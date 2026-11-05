@@ -101,7 +101,14 @@
 (def ^:const W-CLEANUP-DORMANT 45) ; lazy inherited waiter descriptors; no physical authority
 (def ^:const W-CLEANUP-FAILURES 46) ; ordered current unreported cleanup failures
 (def ^:const W-CLEANUP-IDENTITY 47) ; immutable world identity; never owner epoch or family-local ID
-(def ^:const W-SIZE 48)
+(def ^:const W-CLOSE 48) ; production staged-close accounting; never copied controls
+(def ^:const W-LINEAGE 49) ; current token/scope evidence through weak metadata parents
+(def ^:const W-ACTIVATION 50) ; first activation claim, child-gate owned and never inherited
+(def ^:const W-ACTIVATION-INTENT 51) ; atomic submission marker; grants no execution/ownership
+(def ^:const W-HOST-REPLAY 52) ; owned ordinary entries, budgeted after activation
+(def ^:const W-CUSTODY 53) ; atom: nil -> one immutable owner/holder claim, never reset
+(def ^:const W-CREATION 54) ; exact immutable process order [uint32-high uint32-low]
+(def ^:const W-SIZE 55)
 
 ;; Scope
 (def ^:const S-PARENT 2)

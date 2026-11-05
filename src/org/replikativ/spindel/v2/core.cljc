@@ -26,7 +26,7 @@
 #?(:clj (set! *warn-on-reflection* true))
 
 (declare create-source-top-host! row-of world-of cancel-resource! resource-ack! demand! settle! pending-zero! rule-r! complete! validate!
-         deliver-observe! value cancel! finish-task! request-atom-sweep! finish-metadata! unwind-regions! resume-cleanup! cleanup-admission! ordinary-admission! conserve-cleanup!)
+         deliver-observe! value cancel! finish-task! request-atom-sweep! finish-metadata! unwind-regions! resume-cleanup! cleanup-admission! ordinary-admission! conserve-cleanup! close-check! after-gate-action! claim-child! child-milestone! scope-ancestry report-key released-ex replay-host-item! invalid-op)
 
 ;; ---------------------------------------------------------------------------
 ;; Execution context: the world being processed and the run holding the slice
@@ -93,13 +93,74 @@
     (when parent (aadd! (g parent rw/S-CHILDREN) s))
     (register! w s)))
 
+(deftype WorldHostOwner [token cell retirement terminal])
+(deftype WorldSettlement [token generation cell])
+(deftype WorldPreparation [token generation identity cell])
+
+(deftype WorldLineage [token parent])
+
+(def ^:private max-order-word 4294967295)
+(defonce ^:private world-order (clojure.core/atom [0 0]))
+
+(defn- next-order [[high low] exhausted]
+  ;; Neither word exceeds an exactly representable JS integer. The two
+  ;; bounded spaces refuse independently, never wrap, reuse or round.
+  (if (= low max-order-word)
+    (if (= high max-order-word)
+      (throw (ex-info "ordinal space exhausted" {:spindel/invalid exhausted}))
+      [(inc high) 0])
+    [high (inc low)]))
+
+(defn- next-world-order [order] (next-order order :world-order-exhausted))
+(defn- allocate-world-order! [] (swap! world-order next-world-order))
+(defn- next-acquisition-order [w]
+  (next-order (:next-child (g w rw/W-CLOSE)) :world-acquisition-order-exhausted))
+
+(defn- current-custody [w] @(g w rw/W-CUSTODY))
+
+(defn- ownership-witness [w origin]
+  (loop [node (g w rw/W-LINEAGE)]
+    (when node
+      (when-let [link @(.-parent ^WorldLineage node)]
+        (let [witness (:witness link)]
+          (if (identical? origin (:origin witness)) witness
+              (recur (hs/deref-weak (:parent link)))))))))
+
+(defn- compare-path [a b]
+  (loop [a (seq a) b (seq b)]
+    (cond
+      (nil? a) (if (nil? b) 0 -1)
+      (nil? b) 1
+      :else (let [c (compare (first a) (first b))]
+              (if (zero? c) (recur (next a) (next b)) c)))))
+
+(defn- report-key-compare [a b]
+  (let [c (compare-path (first a) (first b))]
+    (if (zero? c) (compare (subvec a 1) (subvec b 1)) c)))
+
+(defn- new-close-state [w runs resources]
+  (let [retirement (cleanup/observation-state) terminal (cleanup/observation-state)
+        projection {:requested? false :execution-retired? false :terminal? false
+                    :runs runs :resources resources :preparations 0 :child-execution 0
+                    :child-terminal 0 :settlements 0 :recovery {} :unreported-failures []}]
+    (swap! retirement assoc :diagnostics projection)
+    (swap! terminal assoc :diagnostics projection)
+    {:runs runs :resources resources :requested? false :execution-retired? false
+     :terminal? false :next-child [0 0] :audit (str (random-uuid)) :preparations {} :children {} :settlements {}
+     :owner (WorldHostOwner. (g w rw/W-CLEANUP-IDENTITY) (clojure.core/atom w) retirement terminal)
+     :retirement retirement :terminal terminal}))
+
+(defn- close-count! [w field n]
+  (s! w rw/W-CLOSE (update (g w rw/W-CLOSE) field + n)))
+
 (defn world
   "A new world. `:verify? true` keeps an id->row registry and a commit log
    (test only); `:hook` runs after every commit in verify mode."
   ([] (world {}))
   ([{:keys [verify? hook inline? budget executor] :or {inline? true budget 4096}}]
    (ordinary-admission! :world)
-   (let [ep #?(:clj (Object.) :cljs (js-obj))
+   (let [creation (allocate-world-order!)
+         ep #?(:clj (Object.) :cljs (js-obj))
          w (rw/new-row ep rw/W-SIZE)
          next #?(:clj (java.util.concurrent.atomic.AtomicLong. 1)
                  :cljs (doto (long-array 1) (aset 0 1)))]
@@ -112,8 +173,12 @@
      (s! w rw/W-START (alist))
      (s! w rw/W-CLEANUP (alist))
      (s! w rw/W-CLEANUP-WAITS {})
-     (s! w rw/W-CLEANUP-FAILURES (sorted-map))
+     (s! w rw/W-CLEANUP-FAILURES (sorted-map-by report-key-compare))
      (s! w rw/W-CLEANUP-IDENTITY #?(:clj (Object.) :cljs (js-obj)))
+     (s! w rw/W-CREATION creation)
+     (s! w rw/W-CUSTODY (clojure.core/atom nil))
+     (s! w rw/W-LINEAGE (WorldLineage. (g w rw/W-CLEANUP-IDENTITY) (clojure.core/atom nil)))
+     (s! w rw/W-CLOSE (new-close-state w 0 0))
      (s! w rw/W-DRAINING false)
      (s! w rw/W-RQ (alist))
      (s! w rw/W-PINS (hs/vmap))
@@ -126,6 +191,8 @@
      (s! w rw/W-ROOTS (hs/lmap))
      (s! w rw/W-RELEASED false)
      (s! w rw/W-UNBORN false)
+     (s! w rw/W-ACTIVATION-INTENT (hs/flag false))
+     (s! w rw/W-HOST-REPLAY (alist))
      (s! w rw/W-AFTER (alist))
      (s! w rw/W-STATE {})
      (s! w rw/W-ATOMS {})
@@ -756,9 +823,11 @@
 ;; Runs and scopes
 
 (defn- new-run! [w x epoch]
+  (when (:requested? (g w rw/W-CLOSE)) (throw (released-ex)))
   (let [r (rw/new-row (g w rw/W-EPOCH) rw/R-SIZE)]
     (s! r rw/TYPE rw/T-RUN)
     (s! r rw/ID (alloc-id! w))
+    (close-count! w :runs 1)
     (s! r rw/R-SCOPE (alloc-id! w))          ; run scope id; T4/T5/T11 order: run, scope
     (s! r rw/R-OF x)
     (s! r rw/R-EPOCH epoch)
@@ -789,6 +858,12 @@
     (if (and ss (pos? (acount ss)))
       (rv w (anth ss (dec (acount ss))))
       (run-scope! w r))))
+
+(defn- current-scope-id [w r]
+  (let [scopes (g r rw/R-SCOPES)]
+    (if (and scopes (pos? (acount scopes)))
+      (id-of (rv w (anth scopes (dec (acount scopes)))))
+      (g r rw/R-SCOPE))))
 
 (defn- remove-scope-if-empty!
   "T16/Z#18: a closed scope row goes once its subtree has no rows left. A run
@@ -821,52 +896,60 @@
 (defn- holder-child [^objects h] (or (aget h 0) (hs/deref-weak (aget h 1))))
 (defn- holder-dead? [^objects h] (or (hs/flag? (aget h 2)) (nil? (holder-child h))))
 
-(defn- release-child!
-  "Releases `child` (T21 in it) through its ingress; scheduled after this
-   world's gate is released (E3)."
-  [w child]
-  (hs/mpsc-add! (g child rw/W-INGRESS) #(release-world* child))
-  (aadd! (g w rw/W-AFTER) child))
+(defn- scope-ancestry [w scope]
+  (loop [s scope ids []]
+    (if s (recur (rv w (g s rw/S-PARENT)) (conj ids (id-of s))) ids)))
+
+(defn- release-child! [w child]
+  (claim-child! w child (g child rw/W-HOLDER)))
 
 (defn- own-child!
-  "F2: the fork marker of `child` in `w`, owned by `scope`, held strongly or
-   weakly (see above). An owner that has closed releases the child at once."
+  "Install immutable ownership evidence before scheduling a new child. Root
+   forks remain weak until an actual close claims their pending debt."
   [w scope child strong?]
-  (if (or (g w rw/W-RELEASED) (not (g scope rw/S-OPEN)))
-    (do (release-child! w child) child)
-    (let [sid (id-of scope)
-          h (doto (object-array 3)
-              (aset 0 (when strong? child)) (aset 1 (hs/weak child)) (aset 2 (hs/flag false)))
-          m (or (g w rw/W-OWNED) (let [m (hs/vmap)] (s! w rw/W-OWNED m) m))
-          ^objects e (or (hs/mget m sid) (let [e (object-array [(alist) 16])]
-                                           (hs/mput! m sid e) e))
-          l (aget e 0)]
-    ;; dead holders (released, or collected) are pruned when the list doubles
-      (when (>= (acount l) (long (aget e 1)))
-        (loop [i (dec (acount l))]
-          (when-not (neg? i)
-            (when (holder-dead? (anth l i)) (hs/remove-at! l i))
-            (recur (dec i))))
-        (aset e 1 #?(:clj (num (max 16 (* 2 (acount l)))) :cljs (max 16 (* 2 (acount l))))))
-      (aadd! l h)
-      (s! child rw/W-HOLDER h)
-      child)))
+  (when-not (neg? (compare (g w rw/W-CREATION) (g child rw/W-CREATION)))
+    (throw (invalid-op :world-publication-order "custody requires an earlier parent and a later child")))
+  (let [sid (id-of scope)
+        acquisition (next-acquisition-order w)
+        witness {:origin (g w rw/W-CLEANUP-IDENTITY) :scope sid
+                 :ancestors (scope-ancestry w scope) :acquisition acquisition}
+        h (doto (object-array 5)
+            (aset 0 (when strong? child)) (aset 1 (hs/weak child))
+            (aset 2 (hs/flag false)) (aset 3 (hs/weak w)) (aset 4 witness))]
+    ;; This child-owned CAS is shared by every publisher. Two parent gates do
+    ;; not serialize each other; a loser changes neither reservation nor ancestry.
+    (when-not (compare-and-set! (g child rw/W-CUSTODY) nil {:holder h :witness witness})
+      (throw (invalid-op :world-custody "world already has a custody owner")))
+    (s! w rw/W-CLOSE (assoc (g w rw/W-CLOSE) :next-child acquisition))
+    (s! child rw/W-HOLDER h)
+    (let [^WorldLineage lineage (g child rw/W-LINEAGE)]
+      (reset! (.-parent lineage) {:parent (hs/weak (g w rw/W-LINEAGE)) :witness witness}))
+    (if (or (:requested? (g w rw/W-CLOSE)) (not (g scope rw/S-OPEN)))
+      (release-child! w child)
+      (let [m (or (g w rw/W-OWNED) (let [m (hs/vmap)] (s! w rw/W-OWNED m) m))
+            ^objects e (or (hs/mget m sid) (let [e (object-array [(alist) 16])]
+                                             (hs/mput! m sid e) e))
+            l (aget e 0)]
+        (when (>= (acount l) (long (aget e 1)))
+          (loop [i (dec (acount l))]
+            (when-not (neg? i)
+              (when (holder-dead? (anth l i)) (hs/remove-at! l i))
+              (recur (dec i))))
+          (aset e 1 #?(:clj (num (max 16 (* 2 (acount l)))) :cljs (max 16 (* 2 (acount l))))))
+        (aadd! l h)))
+    child))
 
 (defn- release-owned!
-  "F2: the owner scope `sid` closed: each live child is released (T21) through
-   its own ingress. The child is scheduled only after this world's gate is
-   released (W-AFTER), so no thread takes two gates (E3)."
+  "Transfer every live holder into two pending channels BEFORE deleting the
+   scope's list. Requests and subscriptions run only after the parent gate."
   [w sid]
   (when-let [m (g w rw/W-OWNED)]
     (when-let [^objects e (hs/mget m sid)]
-      (hs/mdel! m sid)
       (let [l (aget e 0)]
         (dotimes [i (acount l)]
-          (let [^objects h (anth l i)
-                c (holder-child h)]
-            (aset h 0 nil)
-            (when (and c (hs/flag-cas! (aget h 2) false true))
-              (release-child! w c))))))))
+          (let [^objects h (anth l i)]
+            (when-let [c (holder-child h)] (claim-child! w c h)))))
+      (hs/mdel! m sid))))
 
 (defn- close-scope!
   "T16: cancels the work owned by the subtree, closes its scopes and the
@@ -909,6 +992,7 @@
       (s! s rw/S-HELD false)
       (close-scope! w s))
     (unregister! w r)
+    (close-count! w :runs -1)
     ;; the tombstone and its owner chain go with the run (Z#56)
     (when (and (task? x) (g x rw/K-DONE)) (release-ownership! w x))))
 
@@ -1286,12 +1370,16 @@
         prior (:spindel/cleanup-failures (ex-data value))
         cause (if (seq prior) (:spindel/body-error (ex-data value))
                   (when (and failed? (not (cancelled? value))) value))
-        provenance {:run (g r rw/ID) :region (:id region) :order (:order region)
-                    :release (or (g r rw/R-WAIT-SEQ) 0) :error error :body-error cause}]
+        inherited (:spindel/cleanup-provenance (ex-data error))
+        provenance (or (seq inherited)
+                       [{:origin (:audit (g (cw) rw/W-CLOSE)) :path []
+                         :run (g r rw/ID) :region (:id region) :order (:order region)
+                         :release (or (g r rw/R-WAIT-SEQ) 0) :error error :body-error cause}])
+        errors (if (seq inherited) (mapv :error inherited) [error])]
     (ex-info "finalization failed"
-             {:spindel/cleanup-failures (conj (vec prior) error)
+             {:spindel/cleanup-failures (into (vec prior) errors)
               :spindel/cleanup-provenance
-              (conj (vec (:spindel/cleanup-provenance (ex-data value))) provenance)
+              (into (vec (:spindel/cleanup-provenance (ex-data value))) provenance)
               :spindel/body-error cause}
              cause)))
 
@@ -1301,14 +1389,16 @@
           transferred (g r rw/R-CLEANUP-TRANSFER)]
       (when-not (identical? origin (:origin transferred))
         (s! r rw/R-CLEANUP-TRANSFER {:origin origin :keys #{}}))
-      (doseq [{:keys [run order release] :as failure} failures
-              :let [key [run order release]]
-              :when (not (contains? (:keys (g r rw/R-CLEANUP-TRANSFER)) key))]
+      (doseq [failure failures
+              :let [failure (cond-> failure
+                              (empty? (:path failure)) (assoc :origin (:audit (g w rw/W-CLOSE))))
+                    key (report-key failure)]
+              :when (and (not (:observed? failure))
+                         (not (contains? (:keys (g r rw/R-CLEANUP-TRANSFER)) key)))]
         (s! w rw/W-CLEANUP-FAILURES
             (assoc (g w rw/W-CLEANUP-FAILURES) key failure))
-        ;; Ownership transfers once, independently of later report consumption.
-        ;; Immutable keys are bounded by this live unwind and carry no payload;
-        ;; a fork's new origin cannot inherit its parent's transfer authority.
+        ;; These keys exist only for this live unwind; consumption does not
+        ;; authorize a second transfer of one inherited/current failure.
         (s! r rw/R-CLEANUP-TRANSFER
             {:origin origin :keys (conj (:keys (g r rw/R-CLEANUP-TRANSFER)) key)})))))
 
@@ -1813,6 +1903,7 @@
     x))
 
 (defn- new-comp! [w owner key at inputs body handles]
+  (when (:requested? (g w rw/W-CLOSE)) (throw (released-ex)))
   (let [c (debtor-row w rw/T-COMP rw/C-SIZE owner key at handles)]
     (s! c rw/C-INPUTS inputs)
     (s! c rw/C-BODY body)
@@ -1903,6 +1994,7 @@
       h)))
 
 (defn- new-task! [w owner key at inputs body handles]
+  (when (:requested? (g w rw/W-CLOSE)) (throw (released-ex)))
   (let [k (debtor-row w rw/T-TASK rw/K-SIZE owner key at handles)]
     (s! k rw/K-BODY body)
     (s! k rw/K-INPUTS inputs)
@@ -2157,24 +2249,29 @@
 (declare activate-dormant!)
 
 (defn- run-turn!
-  "H2: processes ingress items and internal work up to the budget. Returns
-   true when work remains."
+  "H2: bounded ingress, replay and engine dispatch. Replay alternates with
+   ingress; ordinary ingress joins its FIFO while internal control proceeds."
   [w]
   (s! w rw/W-DRAINING true)
   (let [unborn? (g w rw/W-UNBORN)]
-    ;; E4: an unborn instance commits host items only: its inherited work and
-    ;; dormant resources wait for activate!
-    (when (and (not unborn?) (or (g w rw/W-DORMANT) (g w rw/W-SP-DORMANT) (g w rw/W-CLEANUP-DORMANT))) (activate-dormant! w))
+    (when (and (not unborn?) (or (g w rw/W-DORMANT) (g w rw/W-SP-DORMANT) (g w rw/W-CLEANUP-DORMANT)))
+      (activate-dormant! w))
     (try
-      (loop [n (gl w rw/W-BUDGET) unborn? unborn?]
-        (if (zero? n)
-          true
+      (loop [n (gl w rw/W-BUDGET) unborn? unborn? replay-next? false]
+        (cond
+          (zero? n) true
+          (and replay-next? (pos? (acount (g w rw/W-HOST-REPLAY))))
+          (do (replay-host-item! w) (recur (dec n) unborn? false))
+          :else
           (if-let [item (hs/mpsc-poll! (ingress w))]
-            (do (item) (recur (dec n) (and unborn? (g w rw/W-UNBORN))))
-            (cond (and (not unborn?) (drain-step! w)) (recur (dec n) false)
-                  (run-callbacks! w) (recur n unborn?)
-                  :else false))))
-      (finally (finish-metadata! w) (s! w rw/W-DRAINING false)))))
+            (do (item) (recur (dec n) (and unborn? (g w rw/W-UNBORN)) true))
+            (cond
+              (pos? (acount (g w rw/W-HOST-REPLAY)))
+              (do (replay-host-item! w) (recur (dec n) unborn? false))
+              (and (not unborn?) (drain-step! w)) (recur (dec n) false false)
+              (run-callbacks! w) (recur n unborn? false)
+              :else false))))
+      (finally (finish-metadata! w) (close-check! w) (s! w rw/W-DRAINING false)))))
 
 (declare handoff! activate-dormant!)
 
@@ -2212,6 +2309,7 @@
 
 (defn- work-pending? [w]
   (or (not (hs/mpsc-empty? (ingress w)))
+      (pos? (acount (g w rw/W-HOST-REPLAY)))
       (pos? (acount (g w rw/W-CALLBACKS)))
       (and (not (g w rw/W-UNBORN))          ; E4: an unborn instance's work waits
            (or (pos? (acount (g w rw/W-READY))) (pos? (acount (g w rw/W-RESUME)))
@@ -2271,15 +2369,109 @@
 (defn- ingress* [w f admit?]
   (ingress-body w f admit?))
 
+(deftype HostIngress [state])
+
+(defn- host-control []
+  (HostIngress. (clojure.core/atom {:phase :new})))
+
+(defn- host-entry-active? [^HostIngress entry]
+  (= :queued (:phase @(.-state entry))))
+
+(defn- cancel-host-entry! [^HostIngress entry]
+  (swap! (.-state entry) (fn [s]
+                           (if (#{:new :queued} (:phase s)) {:phase :canceled} s)))
+  nil)
+
+(defn- prepare-host-entry! [^HostIngress entry f reject after-intent?]
+  (swap! (.-state entry)
+         (fn [s] (if (= :new (:phase s))
+                   {:phase :queued :run f :reject reject :after-intent? after-intent?} s)))
+  entry)
+
+(defn- claim-host-entry! [^HostIngress entry phase]
+  (let [state (.-state entry)]
+    (loop []
+      (let [old @state]
+        (when (= :queued (:phase old))
+          (if (compare-and-set! state old {:phase phase}) old (recur)))))))
+
+(defn- reject-host-entry! [entry]
+  (when-let [old (claim-host-entry! entry :rejected)]
+    (when-let [reject (:reject old)]
+      (after-gate-action! (fn [] (reject (released-ex)))))))
+
+(defn- execute-host-entry! [w entry]
+  (if (or (= :rejected (some-> @(.-state ^HostIngress entry) :decision deref))
+          (and (:requested? (g w rw/W-CLOSE))
+               (not (and (identical? w (cw)) (active-run)))))
+    (reject-host-entry! entry)
+    (when-let [old (claim-host-entry! entry :claimed)] ((:run old)))))
+
+(defn- ordinary-host-item! [w ^HostIngress entry]
+  (when (host-entry-active? entry)
+    (cond
+      ;; A one-shot refused instance stays unborn but loses its publication
+      ;; parent. An entry submitted during intent must still reject if its
+      ;; first child-gate turn falls AFTER the rejection cleared the marker.
+      (and (:after-intent? @(.-state entry)) (g w rw/W-UNBORN)
+           (nil? (g w rw/W-PUB-WORLD)))
+      (reject-host-entry! entry)
+
+      ;; Classify at SUBMISSION: ordinary work queued before intent retains S3
+      ;; ordering even if the marker changes before this item's first turn.
+      (and (g w rw/W-UNBORN) (:after-intent? @(.-state entry))
+           (hs/flag? (g w rw/W-ACTIVATION-INTENT)))
+      (let [activation (or (g w rw/W-ACTIVATION) {:identity nil :ordinary (alist) :decision (clojure.core/atom :pending)})]
+        (s! w rw/W-ACTIVATION activation)
+        (swap! (.-state entry) (fn [state] (if (= :queued (:phase state))
+                                             (assoc state :decision (:decision activation)) state)))
+        (aadd! (:ordinary activation) entry))
+
+      (pos? (acount (g w rw/W-HOST-REPLAY)))
+      (aadd! (g w rw/W-HOST-REPLAY) entry)
+
+      :else (execute-host-entry! w entry))))
+
+(defn- ordinary-ingress-action [w entry]
+  ;; A queued action must not close over host!'s original callback environment.
+  (fn [] (ordinary-host-item! w entry)))
+
+(defn- replay-host-item! [w]
+  (let [pending (g w rw/W-HOST-REPLAY) entry (anth pending 0)]
+    (hs/remove-first! pending)
+    (try (execute-host-entry! w entry)
+         (catch #?(:clj Throwable :cljs :default) error
+           ;; The consumed entry owns its failure; later retained entries still
+           ;; receive their own budgeted dispatch/rejection and cannot be lost.
+           (log/error :engine/activation-item-failed {:error error}))))
+  nil)
+
+(defn- remove-host-entry! [w entry]
+  (doseq [pending [(:ordinary (g w rw/W-ACTIVATION)) (g w rw/W-HOST-REPLAY)]]
+    (when pending
+      (loop [i 0]
+        (when (< i (acount pending))
+          (if (identical? entry (anth pending i))
+            (hs/remove-at! pending i)
+            (recur (inc i))))))))
+
+(defn- finish-activation-ingress! [w accepted?]
+  (hs/flag-set! (g w rw/W-ACTIVATION-INTENT) false)
+  (when-let [activation (g w rw/W-ACTIVATION)]
+    (reset! (:decision activation) (if accepted? :accepted :rejected))
+    ;; Transfer the queue in O(1), never execute an unbounded burst here. A
+    ;; requested child's entries are rejected by the same per-item dispatcher.
+    (s! w rw/W-HOST-REPLAY (:ordinary activation))
+    (s! w rw/W-ACTIVATION nil)))
+
 (defn host!
-  "H1: a host operation `f` of world `w`. A thread that already holds the
-   world (inside a slice or a callback) runs it at once; any other thread
-   enqueues it, then tries the gate (H2) unless the world is not inline. A
-   released world refuses host operations (T21), except the effects of a
-   run's own slice: a finalizer of a cleanup entry may still deliver, post,
-   release and write (Z#40, Z#56)."
-  [w f]
-  (ingress* w f true))
+  "H1 ordinary ingress. Activation owns FIFO entries until budgeted replay.
+   Optional completion/control belongs to the submitter, never its body."
+  ([w f] (host! w f nil nil))
+  ([w f reject control]
+   (let [entry (prepare-host-entry! (or control (host-control)) f reject
+                                    (hs/flag? (g w rw/W-ACTIVATION-INTENT)))]
+     (ingress* w (ordinary-ingress-action w entry) true))))
 
 (defn- internal!
   "A completion of an outstanding resource: not an admission, so it is
@@ -2300,6 +2492,7 @@
 ;; Host API
 
 (defn- new-source! [w kind v owner key at]
+  (when (:requested? (g w rw/W-CLOSE)) (throw (released-ex)))
   (let [x (debtor-row w rw/T-SOURCE rw/X-SIZE owner key at 1)]
     (s! x rw/X-KIND kind)
     (s! x rw/X-VALUE v)
@@ -2557,28 +2750,36 @@
 (defn unborn-ex []
   (ex-info "instance not activated: only writes before activate! (S3)" {:spindel/unborn true}))
 
+(defn- host-wait-withdrawal [w ev control event]
+  (fn []
+    (cancel-host-entry! control)
+    (internal! w
+               (fn []
+                 (remove-host-entry! w control)
+                 (when-let [e @ev]
+                   (when (linked? w e)
+                     (unlink! w e)
+                     (commit! w [event (g e rw/ID)])))))
+    nil))
+
 (defn observe!
   "T8: `cb` receives (value err?) on each change. Returns an unobserve fn."
   [h cb]
   (ordinary-admission! :observe!)
   (let [w (world-of h)
-        ev (volatile! nil)]
-    (when (g w rw/W-UNBORN) (throw (unborn-ex)))
-    (gated w
-           (let [d (row-of h)
-                 e (link! w rw/EK-OBSERVE cb d 0)]
-             (vreset! ev e)
-             (when (and (comp? d) (g d rw/C-IDLE)) (validate! w d))
-             (deliver-observe! w e)
-             (commit! w [:observe (g d rw/ID) [:opaque cb] (g e rw/ID)])
-             (demand! w d)))
-    (fn []
-      (gated w
-             (when-let [e @ev]
-               (when (linked? w e)
-                 (unlink! w e)
-                 (commit! w [:unobserve (g e rw/ID)]))))
-      nil)))
+        ev (volatile! nil) control (host-control)]
+    (when (and (g w rw/W-UNBORN) (not (hs/flag? (g w rw/W-ACTIVATION-INTENT))))
+      (throw (unborn-ex)))
+    (host! w (fn []
+               (let [d (row-of h)
+                     e (link! w rw/EK-OBSERVE cb d 0)]
+                 (vreset! ev e)
+                 (when (and (comp? d) (g d rw/C-IDLE)) (validate! w d))
+                 (deliver-observe! w e)
+                 (commit! w [:observe (g d rw/ID) [:opaque cb] (g e rw/ID)])
+                 (demand! w d)))
+           (fn [error] (after-gate-action! (fn [] (cb error true)))) control)
+    (host-wait-withdrawal w ev control :unobserve)))
 
 (defn pin!
   "T20: a row is a root while its pin count is positive (Z#16)."
@@ -2657,12 +2858,15 @@
                     {:spindel/invalid :host-call}))
     :else
     #?(:clj (let [p (promise)]
-              (host! w #(deliver p (try [(f) nil] (catch Throwable t [nil t]))))
+              (host! w #(deliver p (try [(f) nil] (catch Throwable t [nil t])))
+                     (fn [error] (deliver p [nil error])) nil)
               (let [[v t] @p] (if t (throw t) v)))
-       :cljs (let [box (volatile! ::none)]
-               (host! w #(vreset! box (try [(f) nil] (catch :default t [nil t]))))
+       :cljs (let [box (volatile! ::none) control (host-control)]
+               (host! w #(vreset! box (try [(f) nil] (catch :default t [nil t])))
+                      (fn [error] (vreset! box [nil error])) control)
                (if (= ::none @box)
-                 (throw (ex-info "host-call!: the world did not process the item synchronously" {}))
+                 (do (cancel-host-entry! control)
+                     (throw (ex-info "host-call!: the world did not process the item synchronously" {})))
                  (let [[v t] @box] (if t (throw t) v)))))))
 
 (defn call-in!
@@ -2679,7 +2883,9 @@
   [w f]
   (ordinary-admission! :send-world)
   (when (g w rw/W-RELEASED) (throw (released-ex)))
-  (hs/mpsc-add! (g w rw/W-INGRESS) f)
+  (let [entry (prepare-host-entry! (host-control) f nil
+                                   (hs/flag? (g w rw/W-ACTIVATION-INTENT)))]
+    (hs/mpsc-add! (g w rw/W-INGRESS) (ordinary-ingress-action w entry)))
   (if (holding-gate?)
     (when-not (identical? w (cw)) (aadd! (g (cw) rw/W-AFTER) w))
     (handoff! w))
@@ -2911,39 +3117,34 @@
   [h cb]
   (ordinary-admission! :value-async)
   (let [w (world-of h)
-        ev (volatile! nil)]
-    (gated w
-           (let [d (row-of h)]
-             (cond
-               (g w rw/W-UNBORN)
-               (aadd! (g w rw/W-CALLBACKS) [cb [(unborn-ex) true]])
-               (consuming? d)
-               (aadd! (g w rw/W-CALLBACKS) [cb [(invalid-op :value "a host read of a mailbox or semaphore (Z#54)") true]])
-               (and (source? d) (not (deferred? d)))
-               (aadd! (g w rw/W-CALLBACKS) [cb (debtor-result d)])
-               :else
+        ev (volatile! nil) control (host-control)]
+    (host! w (fn []
+               (let [d (row-of h)]
+                 (cond
+                   (g w rw/W-UNBORN)
+                   (aadd! (g w rw/W-CALLBACKS) [cb [(unborn-ex) true]])
+                   (consuming? d)
+                   (aadd! (g w rw/W-CALLBACKS) [cb [(invalid-op :value "a host read of a mailbox or semaphore (Z#54)") true]])
+                   (and (source? d) (not (deferred? d)))
+                   (aadd! (g w rw/W-CALLBACKS) [cb (debtor-result d)])
+                   :else
           ;; T22 allocates the host-wait edge first (the model's order); a
           ;; debtor that is settled consumes it at once, so no edge row is made.
-               (let [eid (alloc-id! w)
-                     idle? (and (comp? d) (g d rw/C-IDLE))]
-                 (if (and (not idle?) (settled? d))
-                   (do (aadd! (g w rw/W-CALLBACKS) [cb (debtor-result d)])
-                       (commit! w [:host-await (g d rw/ID) eid]))
-                   (let [e (link-id! w eid rw/EK-WAIT cb d 0)]
-                     (vreset! ev e)
-                     (when idle? (validate! w d))
-                     (if (settled? d)
-                       (do (fire-wait! w e)
-                           (commit! w [:host-await (g d rw/ID) (g e rw/ID)]))
-                       (do (commit! w [:host-await (g d rw/ID) (g e rw/ID)])
-                           (demand! w d)))))))))
-    (fn []
-      (gated w
-             (when-let [e @ev]
-               (when (linked? w e)
-                 (unlink! w e)
-                 (commit! w [:host-unawait (g e rw/ID)]))))
-      nil)))
+                   (let [eid (alloc-id! w)
+                         idle? (and (comp? d) (g d rw/C-IDLE))]
+                     (if (and (not idle?) (settled? d))
+                       (do (aadd! (g w rw/W-CALLBACKS) [cb (debtor-result d)])
+                           (commit! w [:host-await (g d rw/ID) eid]))
+                       (let [e (link-id! w eid rw/EK-WAIT cb d 0)]
+                         (vreset! ev e)
+                         (when idle? (validate! w d))
+                         (if (settled? d)
+                           (do (fire-wait! w e)
+                               (commit! w [:host-await (g d rw/ID) (g e rw/ID)]))
+                           (do (commit! w [:host-await (g d rw/ID) (g e rw/ID)])
+                               (demand! w d)))))))))
+           (fn [error] (after-gate-action! (fn [] (cb error true)))) control)
+    (host-wait-withdrawal w ev control :host-unawait)))
 
 (defn value
   "Host read (H3): blocks the calling host thread on a host promise, outside
@@ -3032,6 +3233,7 @@
   "T17: an outstanding resource owned by `r`, with `at = R.effect-index`."
   [w r kind at]
   (let [z (debtor-row w rw/T-RES rw/Z-SIZE r 0 at 0)]
+    (close-count! w :resources 1)
     (s! z rw/Z-KIND kind)
     (s! z rw/Z-PHASE rw/Z-ARMED)
     (hs/oset-add! (armed-set w) (id-of z) z)
@@ -3064,6 +3266,7 @@
         (hs/remove-at! zs i)
         (when (zero? (acount zs)) (s! r rw/R-RES nil))
         (unregister! w z)
+        (close-count! w :resources -1)
         ;; T15, then T13 within the item (Z#55)
         (retire-check! w r)
         (commit! w [:resource-ack (g z rw/ID)])))))
@@ -3268,21 +3471,45 @@
           (commit! w [:cleanup-registered (g r rw/ID) sequence]))
       (after-gate-action! withdraw))))
 
+(defn- observed-world-outcome [outcome entitled? path]
+  (let [[value failed?] outcome]
+    (if failed?
+      [(ex-info #?(:clj (.getMessage ^Throwable value) :cljs (.-message value))
+                (update (ex-data value) :spindel/cleanup-provenance
+                        #(mapv (fn [f] (cond-> (update f :path (fn [p] (into (vec path) p)))
+                                         (not entitled?) (assoc :observed? true))) %)) value) true]
+      outcome)))
+
 (defn await-finalization-effect!
   [operation k ek]
   (let [r (cleanup-admission!) w (cw)]
     (when-not (cleanup/operation? operation)
       (throw (invalid-op :cleanup-operation "await-finalization requires an explicit cleanup operation")))
     (when-not (= (g w rw/W-CLEANUP-IDENTITY) (cleanup/origin operation)) (throw (forked-ex)))
-    (when-not (= :resource (:kind (cleanup/target operation)))
-      (throw (invalid-op :cleanup-target "engine cleanup targets require slice 2")))
-    (when-not (= (g w rw/W-CLEANUP-IDENTITY) (:origin (cleanup/target operation)))
-      (throw (forked-ex)))
-    (when-not (some #{(g (current-scope! w r) rw/ID)} (:ancestors (cleanup/target operation)))
-      (throw (invalid-op :cleanup-target "cleanup target is not owned below the current scope")))
+    (let [target (cleanup/target operation)]
+      (case (:kind target)
+        :resource
+        (do (when-not (= (g w rw/W-CLEANUP-IDENTITY) (:origin target)) (throw (forked-ex)))
+            (when-not (some #{(current-scope-id w r)} (:ancestors target))
+              (throw (invalid-op :cleanup-target "cleanup target is not owned below the current scope"))))
+        :world
+        (let [witness (:witness target)]
+          (when-not (and (= :terminal (:channel target)) witness
+                         (identical? (g w rw/W-CLEANUP-IDENTITY) (:origin witness))
+                         (not (identical? (:token target) (g w rw/W-CLEANUP-IDENTITY)))
+                         (some #{(current-scope-id w r)} (:ancestors witness)))
+            (throw (invalid-op :cleanup-target "world join requires a strictly downward owned target"))))
+        (throw (invalid-op :cleanup-target "unsupported cleanup target"))))
     (when (g r rw/R-CLEANUP-WAIT)
       (throw (invalid-op :cleanup-wait "one cleanup waiter per run")))
-    (let [sequence (inc (long (or (g r rw/R-WAIT-SEQ) 0)))
+    (let [target (cleanup/target operation)
+          token (:token target)
+          debt (get-in (g w rw/W-CLOSE) [:children token])
+          entitled? (and (= :world (:kind target)) debt (not (:lexical-route debt)))
+          _ (when entitled?
+              (s! w rw/W-CLOSE (assoc-in (g w rw/W-CLOSE) [:children token :lexical-route]
+                                         {:run (id-of r) :region (:id (g r rw/R-FINALIZER))})))
+          sequence (inc (long (or (g r rw/R-WAIT-SEQ) 0)))
           cell (doto (object-array 2) (aset 0 w) (aset 1 r))
           claimed (hs/flag false)
           callback (fn [outcome]
@@ -3290,7 +3517,10 @@
                        (let [w (aget cell 0) r (aget cell 1)]
                          (aset cell 0 nil) (aset cell 1 nil)
                          ;; Readiness is ingress, not invocation from registration.
-                         (hs/mpsc-add! (g w rw/W-INGRESS) #(cleanup-ready! w r sequence outcome))
+                         (hs/mpsc-add! (g w rw/W-INGRESS) #(cleanup-ready! w r sequence
+                                                                           (if (= :world (:kind target))
+                                                                             (observed-world-outcome outcome entitled?
+                                                                                                     (when entitled? [(:acquisition (:witness debt))])) outcome)))
                          (handoff! w))))]
       (s! r rw/R-WAIT-SEQ sequence)
       (s! r rw/R-CLEANUP-WAIT {:origin (g w rw/W-CLEANUP-IDENTITY) :generation (g r rw/ID)
@@ -3340,8 +3570,329 @@
   (when-not (and (identical? w (cw)) (hs/held? (g w rw/W-LOCK)))
     (throw (invalid-op :cleanup-report "report consumption requires its world gate")))
   (let [report (vec (vals (g w rw/W-CLEANUP-FAILURES)))]
-    (s! w rw/W-CLEANUP-FAILURES (sorted-map))
+    (s! w rw/W-CLEANUP-FAILURES (sorted-map-by report-key-compare))
     report))
+
+;; ---------------------------------------------------------------------------
+;; Staged world close. All mutable debt belongs to one target gate. The opaque
+;; host bearer is an explicit trusted-host role, never an engine continuation.
+
+(defn- host-role! [op]
+  (when (or (active-run) *cleanup-registration?*)
+    (throw (invalid-op op "world host control is unavailable inside engine execution"))))
+
+(defn- internal-result-action [entry box]
+  (fn []
+    (when-let [old (claim-host-entry! entry :claimed)]
+      (vreset! box (try [((:run old)) nil]
+                        (catch #?(:clj Throwable :cljs :default) error [nil error]))))))
+
+(defn- internal-call! [w f]
+  (cond
+    (and (identical? w (cw)) (holding-gate?)) (f)
+    (holding-gate?) (throw (invalid-op :world-control "cannot enter a foreign world gate"))
+    :else
+    #?(:clj (let [p (promise)]
+              (internal! w #(deliver p (try [(f) nil] (catch Throwable t [nil t]))))
+              (let [[v t] @p] (if t (throw t) v)))
+       :cljs (let [box (volatile! nil)
+                   entry (prepare-host-entry! (host-control) f nil false)]
+               (internal! w (internal-result-action entry box))
+               (when-not @box
+                 (cancel-host-entry! entry)
+                 (throw (invalid-op :world-control "requires a synchronous host turn")))
+               (let [[v t] @box] (if t (throw t) v))))))
+
+(defn- owner-world [^WorldHostOwner owner target]
+  (when-not (and (instance? WorldHostOwner owner)
+                 (identical? (.-token owner) (g target rw/W-CLEANUP-IDENTITY)))
+    (throw (invalid-op :world-owner "expected this target's opaque host owner")))
+  (let [w @(.-cell owner)]
+    (when (and w (not (identical? w target)))
+      (throw (invalid-op :world-owner "host owner target mismatch")))
+    w))
+
+(defn world-host-owner
+  "Return this world's canonical trusted-host controller. Possession of a real
+   world grants this passive role; lookup grants no new acquisition or spending.
+   Forks get fresh bearers and terminal controllers retain no world."
+  [w]
+  (host-role! :world-owner)
+  (get (g w rw/W-CLOSE) :owner))
+
+(defn- close-operation
+  ([w origin channel] (close-operation w origin channel nil))
+  ([w origin channel witness]
+   (cleanup/observation origin {:kind :world :token (g w rw/W-CLEANUP-IDENTITY)
+                                :channel channel :witness witness}
+                        (get (g w rw/W-CLOSE) channel) after-gate-action!)))
+
+(defn- owned-world-witness! [w r target]
+  (let [witness (ownership-witness target (g w rw/W-CLEANUP-IDENTITY))
+        scope (current-scope-id w r)]
+    (when-not (and (not (identical? w target)) witness (some #{scope} (:ancestors witness)))
+      (throw (invalid-op :world-target "world join requires a strictly downward owned target")))
+    witness))
+
+(defn- channel-outcome [report]
+  (if (seq report)
+    [(ex-info "world finalization failed"
+              {:spindel/world-close true :spindel/cleanup-failures (mapv :error report)
+               :spindel/cleanup-provenance report}) true]
+    [nil false]))
+
+(defn- report-key [failure]
+  [(vec (:path failure)) (str (:origin failure)) (long (or (:run failure) 0))
+   (long (or (:order failure) 0)) (long (or (:release failure) 0))
+   (str (:substep failure))])
+
+(defn- add-report! [w failures path]
+  (doseq [failure failures]
+    (let [f (update failure :path #(into (vec path) %))]
+      (s! w rw/W-CLEANUP-FAILURES (assoc (g w rw/W-CLEANUP-FAILURES) (report-key f) f)))))
+
+(defn- close-projection [w]
+  (let [c (g w rw/W-CLOSE)]
+    {:requested? (:requested? c) :execution-retired? (:execution-retired? c)
+     :terminal? (:terminal? c) :runs (:runs c) :resources (:resources c)
+     :preparations (count (:preparations c))
+     :activation-pending? (hs/flag? (g w rw/W-ACTIVATION-INTENT))
+     :deferred-host (+ (count (filter host-entry-active? (:ordinary (g w rw/W-ACTIVATION))))
+                       (count (filter host-entry-active? (g w rw/W-HOST-REPLAY))))
+     :child-execution (count (filter :execution-pending? (vals (:children c))))
+     :child-terminal (count (filter :terminal-pending? (vals (:children c))))
+     :settlements (count (:settlements c))
+     :recovery (into {} (keep (fn [[id debt]] (when (:recovery debt) [id (:recovery debt)]))) (:settlements c))
+     :unreported-failures (vec (vals (g w rw/W-CLEANUP-FAILURES)))
+     :outcome (:outcome c)}))
+
+(defn- close-check! [w]
+  (let [c (g w rw/W-CLOSE)]
+    (when (and (:requested? c) (not (:execution-retired? c))
+               (zero? (:runs c)) (zero? (:resources c)) (empty? (:preparations c))
+               (not-any? :execution-pending? (vals (:children c))))
+      (s! w rw/W-CLOSE (assoc c :execution-retired? true))
+      (cleanup/settle-observation! (:retirement c) after-gate-action! [nil false])))
+  (let [c (g w rw/W-CLOSE)]
+    (when (and (:execution-retired? c) (not (:terminal? c))
+               (empty? (:children c)) (empty? (:settlements c)))
+      (let [outcome (channel-outcome (take-cleanup-report! w))]
+        (s! w rw/W-CLOSE (assoc c :terminal? true :outcome outcome))
+        (when-let [^WorldHostOwner owner (:owner c)] (reset! (.-cell owner) nil))
+        (cleanup/settle-observation! (:terminal c) after-gate-action! outcome))))
+  (let [c (g w rw/W-CLOSE) projection (close-projection w)]
+    (doseq [state [(:retirement c) (:terminal c)]]
+      (swap! state assoc :diagnostics projection))))
+
+(defn- child-milestone! [w token generation channel outcome]
+  (when-let [debt (get-in (g w rw/W-CLOSE) [:children token])]
+    (when (identical? generation (:generation debt))
+      (let [terminal? (= :terminal channel)
+            pending? (if terminal? (:terminal-pending? debt) (:execution-pending? debt))]
+        (when pending?
+          (when (and terminal? (not (:lexical-route debt)))
+            (add-report! w (:spindel/cleanup-provenance (ex-data (first outcome))) [(:acquisition (:witness debt))]))
+          (let [next-debt (if terminal?
+                            (assoc debt :execution-pending? false :terminal-pending? false :world nil)
+                            (assoc debt :execution-pending? false))]
+            (s! w rw/W-CLOSE
+                (if (:terminal-pending? next-debt)
+                  (assoc-in (g w rw/W-CLOSE) [:children token] next-debt)
+                  (update (g w rw/W-CLOSE) :children dissoc token))))
+          (close-check! w))))))
+
+(defn- claim-child! [w child ^objects holder]
+  (let [token (g child rw/W-CLEANUP-IDENTITY)]
+    (when-not (or (get-in (g w rw/W-CLOSE) [:children token])
+                  (and holder (hs/flag? (aget holder 2))))
+      (let [generation #?(:clj (Object.) :cljs (js-obj))
+            witness (when holder (aget holder 4))
+            callback (fn [channel]
+                       (fn [outcome]
+                         (hs/mpsc-add! (g w rw/W-INGRESS)
+                                       #(child-milestone! w token generation channel outcome))
+                         (handoff! w)))]
+        (s! w rw/W-CLOSE
+            (assoc-in (g w rw/W-CLOSE) [:children token]
+                      {:generation generation :world child :witness witness
+                       :execution-pending? true :terminal-pending? true}))
+        (when holder
+          (hs/flag-set! (aget holder 2) true)
+          (aset holder 0 nil))
+        (after-gate-action!
+         #(internal! child
+                     (fn []
+                       ;; Both notifications exist before release. No generic
+                       ;; cleanup registration-throw policy participates here.
+                       (cleanup/subscribe! (close-operation child nil :retirement) (callback :retirement))
+                       (cleanup/subscribe! (close-operation child nil :terminal) (callback :terminal))
+                       (release-world* child))))))))
+
+(defn close-world!
+  "Request close and return the shared terminal observation. Engine callers
+   receive a scope-authorized downward operation; host callers need their bearer."
+  ([target]
+   (let [w (cw) r (active-run)]
+     (when-not (and w r (g r rw/R-SLICE))
+       (throw (invalid-op :world-close "host close requires its opaque host owner")))
+     (let [witness (owned-world-witness! w r target)
+           custody (current-custody target)]
+       ;; Direct debt owns entitlement; transitive observers keep only their
+       ;; particular origin witness and cannot claim an intermediate route.
+       (when (identical? (:origin (:witness custody)) (g w rw/W-CLEANUP-IDENTITY))
+         (claim-child! w target (:holder custody)))
+       (let [op (close-operation target (g w rw/W-CLEANUP-IDENTITY) :terminal witness)]
+         (after-gate-action! #(internal! target (fn [] (release-world* target))))
+         op))))
+  ([owner target]
+   (host-role! :world-close)
+   (if-let [w (owner-world owner target)]
+     (internal-call! w #(let [op (close-operation w nil :terminal)] (release-world* w) op))
+     (cleanup/observation nil {:kind :world :token (.-token ^WorldHostOwner owner) :channel :terminal}
+                          (.-terminal ^WorldHostOwner owner) after-gate-action!))))
+
+(defn world-execution-retirement [owner target]
+  (host-role! :world-retirement)
+  (owner-world owner target)
+  (cleanup/observation nil {:kind :world :token (.-token ^WorldHostOwner owner) :channel :retirement}
+                       (.-retirement ^WorldHostOwner owner) after-gate-action!))
+
+(defn subscribe-world-close! [operation callback]
+  (host-role! :world-subscribe)
+  (when-not (and (cleanup/operation? operation) (= :world (:kind (cleanup/target operation))))
+    (throw (invalid-op :world-operation "expected a world observation")))
+  (cleanup/subscribe! operation callback))
+
+(defn world-close-status [target-or-operation]
+  (host-role! :world-status)
+  (if (cleanup/operation? target-or-operation)
+    (do (when-not (= :world (:kind (cleanup/target target-or-operation)))
+          (throw (invalid-op :world-operation "expected a world observation")))
+        (:diagnostics @(.-state ^org.replikativ.spindel.v2.cleanup.Operation target-or-operation)))
+    (internal-call! target-or-operation #(close-projection target-or-operation))))
+
+(defn register-world-settlement!
+  "Pre-register current foreign work before acquisition. Returns one opaque
+   capability; named preparation bearers are available through world-preparations."
+  [owner target preparations]
+  (host-role! :world-settlement)
+  (let [w (owner-world owner target)]
+    (when-not w (throw (released-ex)))
+    (when-not (and (sequential? preparations) (= (count preparations) (count (set preparations))))
+      (throw (invalid-op :world-preparations "preparation names must be a finite distinct sequence")))
+    (internal-call!
+     w #(do
+          (when (:requested? (g w rw/W-CLOSE)) (throw (released-ex)))
+          (let [generation #?(:clj (Object.) :cljs (js-obj))
+                id (alloc-id! w) token (g w rw/W-CLEANUP-IDENTITY)
+                cell (clojure.core/atom {:world w :id id :phase :pending})
+                reservations (into {} (map (fn [name]
+                                             [name (WorldPreparation. token generation #?(:clj (Object.) :cljs (js-obj))
+                                                                      (clojure.core/atom {:world w :settlement id :phase :pending}))])) preparations)
+                cap (WorldSettlement. token generation cell)]
+            (s! w rw/W-CLOSE
+                (-> (g w rw/W-CLOSE)
+                    (assoc-in [:settlements id] {:capability cap :generation generation :preparations reservations})
+                    (update :preparations into (map (fn [[_ ^WorldPreparation p]] [(.-identity p) p]) reservations))))
+            cap)))))
+
+(defn world-preparations [^WorldSettlement capability]
+  (host-role! :world-preparations)
+  (when-not (instance? WorldSettlement capability)
+    (throw (invalid-op :world-settlement "expected a settlement capability")))
+  (let [{:keys [world id]} @(.-cell capability)]
+    (if world (internal-call! world #(get-in (g world rw/W-CLOSE) [:settlements id :preparations])) {})))
+
+(defn- settlement-debt! [w ^WorldSettlement cap id]
+  (let [debt (get-in (g w rw/W-CLOSE) [:settlements id])]
+    (when-not (and (identical? (.-token cap) (g w rw/W-CLEANUP-IDENTITY))
+                   (identical? cap (:capability debt))
+                   (identical? (.-generation cap) (:generation debt)))
+      (throw (invalid-op :world-settlement "stale or wrong-target settlement capability")))
+    debt))
+
+(defn finish-world-preparation!
+  "Fulfill a named prior reservation with {:disposed? true}, certifying joined
+   disposal, or {:world child}. Publication transfers to owned child disposal
+   before removing the reservation; uncertain output keeps its reservation."
+  [^WorldPreparation reservation disposition]
+  (host-role! :world-preparation)
+  (when-not (instance? WorldPreparation reservation)
+    (throw (invalid-op :world-preparation "expected an opaque preparation bearer")))
+  (when-not (or (= {:disposed? true} disposition)
+                (and (map? disposition) (= #{:world} (set (keys disposition)))))
+    (throw (invalid-op :world-preparation "expected known joined disposal or an exact child publication")))
+  (let [{:keys [world phase]} @(.-cell reservation)]
+    (when (= :pending phase)
+      (internal-call!
+       world
+       #(when-not (= :finished (:phase @(.-cell reservation)))
+          (let [c (g world rw/W-CLOSE) identity (.-identity reservation)]
+            (when-not (and (identical? (.-token reservation) (g world rw/W-CLEANUP-IDENTITY))
+                           (identical? reservation (get (:preparations c) identity)))
+              (throw (invalid-op :world-preparation "stale preparation bearer")))
+            (when-let [child (:world disposition)]
+              (when (or (identical? child world) (current-custody child)
+                        (ownership-witness world (g child rw/W-CLEANUP-IDENTITY)))
+                (throw (invalid-op :world-preparation "published child must be unowned and distinct")))
+            ;; Preparation outputs are disposal participants, never new ordinary
+            ;; target work, even when publication races an earlier request.
+              (own-child! world (rv world (g world rw/W-ROOT)) child true)
+              (claim-child! world child (g child rw/W-HOLDER)))
+            (s! world rw/W-CLOSE (update (g world rw/W-CLOSE) :preparations dissoc identity))
+            (reset! (.-cell reservation) {:phase :finished})
+            (close-check! world))))))
+  nil)
+
+(defn- recovery-data? [x]
+  (or (nil? x) (string? x) (keyword? x) (symbol? x) (number? x) (boolean? x)
+      (and (map? x) (not (record? x))
+           (every? (fn [[k v]] (and (recovery-data? k) (recovery-data? v))) x))
+      (and (or (vector? x) (set? x)) (every? recovery-data? x))))
+
+(defn update-world-settlement! [^WorldSettlement cap recovery]
+  (host-role! :world-settlement)
+  (when-not (instance? WorldSettlement cap)
+    (throw (invalid-op :world-settlement "expected a settlement capability")))
+  (when-not (or (nil? recovery) (and (map? recovery) (:id recovery) (recovery-data? recovery)))
+    (throw (invalid-op :world-recovery "recovery requires a stable ID and current data")))
+  (let [{:keys [world id phase]} @(.-cell cap)]
+    (when-not (= :acknowledged phase)
+      (internal-call! world #(when-not (= :acknowledged (:phase @(.-cell cap)))
+                               (settlement-debt! world cap id)
+                               (s! world rw/W-CLOSE (assoc-in (g world rw/W-CLOSE) [:settlements id :recovery] recovery))
+                               (close-check! world)))))
+  nil)
+
+(defn acknowledge-world-settlement!
+  "One physical acknowledgement after target execution retirement. Outcome is
+   {:settled? true :value v} or {:settled? true :error e}; ambiguous failure uses
+   update-world-settlement! instead. Accepted duplicate delivery is inert."
+  [^WorldSettlement cap outcome]
+  (host-role! :world-settlement)
+  (when-not (instance? WorldSettlement cap)
+    (throw (invalid-op :world-settlement "expected a settlement capability")))
+  (when-not (and (map? outcome) (true? (:settled? outcome))
+                 (or (= #{:settled? :value} (set (keys outcome)))
+                     (= #{:settled? :error} (set (keys outcome)))))
+    (throw (invalid-op :world-settlement "acknowledgement must certify known physical settlement")))
+  (let [{:keys [world id phase]} @(.-cell cap)]
+    (when-not (= :acknowledged phase)
+      (internal-call!
+       world #(when-not (= :acknowledged (:phase @(.-cell cap)))
+                (settlement-debt! world cap id)
+                (when-not (:execution-retired? (g world rw/W-CLOSE))
+                  (throw (invalid-op :world-settlement "execution must retire before settlement acknowledgement")))
+                (when-let [error (:error outcome)]
+                  (add-report! world [{:origin (:audit (g world rw/W-CLOSE)) :substep id :error error}] []))
+                (s! world rw/W-CLOSE (update (g world rw/W-CLOSE) :settlements dissoc id))
+                (reset! (.-cell cap) {:phase :acknowledged})
+                (close-check! world)))))
+  nil)
+
+(defn take-world-cleanup-report! [owner target]
+  (host-role! :world-report)
+  (if-let [w (owner-world owner target)] (internal-call! w #(take-cleanup-report! w)) []))
 
 (defn release-world!
   "T21: revokes the roots (observe callbacks and host waits receive
@@ -3351,7 +3902,7 @@
   [w]
   ;; idempotent: releasing a released world does nothing (old discard)
   (when-not (g w rw/W-RELEASED)
-    (gated w (release-world* w)))
+    (internal! w (fn [] (release-world* w))))
   ;; the root scope is the administrative allowance (I11a): not a row left
   (fn [] (when-let [reg (g w rw/W-REG)] (dec (hs/msize reg)))))
 
@@ -3363,12 +3914,14 @@
 (defn- discard-unborn-storage! [w]
   ;; An unentered snapshot owns no physical cleanup. Drop inherited retention
   ;; wholesale, without traversing runs or invoking parent detach/close code.
+  (finish-activation-ingress! w false)
   (doseq [i [rw/W-READY rw/W-RESUME rw/W-START rw/W-CLEANUP rw/W-RQ rw/W-CALLBACKS]]
     (s! w i (alist)))
   (doseq [i [rw/W-FWD rw/W-DORMANT rw/W-ARMED rw/W-SAVEPOINTS rw/W-SP-DORMANT
              rw/W-PENDING-ACT rw/W-CLEANUP-DORMANT rw/W-PUB-WORLD rw/W-SP-HANDLERS]]
     (s! w i nil))
   (s! w rw/W-CLEANUP-WAITS {})
+  (s! w rw/W-CLOSE (assoc (g w rw/W-CLOSE) :runs 0 :resources 0))
   (s! w rw/W-PINS (hs/vmap))
   (s! w rw/W-ROOTS (hs/lmap))
   (s! w rw/W-STATE {})
@@ -3377,13 +3930,27 @@
     (s! root rw/S-OPEN false)
     (s! w rw/W-ROOT root)))
 
+(defn- handoff-owner-close! [w]
+  (when-let [^objects h (:holder (current-custody w))]
+    ;; Promote BEFORE reading the monotone claimed flag. Parent claim may clear
+    ;; the slot concurrently; no child write may resurrect it after that read.
+    (aset h 0 w)
+    (if (hs/flag? (aget h 2))
+      (aset h 0 nil)
+      (when-let [parent (hs/deref-weak (aget h 3))]
+        (after-gate-action!
+         #(do (hs/mpsc-add! (g parent rw/W-INGRESS)
+                            (fn [] (claim-child! parent w h)))
+              (handoff! parent)))))))
+
 (defn- release-world*
   "T21 inside `w`'s gate. Also the owner-close release of a fork (F2)."
   [w]
+  (when (g w rw/W-RELEASED) (handoff-owner-close! w))
   (when-not (g w rw/W-RELEASED)
-    (when-let [^objects h (g w rw/W-HOLDER)]
-      (aset h 0 nil)
-      (hs/flag-set! (aget h 2) true))
+    ;; Seal all fresh admission before any cancellation or outbox dispatch.
+    (s! w rw/W-CLOSE (assoc (g w rw/W-CLOSE) :requested? true))
+    (handoff-owner-close! w)
     (if (g w rw/W-UNBORN)
       ;; E4: an instance that never ran is discarded as if dropped: nothing
       ;; in it runs, its copied finalizers included
@@ -3488,49 +4055,59 @@
    ID -> copy) is shared persistently. The child gets fresh administration
    and copies of the queues, pins and roots (work in flight, design v3 §6);
    its inherited armed resources are dormant until its first turn (§8.1)."
-  [w]
-  (let [c (aclone ^objects w)
-        armed (g w rw/W-ARMED)]
-    (s! w rw/W-EPOCH #?(:clj (Object.) :cljs (js-obj)))
-    (s! c rw/W-EPOCH #?(:clj (Object.) :cljs (js-obj)))
-    (s! c rw/ID (alloc-id! w))
-    (s! c rw/W-LOCK (hs/lock))
-    (s! c rw/W-INGRESS (hs/mpsc))
-    (s! c rw/W-SCHEDULED (hs/flag false))
-    (s! c rw/W-DRAINING false)
-    (s! c rw/W-CALLBACKS (alist))
+  ([w] (fork-world* w (allocate-world-order!)))
+  ([w creation]
+   (let [c (aclone ^objects w)
+         armed (g w rw/W-ARMED)]
+     (s! w rw/W-EPOCH #?(:clj (Object.) :cljs (js-obj)))
+     (s! c rw/W-EPOCH #?(:clj (Object.) :cljs (js-obj)))
+     (s! c rw/ID (alloc-id! w))
+     (s! c rw/W-LOCK (hs/lock))
+     (s! c rw/W-INGRESS (hs/mpsc))
+     (s! c rw/W-SCHEDULED (hs/flag false))
+     (s! c rw/W-DRAINING false)
+     (s! c rw/W-CALLBACKS (alist))
     ;; lifecycle state is the world's own, never inherited (spec §8.1 D3)
-    (s! c rw/W-OWNED nil)
-    (s! c rw/W-HOLDER nil)
-    (s! c rw/W-AFTER (alist))
-    (s! c rw/W-CLEANUP-FAILURES (sorted-map))
-    (s! c rw/W-CLEANUP-IDENTITY #?(:clj (Object.) :cljs (js-obj)))
-    (s! c rw/W-CLEANUP-WAITS {})
-    (s! c rw/W-CLEANUP-DORMANT
-        (seq (concat (vals (g w rw/W-CLEANUP-WAITS)) (g w rw/W-CLEANUP-DORMANT))))
-    (s! c rw/W-UNBORN false)
-    (s! c rw/W-PUB-WORLD nil)
-    (s! c rw/W-WATCHES (lt/index))
-    (s! c rw/W-SWEEP-PENDING (hs/flag false))
-    (s! c rw/W-META-CLOSED false)
-    (doseq [i [rw/W-READY rw/W-RESUME rw/W-START rw/W-CLEANUP rw/W-RQ]]
-      (s! c i (hs/lcopy (g w i))))
-    (s! c rw/W-PINS (hs/mcopy (g w rw/W-PINS)))
-    (s! c rw/W-ROOTS (hs/mcopy (g w rw/W-ROOTS)))
-    (s! c rw/W-ARMED nil)
+     (s! c rw/W-OWNED nil)
+     (s! c rw/W-HOLDER nil)
+     (s! c rw/W-AFTER (alist))
+     (s! c rw/W-CLEANUP-FAILURES (sorted-map-by report-key-compare))
+     (s! c rw/W-CLEANUP-IDENTITY #?(:clj (Object.) :cljs (js-obj)))
+    ;; The frozen basis contributes the same logical execution debts. COW copies
+    ;; transfer representation only; neither own-copy! nor activation increments.
+     (s! c rw/W-CLOSE (new-close-state c (:runs (g w rw/W-CLOSE)) (:resources (g w rw/W-CLOSE))))
+     (s! c rw/W-CREATION creation)
+     (s! c rw/W-CUSTODY (clojure.core/atom nil))
+     (s! c rw/W-LINEAGE (WorldLineage. (g c rw/W-CLEANUP-IDENTITY) (clojure.core/atom nil)))
+     (s! c rw/W-CLEANUP-WAITS {})
+     (s! c rw/W-CLEANUP-DORMANT
+         (seq (concat (vals (g w rw/W-CLEANUP-WAITS)) (g w rw/W-CLEANUP-DORMANT))))
+     (s! c rw/W-UNBORN false)
+     (s! c rw/W-PUB-WORLD nil)
+     (s! c rw/W-ACTIVATION nil)
+     (s! c rw/W-ACTIVATION-INTENT (hs/flag false))
+     (s! c rw/W-HOST-REPLAY (alist))
+     (s! c rw/W-WATCHES (lt/index))
+     (s! c rw/W-SWEEP-PENDING (hs/flag false))
+     (s! c rw/W-META-CLOSED false)
+     (doseq [i [rw/W-READY rw/W-RESUME rw/W-START rw/W-CLEANUP rw/W-RQ]]
+       (s! c i (hs/lcopy (g w i))))
+     (s! c rw/W-PINS (hs/mcopy (g w rw/W-PINS)))
+     (s! c rw/W-ROOTS (hs/mcopy (g w rw/W-ROOTS)))
+     (s! c rw/W-ARMED nil)
     ;; dormant: this world's armed resources and pending savepoints, plus what
     ;; it still holds dormant itself (a basis is never run, only forked)
-    (s! c rw/W-DORMANT (seq (concat (when armed (hs/oset-vals armed)) (g w rw/W-DORMANT))))
-    (let [sps (g w rw/W-SAVEPOINTS)]
-      (s! c rw/W-SAVEPOINTS nil)
-      (s! c rw/W-PENDING-ACT nil)
-      (s! c rw/W-SP-DORMANT (seq (concat (when sps (hs/oset-vals sps)) (g w rw/W-SP-DORMANT)))))
-    (when-let [reg (g w rw/W-REG)]
-      (s! c rw/W-REG (hs/mcopy reg))
-      (s! c rw/W-LOG (alist)))
-    (lt/register-world! (g c rw/W-FAMILY) c (g c rw/ID) (g c rw/W-WATCHES)
-                        (gl c rw/W-SWEEP-GEN) request-atom-sweep!)
-    c))
+     (s! c rw/W-DORMANT (seq (concat (when armed (hs/oset-vals armed)) (g w rw/W-DORMANT))))
+     (let [sps (g w rw/W-SAVEPOINTS)]
+       (s! c rw/W-SAVEPOINTS nil)
+       (s! c rw/W-PENDING-ACT nil)
+       (s! c rw/W-SP-DORMANT (seq (concat (when sps (hs/oset-vals sps)) (g w rw/W-SP-DORMANT)))))
+     (when-let [reg (g w rw/W-REG)]
+       (s! c rw/W-REG (hs/mcopy reg))
+       (s! c rw/W-LOG (alist)))
+     (lt/register-world! (g c rw/W-FAMILY) c (g c rw/ID) (g c rw/W-WATCHES)
+                         (gl c rw/W-SWEEP-GEN) request-atom-sweep!)
+     c)))
 
 (defn fork!
   "D3, host form: a frozen fork of `w` between slices. Returns the child
@@ -3541,7 +4118,8 @@
     (gated w
            (when (active-run) (throw (ex-info "fork! inside a body: use the (fork) effect" {})))
            (when (g w rw/W-UNBORN) (throw (ex-info "fork! of an unactivated instance" {})))
-           (let [c (fork-world* w)]
+           (let [_ (next-acquisition-order w)
+                 c (fork-world* w)]
              (own-child! w (rv w (g w rw/W-ROOT)) c false)   ; F2: weakly, by the root scope
              (commit! w [:fork-host (g c rw/ID)])
              (vreset! res c)))
@@ -3562,6 +4140,8 @@
       (ek (ex-info "fork in a nested slice is not supported yet" {}))
       :else
       (let [w (cw)
+            _ (next-acquisition-order w)
+            creation (allocate-world-order!)
             owner (current-scope! w r)            ; F2: materialized before the boundary
             aid (alloc-id! w)
             a (new-activation! w aid r :one k ek (object-array 1) (object-array 1) 0)]
@@ -3572,7 +4152,7 @@
         (s! r rw/R-SLICE false)
         (aadd! (g w rw/W-RESUME) a)
         (unregister! w a)                 ; a delivery carrier, not a parked activation
-        (let [child (fork-world* w)]
+        (let [child (fork-world* w creation)]
           (own-child! w owner child true)
           ;; the parent takes the delivery back and continues on its own copy
           (remove-row! (g w rw/W-RESUME) a)
@@ -3662,14 +4242,15 @@
         (comp? (rv w (g r rw/R-OF))) (ek (ex-info "savepoint in a computation body is not supported" {}))
         (> (long (or (aget (ctx) 2) 0)) 1) (ek (ex-info "savepoint in a nested slice is not supported yet" {}))
         :else
-        (let [aid (alloc-id! w)
+        (let [creation (allocate-world-order!)
+              aid (alloc-id! w)
               a (new-activation! w aid r :one k ek (object-array 1) (object-array 1) 1)]
           (s! a rw/A-INLINE false)
           (park! r a)
           (hs/oset-add! (or (g w rw/W-SAVEPOINTS) (let [s (hs/oset)] (s! w rw/W-SAVEPOINTS s) s)) aid a)
           (commit! w [:savepoint (g r rw/ID) [:opaque site] [:opaque payload] aid])
           ;; the basis is a fork of this commit that is never run, only forked
-          (let [basis (fork-world* w)
+          (let [basis (fork-world* w creation)
                 pub (publication w aid site payload basis)]
             ;; the parent's own copy of the run keeps no slice (it is parked)
             (set-active! (rv w r))
@@ -3727,37 +4308,100 @@
     (s! c rw/W-PUB-WORLD (:world pub))
     c))
 
+(defn- activate-instance! [w claim v]
+  ;; A release can occur after parent admission's guard but before its holder
+  ;; publication. Discard clears the activation identity; current-owner handoff
+  ;; must still run on this child gate independently of that stale identity.
+  (when (:requested? (g w rw/W-CLOSE)) (handoff-owner-close! w))
+  ;; Parent admission/holder publication has completed. Recheck cancellation
+  ;; under the child gate: a delayed accepted activation cannot undo disposal.
+  (when (and (identical? claim (:identity (g w rw/W-ACTIVATION))) (g w rw/W-UNBORN))
+    (let [holder (g w rw/W-HOLDER)]
+      (if (or (:requested? (g w rw/W-CLOSE))
+              (nil? (g w rw/W-PENDING-ACT))
+              (and holder (hs/flag? (aget ^objects holder 2))))
+        (release-world* w)
+        (let [aid (g w rw/W-PENDING-ACT)
+              a (rv w (get (g w rw/W-FWD) aid
+                           (some #(when (== (id-of %) (long aid)) %)
+                                 (concat (g w rw/W-SP-DORMANT)
+                                         (some-> (g w rw/W-SAVEPOINTS) hs/oset-vals)))))]
+          (s! w rw/W-PUB-WORLD nil)
+          (s! w rw/W-UNBORN false)
+          (when (or (g w rw/W-DORMANT) (g w rw/W-SP-DORMANT) (g w rw/W-CLEANUP-DORMANT))
+            (activate-dormant! w))
+          (s! w rw/W-PENDING-ACT nil)
+          (if (and a (sp-deliver! w a [v false]))
+            (commit! w [:activate aid [:opaque v]])
+            (refuse! w [:activate aid [:opaque v]]))
+          (finish-activation-ingress! w true))))))
+
+(defn- reject-instance-activation! [w claim dispose-unowned?]
+  (when (identical? claim (:identity (g w rw/W-ACTIVATION)))
+    (s! w rw/W-PUB-WORLD nil)
+    (finish-activation-ingress! w false)
+    (when (and dispose-unowned? (nil? (current-custody w)))
+      (release-world* w))))
+
+(defn- admit-instance! [parent w claim v]
+  (let [admissible? (and (not (:requested? (g parent rw/W-CLOSE)))
+                         (not (g w rw/W-RELEASED))
+                         (g (rv parent (g parent rw/W-ROOT)) rw/S-OPEN))
+        decision (if-not admissible?
+                   {:accepted? false :dispose-unowned? true}
+                   (try (own-child! parent (rv parent (g parent rw/W-ROOT)) w false)
+                        {:accepted? true}
+                        (catch #?(:clj Throwable :cljs :default) error
+                          (case (:spindel/invalid (ex-data error))
+                            :world-custody {:accepted? false}
+                            :world-publication-order {:accepted? false}
+                            ;; This is the legitimate original publication
+                            ;; parent and a fresh instance, not an arbitrary
+                            ;; rejected older output or a competing custodian.
+                            :world-acquisition-order-exhausted
+                            {:accepted? false :dispose-unowned? true}
+                            (throw error)))))]
+    (after-gate-action!
+     (fn []
+       (internal! w
+                  (fn []
+                    (if (:accepted? decision) (activate-instance! w claim v)
+                        (reject-instance-activation! w claim (:dispose-unowned? decision)))))))))
+
 (defn activate!
-  "S4: resumes an instantiated fork's pending activation with `v`. The fork
-   is born here: the root scope of the publication's world owns it (F2)."
+  "S4: claim one activation value under the child gate, then obtain its
+   publication parent's admission before scheduling any child execution."
   [w v]
   (ordinary-admission! :activate)
-  (gated w
-         (when-let [pw (g w rw/W-PUB-WORLD)]
-           (s! w rw/W-PUB-WORLD nil)
-      ;; F2: the owner's table is the publication world's; its gate is only
-      ;; tried, never waited for. A released owner releases the instance.
-           (try (host! pw #(own-child! pw (rv pw (g pw rw/W-ROOT)) w false))
-                (catch #?(:clj Exception :cljs :default) _
-                  (release-world* w))))                 ; still unborn: nothing runs
-         (let [aid (when-not (g w rw/W-RELEASED) (g w rw/W-PENDING-ACT))
-          ;; looked up before the dormant pass below empties the dormant list
-               a (when aid
-                   (rv w (get (g w rw/W-FWD) aid
-                              (some #(when (== (id-of %) (long aid)) %)
-                                    (concat (g w rw/W-SP-DORMANT)
-                                            (some-> (g w rw/W-SAVEPOINTS) hs/oset-vals))))))]
-           (when (and (g w rw/W-UNBORN) (not (g w rw/W-RELEASED)))
-             (s! w rw/W-UNBORN false)
-        ;; inherited resources and savepoints: this item is the first turn's
-        ;; work, so they are activated here, not at a later turn entry
-             (when (or (g w rw/W-DORMANT) (g w rw/W-SP-DORMANT) (g w rw/W-CLEANUP-DORMANT)) (activate-dormant! w)))
-           (when aid
-             (s! w rw/W-PENDING-ACT nil)
-             (do
-               (if (and a (sp-deliver! w a [v false]))
-                 (commit! w [:activate aid [:opaque v]])
-                 (refuse! w [:activate aid [:opaque v]]))))))
+  (when (g w rw/W-RELEASED) (throw (released-ex)))
+  (when (and (g w rw/W-UNBORN) (nil? (g w rw/W-PUB-WORLD)))
+    (throw (invalid-op :world-activation "instance activation was already refused")))
+  ;; Submission intent grants no ownership or execution authority.
+  (when (g w rw/W-UNBORN) (hs/flag-set! (g w rw/W-ACTIVATION-INTENT) true))
+  (after-gate-action!
+   (fn []
+     (internal!
+      w
+      (fn []
+        (cond
+          ;; Public entry checks may precede another caller's birth/refusal or
+          ;; release. Reconcile every stale marker under this child gate.
+          ;; Successful birth already owns replay, so only clear its marker.
+          (not (g w rw/W-UNBORN))
+          (hs/flag-set! (g w rw/W-ACTIVATION-INTENT) false)
+
+          (or (:requested? (g w rw/W-CLOSE)) (nil? (g w rw/W-PUB-WORLD)))
+          (finish-activation-ingress! w false)
+
+          (nil? (:identity (g w rw/W-ACTIVATION)))
+          (let [parent (g w rw/W-PUB-WORLD)
+                claim #?(:clj (Object.) :cljs (js-obj))]
+            (s! w rw/W-ACTIVATION
+                {:identity claim
+                 :ordinary (or (:ordinary (g w rw/W-ACTIVATION)) (alist))
+                 :decision (or (:decision (g w rw/W-ACTIVATION)) (clojure.core/atom :pending))})
+            (after-gate-action!
+             (fn [] (internal! parent (fn [] (admit-instance! parent w claim v)))))))))))
   w)
 
 (defn await-finalization [_] (throw (ex-info "await-finalization outside a body" {})))

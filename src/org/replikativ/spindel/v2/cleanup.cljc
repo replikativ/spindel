@@ -25,17 +25,27 @@
   (Operation. origin {:kind :resource :origin (.-origin r) :owner (.-owner r)
                       :ancestors (.-ancestors r) :identity (.-identity r)} (.-state r) (.-dispatch r)))
 
+(defn observation-state
+  "An externally driven observation. No registration callback can manufacture
+   settlement: only its owning world publishes a milestone."
+  []
+  (atom {:phase :pending :subscribers {} :next 0}))
+
+(defn observation [origin target state dispatch]
+  (Operation. origin target state dispatch))
+
 (defn- safely! [f]
   (when f
     (try (f)
          (catch #?(:clj Throwable :cljs :default) t
            (log/error :engine/cleanup-callback-failed {:error t})))))
 
-(defn- settle! [state dispatch outcome]
+(defn settle-observation! [state dispatch outcome]
   (loop []
     (let [old @state]
       (when-not (= :settled (:phase old))
-        (if (compare-and-set! state old {:phase :settled :outcome outcome})
+        (if (compare-and-set! state old (cond-> {:phase :settled :outcome outcome}
+                                          (:diagnostics old) (assoc :diagnostics (:diagnostics old))))
           (dispatch
            #(do (safely! (:detach old))
                 (doseq [[_ cb] (:subscribers old)]
@@ -43,10 +53,15 @@
           (recur)))))
   nil)
 
+(defn- completion-callback [state dispatch]
+  ;; Kept physical callbacks must not retain register!'s sibling registration
+  ;; closure through a JavaScript scope chain (also in unoptimized builds).
+  (fn complete
+    ([value] (complete value false))
+    ([value failed?] (settle-observation! state dispatch [value (boolean failed?)]))))
+
 (defn- register! [state dispatch register]
-  (let [complete (fn complete
-                   ([value] (complete value false))
-                   ([value failed?] (settle! state dispatch [value (boolean failed?)])))
+  (let [complete (completion-callback state dispatch)
         detach (try (register complete)
                     (catch #?(:clj Throwable :cljs :default) t
                       (complete t true)
@@ -59,6 +74,17 @@
             (when-not (compare-and-set! state old (assoc old :detach detach))
               (recur))))))))
 
+(defn- inert-withdrawal [] nil)
+
+(defn- observer-withdrawal [state id]
+  ;; Construct outside subscribe!'s callback environment. In JS a nested
+  ;; closure otherwise can retain sibling callbacks and the old subscriber map.
+  (fn []
+    (swap! state (fn [s]
+                   (if (= :settled (:phase s)) s
+                       (update s :subscribers dissoc id))))
+    nil))
+
 (defn subscribe!
   "After the world gate: subscribe to a shared close; the first subscription
    registers it once. Returns observer withdrawal, which never cancels close.
@@ -68,16 +94,14 @@
     (loop []
       (let [old @state]
         (if (= :settled (:phase old))
-          (do (dispatch #(safely! (fn [] (cb (:outcome old))))) (fn [] nil))
+          (do (dispatch #(safely! (fn [] (cb (:outcome old))))) inert-withdrawal)
           (let [id (:next old)
                 register (:register old)
                 next-state (-> old (assoc :phase :pending :register nil)
                                (update :next inc) (assoc-in [:subscribers id] cb))]
             (if (compare-and-set! state old next-state)
               (do (when register (register! state dispatch register))
-                  (fn [] (swap! state (fn [s]
-                                        (if (= :settled (:phase s)) s
-                                            (update s :subscribers dissoc id)))) nil))
+                  (observer-withdrawal state id))
               (recur))))))))
 
 (defn status

@@ -213,7 +213,12 @@
           (if outer-fails? (@complete outer true) (@complete :closed))
           (pump! env)
           (is (v2/cancelled? (ffirst @out)))
-          (let [report (consume-report! env)]
+          ;; T32 claims remaining unreported errors under the target gate.
+          ;; Before request the explicit egress still owns that same report.
+          (let [report (if released?
+                         (:spindel/cleanup-provenance
+                          (ex-data (first (:outcome (v2/world-close-status w)))))
+                         (consume-report! env))]
             (is (= (if outer-fails? [outer] []) (mapv :error report)))
             (is (= (if outer-fails? [body] []) (mapv :body-error report))))
           (is (empty? (consume-report! env)))

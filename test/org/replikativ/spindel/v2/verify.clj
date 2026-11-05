@@ -174,6 +174,24 @@
                    :unwinding? (= 1 (f r rw/R-MODE))}]))
    :unreported (count (f w rw/W-CLEANUP-FAILURES))})
 
+(defn world-close-violations
+  "Independent verify census versus production close counters. COW registry
+   rows count once by ID; physical resource rows count until actual T15."
+  [w]
+  (let [reg (rows w) c (f w rw/W-CLOSE)
+        runs (count (filter #(== rw/T-RUN (t %)) reg))
+        resources (count (filter #(== rw/T-RES (t %)) reg))]
+    (cond-> []
+      (not= runs (:runs c)) (conj [:world-run-accounting runs (:runs c)])
+      (not= resources (:resources c)) (conj [:world-resource-accounting resources (:resources c)])
+      (and (:execution-retired? c)
+           (or (pos? runs) (pos? resources) (seq (:preparations c))
+               (some :execution-pending? (vals (:children c)))))
+      (conj [:premature-execution-retirement])
+      (and (:terminal? c)
+           (or (not (:execution-retired? c)) (seq (:children c)) (seq (:settlements c))))
+      (conj [:premature-world-terminal]))))
+
 (defn checking-hook
   "A world hook that records Rule R divergences per commit into `acc`."
   [acc]

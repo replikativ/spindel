@@ -1,0 +1,325 @@
+(ns org.replikativ.spindel.v2.world-close-smoke
+  (:require [org.replikativ.spindel.v2.core :as v2 :refer [task await await-finalization]]
+            [org.replikativ.spindel.v2.cleanup :as cleanup]
+            [org.replikativ.spindel.v2.host :as hs]
+            [org.replikativ.spindel.v2.rows :as rw]))
+
+(def ^:private jobs (atom []))
+
+(defn- manual-world []
+  {:world (v2/world) :jobs jobs})
+
+(defn- pump! [{:keys [jobs]}]
+  (loop [fuel 1000]
+    (when-let [job (first @jobs)]
+      (assert (pos? fuel) "close did not reach a boundary")
+      (swap! jobs subvec 1)
+      (job)
+      (recur (dec fuel)))))
+
+(defn- status [w] (v2/world-close-status w))
+(defn- close! [w] (v2/close-world! (v2/world-host-owner w) w))
+
+(defn- native-and-preparation! []
+  (let [{w :world :as e} (manual-world) owner (v2/world-host-owner w)
+        cap (v2/register-world-settlement! owner w [:late])
+        reservation (:late (v2/world-preparations cap)) c (v2/world)
+        native (v2/register-world-settlement! (v2/world-host-owner c) c [])
+        op (close! w) seen (atom [])]
+    (v2/subscribe-world-close! op #(swap! seen conj %))
+    (assert (not (:execution-retired? (status w))))
+    (v2/finish-world-preparation! reservation {:world c})
+    (pump! e)
+    (assert (:execution-retired? (status w)))
+    (assert (not (:terminal? (status w))))
+    (v2/update-world-settlement! native {:id :native-ack :phase :ambiguous})
+    (assert (= 1 (count (:recovery (status c)))))
+    (v2/acknowledge-world-settlement! native {:settled? true :value :disposed})
+    (pump! e)
+    (v2/acknowledge-world-settlement! cap {:settled? true :value :reconciled})
+    (pump! e)
+    (assert (= [[nil false]] @seen))
+    (assert (identical? owner (v2/world-host-owner w)))
+    (assert (:terminal? (v2/world-close-status op)))
+    (assert (= :settled (:phase (cleanup/status op))))))
+
+(defn- cycle-and-error-route! [caught?]
+  (let [{p :world :as e} (manual-world) child (atom nil) exited (atom false)
+        error (ex-info "child-native" {})]
+    (binding [v2/*world* p]
+      (let [gate (v2/deferred)
+            t (task
+               (let [[branch c] (v2/fork)]
+                 (if (= :parent branch)
+                   (do (reset! child c)
+                       (try (await gate)
+                            (finally
+                              (try (await-finalization (v2/close-world! c))
+                                   (catch :default t (when-not caught? (throw t))))
+                              (reset! exited true))))
+                   (await gate))))]
+        (pump! e)
+        (let [c @child parent-native (v2/register-world-settlement! (v2/world-host-owner p) p [])
+              child-native (v2/register-world-settlement! (v2/world-host-owner c) c [])]
+          (v2/cancel-task! t)
+          (close! p)
+          (pump! e)
+          (assert (:execution-retired? (status c)))
+          (assert (not (:execution-retired? (status p))))
+          (v2/update-world-settlement! parent-native {:id :refund-received :phase :accepted})
+          (v2/update-world-settlement! child-native {:id :discard :phase :ambiguous})
+          (assert (not (:terminal? (status c))))
+          (v2/acknowledge-world-settlement! child-native {:settled? true :error error})
+          (pump! e)
+          (assert (if caught? @exited (not @exited)))
+          (assert (:execution-retired? (status p)))
+          (v2/acknowledge-world-settlement! parent-native {:settled? true :value :disposed})
+          (pump! e)
+          (assert (:terminal? (status p)))
+          (assert (= (if caught? [] [error])
+                     (vec (:spindel/cleanup-failures (ex-data (first (:outcome (status p)))))))))))))
+
+(defn- fork-unborn! []
+  (let [{w :world :as e} (manual-world) pubs (atom []) fins (atom 0)]
+    (v2/install-handlers! w {:s #(swap! pubs conj %)})
+    (binding [v2/*world* w]
+      (let [t (task (try (v2/savepoint :s nil) (finally (swap! fins inc))))
+            c (v2/instantiate (first @pubs)) owner (v2/world-host-owner c)
+            cap (v2/register-world-settlement! owner c [])]
+        (assert (aget c rw/W-UNBORN))
+        (close! c)
+        (pump! e)
+        (assert (:execution-retired? (status c)))
+        (assert (not (:terminal? (status c))))
+        (assert (zero? @fins))
+        (v2/acknowledge-world-settlement! cap {:settled? true :value :native-disposed})
+        (assert (:terminal? (status c)))
+        (assert (not (identical? owner (v2/world-host-owner w))))
+        (v2/abandon! (first @pubs))
+        (pump! e)
+        (assert (= 1 @fins))
+        (v2/release! t)))))
+
+(defn- queued-activation-barrier! []
+  (let [{p :world :as e} (manual-world) pubs (atom []) seen (atom []) result (atom []) canceled (atom [])]
+    (v2/install-handlers! p {:s #(swap! pubs conj %)})
+    (binding [v2/*world* p]
+      (let [x (v2/signal :before) t (task (v2/savepoint :s nil))
+            c (v2/instantiate (first @pubs)) local-x (v2/in-world c x) local-t (v2/in-world c t)]
+        (aset c rw/W-INLINE false)
+        (v2/activate! c :value)
+        (assert (nil? (aget c rw/W-ACTIVATION)))
+        (v2/write! local-x :after)
+        (v2/observe! local-x (fn [v failed?] (swap! seen conj [v failed?])))
+        (let [withdraw (v2/value-async local-t (fn [v failed?] (swap! canceled conj [v failed?])))] (withdraw))
+        (v2/value-async local-t (fn [v failed?] (swap! result conj [v failed?])))
+        (assert (empty? @seen))
+        (pump! e)
+        (assert (= [[:after false]] @seen))
+        (assert (= [[:value false]] @result))
+        (assert (empty? @canceled))
+        (close! p)
+        (pump! e)
+        (assert (:terminal? (aget p rw/W-CLOSE)))
+        (assert (:terminal? (aget c rw/W-CLOSE)))))))
+
+(defn- refused-synchronous-controls! []
+  (let [{w :world :as e} (manual-world) owner (v2/world-host-owner w)]
+    (aset w rw/W-INLINE false)
+    (assert (try (v2/register-world-settlement! owner w [:orphan]) false (catch :default _ true)))
+    (pump! e)
+    (assert (empty? (:settlements (aget w rw/W-CLOSE))))
+    (assert (empty? (:preparations (aget w rw/W-CLOSE))))
+    (assert (try (v2/close-world! owner w) false (catch :default _ true)))
+    (pump! e)
+    (assert (not (:requested? (aget w rw/W-CLOSE))))
+    (aset w rw/W-INLINE true)
+    (let [cap (v2/register-world-settlement! owner w [:a])
+          reservation (:a (v2/world-preparations cap))]
+      (aset w rw/W-INLINE false)
+      (assert (try (v2/update-world-settlement! cap {:id :late :phase :ambiguous}) false (catch :default _ true)))
+      (assert (try (v2/finish-world-preparation! reservation {:disposed? true}) false (catch :default _ true)))
+      (pump! e)
+      (assert (= 1 (count (:preparations (aget w rw/W-CLOSE)))))
+      (assert (every? (fn [debt] (nil? (:recovery debt))) (vals (:settlements (aget w rw/W-CLOSE)))))
+      (v2/release-world! w)
+      (pump! e)
+      (assert (not (:execution-retired? (aget w rw/W-CLOSE))))
+      (aset w rw/W-INLINE true)
+      (v2/finish-world-preparation! reservation {:disposed? true})
+      (assert (:execution-retired? (aget w rw/W-CLOSE)))
+      (aset w rw/W-INLINE false)
+      (assert (try (v2/acknowledge-world-settlement! cap {:settled? true :value :must-not-commit}) false (catch :default _ true)))
+      (pump! e)
+      (assert (= 1 (count (:settlements (aget w rw/W-CLOSE)))))
+      (assert (not (:terminal? (aget w rw/W-CLOSE))))
+      (aset w rw/W-INLINE true)
+      (v2/acknowledge-world-settlement! cap {:settled? true :value :physically-closed})
+      (assert (:terminal? (aget w rw/W-CLOSE))))))
+
+(defn- replay-failure-and-budget! []
+  (let [{p :world :as e} (manual-world) pubs (atom []) submit (atom []) result (atom []) effects (atom [])]
+    (v2/install-handlers! p {:s #(swap! pubs conj %)})
+    (binding [v2/*world* p]
+      (let [t (task (v2/savepoint :s nil)) c (v2/instantiate (first @pubs))]
+        (with-redefs [v2/after-gate-action! (fn [f] (swap! submit conj f))]
+          (v2/activate! c :value))
+        (v2/host! c #(throw (ex-info "queued body" {})))
+        (v2/host! c #(swap! effects conj :after-throw))
+        (v2/value-async (v2/in-world c t) (fn [v failed?] (swap! result conj [v failed?])))
+        (doseq [f @submit] (f))
+        (pump! e)
+        (assert (= [:after-throw] @effects))
+        (assert (= [[:value false]] @result))
+        (close! p)
+        (pump! e))))
+  (let [{p :world :as e} (manual-world) pubs (atom []) submit (atom []) effects (atom [])]
+    (v2/install-handlers! p {:s #(swap! pubs conj %)})
+    (binding [v2/*world* p]
+      (task (v2/savepoint :s nil))
+      (let [c (v2/instantiate (first @pubs)) cap (v2/register-world-settlement! (v2/world-host-owner c) c [])]
+        (aset c rw/W-BUDGET 2)
+        (with-redefs [v2/after-gate-action! (fn [f] (swap! submit conj f))]
+          (v2/activate! c :value))
+        (dotimes [i 12] (v2/host! c #(swap! effects conj i)))
+        (doseq [f @submit] (f))
+        (assert (<= (count @effects) 2))
+        (let [before (count @effects)]
+          (v2/release-world! c)
+          (v2/acknowledge-world-settlement! cap {:settled? true :value :closed})
+          (pump! e)
+          (assert (= before (count @effects)))
+          (assert (:terminal? (aget c rw/W-CLOSE))))
+        (close! p)
+        (pump! e)))))
+
+(defn- preactivation-fifo! []
+  (let [{p :world :as e} (manual-world) pubs (atom []) before (atom []) after (atom [])]
+    (v2/install-handlers! p {:s #(swap! pubs conj %)})
+    (binding [v2/*world* p]
+      (let [x (v2/signal :before) t (task (v2/savepoint :s nil)) c (v2/instantiate (first @pubs))]
+        (aset c rw/W-INLINE false)
+        (v2/write! (v2/in-world c x) :preactivate)
+        (v2/value-async (v2/in-world c t) (fn [v failed?] (swap! before conj [v failed?])))
+        (v2/activate! c :value)
+        (v2/value-async (v2/in-world c t) (fn [v failed?] (swap! after conj [v failed?])))
+        (pump! e)
+        (assert (:spindel/unborn (ex-data (ffirst @before))))
+        (assert (= [[:value false]] @after))
+        (close! p)
+        (pump! e)))))
+
+(defn- exact-creation-order-and-custody! []
+  (doseq [[before after] [[[0 4294967295] [1 0]]
+                          [[2097152 4294967295] [2097153 0]]
+                          [[4294967295 4294967294] [4294967295 4294967295]]]]
+    (assert (= after (v2/next-world-order before)))
+    (assert (neg? (compare before after))))
+  (let [isolated (atom [4294967295 4294967295])]
+    (assert (try (swap! isolated v2/next-world-order) false
+                 (catch :default error (= :world-order-exhausted (:spindel/invalid (ex-data error))))))
+    (assert (= [4294967295 4294967295] @isolated)))
+  (let [{p :world :as e} (manual-world) q (v2/world) c (v2/world)
+        pc (v2/register-world-settlement! (v2/world-host-owner p) p [:c])
+        qc (v2/register-world-settlement! (v2/world-host-owner q) q [:c])
+        cc (v2/register-world-settlement! (v2/world-host-owner c) c [])
+        pr (:c (v2/world-preparations pc)) qr (:c (v2/world-preparations qc))]
+    (v2/finish-world-preparation! pr {:world c})
+    (assert (try (v2/finish-world-preparation! qr {:world c}) false
+                 (catch :default error (= :world-preparation (:spindel/invalid (ex-data error))))))
+    (assert (= 1 (count (:preparations (aget q rw/W-CLOSE)))))
+    (close! p) (pump! e)
+    (v2/acknowledge-world-settlement! pc {:settled? true :value :closed})
+    (assert (not (:terminal? (aget p rw/W-CLOSE))))
+    (v2/acknowledge-world-settlement! cc {:settled? true :value :closed})
+    (pump! e)
+    (assert (:terminal? (aget p rw/W-CLOSE)))
+    (v2/finish-world-preparation! qr {:disposed? true})
+    (close! q) (pump! e)
+    (v2/acknowledge-world-settlement! qc {:settled? true :value :closed}))
+  (let [{old :world :as e} (manual-world) p (v2/world)
+        pc (v2/register-world-settlement! (v2/world-host-owner p) p [:old])
+        reservation (:old (v2/world-preparations pc))]
+    (assert (try (v2/finish-world-preparation! reservation {:world old}) false
+                 (catch :default error (= :world-publication-order (:spindel/invalid (ex-data error))))))
+    (assert (not (:requested? (aget old rw/W-CLOSE))))
+    (assert (= 1 (count (:preparations (aget p rw/W-CLOSE)))))
+    (close! old) (pump! e)
+    (v2/finish-world-preparation! reservation {:disposed? true})
+    (close! p) (pump! e)
+    (v2/acknowledge-world-settlement! pc {:settled? true :value :closed}))
+  (let [{p :world :as e} (manual-world) initial (aget p rw/W-CREATION) c (v2/fork! p)
+        epoch (aget p rw/W-EPOCH)]
+    (assert (neg? (compare initial (aget c rw/W-CREATION))))
+    (aset p rw/W-CLOSE (assoc (aget p rw/W-CLOSE) :next-child [4294967295 4294967295]))
+    (assert (try (v2/fork! p) false
+                 (catch :default error (= :world-acquisition-order-exhausted (:spindel/invalid (ex-data error))))))
+    (assert (identical? epoch (aget p rw/W-EPOCH)))
+    (assert (= initial (aget p rw/W-CREATION)))
+    (close! p) (pump! e)))
+
+(defn- rejected-activation-items! []
+  (let [{p :world :as e} (manual-world) q (v2/world) pubs (atom []) admission (atom [])
+        original-internal v2/internal! effects (atom []) rejected (atom []) read (atom [])]
+    (v2/install-handlers! p {:s #(swap! pubs conj %)})
+    (binding [v2/*world* p]
+      (let [t (task (v2/savepoint :s nil)) c (v2/instantiate (first @pubs))
+            native (v2/register-world-settlement! (v2/world-host-owner c) c [])]
+        (with-redefs [v2/internal! (fn [w f] (if (identical? w p) (swap! admission conj f) (original-internal w f)))]
+          (v2/activate! c :never))
+        ;; Stop the production winning protocol after child-local custody and
+        ;; before its parent bookkeeping/request, as in the concurrent JVM test.
+        (v2/call-in! q #(v2/own-child! q (aget q rw/W-ROOT) c false))
+        (aset c rw/W-INLINE false)
+        (doseq [f @admission] (original-internal p f))
+        (assert (hs/flag? (aget c rw/W-ACTIVATION-INTENT)))
+        (v2/send-world! c #(swap! effects conj :send))
+        (v2/host! c #(swap! effects conj :host) #(swap! rejected conj %) nil)
+        (v2/value-async (v2/in-world c t) (fn [v failed?] (swap! read conj [v failed?])))
+        (pump! e)
+        (assert (empty? @effects))
+        (assert (= 1 (count @rejected)))
+        (assert (:spindel/released (ex-data (first @rejected))))
+        (assert (:spindel/released (ex-data (ffirst @read))))
+        (assert (not (:requested? (aget c rw/W-CLOSE))))
+        (aset c rw/W-INLINE true)
+        (close! p) (close! q) (pump! e)
+        (v2/acknowledge-world-settlement! native {:settled? true :value :closed}))))
+  (doseq [mode [:custody-rejected :released :born]]
+    (let [{p :world :as e} (manual-world) q (v2/world) pubs (atom []) stopped (atom false)
+          original-set hs/flag-set!]
+      (v2/install-handlers! p {:s #(swap! pubs conj %)})
+      (binding [v2/*world* p]
+        (let [t (task (v2/savepoint :s nil)) c (v2/instantiate (first @pubs))
+              target (aget c rw/W-ACTIVATION-INTENT) read (atom [])]
+          (when (= mode :custody-rejected)
+            (v2/call-in! q #(v2/own-child! q (aget q rw/W-ROOT) c false)))
+          (with-redefs [hs/flag-set! (fn [flag value]
+                                       (when (and (identical? flag target) value (compare-and-set! stopped false true))
+                                        ;; Reenter before the stale first setter
+                                        ;; writes. JS needs no thread to order it.
+                                         (if (= mode :released) (v2/release-world! c) (v2/activate! c :second)))
+                                       (original-set flag value))]
+            (v2/activate! c :stale))
+          (pump! e)
+          (assert (not (hs/flag? target)))
+          (when (= mode :born)
+            (v2/value-async (v2/in-world c t) (fn [v failed?] (swap! read conj [v failed?])))
+            (assert (= [[:second false]] @read)))
+          (close! p) (close! q) (pump! e))))))
+
+(defn -main []
+  (with-redefs [hs/execute! (fn [_ f] (swap! jobs conj f))]
+    (native-and-preparation!)
+    (cycle-and-error-route! true)
+    (cycle-and-error-route! false)
+    (fork-unborn!)
+    (queued-activation-barrier!)
+    (refused-synchronous-controls!)
+    (replay-failure-and-budget!)
+    (preactivation-fifo!)
+    (exact-creation-order-and-custody!)
+    (rejected-activation-items!)
+    (println "WORLD CLOSE SMOKE OK")))
+
+(set! *main-cli-fn* -main)
