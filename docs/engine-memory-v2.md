@@ -5,8 +5,8 @@ Status: design candidate. The target v2 contract in
 lifetime profile is described by [engine-formalism.md](engine-formalism.md).
 This file specifies representations and their refinement obligations, and
 records bounded prototype support. **The Z#66 restricted-cleanup operation API
-and world close/join amendments below are planned, not implemented or formally
-accepted.** No runtime API is changed by these spec-first amendments.
+and Z#67 staged world close/join amendments below are planned, not implemented
+or formally accepted.** No runtime API is changed by these spec-first amendments.
 
 ## Goal and unit of publication
 
@@ -514,8 +514,8 @@ for hidden helpers and direct effect/creation entry points too.
 
 A run owns its active boundary, pending body outcome, outer unwind continuations
 and at most one cleanup waiter. Entering a region does not remove it: exit on
-return or throw does, exactly once. The waiter stores immutable origin world ID,
-generation/sequence, operation target, phase, sealed success/error continuations
+return or throw does, exactly once. The waiter stores an immutable process-local
+origin WorldToken, generation/sequence, operation target, phase, sealed success/error continuations
 and detachable subscription control. It is neither an ordinary activation nor a
 reactive edge; ordinary run validity and resume guards stay unchanged. A normally
 entered parked finalizer retains these obligations before result publication.
@@ -546,9 +546,12 @@ previously consumed entries. Public terminal world close/join remains slice 2.
 
 Install the waiter under the world gate before registering after the gate.
 Use a single terminal-claim callback cell; synchronous completion queues a distinct
-cleanup-resume ingress item. Registration throw becomes failed completion, with
-first-terminal-wins even for completion followed by throw. Consume the exact
-origin/generation/sequence once and clear controls before resuming its sealed
+cleanup-resume ingress item. Resource-adapter registration throw becomes failed
+completion, with
+first-terminal-wins even for completion followed by throw. This observation policy
+does not certify Z#67 child/world physical settlement: a failed subscription or
+unknown physical outcome leaves its separate close debt recovery-pending. Consume
+the exact origin/generation/sequence once and clear controls before resuming its sealed
 continuation in a slice. A control returned after completion is detached/released
 exactly once; detach only withdraws that observation. Callback exceptions cannot
 change a settled outcome or prevent other subscribers receiving it. Claimed
@@ -570,41 +573,144 @@ owners must allocate child-local operation/resource adapters; COW does not make
 raw captured resource handles branch-local. Existing prototype refusal of such
 forks remains its supported behavior until this slice is implemented.
 
-The dependent second slice adds a narrowly named world close operation and host
-subscribe/withdraw, consumable by the finalizer wait. Existing request-level
-`release-world!`/`discard!` diagnostic returns remain unchanged. The operation's
-observation origin and close target are distinct identities: a parent slice's
-`close-world!(child)` yields a parent-origin capability targeting its owned child,
-so the parent's finalizer can join it. Target identity does not set observation
-origin. All capabilities observing that target share one physical close and
-terminal outcome; new observers do not restart it. Copying the parent-origin
-capability into a child still fails `::forked` before registration, including
-when that child is the target. Host construction must explicitly select the
-observation-origin world through an origin argument or selected-world binding;
-it must not infer origin from the target. Host subscription needs no engine slice
-and grants no permission to await in another world. Origin selection leaves the
-ownership/join restrictions in force. World-local close state tracks admission
-revocation, pending local obligations, pending owned-child acknowledgements,
-ordered failures, current subscribers and one terminal outcome.
-Record a child debt before dropping its ownership marker, including a child
-admitted before closure and published afterward. Terminal acknowledgement queues
-after the child's gate is released; no nested foreign gates. A released flag or
-empty owner list is not join evidence. Production counters/sets, checked against
-verify census, must supply termination detection; a verify-only registry cannot.
-Ordinarily weak root-owned forks stay weak. An actual pending close may hold its
-target until acknowledgement; terminal operations retain only outcome and clear
-world/release/child/subscriber references. No generic close-ticket family, normal
-body wait or global wait-for graph is added by this phase.
+### Planned staged world close (Z#67)
 
-Joins follow declared acyclic owned lifetimes: downward targets for engine
-bodies, or a host coordinator outside the target tree. Reject self/current-world,
-ancestor and unrelated sibling joins before parking; a nonjoining close request
-may target the caller's owner. Adapters must release consumer activity leases
-before joining; hidden host/CPS dependency cycles are not inferred automatically.
-Progress additionally assumes finitely many joins per finalizer, finite slices,
-fair dispatch and eventual operation/resource/child acknowledgement. B9's finite
-slice rule alone does not prove asynchronous cleanup terminates. Nonacknowledging
-close stays observably pending, never a successful timeout-based join.
+The dependent second slice follows [engine-v2-spec.md](engine-v2-spec.md) §2–3,
+T21/T27–T32 and §7–9. It changes no source here. The current
+`v2/core.cljc/release-owned!` clears holder strength/owner lists at request time;
+`finish-metadata!` prunes local metadata from existing lifetime predicates. Neither
+helper implements the pending child channels or certifies staged close. Existing
+`release-world!`/`discard!` diagnostic-function returns remain request-level.
+
+Three world-local monotone milestones have different evidence:
+
+| Milestone | Gate-committed predicate |
+|---|---|
+| REQUESTED (T21) | Seal ordinary admission, new preparations and host settlement registration, then request cancellation/release. |
+| EXECUTION-RETIRED (T31) | All admitted local execution, physical resources, slices/finalizers/waiters and preparation/late-publication work retired; recursively all owned child execution acknowledged. Exclude external settlement and child terminal debts. |
+| TERMINAL (T32) | Execution retired, every child terminal channel and preregistered host settlement physically acknowledged; no unresolved recovery. Atomically publish one stable error/success outcome. |
+
+`W-RELEASED`, `W-META-CLOSED`, empty holders/verify registry, a queued cancellation
+result or physical return alone proves neither later milestone. T13 remains local
+run retirement; its cleanup predicates cannot be weakened to obtain a world join.
+Generic task cancellation still publishes its result immediately, independently of
+later retirement, and cleanup never amends that result.
+
+Allocate a fresh world-local close record at world creation, with zero counters,
+empty sets and false milestones. It contains generation/milestone flags,
+production run/resource counters, current preparation reservations, two-channel
+child debts, host settlement/recovery records, observers and terminal outcome.
+Increment runs at actual execution admission; decrement only at T13. Increment
+resources before physical dispatch; decrement only on real physical ack. Queued
+start/resume/cleanup is owned by the counted run; stale queue garbage is not a
+permanent obligation. Install a preparation reservation before a producer leaves
+the gate. Replace it atomically with owned work/child debt on publication, or
+remove it on known joined disposal. Revoking admission/canceling a public task
+cannot erase an already-admitted producer. No zero counter is final while such a
+producer can introduce execution. Compare production accounting against a separate
+verify census; the census must not supply production termination detection.
+
+Before clearing a child holder/list or deleting a scope, transfer each live child
+to a bounded pending record with target token, generation, immutable owner witness,
+execution/terminal channels and report route. This applies when child close precedes
+parent request and when scope retirement precedes acknowledgement. Subscribe before
+requesting child release; already-ready children deliver cached milestones. Child
+callbacks enqueue parent ingress after releasing the child gate; no nested foreign
+gates. Claim late published children before scheduling their disposal after gate.
+Direct child release preserves its parent holder or a strongly retained bounded
+handoff command until the parent records both debts; parent request claims all such
+handoffs before its retirement check. Cross-world close records origin debt then
+queues the target request after gate. Failed notification leaves that handoff pending.
+Channel completion clears its control; final retirement clears the pending record.
+Run the close check after actual retirement/physical ack, scope removal, reservation
+publication/disposal, child/settlement ack and shutdown.
+
+`WorldToken` uses unforgeable process-local identity (`W-CLEANUP-IDENTITY`), stable
+across COW and fresh per fork. `OriginToken` differs from `TargetToken`; validate
+actual owned target, scope witness and operation generation. Bare numeric W-ID and
+portable data grant no authority. Audit IDs are globally qualified family/world IDs
+(or UUID equivalents), separate from physical and logical model identity. A terminal
+operation/token needs no strong token-to-world registry.
+
+`close-world!(target)` in a slice returns an operation with the caller's origin and
+its owned child's target. Only a lexical finalizer may await it after the strictly
+downward join check. A copied operation fails `::forked` before subscription.
+`close-world!(host-owner, target)` returns a host-only observation with no engine
+origin or body admission. `world-execution-retirement(host-owner, target)` observes
+T31 without requesting work. Host subscribe/withdraw needs no slice; withdrawal
+consumes no physical debt or errors. All observers share one physical close/outcome.
+See the normative §9 signature table for the complete bounded interface.
+
+Before shutdown AND before foreign acquisition,
+`register-world-settlement!(host-owner, target, preparations)` creates one bounded
+obligation/capability, naming current acquisition reservations that might publish
+engine worlds. It cannot be copied by fork. Late registration fails before foreign
+action. After request this prior authority may reconcile partial/late outputs,
+finish reservations/disposal, receive child refunds, update recovery and acknowledge.
+It may not admit new run/copy/spend/construction work or restore ordinary handles.
+`finish-world-preparation!` transfers exact prior output to owned disposal before
+ending its reservation. Native-only output stays with the host settlement owner.
+`acknowledge-world-settlement!` is one-shot and requires target execution retirement
+and actual physical settlement. Duplicate accepted ack is inert; wrong-target/stale
+or premature ack refuses without mutation. Status projects immutable milestones,
+counts, debts and recovery IDs without exposing controls/closures.
+
+Host controller dependencies follow **target retirement plus downward owned work**,
+including every prerequisite of its ack. Never gate C settlement/refund acceptance
+on ancestor P execution retirement/terminal, directly or by coordinator proxy.
+P's preregistered settlement owner accepts C's refund independently of P retirement,
+without new spending/admission. P's own source refund/discard still waits its target
+retirement and required child settlement. Thus P finalizer may wait C terminal:
+C quiesces, refunds to P's reserved owner, discards/acks, then P finalizer exits and
+P retires/settles. An outside coordinator drives each eligible controller
+independently and ends its own activity lease before joins. Reject engine-visible
+self/current-world, ancestor and unrelated sibling joins before parking. No generic
+CloseTicket, global cycle detector or hidden host-dependency inference is added.
+
+Controller physical stages remain REVOKE/RESERVE, QUIESCE, REFUND child-before-source,
+NATIVE-DISCARD, WORLD-ACK. A settlement failure is terminal only when physical
+closure is known. Failure to register/deliver a required acknowledgement while
+physical closure is unknown, or ambiguous refund/discard, leaves one visible recovery
+owner and its exact obligation pending. Ordinary observer exceptions are isolated
+after gate: no outcome rewrite, revoked accepted ack or stopped other observers. Stable substep operation
+IDs plus atomic-no-effect-on-error or idempotent/status/reconcile adapters prevent
+blind retry of acknowledged effects. `update-world-settlement!` records recovery;
+only actual reconciled ack releases debt. The generic cleanup adapter's thrown
+registration-to-settled-error rule must not be reused as physical closure evidence.
+No timer, lost subscriber or duplicate suppression proves physical disposal.
+
+COW forks get fresh close state, observers and host obligations; copied mutable
+accounting must not double-count `own-copy!`. Inherited run/resource work is captured
+lazily and activated/resolved locally, including pending/queued cleanup waits.
+Unborn discard drops inherited engine storage with no copied finalizer/detach/close,
+but newly registered host/acquisition obligations survive until known disposal.
+Ordinarily weak root forks remain weak. Only a live claimed pending close target is
+held strongly; host/native work already has an explicit owner and cannot disappear
+through weak GC. Terminal operations/capabilities/stale callbacks clear world, arena,
+release/registration functions, child controls, recovery closures and observers,
+retaining only inert identity/outcome. Pending recovery retains only live unresolved
+substeps/resources; explicit returned audit/error payloads remain caller-owned.
+
+T32 and explicit report consumption serialize under the target gate: first claims
+exactly current unreported entries, clearing only those transferred. Terminal
+observation replays the immutable outcome, never another unreported event. Preserve
+qualified origin/provenance IDs and body cause; order by stable owned acquisition
+path then provenance, never callback time. Pre-consumed child entries do not reappear.
+Each pending direct child has one report route: the first lexical join in its owning
+world may claim before terminal ingress, otherwise automatic forwarding claims it.
+Transitive descendant joins only observe; entitlement follows actual ownership. Lexical catch/publication/
+abandonment owns that entitlement through existing bounded live-unwind keys; loss
+before delivery transfers it to automatic routing. Other observers see the same
+error without new report entitlement. A later propagation preserves its identity
+and ownership marker; independent user errors get fresh provenance. Route/dedup
+keys clear with current delivery/unwind obligations, never become global history.
+Withdrawal consumes nothing. This prevents child forwarding plus lexical joining
+from duplicating an unreported error while retaining current payloads until egress.
+
+Progress assumes finite preparations/joins, finite slices, fair dispatch and eventual
+physical acknowledgement/reconciliation. The target/downward dependency order permits
+independent child progress; B9's finite slice rule alone does not prove terminal
+settlement. A nonacknowledging/ambiguous close stays visibly pending.
 
 Space bounds concern current obligations: one waiter per run, lexical boundary
 depth, current subscribers/owned-child debts, live-unwind transfer keys and the
@@ -618,7 +724,8 @@ cleanup failures before deleting a canceled or stale run. Ordinary published
 failures must not accumulate a global duplicate history. Diagnostics do not
 accumulate or silently consume event history. Formal
 encoding of boundary/waiter conservation, fork isolation, conditional retirement
-and child acknowledgement remains pending under the spec's §11 acceptance gate;
+and Z#67 milestone/reservation/child/settlement conservation, physical ack and report
+routing remains pending under the spec's §11 acceptance gate (with Z#64/I15 open);
 older oracle traces cannot establish these new transitions.
 
 ## Existing native protected-finalization profile
