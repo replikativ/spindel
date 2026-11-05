@@ -180,7 +180,12 @@ Status: **v1.5.1, signed off 2026-11-04.** Q4 and Q6–Q9 proceed with their pro
   - Z#61 (T6, M6 parity with the old `parallel`): `await(all)` is fail-fast:
     its first `err` slot resumes the run with that error, and the unfilled
     members are released as `any` losers (loser tasks created for the await
-    are cancelled).
+    are cancelled);
+  - Z#64 (§3.3 demotion, §3.4): a computation demoted while dirty (its
+    result not for its current epoch: invalidated, or re-demoted at once
+    after a failed validation) records validity `invalid`; validity is
+    derived from its `dep` edges only when its result is current. Before,
+    an idle chain read from the top returned a stale result.
 
 Once approved, this document is the normative contract for the v2 engine. It
 supersedes `engine-formalism.md` Part 4 and `engine-memory-v2.md`. Parts 1–3

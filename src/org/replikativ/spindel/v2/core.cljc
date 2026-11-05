@@ -1812,8 +1812,14 @@
     (s! c rw/C-PENDING 0)
     (if (or (some? (g c rw/C-DONE-EPOCH)) (pos? (gl c rw/HANDLES)))
       (do (s! c rw/C-IDLE true)
+          ;; Z#64: a dirty computation (its result is not for its current
+          ;; epoch: invalidated, or re-demoted right after a failed
+          ;; validation) is :invalid, never valid by an empty edge list
           (s! c rw/C-VALIDITY (when (some? (g c rw/C-DONE-EPOCH))
-                                (if (every? (comp some? second) validity) validity :invalid))))
+                                (if (and (== (gl c rw/C-DONE-EPOCH) (gl c rw/C-EPOCH))
+                                         (every? (comp some? second) validity))
+                                  validity
+                                  :invalid))))
       (unregister! w c))))
 
 (defn- rule-r!
@@ -2893,7 +2899,9 @@
    reclaim the rest. Later host operations fail with ::released. Returns a
    fn reporting the rows left (cleanup entries until they retire, L2)."
   [w]
-  (gated w (release-world* w))
+  ;; idempotent: releasing a released world does nothing (old discard)
+  (when-not (g w rw/W-RELEASED)
+    (gated w (release-world* w)))
   ;; the root scope is the administrative allowance (I11a): not a row left
   (fn [] (when-let [reg (g w rw/W-REG)] (dec (hs/msize reg)))))
 
