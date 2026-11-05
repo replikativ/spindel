@@ -186,6 +186,12 @@ Status: **v1.5.1, signed off 2026-11-04.** Q4 and Q6–Q9 proceed with their pro
     after a failed validation) records validity `invalid`; validity is
     derived from its `dep` edges only when its result is current. Before,
     an idle chain read from the top returned a stale result.
+  - Z#65 (§13; campaign decision 2026-11-05): public `race` and `timeout`
+    are eager one-shot tasks. The first completion, including an error, wins;
+    already-ready ties use input order. Shared input tasks are observed, not
+    owned. Losing computations lose the race's demand. Create a race inside
+    its owning task/scope to propagate cancellation; an externally created
+    race is shared. Explicit `spin (await-any ...)` remains reactive.
 
 Once approved, this document is the normative contract for the v2 engine. It
 supersedes `engine-formalism.md` Part 4 and `engine-memory-v2.md`. Parts 1–3
@@ -1233,7 +1239,9 @@ Shaped by the ansatz feasibility read (`ansatz/.internal/design/spindel-v2-feasi
 | `spawn!`, work `task` / `submit-work!` | task (structured; `detach` for fire-and-forget) |
 | `run-spin!` (one-shot) | a host `wait`-style delivery |
 | `render-spin!`, subscriptions | `observe` |
-| `parallel`, `race`, `timeout` | `await` with mode `all`/`any`; in a task the members are `wait` edges, in a computation `dep` edges |
+| `parallel` | reactive computation over `await(all)` |
+| `race`, `timeout` | eager one-shot task over `await(any)` (Z#65); first completion wins, shared tasks are not cancelled as losers |
+| explicit reactive selection | `spin (await-any ...)`; computation dependency semantics |
 | `signal`, `atom`, `deferred`, `mailbox`, `semaphore` | sources (§4.3) |
 | `mult`, `pub`, `debounce`, `throttle` | library tasks over mailboxes and timers |
 | `rerun!`, `trace/update`, `what-if`, `mark-dirty!` | writes to rerun sources (§4.1) |
@@ -1245,11 +1253,12 @@ Shaped by the ansatz feasibility read (`ansatz/.internal/design/spindel-v2-feasi
 | `stop-context!`, `release-context!` | `seal` / `release` |
 | `snapshot-context` / `serialize-context` | frozen fork plus basis serialization (layer 2b) |
 
-**Behavior changes (approved 2026-11-03 and 2026-11-04):**
+**Behavior changes (approved 2026-11-03 through 2026-11-05):**
 - lazy invalidation of unobserved computations;
 - `track` in a task is a snapshot read;
 - frozen is the default fork mode;
 - structured tasks;
+- public `race` and `timeout` are one-shot tasks (Z#65);
 - `await` in a task is one-shot;
 - dependents wait for asynchronous recomputation, unless the dirty debtor is
   blocked (Q11, §4.5.6–7);
