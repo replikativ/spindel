@@ -966,9 +966,20 @@ Each `track` *site* in a run (identified by `at`) has its own edge, with
     another. It does not promise latency: an inline caller spends at most
     the budget of finite slices.
   - **It loses:** it returns at once.
-  - **Handoff:** after releasing the gate, a thread re-checks the queue. If
-    the queue is non-empty and no drainer is scheduled, it schedules one.
-    Queued work is therefore never stranded.
+  - **Callback ownership:** a callback invocation is consumed once even when
+    it throws. Before propagating its original error, restore the uninvoked
+    snapshot suffix to the world's callback queue, ahead of callbacks appended
+    during that invocation. Do not invoke the suffix within the failed turn.
+  - **Handoff:** on normal and exceptional process/inline exits, release the
+    gate and restore current-world context before draining W-AFTER and rechecking
+    parent work. If work remains and no drainer is scheduled, submit one without
+    requiring new host ingress. An immediate executor may run that new turn on
+    the same physical stack; no extra deferral policy is imposed. Preserve the
+    original turn error if handoff also fails, and report the distinct secondary
+    failure once with `:engine/host-handoff-failed` after unlocking. With no
+    original error, the handoff error propagates normally. Executor refusal is
+    observable and does not certify scheduling/progress; the existing scheduled
+    flag may remain set. No fallback executor or infinite retry is promised.
   - Queue submission and combining never wait for the gate. The explicit
     synchronous host bridge below may wait for its result outside all gates.
 - **H3 – results.** A host operation that has a result (`swap!`, host
@@ -1006,10 +1017,30 @@ Each `track` *site* in a run (identified by `at`) has its own edge, with
   the control itself, including `InterruptedException`, is its outcome and never
   enters the promise-wait cancellation catch.
   This reporting grants no cleanup entitlement or physical acknowledgement and
-  retains no error-history registry. General `host-call!` callback/error priority
-  and generic dispatcher progress after arbitrary callback exceptions remain
-  separately tracked limitations; this bounded bridge correction does not repair
-  those APIs or claim a general no-stranding theorem.
+  retains no error-history registry.
+- **Ordinary synchronous outcome ownership.** `host-call!` retains ordinary
+  host!/S3/S4 admission, deferral and replay. A same-world held-gate call, including
+  a supported slice, runs f directly; foreign-held-gate refusal precedes enqueue.
+  Outside gates use the same single HostIngress claim/cancel lifecycle and an
+  explicit value/failure-bit outcome. Successful nil/false and JavaScript thrown
+  nil/false remain distinct. Action completion and admission rejection own their
+  terminal outcome: :rejected transfers completion to an after-gate action and
+  cannot be canceled as unclaimed work. On submission/turn error cancel only an
+  unclaimed entry, clear its body/rejection closures and propagate that error.
+  A claimed or rejected entry retains outcome delivery, waiting only outside
+  gates on JVM. Its actual value/own error/released rejection wins over a distinct
+  displaced turn error, reported once by `:engine/host-call-turn-failed` after
+  gate unwinding. Node cancels a still-pending unsupported synchronous entry
+  before refusal; after-gate owned rejection completes during unwind rather
+  than being relabeled canceled. JVM interruption uses the internal bridge's
+  wait policy for both claimed and rejected ownership: pending cancel-and-throw,
+  otherwise re-wait through interrupts, report displaced error, then restore
+  status on value/own-error delivery. Catch only wait InterruptedException;
+  f's stored exception remains its own error. No internal-ingress substitution,
+  rollback, second cancellation/result flag or diagnostic history is introduced.
+  Ordinary callback exceptions still propagate at their drainer/inline trigger;
+  callback suffix ownership and post-unlock handoff do not establish progress on
+  an unavailable executor or a general fairness theorem.
 - **H4 – cross-world delivery.** A continuation or callback belonging to
   another world is delivered as an ingress item of that world. This replaces
   `in-callers-world`, which ran caller-world code inline on another world's
