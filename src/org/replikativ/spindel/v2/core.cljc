@@ -2882,7 +2882,6 @@
                (recur true)))
            [outcome interrupted?])))))
 
-
 (defn- host-result-action [f result]
   (fn []
     (let [outcome (try [(f) false]
@@ -3648,7 +3647,6 @@
       (let [outcome (try [((:run old)) false]
                          (catch #?(:clj Throwable :cljs :default) error [error true]))]
         #?(:clj (deliver result outcome) :cljs (vreset! result outcome))))))
-
 
 (defn- internal-call! [w f]
   (cond

@@ -31,12 +31,12 @@
     (let [p (world) x (v2/signal p 0) late (ex-info "later observer" {}) own (ex-info "own failure" {})
           events (atom []) ran (atom 0)
           withdraw (v2/observe! x (fn [v failed?] (when (and (= 1 v) (not failed?))
-                                                  (swap! ran inc) (throw late))))]
+                                                    (swap! ran inc) (throw late))))]
       (binding [trove/*log-fn* (recorder events)]
         (check! [:owned-outcome value failed?]
                 (= [(if failed? own value) failed?]
                    (outcome #(v2/call-in! p (fn [] (v2/reset-world! p {:committed true})
-                                             (v2/write! x 1) (if failed? (throw own) value))))))
+                                              (v2/write! x 1) (if failed? (throw own) value))))))
         (check! [:reported value failed?] (= [[:error :engine/host-call-turn-failed late]] @events)))
       (check! :committed-marker (= {:committed true} (aget p rw/W-STATE)))
       (check! :callback-once (= 1 @ran)) (withdraw) (close! p))))
@@ -46,12 +46,12 @@
     (let [p (world) x (v2/signal p 0) y (v2/signal p :new) seen (atom []) extra (atom nil)
           error (ex-info "batch failure" {})
           withdraws (mapv (fn [i] (v2/observe! x (fn [v failed?]
-                                                  (when (and (= 1 v) (not failed?))
-                                                    (swap! seen conj i)
-                                                    (when (= i fail-at)
-                                                      (reset! extra (v2/observe! y (fn [v _] (swap! seen conj v))))
-                                                      (v2/send-world! p #(v2/reset-world! p {:queued true}))
-                                                      (throw error)))))) (range 3))]
+                                                   (when (and (= 1 v) (not failed?))
+                                                     (swap! seen conj i)
+                                                     (when (= i fail-at)
+                                                       (reset! extra (v2/observe! y (fn [v _] (swap! seen conj v))))
+                                                       (v2/send-world! p #(v2/reset-world! p {:queued true}))
+                                                       (throw error)))))) (range 3))]
       (assert (empty? @jobs))
       (check! [:original-error queued? fail-at]
               (= [error true] (if queued?
@@ -86,8 +86,8 @@
           ;; Actual child claim is published; only original parent's admission
           ;; closure is held. Intent grants no permission to execute our body.
           (with-redefs [v2/internal! (fn [w f] (if (identical? p w)
-                                               (swap! pending conj #(original w f))
-                                               (original w f)))]
+                                                 (swap! pending conj #(original w f))
+                                                 (original w f)))]
             (v2/activate! c :go))
           (assert (some? (:identity (aget c rw/W-ACTIVATION))))
           (let [[_ failed?] (outcome #(v2/call-in! c (fn [] (swap! ran inc))))]
@@ -97,11 +97,43 @@
           (check! [:canceled-replay accept?] (zero? @ran))
           (close! p))))))
 
+(defn- owned-rejection! []
+  (let [p (world) ran (atom 0)]
+    (v2/send-world! p #(v2/release-world! p))
+    (let [[error failed?] (outcome #(v2/call-in! p (fn [] (swap! ran inc))))]
+      (check! :rejected-outcome failed?)
+      (check! :released-identity (:spindel/released (ex-data error)))
+      (check! :rejected-never-runs (zero? @ran)))
+    (pump!)))
+
+(defn- immediate-and-refused-handoff! []
+  (doseq [refuse? [false true]]
+    (let [p (world) x (v2/signal p 0) original hs/execute! seen (atom []) submissions (atom []) events (atom [])
+          primary (ex-info "original callback" {}) secondary (ex-info "nested turn or rejected submission" {})
+          a (v2/observe! x (fn [v _] (when (= 1 v) (swap! seen conj :a) (throw primary))))
+          b (v2/observe! x (fn [v _] (when (= 1 v) (swap! seen conj :b) (throw secondary))))
+          c (v2/observe! x (fn [v _] (when (= 1 v) (swap! seen conj :c))))]
+      (binding [trove/*log-fn* (recorder events)]
+        (with-redefs [hs/execute! (fn [e f]
+                                    (if (identical? e executor)
+                                      (do (swap! submissions conj [(hs/held? (aget p rw/W-LOCK)) (v2/cw)])
+                                          (if refuse? (throw secondary) (f)))
+                                      (original e f)))]
+          (check! [:handoff-primary refuse?] (= [primary true] (outcome #(v2/write! x 1))))
+          (check! [:handoff-secondary refuse?] (= [[:error :engine/host-handoff-failed secondary]] @events))))
+      (check! [:unlocked-submission refuse?] (and (seq @submissions) (every? #{[false nil]} @submissions)))
+      (check! [:immediate-order refuse?] (= (if refuse? [:a] [:a :b :c]) @seen))
+      (when refuse?
+        (check! :refused-scheduled-limit (hs/flag? (aget p rw/W-SCHEDULED)))
+        ;; Teardown rescue only, after all scheduling/error assertions.
+        (outcome #(v2/host! p (fn [] nil))))
+      (a) (b) (c) (close! p))))
+
 (defn -main []
   (let [original hs/execute!]
     (with-redefs [hs/execute! (fn [e f] (if (identical? e executor) (swap! jobs conj f) (original e f)))]
       (falsy-outcomes!) (committed-outcomes!) (callback-suffix!)
-      (unsupported-and-preclaim!) (activation!)
+      (unsupported-and-preclaim!) (activation!) (owned-rejection!) (immediate-and-refused-handoff!)
       (if (seq @failures)
         (throw (ex-info "host delivery behavioral assertions failed" {:failures @failures}))
         (println "HOST DELIVERY SMOKE OK")))))
