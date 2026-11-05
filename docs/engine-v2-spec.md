@@ -1244,9 +1244,30 @@ A savepoint publishes the rest of a body to a handler (see `savepoints.md`).
   - every other inherited `savepoint` edge fires `err ::forked` (§8.1);
   - before activation, the handler may perform writes in `W′` (trace
     entries, weights, counters, handlers).
-- **S4 – activate.** `activate(W′, v)` fires `W′.pending-activation` with `v`
-  and clears it. Instantiating `P` `n` times gives `n` independent
-  particles. In the source world, I10 holds by construction: the copied run
+- **S4 – activate.** `activate(W′, v)` returns the same world and submits an
+  activation intent; the atomic intent marker grants no ownership or execution.
+  The child gate claims one pending activation/value, then after-gate ingress to
+  the publication parent decides admission under its gate. It rechecks request
+  and root openness there, installs the immutable ownership holder before
+  scheduling child delivery, or disposes the still-unborn instance without adding
+  post-T31 parent debt. No child body/resource activation precedes acceptance and
+  no two gates are held together. Direct release racing acceptance either refuses
+  publication or immediately hands the accepted closing child into both debts.
+  Child delivery rechecks exact claim, unborn/pending identity and release/holder
+  cancellation before firing `pending-activation` with `v` and clearing it; a
+  delayed delivery cannot revive disposal. Repeated submissions have one winner.
+  After intent (including before the claim ingress runs), subsequent ordinary
+  host ingress waits FIFO behind the claim before demand or row allocation.
+  Pre-intent unborn writes retain S3 semantics and reads/observation still refuse.
+  Internal shutdown, admission and acknowledgement ingress bypass this barrier.
+  Birth replays deferred ordinary items before later ordinary ingress; refusal
+  clears them without running bodies, delivering existing released completions to
+  reads/observers/host-call promises and dropping fire-and-forget items. Withdrawal
+  or timeout cancels a deferred wait before replay, with no stale edge/callback or
+  double completion. Clear all deferred bodies/controls on birth or disposal; do
+  not spin or repeatedly reschedule a blocked claim. An accepted holder keeps
+  child execution owed through parent request until actual stop. Instantiating
+  `P` `n` times gives `n` independent particles. I10 still holds: the copied run
   is the run, so nothing is added (R#7).
 - **S5 – incremental re-execution.** Re-running from a changed choice is
   either S3/S4 with the new value, or T11 at the choice's `dep` edge. Both

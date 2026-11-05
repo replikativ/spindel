@@ -623,6 +623,21 @@ cannot erase an already-admitted producer. No zero counter is final while such a
 producer can introduce execution. Compare production accounting against a separate
 verify census; the census must not supply production termination detection.
 
+Activation publication uses an atomic submission-intent marker and a child-gate
+first-value claim. The marker itself grants no ownership/execution. Ordinary host
+ingress submitted afterward is held FIFO before demand/allocation, including when
+the claim ingress has not executed; pre-intent unborn behavior remains S3. Parent
+admission rechecks the seal under the parent gate and installs its holder before
+after-gate child delivery. Rejection disposes an unborn instance without adding
+fresh parent debt. Accepted publication is owed through a racing parent request;
+child delivery rechecks claim and cancellation before birth. Internal control,
+release and settlement bypass the ordinary barrier. Birth replays queued items
+before later ordinary ingress; disposal rejects waiting reads/observers/promises
+once and drops fire-and-forget bodies. Withdrawal/timeout cancels queued work before
+replay. Clear pending bodies, completion controls and publication pointers on birth
+or disposal. A blocked barrier is a bounded current obligation, never a spinning
+queue or retained activation history. Fork resets these controls in O(1).
+
 Before clearing a child holder/list or deleting a scope, transfer each live child
 to a bounded pending record with target token, generation, immutable owner witness,
 execution/terminal channels and report route. This applies when child close precedes
