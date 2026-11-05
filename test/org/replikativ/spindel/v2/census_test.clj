@@ -6,6 +6,7 @@
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.spindel.v2.core :as v2 :refer [spin task track await take!]]
             [org.replikativ.spindel.v2.rows :as rw]
+            [org.replikativ.spindel.v2.combinators :as comb]
             [org.replikativ.spindel.v2.verify :as verify]
             [org.replikativ.spindel.incremental.interval :as iv]))
 
@@ -106,3 +107,51 @@
             (is (<= after (+ before 3)) (str "rows grew from " before " to " after))))
         (v2/post! mb :stop)
         (is (number? (v2/value loop-task 5000 ::timeout)))))))
+
+(deftest opaque-collections-preserve-equality-without-retaining-handles
+  (let [w (v2/world {:verify? true})
+        refs (v2/call-in! w
+                          (fn []
+                            (let [h (v2/deferred w)
+                                  intern #(v2/intern-opaque! w %)
+                                  a (intern {:nested [#{h} (list h)]})]
+                              (is (= a (intern {:nested (list #{h} [h])})))
+                              (is (not= (intern [h]) (intern #{h})))
+                              (is (not= (intern {h :value}) (intern {:value h})))
+                              (is (= (intern [:metadata])
+                                     (intern (with-meta [:metadata] {:handle h}))))
+                              (is (= 0 (intern nil)))
+                              (is (= 1 (intern :org.replikativ.spindel.v2.core/cancelled)))
+                              (is (= 2 (intern :org.replikativ.spindel.v2.core/closed)))
+                              [(java.lang.ref.WeakReference. h)])))]
+    (verify/gc-settle! w)
+    (is (every? #(nil? (.get ^java.lang.ref.WeakReference %)) refs))
+    (is (= {rw/T-SCOPE 1} (census w)))))
+
+(deftest combinator-captures-are-reclaimed
+  (doseq [kind [:parallel :race :timeout]]
+    (testing (name kind)
+      (let [w (v2/world {:verify? true})]
+        (binding [v2/*world* w]
+          (dotimes [i 30]
+            (case kind
+              :parallel (v2/value (comb/parallel (spin i) (spin :b)) 1000 ::timeout)
+              :race (v2/value (comb/race (spin i) (spin :b)) 1000 ::timeout)
+              :timeout (v2/value (comb/timeout (comb/never) 0 :fallback) 1000 ::timeout))))
+        (is (= {rw/T-SCOPE 1} (census w)))))))
+
+(deftest refused-payloads-are-interned-and-reclaimed
+  (let [w (v2/world {:verify? true})
+        d (v2/deferred w)
+        ref (v2/call-in! w
+                         (fn []
+                           (let [h (v2/deferred w)]
+                             (v2/deliver! d :first)
+                             (v2/deliver! d {:nested [h]})
+                             (java.lang.ref.WeakReference. h))))]
+    (let [entry (last (filter #(false? (:accepted %)) (verify/log w)))]
+      (is (= :deliver (first (:item entry))))
+      (is (true? (integer? (last (:item entry))))))
+    (verify/gc-settle! w)
+    (is (nil? (.get ^java.lang.ref.WeakReference ref)))
+    (is (= :first (v2/value d)))))

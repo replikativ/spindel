@@ -276,9 +276,9 @@
            (and (coll? x) (not (record? x))))))
 
 (defn intern-opaque!
-  "Verify mode: the Nat for an opaque value. Plain values intern by
-   equality; identity objects (fns, arrays, handles) are held weakly, so the
-   log retains nothing a body would not (census)."
+  "Verify mode: the Nat for an opaque value. Collections intern structurally
+   by their members' Nats, never by retaining the members themselves. Identity
+   objects (fns, arrays, handles) are held weakly (census)."
   [w x]
   #?(:clj (if (nil? x)
             0
@@ -286,9 +286,20 @@
                   x (cond (cancelled? x) ::cancelled          ; reserved: 1 (see world)
                           (:spindel/closed (ex-data x)) ::closed   ; reserved: 2
                           :else x)
-                  ^java.util.Map m (if (by-identity? x) weak strong)]
-              (or (.get m x)
-                  (let [v (aset n 0 (inc (aget n 0)))] (.put m x v) v))))
+                  identity? (by-identity? x)
+                  ;; A collection may contain handles, closures or metadata
+                  ;; holding either. Keep only its shape and interned members.
+                  ;; Lists and vectors compare equally; maps and sets do not.
+                  k (if identity?
+                      x
+                      (cond
+                        (map? x) [:map (into {} (map (fn [[k v]] [(intern-opaque! w k) (intern-opaque! w v)])) x)]
+                        (set? x) [:set (into #{} (map #(intern-opaque! w %)) x)]
+                        (coll? x) [:seq (mapv #(intern-opaque! w %) x)]
+                        :else x))
+                  ^java.util.Map m (if identity? weak strong)]
+              (or (.get m k)
+                  (let [v (aset n 0 (inc (aget n 0)))] (.put m k v) v))))
      :cljs 0))
 
 (defn- opaque-item [w x]
@@ -318,7 +329,7 @@
 
 (defn- refuse! [w item]
   (when-let [log (g w rw/W-LOG)]
-    (aadd! log {:item item :accepted false}))
+    (aadd! log {:item (opaque-item w item) :accepted false}))
   nil)
 
 ;; ---------------------------------------------------------------------------
