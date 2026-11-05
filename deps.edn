@@ -20,7 +20,9 @@
         ;; qualified execution owners across suspension and nested binding exit.
         ;; 0.1.72 diagnoses visible suspension across callback boundaries and
         ;; resolves ClojureScript macro scopes through the compiler expander.
-        org.replikativ/partial-cps {:mvn/version "0.1.72"}
+        ;; 0.1.73 preserves JVM case* dispatch-table ordering across CPS
+        ;; transformation, including keyword cases with more than eight arms.
+        org.replikativ/partial-cps {:mvn/version "0.1.73"}
         ;; is.simm/partial-cps is the same library under its old coordinates: two
         ;; jars with one set of namespaces, whichever comes first on the classpath
         ;; winning. Excluded until the libraries that pull it move over.
