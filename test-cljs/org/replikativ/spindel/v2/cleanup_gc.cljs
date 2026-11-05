@@ -74,10 +74,42 @@
               (callback :duplicate)
               (next)))))
 
+(defn- world-close-fixture []
+  (let [w (v2/world) owner (v2/world-host-owner w)
+        payload (js/Uint8Array. (* 1024 1024))
+        weak-world (hs/weak w) weak-payload (hs/weak payload)
+        cap (v2/register-world-settlement! owner w [:acquisition])
+        reservation (:acquisition (v2/world-preparations cap))]
+    (v2/reset-world! w {:payload payload})
+    (let [operation (v2/close-world! owner w)
+          withdraw (v2/subscribe-world-close! operation (fn [_] (assert (aget w rw/W-ROOT))))]
+      (v2/update-world-settlement! cap {:id :native-discard :phase :ambiguous})
+      (v2/finish-world-preparation! reservation {:disposed? true})
+      {:world weak-world :payload weak-payload :owner owner :cap cap
+       :reservation reservation :operation operation :withdraw withdraw})))
+
+(defn- held-world-close-controls [next]
+  (let [{:keys [world payload owner cap reservation operation withdraw]} (world-close-fixture)]
+    (until "pending recovery retains its exact world obligation"
+           #(some? (hs/deref-weak world))
+           #(do
+              (assert (not (:terminal? (v2/world-close-status operation))))
+              (v2/acknowledge-world-settlement! cap {:settled? true :value :physically-disposed})
+              (until "held terminal owner/cap/reservation/operation/withdrawal release world and payload"
+                     (fn [] (and (nil? (hs/deref-weak world)) (nil? (hs/deref-weak payload))))
+                     (fn []
+                       (assert (:terminal? (v2/world-close-status operation)))
+                       (assert (nil? @(.-cell owner)))
+                       (v2/acknowledge-world-settlement! cap {:settled? true :value :duplicate})
+                       (v2/finish-world-preparation! reservation {:disposed? true})
+                       (withdraw)
+                       (next)))))))
+
 (defn -main []
   (when-not (and (exists? js/WeakRef) (exists? js/gc))
     (throw (ex-info "requires Node WeakRef and --expose-gc" {})))
   (held-results [:success :error :cancel]
-                #(held-terminal-capabilities (fn [] (println "CLEANUP GC OK")))))
+                #(held-terminal-capabilities
+                  (fn [] (held-world-close-controls (fn [] (println "CLEANUP GC OK")))))))
 
 (set! *main-cli-fn* -main)

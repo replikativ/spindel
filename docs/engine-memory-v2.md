@@ -581,6 +581,13 @@ acceptance remain open.
 
 ### Planned staged world close (Z#67)
 
+Each world creates one canonical opaque host controller before publication; forks
+create a fresh controller/token in O(1). Passive host lookup may return that same
+bearer after request and terminal, without gate entry, drain or activation. The
+controller holds its target only while live/pending; T32 clears that reference and
+retains the inert bearer identity. Held terminal bearers therefore add no world
+root. Lookup inside an engine slice/cleanup registration grants no host role.
+
 The dependent second slice follows [engine-v2-spec.md](engine-v2-spec.md) §2–3,
 T21/T27–T32 and §7–9. It changes no source here. The current
 `v2/core.cljc/release-owned!` clears holder strength/owner lists at request time;

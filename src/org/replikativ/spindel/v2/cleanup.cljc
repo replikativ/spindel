@@ -45,7 +45,7 @@
     (let [old @state]
       (when-not (= :settled (:phase old))
         (if (compare-and-set! state old (cond-> {:phase :settled :outcome outcome}
-                                    (:diagnostics old) (assoc :diagnostics (:diagnostics old))))
+                                          (:diagnostics old) (assoc :diagnostics (:diagnostics old))))
           (dispatch
            #(do (safely! (:detach old))
                 (doseq [[_ cb] (:subscribers old)]

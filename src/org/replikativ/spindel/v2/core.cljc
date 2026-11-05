@@ -26,7 +26,7 @@
 #?(:clj (set! *warn-on-reflection* true))
 
 (declare create-source-top-host! row-of world-of cancel-resource! resource-ack! demand! settle! pending-zero! rule-r! complete! validate!
-         deliver-observe! value cancel! finish-task! request-atom-sweep! finish-metadata! unwind-regions! resume-cleanup! cleanup-admission! ordinary-admission! conserve-cleanup! close-check! after-gate-action! claim-child! child-milestone! scope-ancestry report-key)
+         deliver-observe! value cancel! finish-task! request-atom-sweep! finish-metadata! unwind-regions! resume-cleanup! cleanup-admission! ordinary-admission! conserve-cleanup! close-check! after-gate-action! claim-child! child-milestone! scope-ancestry report-key released-ex)
 
 ;; ---------------------------------------------------------------------------
 ;; Execution context: the world being processed and the run holding the slice
@@ -777,6 +777,7 @@
 ;; Runs and scopes
 
 (defn- new-run! [w x epoch]
+  (when (:requested? (g w rw/W-CLOSE)) (throw (released-ex)))
   (let [r (rw/new-row (g w rw/W-EPOCH) rw/R-SIZE)]
     (s! r rw/TYPE rw/T-RUN)
     (s! r rw/ID (alloc-id! w))
@@ -811,6 +812,12 @@
     (if (and ss (pos? (acount ss)))
       (rv w (anth ss (dec (acount ss))))
       (run-scope! w r))))
+
+(defn- current-scope-id [w r]
+  (let [scopes (g r rw/R-SCOPES)]
+    (if (and scopes (pos? (acount scopes)))
+      (id-of (rv w (anth scopes (dec (acount scopes)))))
+      (g r rw/R-SCOPE))))
 
 (defn- remove-scope-if-empty!
   "T16/Z#18: a closed scope row goes once its subtree has no rows left. A run
@@ -1327,15 +1334,16 @@
           transferred (g r rw/R-CLEANUP-TRANSFER)]
       (when-not (identical? origin (:origin transferred))
         (s! r rw/R-CLEANUP-TRANSFER {:origin origin :keys #{}}))
-      (doseq [{:keys [run order release] :as failure} failures
-              :let [key [run order release]]
+      (doseq [failure failures
+              :let [failure (cond-> failure
+                              (empty? (:path failure)) (assoc :origin (:audit (g w rw/W-CLOSE))))
+                    key (report-key failure)]
               :when (and (not (:observed? failure))
                          (not (contains? (:keys (g r rw/R-CLEANUP-TRANSFER)) key)))]
         (s! w rw/W-CLEANUP-FAILURES
-            (assoc (g w rw/W-CLEANUP-FAILURES) (report-key failure) failure))
-        ;; Ownership transfers once, independently of later report consumption.
-        ;; Immutable keys are bounded by this live unwind and carry no payload;
-        ;; a fork's new origin cannot inherit its parent's transfer authority.
+            (assoc (g w rw/W-CLEANUP-FAILURES) key failure))
+        ;; These keys exist only for this live unwind; consumption does not
+        ;; authorize a second transfer of one inherited/current failure.
         (s! r rw/R-CLEANUP-TRANSFER
             {:origin origin :keys (conj (:keys (g r rw/R-CLEANUP-TRANSFER)) key)})))))
 
@@ -1840,6 +1848,7 @@
     x))
 
 (defn- new-comp! [w owner key at inputs body handles]
+  (when (:requested? (g w rw/W-CLOSE)) (throw (released-ex)))
   (let [c (debtor-row w rw/T-COMP rw/C-SIZE owner key at handles)]
     (s! c rw/C-INPUTS inputs)
     (s! c rw/C-BODY body)
@@ -1930,6 +1939,7 @@
       h)))
 
 (defn- new-task! [w owner key at inputs body handles]
+  (when (:requested? (g w rw/W-CLOSE)) (throw (released-ex)))
   (let [k (debtor-row w rw/T-TASK rw/K-SIZE owner key at handles)]
     (s! k rw/K-BODY body)
     (s! k rw/K-INPUTS inputs)
@@ -2327,6 +2337,7 @@
 ;; Host API
 
 (defn- new-source! [w kind v owner key at]
+  (when (:requested? (g w rw/W-CLOSE)) (throw (released-ex)))
   (let [x (debtor-row w rw/T-SOURCE rw/X-SIZE owner key at 1)]
     (s! x rw/X-KIND kind)
     (s! x rw/X-VALUE v)
@@ -3295,12 +3306,13 @@
           (commit! w [:cleanup-registered (g r rw/ID) sequence]))
       (after-gate-action! withdraw))))
 
-(defn- observed-world-outcome [outcome entitled?]
+(defn- observed-world-outcome [outcome entitled? path]
   (let [[value failed?] outcome]
-    (if (and failed? (not entitled?))
+    (if failed?
       [(ex-info #?(:clj (.getMessage ^Throwable value) :cljs (.-message value))
                 (update (ex-data value) :spindel/cleanup-provenance
-                        #(mapv (fn [f] (assoc f :observed? true)) %)) value) true]
+                        #(mapv (fn [f] (cond-> (update f :path (fn [p] (into (vec path) p)))
+                                         (not entitled?) (assoc :observed? true))) %)) value) true]
       outcome)))
 
 (defn await-finalization-effect!
@@ -3313,13 +3325,13 @@
       (case (:kind target)
         :resource
         (do (when-not (= (g w rw/W-CLEANUP-IDENTITY) (:origin target)) (throw (forked-ex)))
-            (when-not (some #{(id-of (current-scope! w r))} (:ancestors target))
+            (when-not (some #{(current-scope-id w r)} (:ancestors target))
               (throw (invalid-op :cleanup-target "cleanup target is not owned below the current scope"))))
         :world
         (let [witness (some #(when (identical? (g w rw/W-CLEANUP-IDENTITY) (:origin %)) %) (:ancestry target))]
           (when-not (and (= :terminal (:channel target)) witness
                          (not (identical? (:token target) (g w rw/W-CLEANUP-IDENTITY)))
-                         (some #{(id-of (current-scope! w r))} (:ancestors witness)))
+                         (some #{(current-scope-id w r)} (:ancestors witness)))
             (throw (invalid-op :cleanup-target "world join requires a strictly downward owned target"))))
         (throw (invalid-op :cleanup-target "unsupported cleanup target"))))
     (when (g r rw/R-CLEANUP-WAIT)
@@ -3330,7 +3342,7 @@
           entitled? (and (= :world (:kind target)) debt (not (:lexical-route debt)))
           _ (when entitled?
               (s! w rw/W-CLOSE (assoc-in (g w rw/W-CLOSE) [:children token :lexical-route]
-                                       {:run (id-of r) :region (:id (g r rw/R-FINALIZER))})))
+                                         {:run (id-of r) :region (:id (g r rw/R-FINALIZER))})))
           sequence (inc (long (or (g r rw/R-WAIT-SEQ) 0)))
           cell (doto (object-array 2) (aset 0 w) (aset 1 r))
           claimed (hs/flag false)
@@ -3340,8 +3352,9 @@
                          (aset cell 0 nil) (aset cell 1 nil)
                          ;; Readiness is ingress, not invocation from registration.
                          (hs/mpsc-add! (g w rw/W-INGRESS) #(cleanup-ready! w r sequence
-                                                                     (if (= :world (:kind target))
-                                                                       (observed-world-outcome outcome entitled?) outcome)))
+                                                                           (if (= :world (:kind target))
+                                                                             (observed-world-outcome outcome entitled?
+                                                                                                     (when entitled? [(:acquisition (:witness debt))])) outcome)))
                          (handoff! w))))]
       (s! r rw/R-WAIT-SEQ sequence)
       (s! r rw/R-CLEANUP-WAIT {:origin (g w rw/W-CLEANUP-IDENTITY) :generation (g r rw/ID)
@@ -3417,7 +3430,7 @@
 
 (defn- owner-world [^WorldHostOwner owner target]
   (when-not (and (instance? WorldHostOwner owner)
-                (identical? (.-token owner) (g target rw/W-CLEANUP-IDENTITY)))
+                 (identical? (.-token owner) (g target rw/W-CLEANUP-IDENTITY)))
     (throw (invalid-op :world-owner "expected this target's opaque host owner")))
   (let [w @(.-cell owner)]
     (when (and w (not (identical? w target)))
@@ -3440,7 +3453,7 @@
 (defn- owned-world-witness! [w r target]
   (let [token (g w rw/W-CLEANUP-IDENTITY)
         witness (some #(when (identical? token (:origin %)) %) (g target rw/W-ANCESTRY))
-        scope (id-of (current-scope! w r))]
+        scope (current-scope-id w r)]
     (when-not (and (not (identical? w target)) witness (some #{scope} (:ancestors witness)))
       (throw (invalid-op :world-target "world join requires a strictly downward owned target")))
     witness))
@@ -3471,7 +3484,8 @@
      :child-terminal (count (filter :terminal-pending? (vals (:children c))))
      :settlements (count (:settlements c))
      :recovery (into {} (keep (fn [[id debt]] (when (:recovery debt) [id (:recovery debt)]))) (:settlements c))
-     :unreported-failures (vec (vals (g w rw/W-CLEANUP-FAILURES)))}))
+     :unreported-failures (vec (vals (g w rw/W-CLEANUP-FAILURES)))
+     :outcome (:outcome c)}))
 
 (defn- close-check! [w]
   (let [c (g w rw/W-CLOSE)]
@@ -3612,8 +3626,8 @@
 (defn- settlement-debt! [w ^WorldSettlement cap id]
   (let [debt (get-in (g w rw/W-CLOSE) [:settlements id])]
     (when-not (and (identical? (.-token cap) (g w rw/W-CLEANUP-IDENTITY))
-                  (identical? cap (:capability debt))
-                  (identical? (.-generation cap) (:generation debt)))
+                   (identical? cap (:capability debt))
+                   (identical? (.-generation cap) (:generation debt)))
       (throw (invalid-op :world-settlement "stale or wrong-target settlement capability")))
     debt))
 
@@ -3634,10 +3648,13 @@
        world
        #(let [c (g world rw/W-CLOSE) identity (.-identity reservation)]
           (when-not (and (identical? (.-token reservation) (g world rw/W-CLEANUP-IDENTITY))
-                        (identical? reservation (get (:preparations c) identity)))
+                         (identical? reservation (get (:preparations c) identity)))
             (throw (invalid-op :world-preparation "stale preparation bearer")))
           (when-let [child (:world disposition)]
-            (when (or (identical? child world) (g child rw/W-HOLDER))
+            (when (or (identical? child world) (g child rw/W-HOLDER)
+                      (some (fn [witness]
+                              (identical? (:origin witness) (g child rw/W-CLEANUP-IDENTITY)))
+                            (g world rw/W-ANCESTRY)))
               (throw (invalid-op :world-preparation "published child must be unowned and distinct")))
             ;; Preparation outputs are disposal participants, never new ordinary
             ;; target work, even when publication races an earlier request.
@@ -3648,17 +3665,23 @@
           (close-check! world)))))
   nil)
 
+(defn- recovery-data? [x]
+  (or (nil? x) (string? x) (keyword? x) (symbol? x) (number? x) (boolean? x)
+      (and (map? x) (not (record? x))
+           (every? (fn [[k v]] (and (recovery-data? k) (recovery-data? v))) x))
+      (and (or (vector? x) (set? x)) (every? recovery-data? x))))
+
 (defn update-world-settlement! [^WorldSettlement cap recovery]
   (host-role! :world-settlement)
   (when-not (instance? WorldSettlement cap)
     (throw (invalid-op :world-settlement "expected a settlement capability")))
-  (when-not (or (nil? recovery) (and (map? recovery) (:id recovery)))
+  (when-not (or (nil? recovery) (and (map? recovery) (:id recovery) (recovery-data? recovery)))
     (throw (invalid-op :world-recovery "recovery requires a stable ID and current data")))
   (let [{:keys [world id phase]} @(.-cell cap)]
     (when-not (= :acknowledged phase)
       (internal-call! world #(do (settlement-debt! world cap id)
-                                (s! world rw/W-CLOSE (assoc-in (g world rw/W-CLOSE) [:settlements id :recovery] recovery))
-                                (close-check! world)))))
+                                 (s! world rw/W-CLOSE (assoc-in (g world rw/W-CLOSE) [:settlements id :recovery] recovery))
+                                 (close-check! world)))))
   nil)
 
 (defn acknowledge-world-settlement!
@@ -3670,8 +3693,8 @@
   (when-not (instance? WorldSettlement cap)
     (throw (invalid-op :world-settlement "expected a settlement capability")))
   (when-not (and (map? outcome) (true? (:settled? outcome))
-                (or (= #{:settled? :value} (set (keys outcome)))
-                    (= #{:settled? :error} (set (keys outcome)))))
+                 (or (= #{:settled? :value} (set (keys outcome)))
+                     (= #{:settled? :error} (set (keys outcome)))))
     (throw (invalid-op :world-settlement "acknowledgement must certify known physical settlement")))
   (let [{:keys [world id phase]} @(.-cell cap)]
     (when-not (= :acknowledged phase)
@@ -3740,7 +3763,7 @@
         (when-let [parent (hs/deref-weak (aget h 3))]
           (after-gate-action!
            #(do (hs/mpsc-add! (g parent rw/W-INGRESS)
-                             (fn [] (claim-child! parent w h)))
+                              (fn [] (claim-child! parent w h)))
                 (handoff! parent))))))
     (if (g w rw/W-UNBORN)
       ;; E4: an instance that never ran is discarded as if dropped: nothing
