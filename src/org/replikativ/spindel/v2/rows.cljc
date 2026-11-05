@@ -92,7 +92,9 @@
 (def ^:const W-PUB-WORLD 36)   ; an unborn instance's publication world, its owner at activation
 (def ^:const W-STATE 37)       ; app world state: one persistent map, forked by value (M6 R1)
 (def ^:const W-ATOMS 38)       ; fork-safe atoms: atom id -> value, forked by value (M6 R6)
-(def ^:const W-SIZE 39)
+(def ^:const W-WATCHES 39)     ; this world's watches: id -> {key fn}; never inherited by a fork
+(def ^:const W-FAMILY 40)      ; identity shared by a world and all its forks (handle lineage)
+(def ^:const W-SIZE 41)
 
 ;; Scope
 (def ^:const S-PARENT 2)

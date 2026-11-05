@@ -121,6 +121,7 @@
      (s! w rw/W-AFTER (alist))
      (s! w rw/W-STATE {})
      (s! w rw/W-ATOMS {})
+     (s! w rw/W-FAMILY #?(:clj (Object.) :cljs (js-obj)))
      (when verify?
        (s! w rw/W-REG (hs/lmap))
        (s! w rw/W-LOG (alist))
@@ -1473,7 +1474,7 @@
 ;; A host handle (§1): weak, never a liveness reason. `cell` holds the row
 ;; (set when the creating item commits); `dropped` makes T19 happen once,
 ;; by `release!` or by the Cleaner after the handle is collected (M3c).
-(declare host-call! write! deliver! post! handle-swap! handle-claim!)
+(declare host-call! write! deliver! post! handle-swap! handle-claim! handle-watch! handle-unwatch! handle-watches)
 
 (deftype Handle [w ^objects cell dropped]
   ;; @h is the host read (B7 outside bodies). On a signal or cell, reset! and
@@ -1488,6 +1489,12 @@
             (swap [this f a b] (handle-swap! this #(f % a b)))
             (swap [this f a b xs] (handle-swap! this #(apply f % a b xs)))
             (compareAndSet [this o n] (handle-swap! this #(if (identical? % o) n %) (fn [old _] (identical? old o))))
+            clojure.lang.IRef
+            (addWatch [this k f] (handle-watch! this k f) this)
+            (removeWatch [this k] (handle-unwatch! this k) this)
+            (getWatches [this] (handle-watches this))
+            (getValidator [_] nil)
+            (setValidator [_ _] (throw (ex-info "signals take no validator" {:spindel/invalid :validator})))
             clojure.lang.IFn
             (invoke [this v] (handle-claim! this v))
             (applyTo [this args] (if (== 1 (count args)) (handle-claim! this (first args))
@@ -1498,7 +1505,11 @@
              (-swap! [this f a] (handle-swap! this #(f % a)))
              (-swap! [this f a b] (handle-swap! this #(f % a b)))
              (-swap! [this f a b xs] (handle-swap! this #(apply f % a b xs)))
-             IFn (-invoke [this v] (handle-claim! this v))]))
+             IFn (-invoke [this v] (handle-claim! this v))
+             IWatchable
+             (-add-watch [this k f] (handle-watch! this k f) this)
+             (-remove-watch [this k] (handle-unwatch! this k) this)
+             (-notify-watches [_ _ _] nil)]))
 
 (declare host! handle-drop! href)
 
@@ -2209,25 +2220,37 @@
 (defn semaphore
   "T1 at top level: a counting semaphore with `n` permits (§4.3)."
   ([n] (semaphore *world* n))
-  ([w n] (create-source-top! w rw/SRC-SEMAPHORE (long n)
-                             #(do (s! % rw/X-WAITERS (hs/deque)) (s! % rw/X-MAX (long n))))))
+  ([w n]
+   (when-not (pos? n)
+     (throw (ex-info "a semaphore needs a positive permit count" {:spindel/invalid :semaphore :permits n})))
+   (create-source-top! w rw/SRC-SEMAPHORE (long n)
+                       #(do (s! % rw/X-WAITERS (hs/deque)) (s! % rw/X-MAX (long n))))))
 
 (defn sem-release!
-  "Gives the permit to the first armed waiter, or returns it (§4.3)."
+  "Gives the permit to the first armed waiter, or returns it (§4.3). A
+   release at the maximum is refused and throws (Z#62, old over-release)."
   [h]
-  (gated (world-of h)
-         (let [x (row-of h) w (cw)]
-           (cond
-             (closed? x) (refuse! w [:release (g x rw/ID)])
-        ;; Z#62: no release beyond the maximum (nobody waits at the maximum)
-             (and (some? (g x rw/X-MAX)) (>= (gl x rw/X-VALUE) (gl x rw/X-MAX)))
-             (refuse! w [:release (g x rw/ID)])
-             :else
-             (do (s! x rw/VERSION (inc (gl x rw/VERSION)))
-                 (when-not (serve-waiter! w x :acquired)
-                   (s! x rw/X-VALUE (inc (gl x rw/X-VALUE))))
-                 (commit! w [:release (g x rw/ID)])))))
+  (let [over? (host-call! (world-of h)
+                          #(let [x (row-of h) w (cw)]
+                             (cond
+                               (closed? x) (do (refuse! w [:release (g x rw/ID)]) false)
+                               (and (some? (g x rw/X-MAX)) (>= (gl x rw/X-VALUE) (gl x rw/X-MAX)))
+                               (do (refuse! w [:release (g x rw/ID)]) true)
+                               :else
+                               (do (s! x rw/VERSION (inc (gl x rw/VERSION)))
+                                   (when-not (serve-waiter! w x :acquired)
+                                     (s! x rw/X-VALUE (inc (gl x rw/X-VALUE))))
+                                   (commit! w [:release (g x rw/ID)])
+                                   false))))]
+    (when over?
+      (throw (ex-info "release beyond the semaphore's maximum" {:spindel/invalid :over-release}))))
   nil)
+
+(defn permits
+  "The available permits of a semaphore (old @semaphore)."
+  [h]
+  (let [w (world-of h)]
+    (host-call! w #(g (row-of h) rw/X-VALUE))))
 
 (defn deferred
   "T1 at top level: a deferred, delivered once (§4.3)."
@@ -2248,11 +2271,32 @@
                  (commit! w [:deliver (g x rw/ID) [:opaque v]])))))
   v)
 
+(defn- notify-watches!
+  "This world's watches on `id` (a signal row or an atom), called at the
+   commit, synchronously, under the gate (as clojure.core watches are called
+   by the mutating thread). A failing watch is reported."
+  [w id ref old new]
+  (when-let [ws (g w rw/W-WATCHES)]
+    (when-let [m (get ws id)]
+      (doseq [[k f] m]
+        (try (f k ref old new)
+             (catch #?(:clj Throwable :cljs :default) t
+               #?(:clj (binding [*out* *err*] (println "watch" k "failed:" t))
+                  :cljs (js/console.error "watch" k "failed:" t))))))))
+
+(defn- add-watch* [w id k f]
+  (host-call! w #(s! w rw/W-WATCHES (assoc-in (g w rw/W-WATCHES) [id k] f))))
+
+(defn- remove-watch* [w id k]
+  (host-call! w #(s! w rw/W-WATCHES (let [ws (g w rw/W-WATCHES)
+                                          m (dissoc (get ws id) k)]
+                                      (if (empty? m) (dissoc ws id) (assoc ws id m))))))
+
 (defn write!
   "T2: `version += 1`, fire dep edges and deliver observe edges (§4.5.1)."
   [h v]
   (gated (world-of h)
-         (let [x (row-of h) w (cw)]
+         (let [x (row-of h) w (cw) old (g x rw/X-VALUE)]
            (if (closed? x)
              (refuse! w [:write (g x rw/ID) [:opaque v]])
              (do
@@ -2263,7 +2307,8 @@
                    (let [e (rv w (anth outs i)) k (gl e rw/E-KIND)]
                      (cond (== k rw/EK-DEP) (fire-dep! w e)
                            (== k rw/EK-OBSERVE) (deliver-observe! w e)))))
-               (commit! w [:write (g x rw/ID) [:opaque v]])))))
+               (commit! w [:write (g x rw/ID) [:opaque v]])
+               (notify-watches! w (g x rw/ID) h old v)))))
   v)
 
 (defn unborn-ex []
@@ -2431,6 +2476,18 @@
                         (write! h n)
                         (ret old n)))))))
 
+(defn swap-changed?
+  "swap! on a signal or cell, returning whether its value changed (old
+   swap-signal-changed?)."
+  [h f & args]
+  (handle-swap! h #(apply f % args) (fn [old n] (not= old n))))
+
+(defn- handle-row-id [h] (aget ^objects (aget ^objects (.-cell ^Handle h) 0) rw/ID))
+(defn- handle-watch! [h k f] (add-watch* (world-of h) (handle-row-id h) k f))
+(defn- handle-unwatch! [h k] (remove-watch* (world-of h) (handle-row-id h) k))
+(defn- handle-watches [h]
+  (let [w (world-of h)] (host-call! w #(get (g w rw/W-WATCHES) (handle-row-id h) {}))))
+
 (defn- handle-claim!
   "(d v) delivers a deferred (true when this call delivered it); (mb v)
    posts to a mailbox."
@@ -2479,49 +2536,73 @@
 (defn- missing-state [id]
   (ex-info "this world has no state for the atom" {:spindel/missing-state id}))
 
-(defn- atom-op! [id f]
+(defn- atom-op!
+  "Runs `f` on the atom's value in the current world, under the gate; `f`
+   returns [new-value result]. A changed value notifies this world's
+   watches at the commit."
+  [ref id f]
   (let [w (or (current-world) (throw (ex-info "atom outside a world" {})))]
     (host-call! w #(let [m (g w rw/W-ATOMS)]
                      (if (contains? m id)
-                       (let [[v' ret] (f (get m id))]
-                         (when-not (identical? v' (get m id)) (s! w rw/W-ATOMS (assoc m id v')))
+                       (let [old (get m id)
+                             [v' ret] (f old)]
+                         (when-not (identical? v' old)
+                           (s! w rw/W-ATOMS (assoc m id v'))
+                           (notify-watches! w id ref old v'))
                          ret)
                        (throw (missing-state id)))))))
 
-(deftype RAtom [^long id]
+(deftype RAtom [^long id ^:volatile-mutable mta]
   #?@(:clj
       [clojure.lang.IDeref
-       (deref [this] (let [v (atom-op! id (fn [v] [v v]))] (java.lang.ref.Reference/reachabilityFence this) v))
+       (deref [this] (let [v (atom-op! this id (fn [v] [v v]))] (java.lang.ref.Reference/reachabilityFence this) v))
+       clojure.lang.IRef
+       (addWatch [this k f] (atom-op! this id (fn [v] (add-watch* (current-world) id k f) [v nil])) this)
+       (removeWatch [this k] (atom-op! this id (fn [v] (remove-watch* (current-world) id k) [v nil])) this)
+       (getWatches [this] (atom-op! this id (fn [v] [v (get (g (current-world) rw/W-WATCHES) id {})])))
+       (getValidator [_] nil)
+       (setValidator [_ _] (throw (ex-info "atoms take no validator" {:spindel/invalid :validator})))
+       clojure.lang.IMeta
+       (meta [_] mta)
+       clojure.lang.IReference
+       (alterMeta [_ f args] (set! mta (apply f mta args)) mta)
+       (resetMeta [_ m] (set! mta m) m)
        clojure.lang.IAtom
-       (swap [this f] (atom-op! id (fn [v] (let [n (f v)] [n n]))))
-       (swap [this f a] (atom-op! id (fn [v] (let [n (f v a)] [n n]))))
-       (swap [this f a b] (atom-op! id (fn [v] (let [n (f v a b)] [n n]))))
-       (swap [this f a b xs] (atom-op! id (fn [v] (let [n (apply f v a b xs)] [n n]))))
-       (compareAndSet [this o n] (atom-op! id (fn [v] (if (identical? v o) [n true] [v false]))))
-       (reset [this n] (atom-op! id (fn [_] [n n])))
+       (swap [this f] (atom-op! this id (fn [v] (let [n (f v)] [n n]))))
+       (swap [this f a] (atom-op! this id (fn [v] (let [n (f v a)] [n n]))))
+       (swap [this f a b] (atom-op! this id (fn [v] (let [n (f v a b)] [n n]))))
+       (swap [this f a b xs] (atom-op! this id (fn [v] (let [n (apply f v a b xs)] [n n]))))
+       (compareAndSet [this o n] (atom-op! this id (fn [v] (if (identical? v o) [n true] [v false]))))
+       (reset [this n] (atom-op! this id (fn [_] [n n])))
        clojure.lang.IAtom2
-       (swapVals [this f] (atom-op! id (fn [v] (let [n (f v)] [n [v n]]))))
-       (swapVals [this f a] (atom-op! id (fn [v] (let [n (f v a)] [n [v n]]))))
-       (swapVals [this f a b] (atom-op! id (fn [v] (let [n (f v a b)] [n [v n]]))))
-       (swapVals [this f a b xs] (atom-op! id (fn [v] (let [n (apply f v a b xs)] [n [v n]]))))
-       (resetVals [this n] (atom-op! id (fn [v] [n [v n]])))]
+       (swapVals [this f] (atom-op! this id (fn [v] (let [n (f v)] [n [v n]]))))
+       (swapVals [this f a] (atom-op! this id (fn [v] (let [n (f v a)] [n [v n]]))))
+       (swapVals [this f a b] (atom-op! this id (fn [v] (let [n (f v a b)] [n [v n]]))))
+       (swapVals [this f a b xs] (atom-op! this id (fn [v] (let [n (apply f v a b xs)] [n [v n]]))))
+       (resetVals [this n] (atom-op! this id (fn [v] [n [v n]])))]
       :cljs
-      [IDeref (-deref [_] (atom-op! id (fn [v] [v v])))
-       IReset (-reset! [_ n] (atom-op! id (fn [_] [n n])))
+      [IDeref (-deref [this] (atom-op! this id (fn [v] [v v])))
+       IMeta (-meta [_] mta)
+       IWatchable
+       (-add-watch [this k f] (atom-op! this id (fn [v] (add-watch* (current-world) id k f) [v nil])) this)
+       (-remove-watch [this k] (atom-op! this id (fn [v] (remove-watch* (current-world) id k) [v nil])) this)
+       (-notify-watches [_ _ _] nil)
+       IReset (-reset! [this n] (atom-op! this id (fn [_] [n n])))
        ISwap
-       (-swap! [_ f] (atom-op! id (fn [v] (let [n (f v)] [n n]))))
-       (-swap! [_ f a] (atom-op! id (fn [v] (let [n (f v a)] [n n]))))
-       (-swap! [_ f a b] (atom-op! id (fn [v] (let [n (f v a b)] [n n]))))
-       (-swap! [_ f a b xs] (atom-op! id (fn [v] (let [n (apply f v a b xs)] [n n]))))]))
+       (-swap! [this f] (atom-op! this id (fn [v] (let [n (f v)] [n n]))))
+       (-swap! [this f a] (atom-op! this id (fn [v] (let [n (f v a)] [n n]))))
+       (-swap! [this f a b] (atom-op! this id (fn [v] (let [n (f v a b)] [n n]))))
+       (-swap! [this f a b xs] (atom-op! this id (fn [v] (let [n (apply f v a b xs)] [n n]))))]))
 
 (defn atom
-  "A fork-safe atom in the current world, initialised to `init`."
-  [init]
+  "A fork-safe atom in the current world, initialised to `init`; options as
+   clojure.core/atom: `:meta` (validators are not supported)."
+  [init & {:keys [meta]}]
   (let [w (or (current-world) (throw (ex-info "atom outside a world" {})))
         id (host-call! w #(let [id (alloc-id! w)]
                             (s! w rw/W-ATOMS (assoc (g w rw/W-ATOMS) id init))
                             id))
-        a (RAtom. id)
+        a (RAtom. id meta)
         ww (hs/weak w)]
     ;; holds the world weakly: an atom table may reach the wrapper
     (hs/on-collect! a (fn [] (when-let [w (hs/deref-weak ww)]
@@ -2746,17 +2827,19 @@
        (let [ctl (hs/offload-ctl)]
          (set-ctl! w z ctl)
          ;; :pool runs f on another executor than the world's (M6 R8, blocking)
-         (hs/execute! (or (:pool opts) (g w rw/W-EXEC))
-                      (fn []
-                        (when (hs/ctl-start! ctl)
-                          (let [res (try [(f) false] (catch #?(:clj Throwable :cljs :default) t [t true]))]
-                            #?(:clj (do (hs/ctl-finish! ctl) (join! w z res))
+         (hs/execute-or! (or (:pool opts) (g w rw/W-EXEC))
+                      ;; a rejecting executor fails the effect (old blocking)
+                         (fn [t] (hs/ctl-cancel! ctl) (join! w z [t true]))
+                         (fn []
+                           (when (hs/ctl-start! ctl)
+                             (let [res (try [(f) false] (catch #?(:clj Throwable :cljs :default) t [t true]))]
+                               #?(:clj (do (hs/ctl-finish! ctl) (join! w z res))
                                ;; a returned promise is awaited (old blocking on JS)
-                               :cljs (if (and (not (second res)) (instance? js/Promise (first res)))
-                                       (.then (first res)
-                                              (fn [v] (hs/ctl-finish! ctl) (join! w z [v false]))
-                                              (fn [e] (hs/ctl-finish! ctl) (join! w z [e true])))
-                                       (do (hs/ctl-finish! ctl) (join! w z res)))))))))))
+                                  :cljs (if (and (not (second res)) (instance? js/Promise (first res)))
+                                          (.then (first res)
+                                                 (fn [v] (hs/ctl-finish! ctl) (join! w z [v false]))
+                                                 (fn [e] (hs/ctl-finish! ctl) (join! w z [e true])))
+                                          (do (hs/ctl-finish! ctl) (join! w z res)))))))))))
     (unwind! ek)))
 
 (defn sleep-effect!
@@ -2903,6 +2986,8 @@
   "A handle naming the same row as `h`, in world `w` (e.g. a fork). The row
    resolves to `w`'s copy when `w` processes it."
   [w h]
+  (when-not (identical? (g w rw/W-FAMILY) (g (.-w ^Handle h) rw/W-FAMILY))
+    (throw (ex-info "in-world: the handle belongs to an unrelated world" {:spindel/invalid :lineage})))
   (new-handle w (aget ^objects (.-cell ^Handle h) 0)))
 
 (defn- fork-world*
@@ -2929,6 +3014,7 @@
     (s! c rw/W-AFTER (alist))
     (s! c rw/W-UNBORN false)
     (s! c rw/W-PUB-WORLD nil)
+    (s! c rw/W-WATCHES nil)
     (doseq [i [rw/W-READY rw/W-RESUME rw/W-START rw/W-CLEANUP rw/W-RQ]]
       (s! c i (hs/lcopy (g w i))))
     (s! c rw/W-PINS (hs/mcopy (g w rw/W-PINS)))

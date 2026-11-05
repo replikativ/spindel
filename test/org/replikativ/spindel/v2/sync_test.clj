@@ -130,7 +130,10 @@
   (let [w (vworld)]
     (binding [v2/*world* w]
       (let [src (promise) gk (v2/deferred)
-            k (task (deliver src (mk)) (await gk))
+            k (task (let [x (mk)]
+                      (when (= op :acquire) (acquire! x))     ; k holds the only permit
+                      (deliver src x)
+                      (await gk)))
             x (deref src 1000 nil)
             t (case op
                 :take (task (take! x))
@@ -150,7 +153,7 @@
 (deftest waiters-on-a-closed-source-get-an-error
   ;; Z#53: a closed source without a value wakes its waiters with err ::closed
   (checked
-   (doseq [[mk op] [[v2/mailbox :take] [#(v2/semaphore 0) :acquire] [v2/deferred :await]]]
+   (doseq [[mk op] [[v2/mailbox :take] [#(v2/semaphore 1) :acquire] [v2/deferred :await]]]
      (testing (name op)
        (let [{:keys [task comp]} (waiter-on-closed mk op)]
          (is (= [:err {:spindel/closed true}] task))

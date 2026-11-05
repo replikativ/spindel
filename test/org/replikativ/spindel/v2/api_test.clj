@@ -170,7 +170,9 @@
        (let [s (v2/semaphore 1)]
          (is (= [:ok :acquired] (outcome (task (v2/acquire! s)))))
          (v2/sem-release! s)
-         (v2/sem-release! s)                         ; at the maximum: refused
+         (is (= :over-release (:spindel/invalid (try (v2/sem-release! s) nil (catch Exception e (ex-data e)))))
+             "a release at the maximum is refused and throws")
+         (is (= 1 (v2/permits s)))
          (is (= [:ok :acquired] (outcome (task (v2/acquire! s)))))
          (is (= :pending (v2/value (task (v2/acquire! s)) 100 :pending))
              "only one permit existed, so a third acquire waits"))))))

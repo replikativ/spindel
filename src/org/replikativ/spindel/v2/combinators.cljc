@@ -7,8 +7,9 @@
    run is cancelled (§3.3); a loser demanded elsewhere keeps running. Tasks
    passed in are observed, never cancelled."
   (:refer-clojure :exclude [await])
-  (:require [org.replikativ.spindel.v2.core :as v2 :refer [spin await await-all await-any]])
-  #?(:cljs (:require-macros [org.replikativ.spindel.v2.core :refer [spin]])))
+  (:require [org.replikativ.spindel.v2.core :as v2 :refer [spin task await await-all await-any]]
+            [org.replikativ.spindel.incremental.interval :as iv])
+  #?(:cljs (:require-macros [org.replikativ.spindel.v2.core :refer [spin task]])))
 
 (defn parallel
   "A computation of the vector of the values of `hs`; fail-fast on the first
@@ -59,9 +60,17 @@
 (defn blocking
   "A computation of `(f)` run off the world, on `:pool` (an Executor) or the
    world's executor. The calling thread's dynamic bindings are conveyed (JVM);
-   on JS a returned promise is awaited. Cancellation interrupts the worker."
+   on JS a returned promise is awaited. Cancellation interrupts the worker. A
+   pool that would run the work on the caller (CallerRunsPolicy) is refused;
+   a pool that rejects the work fails the computation."
   ([f] (blocking f nil))
   ([f opts]
+   #?(:clj (when-let [p (:pool opts)]
+             (when (and (instance? java.util.concurrent.ThreadPoolExecutor p)
+                        (instance? java.util.concurrent.ThreadPoolExecutor$CallerRunsPolicy
+                                   (.getRejectedExecutionHandler ^java.util.concurrent.ThreadPoolExecutor p)))
+               (throw (ex-info "blocking: a CallerRunsPolicy pool would run on the world"
+                               {:spindel/invalid :pool})))))
    (let [g #?(:clj (bound-fn* f) :cljs f)]
      (spin (v2/offload g opts)))))
 
@@ -115,3 +124,31 @@
                 merged (merge-fn @acc cur)]
             (reset! acc merged)
             merged))))
+
+;; ---------------------------------------------------------------------------
+;; Errors as values (old attempt/absolve)
+
+(defn attempt
+  "A computation that always succeeds with a zero-argument fn: it returns
+   `h`'s value, or throws its error."
+  [h]
+  (spin (try (let [v (await h)] (fn [] v))
+             (catch #?(:clj Throwable :cljs :default) t (fn [] (throw t))))))
+
+(defn absolve
+  "Inverse of attempt: a computation of calling the fn `h` delivers."
+  [h]
+  (spin ((await h))))
+
+;; ---------------------------------------------------------------------------
+;; Signal updates (old swap-signal-changed?, swap-await!)
+
+(defn swap-await!
+  "A task that sets `sig` to `(await (apply f current args))`, where `f`
+   returns an awaitable; a write landing meanwhile re-runs `f` against the
+   new value (compare-and-set retry)."
+  [sig f & args]
+  (task (loop []
+          (let [cur (iv/get-new (v2/track sig))
+                new (await (apply f cur args))]
+            (if (compare-and-set! sig cur new) new (recur))))))

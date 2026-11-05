@@ -66,6 +66,15 @@
 
 (defn executor [] #?(:clj @default-executor :cljs nil))
 
+(defn execute-or!
+  "execute!, calling `(on-reject t)` instead of throwing when the executor
+   refuses the work."
+  [ex on-reject f]
+  #?(:clj (try (.execute ^java.util.concurrent.Executor ex ^Runnable f)
+               (catch java.util.concurrent.RejectedExecutionException t (on-reject t)))
+     :cljs (js/setTimeout f 0))
+  nil)
+
 (defn execute!
   "Runs `f` later: on the executor (JVM), as a macrotask (JS)."
   [ex f]
