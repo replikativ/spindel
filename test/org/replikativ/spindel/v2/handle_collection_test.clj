@@ -157,21 +157,27 @@
         model (binding [v2/*world* p] (spin (* 5 6)))
         id (row-id model) c (v2/fork! p) sibling (v2/fork! p)
         sh (v2/in-world sibling model)
-        prepared (promise) finish (promise) result (promise)
-        work (binding [v2/*world* p]
-               (comb/parallel
-                (comb/blocking
-                 #(let [[target action] (capture-handle c (fn [] (v2/in-world c model)))
-                        value (v2/value target)]
-                    (deliver prepared action)
-                    (deref finish 5000 ::timeout)
-                    (hs/fence! target)
-                    value))
-                (comb/blocking #(v2/value sh))))]
+        prepared (promise) finish (promise) result (promise) sibling-settled (promise)
+        [work sibling-work]
+        (binding [v2/*world* p]
+          (let [child-work (comb/blocking
+                            #(let [[target action] (capture-handle c (fn [] (v2/in-world c model)))
+                                   value (v2/value target)]
+                               (deliver prepared action)
+                               (deref finish 5000 ::timeout)
+                               (hs/fence! target)
+                               value))
+                sibling-work (comb/blocking #(v2/value sh))]
+            [(comb/parallel child-work sibling-work) sibling-work]))]
     (try
+      (v2/value-async sibling-work #(deliver sibling-settled [%1 %2]))
       (v2/value-async work #(deliver result [%1 %2]))
       (let [action (deref prepared 2000 nil)]
         (is (some? action))
+        (is (= [30 false] (deref sibling-settled 2000 ::timeout)))
+        ;; The sibling's offload has published in the parent. Process one host
+        ;; barrier so no world being inspected still has a slice in flight.
+        (v2/call-in! p (fn [] nil))
         (when action
           (is (not (identical? (raw-row p id) (raw-row c id))))
           (is (= 1 (:handles (snapshot (raw-row c id)))))
