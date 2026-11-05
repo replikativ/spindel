@@ -1216,3 +1216,13 @@ commit and place exactly the accepted child's handoff in W-AFTER. The outer gate
 owner drains that outbox after unlocking, even if the callback throws. Do not
 retain allocation closure/payload history or turn weak ordinary custody into a
 strong World root. This preserves D3 and does not implement S3R cloning.
+
+The internal synchronous bridge applies the existing clearable HostIngress cell
+on JVM and Node. A dispatch error atomically cancels only an unclaimed runnable;
+claim-winning JVM races keep ownership until the actual outcome arrives outside
+gates. Completed success (including nil) or own exception takes priority over a
+distinct later turn error, which is logged once through the stable engine event.
+No fork-specific result flag, capability rollback or retained runtime error history
+is added. A canceled queue entry retains only its inert phase/result transport,
+never the allocation closure. The separate legacy host-call! and generic callback
+progress limitations are not silently repaired by this lifetime rule.

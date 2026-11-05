@@ -984,6 +984,22 @@ Each `track` *site* in a run (identified by `at`) has its own edge, with
   performs no validation/allocation/epoch/ordinal/custody/metadata mutation. A
   completed result is never discarded as an unsupported-sync refusal. This bridge
   does not grant permission to hold two World gates or block inside a slice.
+- **Internal synchronous control outcome ownership.** The shared internal
+  bridge used by ordinary `fork!` and World host controls has one atomic runnable
+  claim/cancel cell and one outcome slot on JVM and Node. On submission/turn
+  failure before claim, atomically cancel, clear the runnable and propagate that
+  error; later pumping is inert. If claim wins (including a JVM race before its
+  outcome is ready), preserve delivery of the control's own value or own exception,
+  waiting only outside gates. A completed nil value is an outcome, not absence.
+  A distinct later submission/turn error cannot replace that owned outcome: report
+  it once through `log/error :engine/host-control-turn-failed {:error error}` after
+  gate unwinding, then return/throw the actual control outcome. Direct same-world
+  held-gate calls still call the control directly without draining/log duplication.
+  This reporting grants no cleanup entitlement or physical acknowledgement and
+  retains no error-history registry. General `host-call!` callback/error priority
+  and generic dispatcher progress after arbitrary callback exceptions remain
+  separately tracked limitations; this bounded bridge correction does not repair
+  those APIs or claim a general no-stranding theorem.
 - **H4 – cross-world delivery.** A continuation or callback belonging to
   another world is delivered as an ingress item of that world. This replaces
   `in-callers-world`, which ran caller-world code inline on another world's
