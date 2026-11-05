@@ -52,18 +52,31 @@
 
 (deftest pending-interrupt-revokes-only-the-unclaimed-fork-or-capability
   (doseq [operation [:fork :settlement] preinterrupt? [false true]]
-    (let [{:keys [p submitted] :as e} (env false) before (snapshot p)
-          held-entry (atom nil) allocation (atom nil) original-prepare @#'v2/prepare-host-entry!
-          c (caller #(with-redefs-fn
-                       {#'v2/prepare-host-entry!
-                        (fn [entry f reject intent]
-                          (reset! held-entry entry)
-                          (reset! allocation (java.lang.ref.WeakReference. f))
-                          (original-prepare entry f reject intent))}
-                       (fn [] (if (= operation :fork) (v2/fork! p)
-                                  (v2/register-world-settlement! (v2/world-host-owner p) p [])))) preinterrupt?)]
+    (let [{:keys [p submitted] :as e} (env false) q (v2/world) before (snapshot p)
+          held-entry (atom nil) allocation (atom nil) ignored-threads (atom #{})
+          original-prepare @#'v2/prepare-host-entry!
+          c (caller
+             (fn []
+               (let [initiator (Thread/currentThread)]
+                 (with-redefs-fn
+                   {#'v2/prepare-host-entry!
+                    (fn [entry f reject intent]
+                      (let [value (original-prepare entry f reject intent)]
+                        (if (identical? initiator (Thread/currentThread))
+                          (do (reset! held-entry entry)
+                              (reset! allocation (java.lang.ref.WeakReference. f)))
+                          (swap! ignored-threads conj (.threadId (Thread/currentThread))))
+                        value))}
+                   (fn [] (if (= operation :fork) (v2/fork! p)
+                              (v2/register-world-settlement! (v2/world-host-owner p) p []))))))
+             preinterrupt?)]
       (is (.await ^java.util.concurrent.CountDownLatch submitted 5 java.util.concurrent.TimeUnit/SECONDS))
-      (when-not preinterrupt? (.interrupt ^Thread (:thread c)))
+      (when-not preinterrupt?
+        ;; Deterministic foreign noise while the P caller's global Var hook is
+        ;; installed: this Q control claims its own entry on another Thread.
+        (is (map? (v2/world-close-status q)))
+        (is (contains? @ignored-threads (.threadId (Thread/currentThread))))
+        (.interrupt ^Thread (:thread c)))
       (let [{[kind error] :outcome} (result! c)]
         (is (= :error kind)) (is (instance? InterruptedException error)))
       (is (= before (snapshot p)))
@@ -75,12 +88,11 @@
       (pump! e)
       (is (= before (snapshot p)))
       (is (nil? (aget ^objects p rw/W-OWNED)))
-      ;; Red-case private teardown of an otherwise inaccessible cap. close!
-      ;; restores inline before synchronous ack; the original caller has none.
       (close! e)
       (doseq [debt (vals (:settlements (aget ^objects p rw/W-CLOSE)))]
         (v2/acknowledge-world-settlement! (:capability debt) {:settled? true :value :closed}))
-      (pump! e))))
+      (pump! e)
+      (v2/release-world! q))))
 
 (deftest claimed-control-survives-repeated-caller-interrupts
   (doseq [failed? [false true]]
@@ -92,7 +104,9 @@
         (with-redefs-fn
           {#'v2/fork-world* (fn
                               ([w] (let [child (original-fork w)]
-                                     (.countDown claimed) (.await proceed) child))
+                                     (when (and (identical? p w) (identical? @worker (Thread/currentThread)))
+                                       (.countDown claimed) (.await proceed))
+                                     child))
                               ;; The original one-arity implementation delegates
                               ;; through this Var to its mutating arity.
                               ([w creation] (original-fork w creation)))}
@@ -123,15 +137,18 @@
 
 (deftest already-published-outcome-wins-over-interrupt-before-promise-await
   (doseq [operation [:fork :own-error :own-interrupt]]
-    (let [{:keys [p] :as e} (env true) original-internal @#'v2/internal!
+    (let [{:keys [p] :as e} (env true) original-internal @#'v2/internal! initiator (atom nil)
           own-error (if (= operation :own-interrupt) (InterruptedException. "own f exception") (ex-info "own error" {}))]
       (with-redefs-fn
         {#'v2/internal! (fn [w action]
                           (let [value (original-internal w action)]
-                            (.interrupt (Thread/currentThread)) value))}
+                            (when (and (identical? p w) (identical? @initiator (Thread/currentThread)))
+                              (.interrupt (Thread/currentThread)))
+                            value))}
         (fn []
-          (let [c (caller #(if (= operation :fork) (v2/fork! p)
-                               (#'v2/internal-call! p (fn [] (throw own-error)))) false)
+          (let [c (caller #(do (reset! initiator (Thread/currentThread))
+                               (if (= operation :fork) (v2/fork! p)
+                                   (#'v2/internal-call! p (fn [] (throw own-error))))) false)
                 {[kind value] :outcome interrupted? :interrupted?} (result! c)]
             (if (= operation :fork)
               (do (is (= :value kind)) (when (= :value kind) (is (= rw/T-WORLD (aget ^objects value rw/TYPE)))))
@@ -150,23 +167,26 @@
     (let [{:keys [p] :as e} (env true) original-internal @#'v2/internal!
           claimed (java.util.concurrent.CountDownLatch. 1) proceed (java.util.concurrent.CountDownLatch. 1)
           transport (InterruptedException. "submission interrupted after remote claim")
-          own (ex-info "own refused control" {}) unique (Object.) events (atom []) worker (atom nil) c (atom nil)]
+          own (ex-info "own refused control" {}) unique (Object.) events (atom []) worker (atom nil) c (atom nil) initiator (atom nil)]
       (try
         (with-redefs-fn
           {#'v2/internal! (fn [w action]
-                            (reset! worker (Thread. ^Runnable #(original-internal w action)))
-                            (.start ^Thread @worker)
-                            (assert (.await claimed 5 java.util.concurrent.TimeUnit/SECONDS))
-                            (throw transport))}
+                            (if (and (identical? p w) (identical? @initiator (Thread/currentThread)))
+                              (do (reset! worker (Thread. ^Runnable #(original-internal w action)))
+                                  (.start ^Thread @worker)
+                                  (assert (.await claimed 5 java.util.concurrent.TimeUnit/SECONDS))
+                                  (throw transport))
+                              (original-internal w action)))}
           (fn []
             (reset! c (caller
-                       #(binding [trove/*log-fn*
-                                  (fn [_ _ _ id lazy-data]
-                                    (when (= id :engine/host-control-turn-failed)
-                                      (swap! events conj [(:error (:data (force lazy-data)))
-                                                          (.isInterrupted (Thread/currentThread))])))]
-                          (#'v2/internal-call! p (fn [] (.countDown claimed) (.await proceed)
-                                                   (if failed? (throw own) unique)))) false))
+                       #(do (reset! initiator (Thread/currentThread))
+                            (binding [trove/*log-fn*
+                                      (fn [_ _ _ id lazy-data]
+                                        (when (= id :engine/host-control-turn-failed)
+                                          (swap! events conj [(:error (:data (force lazy-data)))
+                                                              (.isInterrupted (Thread/currentThread))])))]
+                              (#'v2/internal-call! p (fn [] (.countDown claimed) (.await proceed)
+                                                       (if failed? (throw own) unique))))) false))
             (is (.await claimed 5 java.util.concurrent.TimeUnit/SECONDS))
             (is (reblocked? (:thread @c)))
             (.countDown proceed)

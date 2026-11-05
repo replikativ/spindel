@@ -92,17 +92,20 @@
           claimed (java.util.concurrent.CountDownLatch. 1) proceed (java.util.concurrent.CountDownLatch. 1)
           transport-threw (java.util.concurrent.CountDownLatch. 1)
           own-error (ex-info "claimed control failure" {}) turn-error (ex-info "submission error after remote claim" {})
-          unique (Object.) events (atom []) worker (atom nil) caller (atom nil)]
+          unique (Object.) events (atom []) worker (atom nil) caller (atom nil) initiator (atom nil)]
       (try
         (with-redefs-fn
           {#'v2/internal! (fn [w action]
-                            (reset! worker (future (original-internal w action)))
-                            (assert (.await claimed 5 java.util.concurrent.TimeUnit/SECONDS))
-                            (.countDown transport-threw)
-                            (throw turn-error))}
+                            (if (and (identical? p w) (identical? @initiator (Thread/currentThread)))
+                              (do (reset! worker (future (original-internal w action)))
+                                  (assert (.await claimed 5 java.util.concurrent.TimeUnit/SECONDS))
+                                  (.countDown transport-threw)
+                                  (throw turn-error))
+                              (original-internal w action)))}
           (fn []
             (reset! caller
                     (future
+                      (reset! initiator (Thread/currentThread))
                       (binding [trove/*log-fn* (recorder events)]
                         (outcome #(#'v2/internal-call! p
                                                        (fn []

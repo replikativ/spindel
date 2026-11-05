@@ -62,7 +62,8 @@
   (doseq [queued? [false true] throws? [false true]]
     (let [jobs (atom []) marker (atom false) child (atom nil) child-work (atom []) handoffs (atom [])
           executor (reify java.util.concurrent.Executor (execute [_ f] (if queued? (swap! jobs conj f) (.run ^Runnable f))))
-          p (v2/world {:executor executor}) original-handoff @#'v2/handoff!]
+          p (v2/world {:executor executor}) original-handoff @#'v2/handoff!
+          original-own @#'v2/own-child! expected-child (atom nil) callback-thread (atom nil)]
       (binding [v2/*world* p]
         (let [gate (v2/deferred) x (v2/signal 0)
               worker (task (await gate)
@@ -71,6 +72,7 @@
               withdraw (v2/observe! x
                                     (fn [value failed?]
                                       (when (and (not failed?) (= 1 value))
+                                        (reset! callback-thread (Thread/currentThread))
                                         (reset! marker true)
                                         (try
                                           (v2/deliver! gate :go)
@@ -79,14 +81,23 @@
                                           (is (some? (aget ^objects @child rw/W-HOLDER)))
                                           (when throws? (throw (ex-info "callback throws after accepting child" {})))
                                           (finally (reset! marker false))))))]
-          (with-redefs-fn {#'v2/handoff! (fn [w]
-                                           (when-not (identical? w p)
-                                             (swap! handoffs conj [@marker (hs/held? (aget ^objects p rw/W-LOCK))]))
-                                           (original-handoff w))}
+          (with-redefs-fn
+            {#'v2/own-child! (fn [w scope c strong?]
+                               (let [value (original-own w scope c strong?)]
+                                 (when (and (identical? p w) (identical? @callback-thread (Thread/currentThread)))
+                                   (reset! expected-child c))
+                                 value))
+             #'v2/handoff! (fn [w]
+                             ;; Capture the accepted child before fork! returns,
+                             ;; preserving red detection of an early handoff.
+                             (when (identical? w @expected-child)
+                               (swap! handoffs conj [@marker (hs/held? (aget ^objects p rw/W-LOCK))]))
+                             (original-handoff w))}
             #(let [error (failure (fn [] (v2/write! x 1)))]
                (is (= throws? (some? error)))
                (pump! {:jobs jobs})))
           (is (some? @child))
+          (is (identical? @child @expected-child))
           (is (seq @handoffs))
           (is (every? #{[false false]} @handoffs))
           (is (= [[false false]] @child-work))
@@ -156,16 +167,31 @@
 
 (deftest unborn-refusal-is-never-replayed-after-birth
   (doseq [phase [:before-intent :intent :claim]]
-    (let [p (v2/world) pubs (atom []) pending (atom []) original-internal @#'v2/internal!]
+    (let [p (v2/world) pubs (atom []) pending (atom []) original-internal @#'v2/internal!
+          initiator (Thread/currentThread)]
       (v2/install-handlers! p {:s #(swap! pubs conj %)})
       (binding [v2/*world* p]
         (let [t (task (v2/savepoint :s nil)) c (v2/instantiate (first @pubs))]
           (case phase
             :before-intent nil
-            :intent (with-redefs-fn {#'v2/after-gate-action! #(swap! pending conj %)} #(v2/activate! c :go))
-            :claim (with-redefs-fn {#'v2/internal! (fn [w f] (if (identical? w p)
+            ;; activate!'s first after-gate call is OUTSIDE any gate (cw=nil).
+            ;; Pause this exact child submission before delegation; a cw=c hook
+            ;; would instead stop after the child claim and merge the windows.
+            :intent (with-redefs-fn
+                      {#'v2/internal! (fn [w f]
+                                        (if (and (identical? c w) (identical? initiator (Thread/currentThread)))
+                                          (swap! pending conj #(original-internal c f))
+                                          (original-internal w f)))}
+                      #(v2/activate! c :go))
+            :claim (with-redefs-fn {#'v2/internal! (fn [w f] (if (and (identical? w p) (identical? initiator (Thread/currentThread)))
                                                                (swap! pending conj #(original-internal p f))
                                                                (original-internal w f)))} #(v2/activate! c :go)))
+          (when (= phase :intent)
+            (is (hs/flag? (aget ^objects c rw/W-ACTIVATION-INTENT)))
+            (is (nil? (:identity (aget ^objects c rw/W-ACTIVATION)))))
+          (when (= phase :claim)
+            (is (hs/flag? (aget ^objects c rw/W-ACTIVATION-INTENT)))
+            (is (some? (:identity (aget ^objects c rw/W-ACTIVATION)))))
           (let [before (snapshot c)]
             (is (some? (failure #(v2/fork! c))))
             (is (= before (snapshot c)))
@@ -184,10 +210,14 @@
       (is (= before (snapshot p))))
     (close! p))
   (let [p (v2/world {:verify? true}) before (snapshot p)
-        isolated (atom [4294967295 4294967295])]
+        isolated (atom [4294967295 4294967295])
+        original-allocate @#'v2/allocate-world-order! initiator (Thread/currentThread)]
     ;; Exercise the real allocator with isolated storage; never reset the live
     ;; process allocator or let a successful World reuse an ordinal.
-    (with-redefs-fn {#'v2/world-order isolated}
+    (with-redefs-fn {#'v2/allocate-world-order!
+                     (fn [] (if (and (identical? initiator (Thread/currentThread))
+                                     (identical? p (#'v2/cw)))
+                              (swap! isolated #'v2/next-world-order) (original-allocate)))}
       #(is (= :world-order-exhausted (:spindel/invalid (ex-data (failure (fn [] (v2/fork! p))))))))
     (is (= [4294967295 4294967295] @isolated))
     (is (= before (snapshot p))) (close! p)))

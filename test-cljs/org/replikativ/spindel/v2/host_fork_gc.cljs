@@ -17,15 +17,19 @@
   (let [p (v2/world {:inline? (= kind :preclaim) :budget 1}) jobs (atom []) weak (atom nil) held (atom nil)
         turn-error (ex-info "preclaim turn error" {})
         original v2/prepare-host-entry! rank @v2/world-order epoch (aget p rw/W-EPOCH) next-id (v2/peek-id p)]
-    (with-redefs [hs/execute! (fn [_ f] (swap! jobs conj f))
-                  v2/prepare-host-entry! (fn [entry f reject intent]
-                                           (reset! weak (hs/weak f)) (reset! held entry)
-                                           (original entry f reject intent))]
+    (with-redefs [hs/execute! (fn [_ f] (swap! jobs conj f))]
+      ;; Setup's ordinary ingress is outside the allocation-entry capture.
       (when (= kind :preclaim) (v2/send-world! p #(throw turn-error)))
-      (try (v2/fork! p) (throw (ex-info "expected control refusal" {}))
-           (catch :default error
-             (assert (if (= kind :preclaim) (identical? turn-error error)
-                         (= :world-control (:spindel/invalid (ex-data error))))))))
+      (with-redefs [v2/prepare-host-entry!
+                    (fn [entry f reject intent]
+                      (when-not @held
+                        (reset! weak (hs/weak f))
+                        (reset! held entry))
+                      (original entry f reject intent))]
+        (try (v2/fork! p) (throw (ex-info "expected control refusal" {}))
+             (catch :default error
+               (assert (if (= kind :preclaim) (identical? turn-error error)
+                           (= :world-control (:spindel/invalid (ex-data error)))))))))
     {:p p :jobs jobs :weak @weak :entry @held :rank rank :epoch epoch :next-id next-id}))
 (defn- canceled-allocation [kinds next]
   (if-let [kind (first kinds)]

@@ -54,7 +54,7 @@
   (doseq [queued? [false true] throws? [false true]]
     (with-redefs [hs/execute! (if queued? (fn [_ f] (swap! jobs conj f)) (fn [_ f] (f)))]
       (let [p (v2/world) marker (atom false) child (atom nil) work (atom []) handoffs (atom [])
-            original-handoff v2/handoff!]
+            original-handoff v2/handoff! original-own v2/own-child! expected-child (atom nil)]
         (binding [v2/*world* p]
           (let [gate (v2/deferred) x (v2/signal 0)
                 worker (task (await gate)
@@ -69,12 +69,17 @@
                                                  (assert (some? (aget @child rw/W-HOLDER)))
                                                  (when throws? (throw (ex-info "callback after allocation" {})))
                                                  (finally (reset! marker false))))))]
-            (with-redefs [v2/handoff! (fn [w]
-                                        (when-not (identical? p w)
+            (with-redefs [v2/own-child! (fn [w scope c strong?]
+                                          (let [value (original-own w scope c strong?)]
+                                            (when (identical? p w) (reset! expected-child c))
+                                            value))
+                          v2/handoff! (fn [w]
+                                        (when (identical? w @expected-child)
                                           (swap! handoffs conj [@marker (hs/held? (aget p rw/W-LOCK))]))
                                         (original-handoff w))]
               (assert (= throws? (some? (failure #(v2/write! x 1)))))
               (pump!))
+            (assert (identical? @child @expected-child))
             (assert (seq @handoffs))
             (assert (every? #{[false false]} @handoffs))
             (assert (= [[false false]] @work))
@@ -114,8 +119,10 @@
     (close! p)
     (pump!))
   (let [p (v2/world {:verify? true}) before (snapshot p) epoch (aget p rw/W-EPOCH)
-        isolated (atom [4294967295 4294967295])]
-    (with-redefs [v2/world-order isolated]
+        isolated (atom [4294967295 4294967295]) original-allocate v2/allocate-world-order!]
+    (with-redefs [v2/allocate-world-order! (fn [] (if (identical? p (v2/cw))
+                                                    (swap! isolated v2/next-world-order)
+                                                    (original-allocate)))]
       (assert (= :world-order-exhausted
                  (:spindel/invalid (ex-data (failure #(v2/fork! p)))))))
     (assert (= [4294967295 4294967295] @isolated))
@@ -138,10 +145,20 @@
         (let [t (task (v2/savepoint :s nil)) c (v2/instantiate (first @pubs))]
           (case phase
             :before-intent nil
-            :intent (with-redefs [v2/after-gate-action! #(swap! pending conj %)] (v2/activate! c :go))
+            :intent (with-redefs [v2/internal! (fn [w f]
+                                                 (if (identical? c w)
+                                                   (swap! pending conj #(original-internal c f))
+                                                   (original-internal w f)))]
+                      (v2/activate! c :go))
             :claim (with-redefs [v2/internal! (fn [w f] (if (identical? p w)
                                                           (swap! pending conj #(original-internal p f))
                                                           (original-internal w f)))] (v2/activate! c :go)))
+          (when (= phase :intent)
+            (assert (hs/flag? (aget c rw/W-ACTIVATION-INTENT)))
+            (assert (nil? (:identity (aget c rw/W-ACTIVATION)))))
+          (when (= phase :claim)
+            (assert (hs/flag? (aget c rw/W-ACTIVATION-INTENT)))
+            (assert (some? (:identity (aget c rw/W-ACTIVATION)))))
           (let [before (snapshot c) epoch (aget c rw/W-EPOCH)]
             (assert (some? (failure #(v2/fork! c))))
             (assert (= before (snapshot c))) (assert (identical? epoch (aget c rw/W-EPOCH)))
