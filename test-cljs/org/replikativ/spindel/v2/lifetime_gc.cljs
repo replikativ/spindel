@@ -89,12 +89,20 @@
     (add-watch s :self (fn [& _] (v2/handle? s)))
     {:child c :alias (v2/in-world c s) :parent-source (hs/weak s)}))
 
+(defn- expect-value [handle expected next]
+  (v2/value-async handle
+                  (fn [value failed?]
+                    (assert (not failed?))
+                    (assert (= expected value))
+                    (js/setTimeout next 0))))
+
 (defn- parent-isolation [next]
   (let [p (v2/world) {:keys [child alias parent-source]} (isolated-child p)]
     (until "child alias does not retain parent watch cycle"
            #(nil? (hs/deref-weak parent-source))
-           #(do (assert (= :value (v2/value alias)))
-                (v2/release-world! child) (v2/release-world! p) (next)))))
+           #(expect-value alias :value
+                          (fn [] (v2/release-world! child)
+                            (v2/release-world! p) (next))))))
 
 (defn- neutral-fixture [p]
   (let [s (binding [v2/*world* p] (v2/signal :value))]
@@ -105,8 +113,8 @@
   (let [p (v2/world) {:keys [ref source]} (neutral-fixture p)]
     (until "world-neutral reference releases source watch cycle"
            #(nil? (hs/deref-weak source))
-           #(do (assert (= :value (v2/value (v2/resolve-ref p ref))))
-                (v2/release-world! p) (next)))))
+           #(expect-value (v2/resolve-ref p ref) :value
+                          (fn [] (v2/release-world! p) (next))))))
 
 (defn -main []
   (when-not (exists? js/gc) (throw (js/Error. "Run node with --expose-gc")))
