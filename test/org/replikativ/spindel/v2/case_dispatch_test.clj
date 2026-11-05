@@ -1,11 +1,7 @@
-(ns org.replikativ.spindel.v2.case-dispatch-gap-test
-  "Known partial-cps 0.1.72 keyword-case emission defect. Must close before
-   Foerster compiler acceptance; cleanup admission tests use cond independently.
-   The dependency's CLJ case* emitter rebuilds a sorted dispatch table as {}.
-   More than eight keyword entries then misdispatch. Ordinary task and standalone
-   async reproductions are preserved in .internal/validation/case-repro.clj.
-   Upstream original local commit c4d2dd2 fixes both emitters via (empty imap);
-   adopting/pinning that fix requires the separate dependency checkpoint."
+(ns org.replikativ.spindel.v2.case-dispatch-test
+  "Consumer regression for partial-cps keyword-case dispatch across registered
+   breakpoints. All eleven ordinary branches complete; ordinary effects in
+   finalizers still fail with the cleanup admission error."
   (:refer-clojure :exclude [await])
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.spindel.v2.core :as v2 :refer [task await]]))
@@ -44,7 +40,7 @@
             :custom (await ready)
             :custom-helper (await ready))))))
 
-(deftest ^:gap keyword-case-keeps-every-suspending-branch
+(deftest keyword-case-keeps-every-suspending-branch
   (let [w (v2/world)]
     (binding [v2/*world* w]
       (let [ready (v2/deferred)]

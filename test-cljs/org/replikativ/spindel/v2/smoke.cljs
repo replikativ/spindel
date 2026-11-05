@@ -4,6 +4,60 @@
             [org.replikativ.spindel.v2.combinators :as comb]
             [org.replikativ.spindel.incremental.interval :as iv]))
 
+(defn- ordinary-case [selector ready]
+  (task
+   (case selector
+     :await (await ready)
+     :track (await ready)
+     :external (await ready)
+     :sleep (await ready)
+     :spawn (await ready)
+     :spin (await ready)
+     :fork (await ready)
+     :savepoint (await ready)
+     :scope (await ready)
+     :custom (await ready)
+     :custom-helper (await ready))))
+
+(defn- finalizer-case [selector ready]
+  (task
+   (try :body
+        (finally
+          (case selector
+            :await (await ready)
+            :track (await ready)
+            :external (await ready)
+            :sleep (await ready)
+            :spawn (await ready)
+            :spin (await ready)
+            :fork (await ready)
+            :savepoint (await ready)
+            :scope (await ready)
+            :custom (await ready)
+            :custom-helper (await ready))))))
+
+(defn- case-dispatch-smoke! []
+  (let [w (v2/world)]
+    (try
+      (binding [v2/*world* w]
+        (let [ready (v2/deferred)]
+          (v2/deliver! ready :ok)
+          (doseq [selector [:await :track :external :sleep :spawn :spin :fork
+                            :savepoint :scope :custom :custom-helper]]
+            (let [ordinary (atom []) finalizer (atom [])]
+              (v2/value-async (ordinary-case selector ready)
+                              (fn [value failed?] (swap! ordinary conj [value failed?])))
+              (assert (= [[:ok false]] @ordinary) (str "ordinary case " selector))
+              (v2/value-async (finalizer-case selector ready)
+                              (fn [value failed?]
+                                (swap! finalizer conj
+                                       [(:spindel/invalid
+                                         (ex-data (first (:spindel/cleanup-failures (ex-data value)))))
+                                        failed?])))
+              (assert (= [[:finalizer-effect true]] @finalizer) (str "finalizer case " selector))))))
+      (println "CASE DISPATCH OK: ordinary 11/11; finalizer admission 11/11")
+      (finally (v2/release-world! w)))))
+
 (defn- cleanup-smoke! [done]
   (let [w (v2/world) complete (atom nil) events (atom []) result (atom nil)]
     (binding [v2/*world* w]
@@ -55,6 +109,7 @@
         (@complete :closed)))))
 
 (defn -main []
+  (case-dispatch-smoke!)
   (let [w (v2/world)
         out (atom []) cleanup-done (atom false) fork-cleanup-done (atom false)]
     (cleanup-smoke! cleanup-done)
