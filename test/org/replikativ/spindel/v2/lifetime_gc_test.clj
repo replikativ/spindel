@@ -153,3 +153,28 @@
         (is (= :value (v2/value alias)))
         (is (empty? (.getWatches ^clojure.lang.IRef alias))))
       (finally (v2/release-world! p)))))
+
+(defn- temporary-computation-alias [c parent-handle]
+  (let [h (v2/in-world c parent-handle)]
+    (v2/value h)
+    (hs/weak h)))
+
+(deftest collected-fork-alias-preserves-parent-and-sibling-handles
+  ;; Actual weak-unreachability complements handle-collection-test's injected
+  ;; callbacks. Keep the parent's handle and sibling alias fenced throughout.
+  (let [p (v2/world {:verify? true})
+        h (binding [v2/*world* p] (v2/spin :kept))
+        _ (v2/value h)
+        id (aget ^objects (aget ^objects (.-cell ^org.replikativ.spindel.v2.core.Handle h) 0) rw/ID)
+        c (v2/fork! p) sibling (v2/fork! p)
+        sh (v2/in-world sibling h) target (temporary-computation-alias c h)]
+    (try
+      (is (eventually #(nil? (hs/deref-weak target))))
+      (is (eventually #(nil? (hs/mget (aget ^objects c rw/W-REG) id))))
+      (doseq [w [p sibling]]
+        (is (= 1 (aget ^objects (hs/mget (aget ^objects w rw/W-REG) id) rw/HANDLES))))
+      (is (= :kept (v2/value h)))
+      (is (= :kept (v2/value sh)))
+      (finally
+        (hs/fence! [h sh])
+        (doseq [w [c sibling p]] (v2/release-world! w))))))
