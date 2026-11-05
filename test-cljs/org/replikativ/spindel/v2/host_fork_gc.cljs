@@ -13,27 +13,34 @@
                   (= n 200) (throw (ex-info "host fork GC failed" {:probe label}))
                   :else (js/setTimeout #(check (inc n)) 10)))]
     (js/setTimeout #(check 0) 0)))
-(defn- canceled-fixture []
-  (let [p (v2/world {:inline? false}) jobs (atom []) weak (atom nil) held (atom nil)
+(defn- canceled-fixture [kind]
+  (let [p (v2/world {:inline? (= kind :preclaim) :budget 1}) jobs (atom []) weak (atom nil) held (atom nil)
+        turn-error (ex-info "preclaim turn error" {})
         original v2/prepare-host-entry! rank @v2/world-order epoch (aget p rw/W-EPOCH) next-id (v2/peek-id p)]
     (with-redefs [hs/execute! (fn [_ f] (swap! jobs conj f))
                   v2/prepare-host-entry! (fn [entry f reject intent]
                                            (reset! weak (hs/weak f)) (reset! held entry)
                                            (original entry f reject intent))]
-      (try (v2/fork! p) (throw (ex-info "expected unsupported sync" {}))
-           (catch :default error (assert (= :world-control (:spindel/invalid (ex-data error)))))))
+      (when (= kind :preclaim) (v2/send-world! p #(throw turn-error)))
+      (try (v2/fork! p) (throw (ex-info "expected control refusal" {}))
+           (catch :default error
+             (assert (if (= kind :preclaim) (identical? turn-error error)
+                         (= :world-control (:spindel/invalid (ex-data error))))))))
     {:p p :jobs jobs :weak @weak :entry @held :rank rank :epoch epoch :next-id next-id}))
-(defn- canceled-allocation [next]
-  (let [{:keys [p jobs weak entry rank epoch next-id]} (canceled-fixture)]
-    (until "held canceled queue entry releases allocation closure before pump"
-           #(nil? (hs/deref-weak weak))
-           #(do
-              (assert (= {:phase :canceled} @(.-state entry)))
-              (assert (seq @jobs)) (pump! jobs)
-              (assert (= rank @v2/world-order)) (assert (= next-id (v2/peek-id p)))
-              (assert (identical? epoch (aget p rw/W-EPOCH)))
-              (assert (nil? (aget p rw/W-OWNED)))
-              (v2/release-world! p) (pump! jobs) (next)))))
+(defn- canceled-allocation [kinds next]
+  (if-let [kind (first kinds)]
+    (let [{:keys [p jobs weak entry rank epoch next-id]} (canceled-fixture kind)]
+      (until (str "held canceled " (name kind) " entry releases allocation closure before pump")
+             #(nil? (hs/deref-weak weak))
+             #(do
+                (assert (= {:phase :canceled} @(.-state entry)))
+                (assert (seq @jobs)) (pump! jobs)
+                (assert (= rank @v2/world-order)) (assert (= next-id (v2/peek-id p)))
+                (assert (identical? epoch (aget p rw/W-EPOCH)))
+                (assert (nil? (aget p rw/W-OWNED)))
+                (v2/release-world! p) (pump! jobs)
+                (canceled-allocation (rest kinds) next))))
+    (next)))
 (defn- closed-child-fixture []
   (let [p (v2/world) c (v2/fork! p) jobs (atom []) payload (js/Uint8Array. (* 1024 1024))
         world (hs/weak c) private (hs/weak payload)]
@@ -58,7 +65,25 @@
               (assert (zero? (.-length (aget p rw/W-AFTER))))
               (assert (zero? (.-length (aget p rw/W-CALLBACKS))))
               (v2/release-world! p) (next)))))
+(defn- refused-frontier [next]
+  (let [p (v2/world {:inline? false}) jobs (atom []) rank @v2/world-order next-id (v2/peek-id p)]
+    (with-redefs [hs/execute! (fn [_ f] (swap! jobs conj f))]
+      (dotimes [_ 1000]
+        (try (v2/fork! p) (throw (ex-info "expected synchronous refusal" {}))
+             (catch :default error (assert (= :world-control (:spindel/invalid (ex-data error))))))
+        (pump! jobs)))
+    (until "1000 refused controls leave no allocation or metadata/queue history"
+           #(= 1 (:worlds (lt/census (aget p rw/W-FAMILY) (aget p rw/W-WATCHES) nil)))
+           #(do
+              (assert (= rank @v2/world-order))
+              (assert (= next-id (v2/peek-id p)))
+              (assert (nil? (aget p rw/W-OWNED)))
+              (assert (hs/mpsc-empty? (aget p rw/W-INGRESS)))
+              (assert (zero? (.-length (aget p rw/W-AFTER))))
+              (assert (zero? (hs/msize (aget p rw/W-WATCHES))))
+              (v2/release-world! p) (pump! jobs) (next)))))
+
 (defn -main []
   (assert (and (exists? js/gc) (exists? js/WeakRef)))
-  (canceled-allocation #(closed-child (fn [] (fixed-frontier (fn [] (println "HOST FORK GC OK")))))))
+  (canceled-allocation [:unsupported :preclaim] #(closed-child (fn [] (fixed-frontier (fn [] (refused-frontier (fn [] (println "HOST FORK GC OK")))))))))
 (set! *main-cli-fn* -main)

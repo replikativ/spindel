@@ -3581,27 +3581,38 @@
   (when (or (active-run) *cleanup-registration?*)
     (throw (invalid-op op "world host control is unavailable inside engine execution"))))
 
-(defn- internal-result-action [entry box]
+(defn- internal-result-action [entry result]
   (fn []
     (when-let [old (claim-host-entry! entry :claimed)]
-      (vreset! box (try [((:run old)) nil]
-                        (catch #?(:clj Throwable :cljs :default) error [nil error]))))))
+      (let [outcome (try [((:run old)) false]
+                         (catch #?(:clj Throwable :cljs :default) error [error true]))]
+        #?(:clj (deliver result outcome) :cljs (vreset! result outcome))))))
 
 (defn- internal-call! [w f]
   (cond
     (and (identical? w (cw)) (holding-gate?)) (f)
     (holding-gate?) (throw (invalid-op :world-control "cannot enter a foreign world gate"))
     :else
-    #?(:clj (let [p (promise)]
-              (internal! w #(deliver p (try [(f) nil] (catch Throwable t [nil t]))))
-              (let [[v t] @p] (if t (throw t) v)))
-       :cljs (let [box (volatile! nil)
-                   entry (prepare-host-entry! (host-control) f nil false)]
-               (internal! w (internal-result-action entry box))
-               (when-not @box
-                 (cancel-host-entry! entry)
-                 (throw (invalid-op :world-control "requires a synchronous host turn")))
-               (let [[v t] @box] (if t (throw t) v))))))
+    (let [result #?(:clj (promise) :cljs (volatile! nil))
+          entry (prepare-host-entry! (host-control) f nil false)
+          [turn-error turn-failed?]
+          (try (internal! w (internal-result-action entry result)) [nil false]
+               (catch #?(:clj Throwable :cljs :default) error [error true]))]
+      (when turn-failed?
+        ;; The atomic claim/cancel cell decides whether execution is still ours
+        ;; to prevent, or an accepted control outcome is already owed.
+        (cancel-host-entry! entry)
+        (when (= :canceled (:phase @(.-state ^HostIngress entry)))
+          (throw turn-error)))
+      #?(:cljs
+         (when-not @result
+           (cancel-host-entry! entry)
+           (throw (invalid-op :world-control "requires a synchronous host turn"))))
+      ;; A JVM executor may have claimed before cancellation and not yet
+      ;; published. This wait is outside all gates. Nil success is a real pair.
+      (let [[value failed?] @result]
+        (when turn-failed? (log/error :engine/host-control-turn-failed {:error turn-error}))
+        (if failed? (throw value) value)))))
 
 (defn- owner-world [^WorldHostOwner owner target]
   (when-not (and (instance? WorldHostOwner owner)

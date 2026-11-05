@@ -47,7 +47,7 @@
 
 (defn- transport-successors [s]
   (let [js-turn-can-finish? (or (= :jvm (:platform s))
-                               (not= :claimed (:entry s)) (not= :absent (:outcome s)))]
+                                (not= :claimed (:entry s)) (not= :absent (:outcome s)))]
     (keep identity
           [(when (and (= :pending (:entry s))
                       (or (= :jvm (:platform s)) (= :running (:transport s))))
