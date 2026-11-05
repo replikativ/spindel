@@ -525,8 +525,24 @@ finalizer and unwinds outer regions without restarting cleanup or running an
 ordinary body suffix. Normal success/error publishes only after lexical cleanup.
 A finalizer-local catch can recover a cleanup error; it cannot restore success
 after cancellation. Preserve original body failure as cause, with cleanup failures
-ordered by stable run/region/release order. Cancellation's eventual cleanup
-failures belong in world close/join, not a replacement task result.
+ordered by stable run/region/release order. Published ordinary aggregates own
+their errors without a world-level duplicate. Unrecovered inner failures remain
+with the pending outer outcome; cancellation or staleness that abandons ordinary
+publication transfers their provenance and original body-error cause to the
+current unreported world report exactly once. This includes cancellation while
+an outer finalizer is waiting. A user catch that recovers the aggregate removes
+that obligation. Later outer exits cannot re-add an already transferred failure,
+even after report consumption; new outer failures remain distinct obligations.
+Cancellation's failures never replace its already published task result.
+
+A failure is reported only by ordinary result publication or explicit report
+consumption. Internal consumption atomically transfers the current ordered report
+under its world's gate, including after release, and clears only those entries;
+subsequent failures stay pending. Diagnostics do not consume. Any live-unwind
+transfer keys are world-local, bounded by current provenance, and dropped at run
+retirement; no world-lifetime consumed-ID history is allowed. Planned slice 2
+transfers remaining errors into its immutable terminal outcome, without replaying
+previously consumed entries. Public terminal world close/join remains slice 2.
 
 Install the waiter under the world gate before registering after the gate.
 Use a single terminal-claim callback cell; synchronous completion queues a distinct
@@ -591,10 +607,16 @@ slice rule alone does not prove asynchronous cleanup terminates. Nonacknowledgin
 close stays observably pending, never a successful timeout-based join.
 
 Space bounds concern current obligations: one waiter per run, lexical boundary
-depth, current subscribers/owned-child debts and the current ordered close report.
-These are storage retention reasons, independent of hotness or demand. Remove
-consumed continuations/controls promptly and record cleanup failures before deleting
-a canceled or stale run. Diagnostics do not accumulate event history. Formal
+depth, current subscribers/owned-child debts, live-unwind transfer keys and the
+current unreported report's actual unacknowledged error payloads. These are storage
+retention reasons, independent of hotness or demand. An unconsumed report may grow;
+constant memory is not claimed for that case. Pair conservation/retention tests
+for unconsumed errors with acknowledged-consumption churn that plateaus after
+returned reports drop. Held returned reports/results intentionally own their public
+payloads. Remove consumed continuations/controls promptly and transfer unpublished
+cleanup failures before deleting a canceled or stale run. Ordinary published
+failures must not accumulate a global duplicate history. Diagnostics do not
+accumulate or silently consume event history. Formal
 encoding of boundary/waiter conservation, fork isolation, conditional retirement
 and child acknowledgement remains pending under the spec's §11 acceptance gate;
 older oracle traces cannot establish these new transitions.
