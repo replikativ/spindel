@@ -2472,9 +2472,10 @@
 
 (defn current-world
   "The world an operation acts on: the slice's world inside a body, else the
-   bound *world*."
+   bound *world*, else the world this thread is processing (a host item or a
+   callback on a drainer thread)."
   []
-  (if (and (active-run) (cw)) (cw) *world*))
+  (if (and (active-run) (cw)) (cw) (or *world* (cw))))
 
 (defn resolve-ref
   "The handle of `r`'s row in `w` (default: the current world)."
@@ -2553,6 +2554,13 @@
 (defn- missing-state [id]
   (ex-info "this world has no state for the atom" {:spindel/missing-state id}))
 
+(defn- atom-watch-op!
+  "Runs `(f w)` under the gate of the current world, which must hold the
+   atom's state."
+  [id f]
+  (let [w (or (current-world) (throw (ex-info "atom outside a world" {})))]
+    (host-call! w #(if (contains? (g w rw/W-ATOMS) id) (f w) (throw (missing-state id))))))
+
 (defn- atom-op!
   "Runs `f` on the atom's value in the current world, under the gate; `f`
    returns [new-value result]. A changed value notifies this world's
@@ -2574,9 +2582,9 @@
       [clojure.lang.IDeref
        (deref [this] (let [v (atom-op! this id (fn [v] [v v]))] (java.lang.ref.Reference/reachabilityFence this) v))
        clojure.lang.IRef
-       (addWatch [this k f] (atom-op! this id (fn [v] (add-watch* (current-world) id k f) [v nil])) this)
-       (removeWatch [this k] (atom-op! this id (fn [v] (remove-watch* (current-world) id k) [v nil])) this)
-       (getWatches [this] (atom-op! this id (fn [v] [v (get (g (current-world) rw/W-WATCHES) id {})])))
+       (addWatch [this k f] (atom-watch-op! id (fn [w] (add-watch* w id k f))) this)
+       (removeWatch [this k] (atom-watch-op! id (fn [w] (remove-watch* w id k))) this)
+       (getWatches [this] (atom-watch-op! id (fn [w] (get (g w rw/W-WATCHES) id {}))))
        (getValidator [_] nil)
        (setValidator [_ _] (throw (ex-info "atoms take no validator" {:spindel/invalid :validator})))
        clojure.lang.IMeta
@@ -2601,8 +2609,8 @@
       [IDeref (-deref [this] (atom-op! this id (fn [v] [v v])))
        IMeta (-meta [_] mta)
        IWatchable
-       (-add-watch [this k f] (atom-op! this id (fn [v] (add-watch* (current-world) id k f) [v nil])) this)
-       (-remove-watch [this k] (atom-op! this id (fn [v] (remove-watch* (current-world) id k) [v nil])) this)
+       (-add-watch [this k f] (atom-watch-op! id (fn [w] (add-watch* w id k f))) this)
+       (-remove-watch [this k] (atom-watch-op! id (fn [w] (remove-watch* w id k))) this)
        (-notify-watches [_ _ _] nil)
        IReset (-reset! [this n] (atom-op! this id (fn [_] [n n])))
        ISwap

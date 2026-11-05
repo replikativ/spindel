@@ -281,3 +281,25 @@
            (is (= `where (:effect a)))
            (is (not= (:site a) (:site b)) "two call sites")
            (is (= (:site a) (:site c)) "the same call site in another run")))))))
+
+(deftest atom-watches-in-host-items-without-an-ambient-binding
+  (checked
+   (let [w (vworld)
+         a (binding [v2/*world* w] (v2/atom 0))
+         seen (atom [])
+         watch (fn [k ref old new] (swap! seen conj [k (identical? a ref) old new]))]
+     (v2/host-call! w
+                    (fn []
+                      (binding [v2/*world* nil]
+                        (is (identical? w (v2/current-world)))
+                        (is (identical? a (add-watch a :k watch)))
+                        (is (= {:k watch} (.getWatches ^clojure.lang.IRef a))))))
+     (binding [v2/*world* w] (swap! a inc))
+     (is (= [[:k true 0 1]] @seen))
+     (v2/host-call! w
+                    (fn []
+                      (binding [v2/*world* nil]
+                        (is (identical? a (remove-watch a :k)))
+                        (is (empty? (.getWatches ^clojure.lang.IRef a))))))
+     (binding [v2/*world* w] (swap! a inc))
+     (is (= 1 (count @seen))))))
