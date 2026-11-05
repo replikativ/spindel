@@ -126,21 +126,33 @@
 
 (deftest lifecycle-order-is-decided-on-the-source-control-turn
   (doseq [close-first? [true false]]
-    (let [{:keys [p submitted] :as e} (env {:inline? false}) before (snapshot p)]
+    (let [{:keys [p] :as e} (env {:inline? false}) before (snapshot p)
+          original-internal @#'v2/internal! fork-submitted (java.util.concurrent.CountDownLatch. 1)
+          fork-thread (atom nil)]
       (when close-first? (close! p))
-      (let [caller (future (try [:child (v2/fork! p)] (catch Throwable error [:error error])))]
-        (try
-          (is (.await submitted 5 java.util.concurrent.TimeUnit/SECONDS))
-          (when-not close-first? (close! p))
-          (pump! e)
-          (let [[kind value] (deref caller 5000 [::timeout nil])]
-            (if close-first?
-              (do (is (= :error kind)) (is (:spindel/released (ex-data value)))
-                  (is (= (:rank before) (:rank (snapshot p)))) (is (= 0 (fork-events p))))
-              (do (is (= :child kind)) (is (some? (aget ^objects value rw/W-HOLDER)))
-                  (is (= 1 (fork-events p))) (is (:terminal? (aget ^objects value rw/W-CLOSE))))))
-          (is (:terminal? (aget ^objects p rw/W-CLOSE)))
-          (finally (future-cancel caller)))))))
+      (with-redefs-fn
+        {#'v2/internal! (fn [w f]
+                          (let [value (original-internal w f)]
+                            ;; The close may already have scheduled the drainer.
+                            ;; Signal THIS actual control enqueue, not any job.
+                            (when (and (identical? p w) (identical? @fork-thread (Thread/currentThread)))
+                              (.countDown fork-submitted))
+                            value))}
+        (fn []
+          (let [caller (future (reset! fork-thread (Thread/currentThread))
+                               (try [:child (v2/fork! p)] (catch Throwable error [:error error])))]
+            (try
+              (is (.await fork-submitted 5 java.util.concurrent.TimeUnit/SECONDS))
+              (when-not close-first? (close! p))
+              (pump! e)
+              (let [[kind value] (deref caller 5000 [::timeout nil])]
+                (if close-first?
+                  (do (is (= :error kind)) (is (:spindel/released (ex-data value)))
+                      (is (= (:rank before) (:rank (snapshot p)))) (is (= 0 (fork-events p))))
+                  (do (is (= :child kind)) (is (some? (aget ^objects value rw/W-HOLDER)))
+                      (is (= 1 (fork-events p))) (is (:terminal? (aget ^objects value rw/W-CLOSE))))))
+              (is (:terminal? (aget ^objects p rw/W-CLOSE)))
+              (finally (future-cancel caller)))))))))
 
 (deftest unborn-refusal-is-never-replayed-after-birth
   (doseq [phase [:before-intent :intent :claim]]

@@ -3588,6 +3588,19 @@
                          (catch #?(:clj Throwable :cljs :default) error [error true]))]
         #?(:clj (deliver result outcome) :cljs (vreset! result outcome))))))
 
+#?(:clj
+   (defn- await-internal-result [entry result interrupted?]
+     (loop [interrupted? interrupted?]
+       (let [[outcome wait-interrupted?]
+             (try [@result false] (catch InterruptedException error [error true]))]
+         (if wait-interrupted?
+           (do
+             (cancel-host-entry! entry)
+             (if (= :canceled (:phase @(.-state ^HostIngress entry)))
+               (throw outcome)
+               (recur true)))
+           [outcome interrupted?])))))
+
 (defn- internal-call! [w f]
   (cond
     (and (identical? w (cw)) (holding-gate?)) (f)
@@ -3610,9 +3623,16 @@
            (throw (invalid-op :world-control "requires a synchronous host turn"))))
       ;; A JVM executor may have claimed before cancellation and not yet
       ;; published. This wait is outside all gates. Nil success is a real pair.
-      (let [[value failed?] @result]
-        (when turn-failed? (log/error :engine/host-control-turn-failed {:error turn-error}))
-        (if failed? (throw value) value)))))
+      (let [[outcome interrupted?]
+            #?(:clj (await-internal-result entry result (and turn-failed? (instance? InterruptedException turn-error)))
+               :cljs [@result false])]
+        (try
+          (when turn-failed? (log/error :engine/host-control-turn-failed {:error turn-error}))
+          (let [[value failed?] outcome] (if failed? (throw value) value))
+          (finally
+            ;; Keep the remembered status through diagnostics, then restore it
+            ;; for both successful value and the control's own error delivery.
+            #?(:clj (when interrupted? (.interrupt (Thread/currentThread))) :cljs nil)))))))
 
 (defn- owner-world [^WorldHostOwner owner target]
   (when-not (and (instance? WorldHostOwner owner)

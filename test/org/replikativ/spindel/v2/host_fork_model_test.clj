@@ -116,7 +116,7 @@
 
 (deftest interrupted-wait-cancels-pending-or-preserves-claimed-outcome-and-status
   (doseq [fail? [false true] published? [false true] transport-interrupted? [false true]]
-    (let [initial {:fail? fail? :entry (if published? :claimed :pending)
+    (let [initial {:fail? fail? :entry (if (or published? transport-interrupted?) :claimed :pending)
                    :outcome (if published? (if fail? :own-error :nil-value) :absent)
                    :phase :waiting :interrupts 0 :flag? false :remembered? transport-interrupted?
                    :reported? false :log-flag nil :delivered nil}
