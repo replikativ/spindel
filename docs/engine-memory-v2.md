@@ -645,7 +645,10 @@ Custody is child-local and one-shot: an atomic unowned-to-owner claim precedes
 parent reservation removal/debt installation. Every World/fork/instance has a fresh
 immutable exact creation ordinal; only earlier-parent/later-child custody edges
 are admissible. Two unsigned32 words provide exact JVM/CLJS ordering, with clean
-nonwrapping exhaustion before publication/source mutation. Rank confers no target
+nonwrapping exhaustion before publication/source mutation. Parent-local acquisition
+exhaustion is a distinct refusal: preflight it before fork allocation, process
+ordinal consumption, source mutation or effect parking, then consume only for the
+winning custody claim. Rank confers no target
 permission and retains no World. Competing losers retain their reservations; older
 outputs require explicit validated disposal/settlement or no-acquisition evidence,
 never automatic ancestor closure or synthetic acknowledgement. A rejected S4 claim
@@ -661,9 +664,15 @@ that ownership path is live. Parent-local successful-acquisition ordinals order
 reports even when independent child Worlds have identical numeric IDs.
 
 Holder handoff promotes the child before reading the monotone claimed flag and
-clears that slot when already claimed. No child write may restore a strong holder
-after a concurrent parent claim has cleared it. Pending close still retains its
-strong child debt; terminal control clearing leaves only the weak ordinary holder.
+clears that slot when already claimed. A concurrent promotion may transiently follow
+the parent clear; every successful claim must unconditionally schedule child
+subscriptions and internal release, including repeated release of an already
+released child. Queue/lock happens-before (or direct same-thread ordering) and
+child-gate serialization place prior false-read promotions before that mandatory
+corrective handoff. Later handoffs observe the monotone claimed flag and clear.
+Claim-specific milestones dispatch after this corrective child turn; quiescent
+terminal control leaves only the weak ordinary holder. Pending close still retains
+its strong child debt until actual acknowledgement.
 
 Before clearing a child holder/list or deleting a scope, transfer each live child
 to a bounded pending record with target token, generation, immutable owner witness,

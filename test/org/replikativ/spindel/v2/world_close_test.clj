@@ -831,3 +831,45 @@
         (is (terminal? p))
         (is (empty? (failures p)))
         (hs/fence! t)))))
+
+(defn- claimed-holder-retention-fixture []
+  (let [{p :world :as e} (env) c (v2/fork! p)
+        cap (v2/register-world-settlement! (v2/world-host-owner c) c [])
+        holder (aget ^objects c rw/W-HOLDER) target-flag (aget ^objects holder 2)
+        original-flag? hs/flag? intercepted (atom false)]
+    (with-redefs-fn
+      {#'hs/flag? (fn [flag]
+                    (let [result (original-flag? flag)]
+                      (when (and (identical? target-flag flag)
+                                 (compare-and-set! intercepted false true))
+                        ;; The child has read the old flag. Parent claim clears
+                        ;; its strong holder while the child still owns its gate.
+                        (let [claim (future (#'v2/internal-call! p #(#'v2/claim-child! p c holder)))]
+                          (try (when (= ::timeout (deref claim 5000 ::timeout))
+                                 (throw (ex-info "parent claim did not reach its boundary" {})))
+                               (finally (future-cancel claim)))))
+                      result))}
+      #(v2/release-world! c))
+    (v2/acknowledge-world-settlement! cap {:settled? true :value :closed})
+    (pump! e)
+    (let [joined? (#'v2/internal-call! p #(empty? (:children (aget ^objects p rw/W-CLOSE))))]
+      {:parent p :probe (java.lang.ref.WeakReference. c)
+       :joined? joined? :strong? (some? (aget ^objects holder 0))
+       :claimed? (original-flag? target-flag)})))
+
+(defn- world-collected? [^java.lang.ref.WeakReference probe]
+  (loop [fuel 100]
+    (System/gc)
+    (if (nil? (.get probe)) true
+        (if (zero? fuel) false
+            (do (Thread/sleep 10) (recur (dec fuel)))))))
+
+(deftest racing-child-promotion-cannot-retain-terminal-world-in-open-parent
+  (let [{:keys [parent probe joined? strong? claimed?]} (claimed-holder-retention-fixture)]
+    ;; Assert only scalars so test diagnostics cannot themselves root the child.
+    (is (true? joined?))
+    (is (true? claimed?))
+    (is (false? strong?))
+    (is (world-collected? probe))
+    (is (false? (:requested? (status parent))))
+    (close! parent)))

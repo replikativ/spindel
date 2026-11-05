@@ -504,6 +504,13 @@ links can end when an intermediate owner is no longer live; historical membershi
 alone grants no new join authority. A previously authorized pending operation keeps
 its bounded immutable witness. Parent-local acquisition ordinals are assigned only
 after successful custody claim, independently of child numeric W-ID/audit UUID.
+The parent acquisition space is separate from the process World-creation space.
+Fork admission preflights predictable acquisition exhaustion before allocating a
+World ordinal, changing the source epoch/ID allocation, or parking the calling run;
+the central winner alone consumes the preflighted acquisition ordinal. S4 refusal
+on this exhaustion rejects its claimed FIFO and disposes only its legitimate still
+unowned original instance, preserving actual host settlement obligations. Neither
+ordinal guarantee claims that unrelated family entity IDs cannot exhaust.
 Thus independent roots with equal W-ID still report in actual acquisition order.
 A losing S4 attempt rejects its own queued activation work without reassigning or
 requesting disposal through the losing parent's authority; the current winning

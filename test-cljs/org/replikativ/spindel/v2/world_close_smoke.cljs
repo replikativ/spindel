@@ -209,6 +209,55 @@
         (close! p)
         (pump! e)))))
 
+(defn- exact-creation-order-and-custody! []
+  (doseq [[before after] [[[0 4294967295] [1 0]]
+                          [[2097152 4294967295] [2097153 0]]
+                          [[4294967295 4294967294] [4294967295 4294967295]]]]
+    (assert (= after (v2/next-world-order before)))
+    (assert (neg? (compare before after))))
+  (let [isolated (atom [4294967295 4294967295])]
+    (assert (try (swap! isolated v2/next-world-order) false
+                 (catch :default error (= :world-order-exhausted (:spindel/invalid (ex-data error))))))
+    (assert (= [4294967295 4294967295] @isolated)))
+  (let [{p :world :as e} (manual-world) q (v2/world) c (v2/world)
+        pc (v2/register-world-settlement! (v2/world-host-owner p) p [:c])
+        qc (v2/register-world-settlement! (v2/world-host-owner q) q [:c])
+        cc (v2/register-world-settlement! (v2/world-host-owner c) c [])
+        pr (:c (v2/world-preparations pc)) qr (:c (v2/world-preparations qc))]
+    (v2/finish-world-preparation! pr {:world c})
+    (assert (try (v2/finish-world-preparation! qr {:world c}) false
+                 (catch :default error (= :world-preparation (:spindel/invalid (ex-data error))))))
+    (assert (= 1 (count (:preparations (aget q rw/W-CLOSE)))))
+    (close! p) (pump! e)
+    (v2/acknowledge-world-settlement! pc {:settled? true :value :closed})
+    (assert (not (:terminal? (aget p rw/W-CLOSE))))
+    (v2/acknowledge-world-settlement! cc {:settled? true :value :closed})
+    (pump! e)
+    (assert (:terminal? (aget p rw/W-CLOSE)))
+    (v2/finish-world-preparation! qr {:disposed? true})
+    (close! q) (pump! e)
+    (v2/acknowledge-world-settlement! qc {:settled? true :value :closed}))
+  (let [{old :world :as e} (manual-world) p (v2/world)
+        pc (v2/register-world-settlement! (v2/world-host-owner p) p [:old])
+        reservation (:old (v2/world-preparations pc))]
+    (assert (try (v2/finish-world-preparation! reservation {:world old}) false
+                 (catch :default error (= :world-publication-order (:spindel/invalid (ex-data error))))))
+    (assert (not (:requested? (aget old rw/W-CLOSE))))
+    (assert (= 1 (count (:preparations (aget p rw/W-CLOSE)))))
+    (close! old) (pump! e)
+    (v2/finish-world-preparation! reservation {:disposed? true})
+    (close! p) (pump! e)
+    (v2/acknowledge-world-settlement! pc {:settled? true :value :closed}))
+  (let [{p :world :as e} (manual-world) initial (aget p rw/W-CREATION) c (v2/fork! p)
+        epoch (aget p rw/W-EPOCH)]
+    (assert (neg? (compare initial (aget c rw/W-CREATION))))
+    (aset p rw/W-CLOSE (assoc (aget p rw/W-CLOSE) :next-child [4294967295 4294967295]))
+    (assert (try (v2/fork! p) false
+                 (catch :default error (= :world-acquisition-order-exhausted (:spindel/invalid (ex-data error))))))
+    (assert (identical? epoch (aget p rw/W-EPOCH)))
+    (assert (= initial (aget p rw/W-CREATION)))
+    (close! p) (pump! e)))
+
 (defn -main []
   (with-redefs [hs/execute! (fn [_ f] (swap! jobs conj f))]
     (native-and-preparation!)
@@ -219,6 +268,7 @@
     (refused-synchronous-controls!)
     (replay-failure-and-budget!)
     (preactivation-fifo!)
+    (exact-creation-order-and-custody!)
     (println "WORLD CLOSE SMOKE OK")))
 
 (set! *main-cli-fn* -main)

@@ -141,12 +141,32 @@
                 (canceled-pending-entries (rest kinds) next))))
     (next)))
 
+(defn- last-world-chain-fixture []
+  (loop [w (v2/world) i 0 worlds [] nodes [] tokens []]
+    (if (= i 1000)
+      {:last-world w :worlds worlds :nodes nodes :tokens tokens}
+      (recur (v2/fork! w) (inc i)
+             (conj worlds (hs/weak w))
+             (conj nodes (hs/weak (aget w rw/W-LINEAGE)))
+             (conj tokens (hs/weak (aget w rw/W-CLEANUP-IDENTITY)))))))
+
+(defn- held-last-world-chain [next]
+  (let [{:keys [last-world worlds nodes tokens]} (last-world-chain-fixture)]
+    (until "held last fork releases 1000 ancestor worlds/nodes and 999 historical tokens"
+           #(and (every? (fn [x] (nil? (hs/deref-weak x))) worlds)
+                 (every? (fn [x] (nil? (hs/deref-weak x))) nodes)
+                 (every? (fn [x] (nil? (hs/deref-weak x))) (butlast tokens)))
+           #(do
+              (assert (some? (hs/deref-weak (last tokens))))
+              (v2/release-world! last-world)
+              (next)))))
+
 (defn -main []
   (when-not (and (exists? js/WeakRef) (exists? js/gc))
     (throw (ex-info "requires Node WeakRef and --expose-gc" {})))
   (held-results [:success :error :cancel]
                 #(held-terminal-capabilities
                   (fn [] (held-world-close-controls
-                          (fn [] (canceled-pending-entries [:wait :observe] (fn [] (println "CLEANUP GC OK")))))))))
+                          (fn [] (canceled-pending-entries [:wait :observe] (fn [] (held-last-world-chain (fn [] (println "CLEANUP GC OK")))))))))))
 
 (set! *main-cli-fn* -main)
