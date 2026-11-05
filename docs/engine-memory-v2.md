@@ -1,9 +1,12 @@
 # Engine memory v2: owned world storage
 
-Status: design candidate. The lifetime semantics in
-[engine-formalism.md](engine-formalism.md) remain authoritative. This file
-specifies a reference representation, a proposed mutable fast path, and their
-refinement obligations. No runtime API is changed by this draft.
+Status: design candidate. The target v2 contract in
+[engine-v2-spec.md](engine-v2-spec.md) is authoritative; the existing native
+lifetime profile is described by [engine-formalism.md](engine-formalism.md).
+This file specifies representations and their refinement obligations, and
+records bounded prototype support. **The Z#66 restricted-cleanup operation API
+and world close/join amendments below are planned, not implemented or formally
+accepted.** No runtime API is changed by these spec-first amendments.
 
 ## Goal and unit of publication
 
@@ -490,11 +493,119 @@ cached spin after item removal, despite releasing its track subscriptions and
 observers. This reproduces on the unchanged baseline; the replacement must
 close this reclamation gap before claiming the full GC acceptance gate.
 
-Cancellation-shielded `await-finalization` is also an explicit migration gate.
-It must preserve the cancelled cached result while asynchronous cleanup can
-finish and physical joining waits. It cannot be translated into an ordinary
-await on an unwinding run, whose new ordinary registrations are refused by the
-lifetime model.
+## Planned restricted cleanup operations (Z#66)
+
+The campaign's first cleanup slice is the explicit operation contract in
+[engine-v2-spec.md](engine-v2-spec.md) §2–3, T12–T14/T23–T26 and B8. Its
+`await-finalization` accepts only an opaque one-shot operation for a declared
+already-owned resource close/join, within a lexical finalizer. It does not
+accept ordinary Spins/Tasks, deferreds, mailboxes, signals or arbitrary CPS
+functions. Adapter registration must be finite and nonblocking; it owns
+physical close independently of its subscribers. This planned API is distinct
+from the native protected-thunk prototype described below.
+
+All lexical finalizers have the same restricted admission on normal return,
+error and cancellation. Permit write/deliver/post/release/close and this wait;
+reject ordinary await/track/external/sleep/offload, new computations/tasks/sources,
+fork/savepoint and new engine-owned finally regions. Unawaited offload is not a
+compatibility escape: wrap asynchronous physical close in the declared adapter.
+Pure helper try/finally adds no engine obligation. Enforce admission at runtime
+for hidden helpers and direct effect/creation entry points too.
+
+A run owns its active boundary, pending body outcome, outer unwind continuations
+and at most one cleanup waiter. Entering a region does not remove it: exit on
+return or throw does, exactly once. The waiter stores immutable origin world ID,
+generation/sequence, operation target, phase, sealed success/error continuations
+and detachable subscription control. It is neither an ordinary activation nor a
+reactive edge; ordinary run validity and resume guards stay unchanged. A normally
+entered parked finalizer retains these obligations before result publication.
+Cancellation preserves that same boundary/waiter, including queued readiness,
+and publishes the canceled task result immediately. It then completes the current
+finalizer and unwinds outer regions without restarting cleanup or running an
+ordinary body suffix. Normal success/error publishes only after lexical cleanup.
+A finalizer-local catch can recover a cleanup error; it cannot restore success
+after cancellation. Preserve original body failure as cause, with cleanup failures
+ordered by stable run/region/release order. Cancellation's eventual cleanup
+failures belong in world close/join, not a replacement task result.
+
+Install the waiter under the world gate before registering after the gate.
+Use a single terminal-claim callback cell; synchronous completion queues a distinct
+cleanup-resume ingress item. Registration throw becomes failed completion, with
+first-terminal-wins even for completion followed by throw. Consume the exact
+origin/generation/sequence once and clear controls before resuming its sealed
+continuation in a slice. A control returned after completion is detached/released
+exactly once; detach only withdraws that observation. Callback exceptions cannot
+change a settled outcome or prevent other subscribers receiving it. Claimed
+callback cells clear world/run references. Physical resource acknowledgement,
+cleanup completion, finalizer exit and physical return remain separate evidence;
+none alone certifies run retirement. T13 additionally requires no active boundary
+and no waiter.
+
+Copy-on-write edits clone mutable finalizer/waiter containers. Forking captures
+inherited obligations lazily, preserving constant creation cost. It transfers no
+physical controller or host subscription and creates fresh world close state.
+First child activation resumes inherited pending or queued-but-not-resumed waits
+through their error continuation with `::forked` exactly once, replacing copied
+resume items so parent success cannot enter the child. Parent completion affects
+only the parent. Frozen/unborn discard invokes no finalizer/detach/physical close;
+activated children finish their own chain and retire independently. A later use
+of a captured parent operation fails `::forked` before registration. Child-local
+owners must allocate child-local operation/resource adapters; COW does not make
+raw captured resource handles branch-local. Existing prototype refusal of such
+forks remains its supported behavior until this slice is implemented.
+
+The dependent second slice adds a narrowly named world close operation and host
+subscribe/withdraw, consumable by the finalizer wait. Existing request-level
+`release-world!`/`discard!` diagnostic returns remain unchanged. The operation's
+observation origin and close target are distinct identities: a parent slice's
+`close-world!(child)` yields a parent-origin capability targeting its owned child,
+so the parent's finalizer can join it. Target identity does not set observation
+origin. All capabilities observing that target share one physical close and
+terminal outcome; new observers do not restart it. Copying the parent-origin
+capability into a child still fails `::forked` before registration, including
+when that child is the target. Host construction must explicitly select the
+observation-origin world through an origin argument or selected-world binding;
+it must not infer origin from the target. Host subscription needs no engine slice
+and grants no permission to await in another world. Origin selection leaves the
+ownership/join restrictions in force. World-local close state tracks admission
+revocation, pending local obligations, pending owned-child acknowledgements,
+ordered failures, current subscribers and one terminal outcome.
+Record a child debt before dropping its ownership marker, including a child
+admitted before closure and published afterward. Terminal acknowledgement queues
+after the child's gate is released; no nested foreign gates. A released flag or
+empty owner list is not join evidence. Production counters/sets, checked against
+verify census, must supply termination detection; a verify-only registry cannot.
+Ordinarily weak root-owned forks stay weak. An actual pending close may hold its
+target until acknowledgement; terminal operations retain only outcome and clear
+world/release/child/subscriber references. No generic close-ticket family, normal
+body wait or global wait-for graph is added by this phase.
+
+Joins follow declared acyclic owned lifetimes: downward targets for engine
+bodies, or a host coordinator outside the target tree. Reject self/current-world,
+ancestor and unrelated sibling joins before parking; a nonjoining close request
+may target the caller's owner. Adapters must release consumer activity leases
+before joining; hidden host/CPS dependency cycles are not inferred automatically.
+Progress additionally assumes finitely many joins per finalizer, finite slices,
+fair dispatch and eventual operation/resource/child acknowledgement. B9's finite
+slice rule alone does not prove asynchronous cleanup terminates. Nonacknowledging
+close stays observably pending, never a successful timeout-based join.
+
+Space bounds concern current obligations: one waiter per run, lexical boundary
+depth, current subscribers/owned-child debts and the current ordered close report.
+These are storage retention reasons, independent of hotness or demand. Remove
+consumed continuations/controls promptly and record cleanup failures before deleting
+a canceled or stale run. Diagnostics do not accumulate event history. Formal
+encoding of boundary/waiter conservation, fork isolation, conditional retirement
+and child acknowledgement remains pending under the spec's §11 acceptance gate;
+older oracle traces cannot establish these new transitions.
+
+## Existing native protected-finalization profile
+
+Cancellation-shielded cleanup remains a migration gate for the full public
+contract. The existing prototype below is bounded support, not an implementation
+of the new explicit-operation adapter boundary. It cannot be translated into an
+ordinary await on an unwinding run, whose new ordinary registrations are refused
+by the lifetime model.
 
 The opt-in executable `:cps-exit?` / `:slices?` profile now refines retirement
 with a protected exit ticket for each entered, unfinished CPS generation.

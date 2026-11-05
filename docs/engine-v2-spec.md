@@ -1,6 +1,13 @@
 # Spindel engine v2: specification
 
-Status: **v1.5.1, signed off 2026-11-04.** Q4 and Q6–Q9 proceed with their proposals (§12). Later model and oracle findings are applied as numbered spec patches.
+Status: **v1.5.1, signed off 2026-11-04, with numbered spec patches.**
+Q4 and Q6–Q9 proceed with their proposals (§12). **Z#66 is the planned
+restricted-cleanup contract (2026-11-05), specified before implementation.**
+Its first slice is lexical cleanup operations and fork isolation; its dependent
+second slice is world close/join. Neither slice is claimed implemented or
+formally accepted here. References to Z#66 below state the target contract;
+they do not describe shipped runtime behavior. Existing native protected-wait
+prototypes are not acceptance evidence for this smaller operation API.
 
 ## History and tags
 
@@ -176,7 +183,31 @@ Status: **v1.5.1, signed off 2026-11-04.** Q4 and Q6–Q9 proceed with their pro
     or leaves the physical completion outstanding (it acks later, its value
     dropped). A resource's physical controller belongs to the world that set
     it: a copy in any other world holds none (F1), and an inherited external
-    resource is dormant (§8.1).
+    resource is dormant (§8.1);
+  - Z#61 (T6, M6 parity with the old `parallel`): `await(all)` is fail-fast:
+    its first `err` slot resumes the run with that error, and the unfilled
+    members are released as `any` losers (loser tasks created for the await
+    are cancelled);
+  - Z#64 (§3.3 demotion, §3.4): a computation demoted while dirty (its
+    result not for its current epoch: invalidated, or re-demoted at once
+    after a failed validation) records validity `invalid`; validity is
+    derived from its `dep` edges only when its result is current. Before,
+    an idle chain read from the top returned a stale result.
+  - Z#65 (§13; campaign decision 2026-11-05): public `race` and `timeout`
+    are eager one-shot tasks. The first completion, including an error, wins;
+    already-ready ties use input order. Shared input tasks are observed, not
+    owned. Losing computations lose the race's demand. Create a race inside
+    its owning task/scope to propagate cancellation; an externally created
+    race is shared. Explicit `spin (await-any ...)` remains reactive.
+  - Z#66 (§2–3, T12–T14, T21, T23–T26, B3/B8/B9, I6/I9/I11, §8.1,
+    L2): planned explicit one-shot cleanup operations may be awaited only in
+    lexical finalizers, including on normal entry. Cancellation publishes its
+    result before cleanup retires, and preserves a sealed cleanup continuation.
+    Inherited waits fail locally with `::forked`, including queued completions.
+    World close/join additionally needs owned-child terminal acknowledgement
+    (second slice). This supersedes Z#35's one-slice unwind and Z#40's prohibition
+    of all cleanup waiting; ordinary offload remains forbidden. Formal obligations
+    for these transitions are pending (§11), alongside the existing Z#64/I15 work.
 
 Once approved, this document is the normative contract for the v2 engine. It
 supersedes `engine-formalism.md` Part 4 and `engine-memory-v2.md`. Parts 1–3
@@ -234,16 +265,18 @@ first-class.
 **G2 – resources.**
 - Every run and resource has exactly one owner.
 - Cancelling an owner reaches everything it owns.
-- A run is retired exactly when four conditions hold together (T13):
+- A run is retired exactly when these conditions hold together (T13, Z#66):
   - it is logically done;
   - its slice has exited;
-  - its finalizers have run;
+  - its finalizers have exited, including any active boundary;
+  - it has no cleanup waiter;
   - it has no outstanding resources.
 
 **G3 – forks.**
 - A fork costs O(1) at creation, plus O(touched pages) for later writes, plus
-  O(inherited armed resources) when the fork is activated.
-- A released fork pins nothing.
+  O(inherited armed resources + inherited cleanup waits) when activated (Z#66).
+- A terminally closed fork pins nothing; a release request may retain
+  outstanding cleanup until acknowledgement (Z#66).
 - Lineage is held as ids.
 
 **G4 – performance.**
@@ -252,9 +285,11 @@ first-class.
 - Allocation per update ≤ 20× missionary.
 
 **G5 – verification.**
-- Safety (I1–I13, L1, L4 and the safety half of L5) is proved in ansatz over
-  opaque continuations (§7, §11).
-- Join progress (L2) is proved as a per-run measure lemma.
+- Safety (I1–I13, L1, L4 and the safety half of L5) is a proof gate in
+  ansatz over opaque continuations (§7, §11). Z#66's amended invariants and
+  transitions remain unencoded/unproved; existing proofs do not cover them.
+- Join progress (L2) requires the finite, acyclic, acknowledging cleanup
+  assumptions below. Extending the per-run measure lemma for Z#66 is pending.
 - The engine is checked against the ansatz-compiled model by differential
   testing.
 
@@ -329,7 +364,18 @@ These belong to yggdrasil and dvergr, which build on §9.
   - an external wait;
   - an `offload` operation;
   - a native operation.
-- **Finalizer** `F`: a lexical `finally` region that is open in a run.
+- **Finalizer** `F`: a lexical `finally` region that is open in a run; its
+  boundary remains open until its body returns or throws, including while waiting.
+- **Cleanup operation** `O` (Z#66, planned): an opaque one-shot capability for
+  an explicitly declared, already-owned resource close/join. It is not a Spin,
+  Task, deferred, mailbox, signal or arbitrary CPS function. Its adapter has
+  finite nonblocking registration; physical close belongs to the operation,
+  independently of its subscribers. Its **observation origin** (the world
+  permitted to await it) is distinct from its **target** (the resource/world
+  being closed). Origin checks compare the awaiting world with that observation
+  origin, not with the target's world (§9). This is not a user-extensible scheduler.
+- **Cleanup waiter** `Q` (Z#66, planned): one run's observation of `O`, holding
+  a sealed finalizer continuation rather than an ordinary activation or edge.
 - **Handle** `H`: a host object, for example `Spin`, a signal, a fork
   handle or a savepoint publication. Handles are weak and are never liveness
   reasons (§3.4), except that an armed publication's handles make it a root
@@ -365,7 +411,12 @@ World  = { scopes  : S ↦ {parent: S?, kind: root|run|explicit, open: Bool}
                           mode: normal | unwinding,
                           slice: Bool,
                           effect-index: Nat,                   ; Z#12: +1 per body effect; an effect's `at` is the index before it
-                          finalizers: [(F, at, refs)],         ; open finally regions, innermost first; refs ⊆ sources they touch (Z#3)
+                          finalizers: [(F, at, refs)],         ; open regions, innermost first; refs ⊆ sources (Z#3)
+                          finalizer: {F, pending-outcome, k, ek}?, ; active boundary and outer unwind, Z#66
+                          cleanup-wait: {origin, generation, sequence, F, operation,
+                                         phase: registering|waiting|ready,
+                                         k, ek, control}?,     ; sealed continuation, at most one, Z#66
+                          cleanup-failures: [(region, release, error)], ; current report, Z#66
                           resources: {Z}}                      ; outstanding only
            sources : X ↦ {owner: S|C|⊥, kind, state, version: Nat, open: Bool, handles: Nat}   ; Z#13: created with version 0, open, handles 1
            edges   : E ↦ {kind: wait|dep|observe|savepoint,
@@ -384,8 +435,22 @@ World  = { scopes  : S ↦ {parent: S?, kind: root|run|explicit, open: Bool}
            forks   : M ↦ {child: world-id, owner: S}
            pending-activation : E?
            ingress : [item]
-           released: Bool }
+           released: Bool
+           close: {pending-local, pending-children, failures,
+                   subscribers, outcome}? }                 ; Z#66 slice 2: fresh world-local state
 ```
+
+**Planned finalizer state (Z#66).** A boundary records the pending body
+outcome separately from the entity's published result. Entry marks an already
+registered region active; only exit removes it, on either success or exception.
+Generated exit bookkeeping is not another finally region. A normally entered
+finalizer may wait with `mode = normal`; cancellation converts its admission to
+cleanup without replacing or restarting the boundary. A waiter is reachable only
+through its run. It cannot grant demand, make a computation current/hot, or
+install a normal activation/savepoint. Its origin is immutable world identity,
+not the mutable copy-on-write owner epoch. Mutable boundary/waiter containers
+must be copied before child edits; physical controls and callback authority must
+never be copied (§8.1).
 
 **Derived status of a computation.**
 - `fresh`: `done-epoch = none`.
@@ -434,6 +499,13 @@ for:
   row exists and is `armed`; a `cancelling` resource does not fire (Z#14).
 - **A resource acknowledgement** carries the resource id. It is valid iff
   the resource row exists and no edge has it as debtor (Z#6).
+
+Z#66 does not broaden ordinary run validity or ordinary resume guards. A
+separate finalizer capability admits only B8 effects while a boundary executes,
+on normal return, failure and cancellation alike. Cleanup completion validates
+its origin, generation, sequence and boundary before invoking only the sealed
+continuation (T25); it grants no ordinary body authority. Hidden helper calls,
+custom effects and direct creation helpers must obey the same runtime check.
 
 An invalid operation is a refusal: it is reported as not accepted and
 changes nothing (L4, Z#10).
@@ -489,9 +561,12 @@ these edges:
 
 **Storage (X#7, Z#3).** `storage(W)` is the set of `refs` of the finalizers
 of runs in `live(W)`. Refs are sources only: B8 lets a finalizer write,
-deliver, post, release and close, and all of these act on sources. Storage
-rows are kept but not expanded, and grant no demand. A ref whose owner is
-removed is detached and closed like any other source (§3.3).
+deliver, post, release and close. Z#66 additionally retains an active boundary,
+its pending outcome and its optional waiter/operation capability as cleanup
+storage, including a normally entered finalizer parked before result publication.
+An operation retains only its current close/join payload and subscriptions;
+it is not a reactive debtor. Storage rows are kept but not expanded, and grant
+no demand. A ref whose owner is removed is detached and closed like any other source (§3.3).
 
 **Cleanup table (R#2, W#4, A#2).** Every run with `act = done` that is not
 retired has an entry `cleanup[R]`, kept outside `live`:
@@ -502,7 +577,7 @@ retired has an entry `cleanup[R]`, kept outside `live`:
     scopes' parent fields at each Rule R pass, not stored with the entry,
     so it follows a `detach` (Z#38, Z#52);
   - its outstanding resources;
-  - its finalizers;
+  - its finalizers, active boundary, pending outcome and optional cleanup waiter;
   - its body entity as a tombstone when the entity has no other reason;
   - the rows it owns that have no other reason.
 - **What its finalizers may touch:** these rows, plus the `refs` recorded
@@ -511,6 +586,16 @@ retired has an entry `cleanup[R]`, kept outside `live`:
   released.
 - **What it may not do:** start runs or grant demand.
 - **When it goes:** with the run, at retirement (T13).
+
+Z#66 makes normally entered pending finalizers obligations too: cancellation or
+stale replacement moves their existing boundary/waiter to cleanup retention,
+without dropping queued readiness or adding a second subscription. Callback,
+continuation and detachable-control references clear when consumed or withdrawn.
+A held callback after terminal claim contains no world/run reference. A held
+terminal operation contains only its outcome, not a world, release closures,
+child controllers or subscriber list. Pending diagnostics describe current
+obligations, never an append-only event history. A nonacknowledging operation
+remains pending and observable; a timeout cannot certify retirement.
 
 ### 3.3 Rule R (A#3, X#10)
 
@@ -786,23 +871,38 @@ Transitions are built from a small set of primitive table edits (§11).
 | T3 | `create-comp(id, inputs, body)` | **Absent id:** a `fresh` computation is created. **Present, equal inputs** (the conservative capture comparison, formalism §1.6): it is adopted. **Present, different inputs (W#5):** body and inputs are replaced at the same id, and the change is handled exactly like a write to `C`'s rerun source. Marking (§4.5.1) dirties `C`'s transitive dependents. `C.epoch += 1`, and the replacement run starts from the body (restart). An idle entry is replaced by a `fresh` one. In every case the creator records `C` (§5.2) before Rule R. |
 | T4 | `spawn(body)` | Creates task `K` owned per §5.2 and starts its run (fresh stamp, run scope with parent `K.owner`, Z#26). |
 | T5 | `start(C)` | **Applies to:** a `fresh` computation, or an invalid idle one. The new run starts from the body, with a fresh stamp and `R.epoch := C.epoch`. |
-| T6 | `await(R, ds, mode)` | **Activation:** an activation `A = {run R, mode, slots, remaining = |ds|, cont}` is created. Its id is always allocated, even when the fast path fills every slot in the same commit and `A` is removed at once (Z#28). **Member edges:** in a computation, each debtor's `dep` edge at this site (`at`) is reused or created, with `C` as creditor; in a task, and for consuming operations, a `wait` edge is created with `A` as creditor. **Demand:** debtors that are not running are demanded (T5, or T11 if `needs-run`). The awaiting slice ends here, and the demanded debtor's first slice is the next step; running that slice on the host stack implements this suspend–run–resume sequence (I10). **Fast path:** a member whose debtor is `live` or final fills its slot in the same commit. **`one`/`all`:** the run resumes when `remaining = 0`. **`any`:** the first filled slot resumes it; loser `wait` edges are removed, and loser tasks created by `R` for this await that have no other creditor are cancelled (T14). Loser computations keep `C`'s `dep` edges, because they are dependencies of `C`. Filling slot `i` removes the entry `(E, i)` from `A.members` (X#4, Z#7). On resume, `A` is removed; `wait` members are removed with it, and `dep` members stay with `C` (W#2). |
+| T6 | `await(R, ds, mode)` | **Activation:** an activation `A = {run R, mode, slots, remaining = |ds|, cont}` is created. Its id is always allocated, even when the fast path fills every slot in the same commit and `A` is removed at once (Z#28). **Member edges:** in a computation, each debtor's `dep` edge at this site (`at`) is reused or created, with `C` as creditor; in a task, and for consuming operations, a `wait` edge is created with `A` as creditor. **Demand:** debtors that are not running are demanded (T5, or T11 if `needs-run`). The awaiting slice ends here, and the demanded debtor's first slice is the next step; running that slice on the host stack implements this suspend–run–resume sequence (I10). **Fast path:** a member whose debtor is `live` or final fills its slot in the same commit. **`one`/`all`:** the run resumes when `remaining = 0`; an `all` activation also resumes at its first `err` slot, with that error, and its unfilled members are treated as `any` losers (fail-fast, Z#61). **`any`:** the first filled slot resumes it; loser `wait` edges are removed, and loser tasks created by `R` for this await that have no other creditor are cancelled (T14). Loser computations keep `C`'s `dep` edges, because they are dependencies of `C`. Filling slot `i` removes the entry `(E, i)` from `A.members` (X#4, Z#7). On resume, `A` is removed; `wait` members are removed with it, and `dep` members stay with `C` (W#2). |
 | T7 | `track(R, X)` | **Domain:** `X` is a signal or a cell; otherwise it is refused (Z#17). Inside a computation: a `dep` edge per §4.4, read immediately. Inside a task: a snapshot read with no edge, which allocates nothing (Q1, Z#19). |
 | T8 | `observe(host, d, cb)` / `unobserve` | Adds or removes an `observe` edge with `seen = none`; validates `d` if it is idle. **Initial delivery (Z#15):** if `d` is a source, or a `live` computation, its current `(value, version)` is delivered in the same commit. Otherwise `d` is demanded (T5, or T11) and the first delivery happens when it settles changed. |
 | T9 | `fire(E, result)` | Requires `E` to be `armed`; then `E` becomes `fired`. **`wait` edge:** fill its activation's slot, at the index recorded with the member (Z#7); a member listed at several indices fills all of them. **`dep` edge** of `C`: if `E` is a member of an activation of `C`'s current run, fill the slot (delivery) and re-arm `E` per §4.2. Otherwise this is an invalidation (§4.5.3), and `E` stays `fired` as a re-entry point. **`savepoint` edge (X#6):** fill its activation's slot, resume the run once if it is still parked on that activation (Z#50; otherwise the fire is refused), and remove the edge; the publication keeps only its basis. **`observe` edge:** per §4.2; it stays `armed` (Z#9). **Slots:** a filled activation resumes per T6, only if its run is parked on it (Z#50). If its run is stale, the slot is not filled (§4.5.4). |
 | T10 | `finalize(d)` | Unfilled members of an activation on `d` are filled with `d`'s final result first; a closed source without a value (a mailbox, a semaphore, an undelivered deferred) gives `err ::closed` (Z#53). Then removes armed `dep` edges on `d`, and cascades: a creditor that becomes final is finalized in turn (Z#25). A member edge is removed when its slot fills (X#4). |
 | T11 | `dispatch(C)` (X#2, X#3) | **Requires:** `C` is eligible and `needs-run`. Let `E` be its earliest fired `dep` edge in creation order, or the rerun-source edge for T3. **Predecessor:** the stale run (if any) is cancelled with `cancel(R, replace)` (T14). It unwinds its own finalizers, and its resources join through `cleanup` and T13. Nothing transfers: by the re-entrancy rule (§2), no finalizer or resource predates `E.at`. **Suffix:** `dep` edges created after `E` are removed, siblings at `E`'s own site included (Z#59), their baselines move to `C.adoption.baselines` (§4.4), and the predecessor's creations with `at > E.at` become `C.adoption.basis` (only the latest is kept). **New run:** fresh stamp, `R.epoch := C.epoch`. If `E.cont = restart`, it starts from the body; prefix creations remain in `basis` for adoption, and `E` is re-armed with its old baseline, which advances when the new run reads the site (Z#22). Otherwise it resumes `E.cont` with `E`'s delivery: a track interval (§4.4) or the debtor's result. **Edge:** `E` is consumed: re-armed with its new baseline, or removed if its debtor is final (§4.2). This covers completed and parked predecessors alike. |
-| T12 | `complete(R, result)` | **Requires:** a valid token (§2); `result` is `ok v` or `err e` (Z#50). `R.act := done`. **Computation, current run:** `result`, `version` and `done-epoch := R.epoch` are set; creations in `basis` that this run did not re-create are released; armed resources are cancelled. Settling follows §4.5.2. **Computation, stale run:** the result is discarded. **Task:** children that were not awaited and not detached are cancelled (Q10); armed resources are cancelled; the result fires the task's `wait` creditors. **Then:** if `R` is not retirable, `cleanup[R]` is created (§3.2), then T13, then T10 if the result is final. |
-| T13 | `retire?(R)` | `R` is retired iff `act = done ∧ ¬slice ∧ finalizers = [] ∧ resources = ∅` (W#3, W#4). **Retiring, in order (Z#18):** (1) if `R` is the entity's run (`C.run` or `K.run`), it is set to none (Z#25); (2) T16 closes `R.scope`: runs owned by the subtree that are not done are cancelled (normally none, because T12/T14 already cancelled them), open explicit scopes in the subtree are closed, and sources owned by the subtree are closed; (3) the run row and `cleanup[R]` are removed; (4) `R.scope` is removed if its subtree is empty, otherwise it stays closed until its last child row is removed (W#9). Children still unwinding keep the closed scope as their owner. Retirement happens inside the transition, before Rule R; Rule R's normalization retires further runs with the same steps. It is called by every path that can make the predicate true: slice exit, finalizer exit, resource join and completion. |
-| T14 | `cancel(R)`, `cancel(R, replace)` | `act := done`, `mode := unwinding`. **Removed:** `R`'s activations, their `wait` members, and its `savepoint` edges. **Resources:** told to cancel (phase `cancelling`). **Children:** runs owned by `R.scope` are cancelled. **Cleanup:** `cleanup[R]` is created. **Finalizers:** the head finalizer is scheduled as a cleanup slice (B3, B8). **Replacement (Y#2):** `cancel(R, replace)` affects only the run itself: its activations, resources, children and finalizers. It has **no debtor-side effect**: the computation's creditors keep waiting for the replacement's coherent result. **Debtor side (R#14), for an ordinary cancel only:** `wait` creditors of the cancelled entity receive `err ::cancelled`; for a computation, cancelling its **current** run is an invalidation of its dependents (§4.5.3). Cancelling a stale run invalidates nothing, because the epoch step already did. Then T13. |
+| T12 | `complete(R, result)` | **Requires:** a valid token (§2); `result` is `ok v` or `err e` (Z#50), after all lexical finalizer boundaries have exited (T26, Z#66). `R.act := done`. **Computation, current run:** `result`, `version` and `done-epoch := R.epoch` are set; creations in `basis` that this run did not re-create are released; armed resources are cancelled. Settling follows §4.5.2. **Computation, stale run:** the ordinary result is discarded; actual cleanup failures still enter the owning world's ordered close report before retirement (Z#66). **Task:** children that were not awaited and not detached are cancelled (Q10); armed resources are cancelled; the result fires the task's `wait` creditors. **Then:** if `R` is not retirable, `cleanup[R]` is created (§3.2), then T13, then T10 if the result is final. |
+| T13 | `retire?(R)` | `R` is retired iff `act = done ∧ ¬slice ∧ finalizers = [] ∧ finalizer = none ∧ cleanup-wait = none ∧ resources = ∅` (W#3, W#4, Z#66). **Retiring, in order (Z#18):** (1) if `R` is the entity's run (`C.run` or `K.run`), it is set to none (Z#25); (2) T16 closes `R.scope`: runs owned by the subtree that are not done are cancelled (normally none, because T12/T14 already cancelled them), open explicit scopes in the subtree are closed, and sources owned by the subtree are closed; (3) the run row and `cleanup[R]` are removed; (4) `R.scope` is removed if its subtree is empty, otherwise it stays closed until its last child row is removed (W#9). Children still unwinding keep the closed scope as their owner. Retirement happens inside the transition, before Rule R; Rule R's normalization retires further runs with the same steps. It is called by every path that can make the predicate true: slice exit, finalizer exit, cleanup completion, resource join and completion. Cleanup failures enter the world report before run deletion; neither physical resource acknowledgement alone nor a queued cleanup completion implies finalizer exit (Z#66). |
+| T14 | `cancel(R)`, `cancel(R, replace)` | `act := done`, `mode := unwinding`. **Removed:** `R`'s activations, their `wait` members, and its `savepoint` edges. **Resources:** told to cancel (phase `cancelling`). **Children:** runs owned by `R.scope` are cancelled. **Cleanup:** `cleanup[R]` is created. **Finalizers (Z#66):** if a boundary is executing or waiting, preserve it and its waiter, including queued completion; record cancellation for outer unwinding and schedule no duplicate entry. Otherwise schedule the head finalizer as a cleanup slice (B3, B8). Cleanup resumption continues the current finalizer once, then unwinds outer regions; no ordinary body suffix or successful result may run. Repeated cancellation does not inject another error into a cleanup wait. **Replacement (Y#2):** `cancel(R, replace)` affects only the run itself: its activations, resources, children and finalizers. It has **no debtor-side effect**: the computation's creditors keep waiting for the replacement's coherent result. **Debtor side (R#14), for an ordinary cancel only:** `wait` creditors of the cancelled entity receive `err ::cancelled` immediately, independently of retirement; later cleanup cannot amend that result; for a computation, cancelling its **current** run is an invalidation of its dependents (§4.5.3). Cancelling a stale run invalidates nothing, because the epoch step already did. Then T13. |
 | T15 | `resource-ack(Z)` | **Requires:** no edge has `Z` as debtor (Z#6). Its wait edge is consumed when `Z` fires, or removed with its activation on cancel. Removes `Z` from its run's resources and from `res`, then T13 within the same item (Z#55). The host "offload returned" item is a fire (refused while `cancelling`) followed by an acknowledgement. |
 | T16 | `open-scope` / `close-scope(S)` | **Close** cancels all work owned by `S` and its subtree, and closes the explicit child scopes in that subtree (W#9). It closes every source they own; such sources are detached by Rule R step 3 if their owner is removed. A closed source is final and read-only, and survives only through its own reasons (R#15). Closing wakes the waiters of a source without a value with `err ::closed` (Z#53). A scope row is removed once its subtree has no rows other than closed scopes. |
 | T17 | `arm(R, Z)` | Adds an outstanding resource owned by `R`, with `at = R.effect-index`. A resource effect (`offload`, `sleep`) is one body effect: T17 and T6 on `Z` in one commit, allocating `Z`, its activation and its `wait` edge in that order; `effect-index` advances once (Z#55). |
 | T18 | `resource-fire(Z, v)` | **Requires:** `Z` is `armed` (Z#14). `armed` becomes `fired`, exactly once, and every armed `wait` edge with debtor `Z` fires (T9) (Z#6). `Z` remains outstanding until its acknowledgement (T15). |
 | T19 | `handle-drop(H)` | `handles -= 1`; Rule R applies §3.4. A publication handle reaching 0 abandons it (S7). |
 | T20 | `pin` / `unpin` | Increments or decrements the row's pin count (Z#16). An `unpin` at count 0 is refused. A row is a root while its count is > 0. |
-| T21 | `release-world` | **Sets** `released := true`. **Roots revoked:** `observe` callbacks receive `::released`, pins are dropped, `pending-activation` is abandoned. **Host admissions revoked:** remaining handles become released handles, whose operations fail with `::released`, and their rows are removed. Not revoked (Z#56): the effects of a cleanup slice (a finalizer may deliver, post, release, write and close, Z#40) and the completions of outstanding resources, which still fire and join. **Then** T16 on the root scope, which stays as the administrative allowance (I11a). **Completes** when no rows remain except cleanup entries, which are reported until they are retired (L2). |
+| T21 | `release-world` | **Request:** sets `released := true`. **Roots revoked:** `observe` callbacks receive `::released`, pins are dropped, `pending-activation` is abandoned. **Host admissions revoked:** remaining handles become released handles, whose operations fail with `::released`, and their rows are removed. **Still admitted (Z#56, Z#66):** B8 cleanup effects, existing/new explicit cleanup waits inside finalizers, their sealed completions, and outstanding resource acknowledgements. Then T16 closes the root scope; it remains the administrative allowance (I11a). Request return does not certify terminal close. **Planned slice-2 join:** settles only after local runs/resources/cleanup and all owned-child terminal acknowledgements finish (§9). A released marker, emptied owner list or `released` flag is not acknowledgement; pending obligations remain observable until then. |
 | T22 | `host-await(d)` / `host-unawait(E)` (Z#27) | **Await:** adds a `wait` edge with creditor host on `d` (demanding it, T5/T11), and validates `d` if it is idle. A root while it exists. **Fire:** when `d` settles or becomes final, the edge is consumed and the host promise receives the result. **Unawait:** a host that stops waiting removes the edge. |
+
+**Planned cleanup transitions (Z#66, slice 1; not yet implemented/modelled):**
+
+| # | Item | Effect |
+|---|---|---|
+| T23 | `finalizer-enter(R, F, outcome)` | Mark the registered head region active and retain the pending body outcome plus outer unwind continuations. Entry is once per region; normal entry has the same B8 restrictions as cancellation entry. |
+| T24 | `await-finalization(R, O, k, ek)` | Requires an active lexical boundary, no existing waiter, a local-origin explicit operation and an admissible owned join (§7). Install the run-owned waiter under the gate before registering with the adapter after the gate. Synchronous completion enqueues T25, never invokes a continuation from registration. Registration throw becomes error completion; the first terminal claim wins, including completion followed by throw. |
+| T25 | `cleanup-complete(origin, R, generation, sequence, outcome)` | A distinct tagged ingress item, separate from cancellation entry and resource acknowledgement. Validate the exact waiter; consume its readiness/control references once and resume only its sealed finalizer `k`/`ek` in a slice. Duplicate/stale items do nothing. Release a detachable subscription exactly once, including one returned after completion raced registration return. Detach withdraws observation, never physical close. |
+| T26 | `finalizer-exit(R, F, outcome)` | Runs on both return and throw; clears the active boundary and removes the region exactly once, only after its body finishes. A finalizer-local catch may recover a cleanup error. Otherwise preserve a body failure as cause with ordered cleanup failures; success plus cleanup failure fails. Cancellation stays irrevocable outside the finalizer and continues outer cancellation unwinding. On ordinary completion, all cleanup precedes result publication. On cancellation, failures enter the eventual world close/join report without amending the published canceled result. Then T13. |
+
+Failures use stable run/region/release order, not callback timing. Operation
+subscriber exceptions cannot stop delivery to other subscribers or change the
+settled outcome. No generic per-task close ticket is introduced. Physical
+resource acknowledgement (T15), operation completion (T25), finalizer exit
+(T26) and run retirement (T13) remain distinct evidence.
 
 ### 5.2 Ownership of created rows (R#9)
 
@@ -813,7 +913,8 @@ Transitions are built from a small set of primitive table edits (§11).
 | top level | owner is the current scope | owner is the current scope | owner is the current scope |
 
 **Errors.**
-- A throw completes the run with `err e`.
+- A throw completes the run with `err e` after lexical cleanup; Z#66 preserves
+  the body failure as cause when cleanup also fails.
 - Errors flow along edges like values.
 - Cancellation reaches `wait` creditors as `err ::cancelled` (T14).
 
@@ -830,21 +931,22 @@ Invariants hold after every commit.
 | I3 | **Liveness:** every row is in `live(W)`, in `storage(W)`, in a cleanup entry, or is admitted by §3.4. |
 | I4 | **Work is reachable:** every run with `act ≠ done` is in `live(W)`. Every run with `act = done` that is not retired has a cleanup entry. |
 | I5 | **Consumption:** no `wait` edge exists without its activation. No armed `dep` edge has a final debtor. An `observe` edge's `seen` never exceeds its debtor's version. |
-| I6 | **Continuation placement:** engine continuations exist only in activations, in `dep` edges (as re-entry points), and in the scheduled slice of an active run. Host data (publications, §8.2) may hold immutable continuation values; B6 makes them free of engine objects. |
+| I6 | **Continuation placement:** engine continuations exist only in activations, in `dep` edges (as re-entry points), in a run's active finalizer boundary/optional sealed cleanup waiter (Z#66), and in its scheduled slice. Host data (publications, §8.2) may hold immutable continuation values; B6 makes them free of engine objects. |
 | I7 | **Idle shape:** an idle computation has no edges, no run, an empty `basis` and no adoption. |
 | I8 | **Closed scopes:** a closed scope owns no run with `act ≠ done` and no open source. |
-| I9 | **Unwinding:** a run with `mode = unwinding` has no activations and no `savepoint` edges. Its resources are `cancelling` or `fired`. |
+| I9 | **Unwinding:** a run with `mode = unwinding` has no ordinary activations and no `savepoint` edges. Its ordinary resources are `cancelling` or `fired`. Its sole permitted suspension is an explicit sealed cleanup waiter (Z#66), which grants no ordinary activation or demand. |
 | I10 | **Runs:** a computation has at most one current run, and every other run of it is stale and retiring. A task has exactly one run until it completes. At most one run in the world has `slice = true` (D0). |
-| I11a | **Retention is reachable from obligations (A#4, X#12):** every row is either part of the fixed per-world administrative allowance (the root scope and the world record), or reachable by the edges of §3.2 from an outstanding obligation, a cleanup entry or a §3.4 admission, or a finalizer ref of a reachable run (Z#3). The **obligations** are: open explicit scopes; runs with `act ≠ done`; outstanding resources; `observe` edges; pins; host handles; `pending-activation`. |
-| I11b | **Bounded fan-out (W#13):** no table is keyed by history. Each row's references are bounded by its current content: <br>• a computation's edges, `basis` and adoption are bounded by its last two runs' effect indices; <br>• an activation's members by its `ds`; <br>• a run's finalizers by the lexical nesting depth; <br>• a source's delta log by `B`; <br>• a mailbox's queue by (posted − taken). <br>Combined with I11a, retained rows are a function of the obligations' current content. The constant factor is measured by the census gate. Physical pages are bounded separately (F5). |
+| I11a | **Retention is reachable from obligations (A#4, X#12):** every row is either part of the fixed per-world administrative allowance (the root scope and the world record), or reachable by the edges of §3.2 from an outstanding obligation, a cleanup entry or a §3.4 admission, or a finalizer ref of a reachable run (Z#3). The **obligations** are: open explicit scopes; runs with `act ≠ done`; outstanding resources; open/active finalizer boundaries and pending cleanup waiters (including normal entry); pending world close and owned-child acknowledgements (Z#66 slice 2); `observe` edges; pins; host handles; `pending-activation`. |
+| I11b | **Bounded fan-out (W#13):** no table is keyed by history. Each row's references are bounded by its current content: <br>• a computation's edges, `basis` and adoption are bounded by its last two runs' effect indices; <br>• an activation's members by its `ds`; <br>• a run's finalizers/boundaries by lexical nesting depth, with at most one current cleanup waiter per run; <br>• an operation's subscriptions and a closing world's child obligations by currently pending observers/owned children, never past registrations; ordered failures by the current close report, cleared from runs at retirement (Z#66); <br>• a source's delta log by `B`; <br>• a mailbox's queue by (posted − taken). <br>Combined with I11a, retained rows are a function of the obligations' current content. The constant factor is measured by the census gate. Physical pages are bounded separately (F5). |
 | I12 | **Rank (A#6):** for every `dep` edge between computations, `rank(creditor) > rank(debtor)`. **Adding an edge** that would violate this raises the creditor's rank and propagates the raise to its creditors. **A cycle:** if the propagation reaches the edge's debtor, the transition refuses with `::cycle`. |
 | I13 | **Coherence as guards (A#5, W#1):** T9 fills a slot from a computation only if that computation is `live`. T12 sets a result only for a current run. |
 | I14 | **Validity is acyclic (Z#60):** the graph whose nodes are idle computations and whose edges go from each to the computation debtors in its `validity` has no cycle. Validation (§3.4) relies on it to terminate. Witness: validity entries strictly decrease in the lexicographic pair (demotion pass, rank at demotion). Demotions in one Rule R pass share their pass and are ordered by I12; a later pass is later; I12 raises happen only in allocating steps, so they never reorder entries recorded in one pass. Rank alone is not a witness: a still-live debtor can be raised after its creditor's demotion (proved in the model, together with "no dep edge has an idle debtor"). |
+| I15 | **Coherence of results (Z#64):** (a) a `live` computation's `dep` edges all have `seen` equal to their debtor's current `version`, and its result is the one its current run produced from those reads; (b) an idle computation whose `validity` is not `invalid` has `done-epoch = epoch`, and each entry records the version its current result read of that debtor; (c) hence validation (§3.4) reactivates a result only when every debtor still has the version the result was computed at. A stale read is a violation of (a) or (b). |
 
 | # | Temporal law |
 |---|---|
 | L1 | **Prompt reclamation:** if transition `t` removes the last reason of a row `r`, then after `t` the row is removed, demoted, admitted by §3.4, or in a cleanup entry. This is a corollary of I3 and Rule R (A#3). |
-| L2 | **Join (W#14, X#11), in two phases.** *Finalizers:* remaining finalizers decrease by one at each finalizer exit, and no finalizer adds one (B8), so all finalizers finish once each slice exits (B9). *Resources:* after the last finalizer, no resource is added, and each acknowledgement removes one. Hence every cleanup entry is retired, given finite slices, returning `offload` functions and acknowledging resources. A resource that never acknowledges is reported. `release-world` completes once its cleanup entries are retired. |
+| L2 | **Join (W#14, X#11, Z#66), conditional progress.** Each finalizer starts finitely many cleanup joins; declared ownership/join dependencies are acyclic; each physical operation eventually completes and each resource/owned child eventually acknowledges; each slice is finite and runnable slices/ingress receive fair dispatch. Under these assumptions, each wait resumes, each finalizer exits once, and each run retires when its remaining resources acknowledge. World terminal close additionally waits for its owned-child acknowledgements (slice 2). B9 alone does not prove async finalizer termination: arbitrary loops or nonacknowledging adapters can stay pending forever. Such obligations remain observable, with no successful timeout-based join. The extended measure/progress proof is pending (§11). |
 | L3 | **Serial execution (D0):** at most one slice of a world executes at any time, and host ingress never waits for the gate (H1, H2). |
 | L4 | **No resurrection:** an operation with an invalid token (§2) changes nothing. |
 | L5 | **Admission (A#8).** *Safety half (proved):* if no slice is runnable and some demanded computation is dirty, then at least one of these holds:
@@ -868,6 +970,7 @@ Body ::= return v | throw e
 op   ::= await (ds, mode) | track X | create-comp | create-source | spawn | detach
        | write X v | deliver X v | post X v | take X | acquire X | release X
        | arm Z | offload f | open-scope | close-scope | savepoint addr | fork
+       | await-finalization O
 ```
 
 `partial-cps` is checked by property tests against a direct-style
@@ -877,25 +980,44 @@ interpreter of the same trees:
 - **B2:** an engine continuation is resumed at most once per fire. T9's phase
   check rejects duplicates. Savepoint continuations are multi-shot; each
   resume belongs to its own run.
-- **B3:** `finally` regions run exactly once per run on return, throw or
-  cancellation, in lexical order. Cancellation runs them as cleanup slices,
-  innermost first. A re-entered run inherits its predecessor's prefix
-  regions (T11).
+- **B3 (Z#66):** entered `finally` regions execute exactly once per run on
+  return, throw or cancellation, innermost first. Entry retains the region
+  until exit on success or exception; a cleanup wait may span slices. Cancel
+  during normal-entry cleanup preserves its continuation and then unwinds
+  outer regions, without restarting that finalizer or running a body suffix.
+  T11 transfers no open region: re-entry requires a site with none (§2).
 - **B4:** effects occur only at lexically visible registered sites
   (CLAUDE.md Rule 2).
 - **B5:** closures held by user code are not engine state.
 - **B6:** continuations close over no engine object (world, run, context,
   edge). The engine supplies them through the activation at slice start.
 - **B7 (D0):** code inside a slice does not block the thread: no blocking IO,
-  host `deref`, sleep or lock wait. Such work goes through `offload`. A
+  host `deref`, sleep or lock wait. Ordinary body work goes through `offload`;
+  finalizer physical close uses the declared cleanup adapter (B8, Z#66). A
   violation stalls only its own world; it cannot break an invariant.
-- **B8 (A#7):** a finalizer that runs as a cleanup slice does not park,
-  spawn or create computations. It is therefore a single slice, finite by B9
-  (X#11). It may write, deliver, post, release and
-  close. It may `offload` a cleanup function without awaiting it; that arms
-  a resource that L2's measure counts.
-- **B9 (X#9):** every slice terminates. A non-terminating pure loop is a
-  body defect, like a blocking call (B7).
+- **B8 (A#7, Z#66):** every lexical finalizer has the same restricted effect
+  domain on normal return, error and cancellation. It may write, deliver, post,
+  release, close, and suspend only with `await-finalization` on an explicit
+  cleanup operation. Reject ordinary await/track/external/sleep, ordinary offload
+  (including unawaited offload), spawn/computation/source creation, fork/savepoint
+  and new engine-owned finally regions. Physical asynchronous close belongs in
+  the declared cleanup adapter. Pure helper `try/finally` is legal and adds no
+  engine obligation. A finalizer-local catch can recover a cleanup error, but
+  cannot recover the outer canceled result. Runtime checks apply at every effect
+  or creation entry, including hidden helpers; macro diagnostics alone do not
+  enforce the boundary.
+- **B9 (X#9, Z#66):** every slice terminates and adapter registration is finite
+  and nonblocking. A non-terminating pure loop or blocking call violates the body
+  contract. Async finalizer termination additionally needs L2's assumptions.
+
+**Declared joins (Z#66).** Cleanup operations describe acyclic already-owned
+lifetimes. Engine bodies may join downward owned targets; a host coordinator
+outside the target tree may join its targets. Reject self, current-world,
+ancestor and unrelated sibling/cross-world joins before parking. A close request
+without joining may target the caller's owner. Consumer activity leases are
+adapter obligations: release the lease before joining. The engine does not
+infer hidden host/CPS dependencies or build a global cross-world cycle detector.
+Independent cross-world joins outside this ownership profile fail explicitly.
 
 ---
 
@@ -940,7 +1062,20 @@ The child `W′` gets:
     counterpart in `W′`, so no acknowledgement is invented.
 - **Inherited `savepoint` edges**, other than `W′.pending-activation`, also
   fire `err ::forked`: the child has no publication for them (W#8).
-- This activation cost is the G3 term "inherited armed resources".
+- **Z#66 inherited cleanup waits (planned slice 1):** fork captures descriptors
+  lazily, preserving O(1) creation. The child has fresh close state and inherits
+  no parent physical controller, callback or host subscription authority.
+  First local activation resumes each inherited pending **or already queued but
+  not resumed** wait through its sealed error continuation with `::forked`
+  exactly once. Remove/replace inherited cleanup-resume items; no copied parent
+  success may resume the child. Parent completion still resumes only the parent.
+  This is local failure of observation, not re-execution of physical close.
+- An explicit operation is a world-origin capability. Using a captured parent
+  operation later in a child fails `::forked` before adapter registration. Child
+  owners must allocate child-local operations and resources; copying a raw
+  captured external handle does not make its cleanup branch-local.
+- This activation cost is the G3 term "inherited armed resources", extended by
+  inherited pending cleanup wait descriptors (Z#66).
 
 **Fork rules:**
 - **F1:** `W′` holds no reference to `W`'s live context: only ids, pinned
@@ -964,7 +1099,12 @@ The child `W′` gets:
 - **F3:** each world applies Rule R to its own tables. A shared page is freed
   when no world and no publication references it; this is a physical
   refcount, not a semantic reason.
-- **F4:** discarding a fork cancels its runs and retires them (T21 in `W′`).
+- **F4:** discarding an activated fork cancels its runs and joins their own
+  cleanup (T21 in `W′`). Frozen/unborn instances discarded without activation run
+  no finalizer, detach or physical-close callback. Release before first normal
+  execution respects that activation/discard distinction and cannot detach the
+  parent. Activated forks finish their local inherited finalizer chains and
+  retire independently of the parent's pending physical operation (Z#66).
 - **F5:** the layer-1 invariants hold in every world. Physical page storage is
   bounded by Σ over live worlds of their touched pages, plus the bases of
   live publications, plus the shared basis.
@@ -1031,7 +1171,34 @@ the existing in-place resume.
   - the ingress queue is empty.
 - `seal(W)`: refuses new host admissions (T4/T5 from the host, T8).
   Propagation continues.
-- `release(W)`: T21 with a join report.
+- `release(W)`: T21's request/report interface. Existing request-level
+  `release-world!`/`discard!` diagnostic-function returns are not changed by Z#66.
+- **Planned Z#66 slice 2:** narrowly named `close-world!` requests closure and
+  returns an opaque world cleanup operation, consumable by `await-finalization`;
+  host observers may subscribe/withdraw. No generic close-ticket protocol and
+  no normal-body wait are added by this phase. Repeated close/observation sees
+  one terminal outcome; withdrawal affects only that subscriber.
+  **Origin versus target:** `close-world!(child)` invoked in a parent slice
+  returns a parent-origin observation capability targeting that child. The
+  parent's finalizer can await it if the downward owned-join check passes.
+  Origin does not become the child's identity merely because it is the target.
+  All observation capabilities for that target share its single physical close
+  and stable terminal outcome; a new observer does not restart physical close.
+  A copied parent-origin capability still fails `::forked` when awaited in a
+  child, even if that child is its target. A host caller must explicitly select
+  the observation-origin world, by an explicit origin argument or selected-world
+  binding; the target is never an implicit origin. Host subscription/withdrawal
+  requires no engine slice and grants no authority to await in another world.
+  Origin selection also does not bypass the target ownership/join restrictions.
+  Terminal close needs all local root-subtree obligations/resources and owned
+  child acknowledgements. Record a pending child before dropping its live
+  ownership marker; admission before close with publication afterward still
+  requires disposal and acknowledgement. Child acknowledgement queues ingress
+  after releasing its gate; never acquire a foreign gate while holding one.
+  Production counters/sets track pending work independently of verify-only row
+  census. Root-owned fork references remain weak in ordinary lifetime; a pending
+  close may hold its target until acknowledgement, then clears all controllers,
+  release closures, world references and subscribers, retaining only the outcome.
 - `diff(W′)`: source rows written in `W′` relative to its basis.
 - merge entry point: refuses unless `W′` is quiescent and sealed. Merge
   semantics, stamping, durability and recovery are the settlement layer's
@@ -1139,9 +1306,24 @@ Shaped by the ansatz feasibility read (`ansatz/.internal/design/spindel-v2-feasi
 2. **Safety.** I1–I13, L1, L4 and the safety half of L5 are preserved by
    every `step`. Rule R's lemma obligation (§3.3) is proved once.
 
-3. **Join.** L2 is proved as the measure lemma on `μ(R)`. "Fair execution
-   implies retirement" stays a paper argument (well-foundedness of
-   ℕ × ℕ).
+3. **Join.** The pre-Z#66 L2 argument uses the measure lemma on `μ(R)`
+   and well-foundedness of ℕ × ℕ. That argument does not cover suspended
+   finalizers. Z#66 needs explicit cleanup-enter/wait/complete/exit steps and
+   preservation of I6/I9/I11, plus a progress lemma under L2's finite, acyclic,
+   acknowledging and fair-dispatch assumptions.
+
+   **Z#66 acceptance remains pending.** Required formal obligations are: exact
+   once-only boundary/waiter consumption through cancel/queued completion;
+   cleanup retention independent of reactive demand and ordinary run validity;
+   fork-origin isolation including queued completion; and conditional retirement.
+   Origin/target witnesses must admit a parent-origin capability joining its
+   owned child while rejecting that same capability when copied into a child.
+   Slice 2 additionally needs conservation of owned-child acknowledgement debt
+   through close/late publication and terminal-close soundness. The external
+   model must encode these transitions and pin its revision in acceptance
+   evidence. Old oracle replay cannot prove steps it cannot express. A local
+   finite contract test is supplementary evidence only; it neither discharges
+   these lemmas nor the existing Z#64/I15 obligation.
 
 4. **Oracle.**
    - The model namespace holds definitions only and loads fast. The proofs
@@ -1199,7 +1381,8 @@ Shaped by the ansatz feasibility read (`ansatz/.internal/design/spindel-v2-feasi
 - Re-entry (T11) is possible only at `dep` sites where the run holds no
   `finally` region and no resource (§2). Other sites restart the body. The
   stale run is cancelled normally, so nothing transfers between runs.
-  Finalizers in cleanup cannot park or spawn (B8).
+  Z#66 permits only explicit cleanup-operation waits in finalizers; ordinary
+  parking and spawning remain forbidden (B8).
 - Computations carry explicit ranks (I12).
 - The row-bound constant is measured by the census gate, not proved (I11b).
 
@@ -1223,7 +1406,9 @@ Shaped by the ansatz feasibility read (`ansatz/.internal/design/spindel-v2-feasi
 | `spawn!`, work `task` / `submit-work!` | task (structured; `detach` for fire-and-forget) |
 | `run-spin!` (one-shot) | a host `wait`-style delivery |
 | `render-spin!`, subscriptions | `observe` |
-| `parallel`, `race`, `timeout` | `await` with mode `all`/`any`; in a task the members are `wait` edges, in a computation `dep` edges |
+| `parallel` | reactive computation over `await(all)` |
+| `race`, `timeout` | eager one-shot task over `await(any)` (Z#65); first completion wins, shared tasks are not cancelled as losers |
+| explicit reactive selection | `spin (await-any ...)`; computation dependency semantics |
 | `signal`, `atom`, `deferred`, `mailbox`, `semaphore` | sources (§4.3) |
 | `mult`, `pub`, `debounce`, `throttle` | library tasks over mailboxes and timers |
 | `rerun!`, `trace/update`, `what-if`, `mark-dirty!` | writes to rerun sources (§4.1) |
@@ -1235,11 +1420,12 @@ Shaped by the ansatz feasibility read (`ansatz/.internal/design/spindel-v2-feasi
 | `stop-context!`, `release-context!` | `seal` / `release` |
 | `snapshot-context` / `serialize-context` | frozen fork plus basis serialization (layer 2b) |
 
-**Behavior changes (approved 2026-11-03 and 2026-11-04):**
+**Behavior changes (approved 2026-11-03 through 2026-11-05):**
 - lazy invalidation of unobserved computations;
 - `track` in a task is a snapshot read;
 - frozen is the default fork mode;
 - structured tasks;
+- public `race` and `timeout` are one-shot tasks (Z#65);
 - `await` in a task is one-shot;
 - dependents wait for asynchronous recomputation, unless the dirty debtor is
   blocked (Q11, §4.5.6–7);

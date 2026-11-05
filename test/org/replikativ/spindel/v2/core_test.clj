@@ -166,3 +166,20 @@
          (v2/write! b 30)
          (is (= [:saw :no-await] (v2/value d 1000 ::timeout)) "the creditor settles after a later write")
          (is (zero? (v2/call-in! w #(aget ^objects (v2/row-of d) rw/C-PENDING))) "nothing is left pending"))))))
+
+(deftest an-idle-chain-read-from-the-top-sees-a-write
+  ;; Z#64: validating `p` finds its idle debtor `a` invalid; Rule R re-demotes
+  ;; `a` at once (nothing references it yet), which must record it :invalid,
+  ;; not valid by its empty edge list (it was returning the stale result)
+  (checked
+   (let [w (vworld)]
+     (binding [v2/*world* w]
+       (let [s (v2/signal 10)
+             a (spin (iv/get-new (track s)))
+             p (spin (await a))
+             q (spin [(await a) (await p)])]
+         (is (= 10 (v2/value p 1000 ::timeout)))
+         (is (= [10 10] (v2/value q 1000 ::timeout)))
+         (v2/write! s 99)
+         (is (= 99 (v2/value p 1000 ::timeout)) "p re-runs: a changed")
+         (is (= [99 99] (v2/value q 1000 ::timeout))))))))

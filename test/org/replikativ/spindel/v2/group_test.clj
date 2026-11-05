@@ -106,3 +106,13 @@
          (v2/write! x 1)
          (is (= [[:b :base] [:b :cycle]] @seen))
          (u))))))
+
+(deftest computation-group-await-over-a-final-debtor
+  ;; the fast path removes the final debtor's dep edge while scanning C.ins
+  (checked
+   (let [w (vworld)]
+     (binding [v2/*world* w]
+       (let [d (v2/deferred) e (v2/deferred)]
+         (v2/deliver! d :delivered)
+         (is (= :delivered (v2/value (spin (await-any [d e])) 1000 ::timeout)))
+         (is (= [:delivered :delivered] (v2/value (spin (await-all [d d])) 1000 ::timeout))))))))
