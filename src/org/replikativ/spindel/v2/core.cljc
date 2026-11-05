@@ -2461,13 +2461,15 @@
   h)
 
 (defn- handle-drop!
-  "T19: `handles -= 1`; Rule R applies §3.4."
+  "T19: `handles -= 1`; Rule R applies §3.4. The Cleaner can retain a
+   pre-fork row, so resolve it under the receiving world's gate first."
   [w x]
-  (if (zero? (gl x rw/HANDLES))
-    (refuse! w [:handle-drop (g x rw/ID)])
-    (do (s! x rw/HANDLES (dec (gl x rw/HANDLES)))
-        (when (zero? (gl x rw/REFS)) (aadd! (g w rw/W-RQ) x))
-        (commit! w [:handle-drop (g x rw/ID)]))))
+  (let [x (rv w x)]
+    (if (zero? (gl x rw/HANDLES))
+      (refuse! w [:handle-drop (g x rw/ID)])
+      (do (s! x rw/HANDLES (dec (gl x rw/HANDLES)))
+          (when (zero? (gl x rw/REFS)) (aadd! (g w rw/W-RQ) x))
+          (commit! w [:handle-drop (g x rw/ID)])))))
 
 (defn release!
   "T19 by hand: drops this handle now instead of at collection."
