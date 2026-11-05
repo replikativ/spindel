@@ -3166,6 +3166,42 @@
 (defn await-any [_] (throw (ex-info "await-any outside a body" {})))
 
 ;; ---------------------------------------------------------------------------
+;; Custom effects (M6 R3): a handler returns an op, the engine executes it;
+;; handlers never see continuations.
+
+(defonce ^:private effect-handlers (clojure.core/atom {}))
+
+#?(:clj (defonce ^:private extra-breakpoints (clojure.core/atom {})))
+
+(defn register-effect!
+  "R3: makes `sym` (qualified) an effect of spin/task bodies. `handler` is
+   `(fn [args ctx] op)`, called inside the slice; `ctx` is {:effect :site
+   :run :effect-index}, `:site` stable per call site. `op` is one of
+   [:value v], [:error e], [:external f] (R2), [:savepoint site payload]
+   (S1, multi-shot) or [:await h]. Bodies compiled before the registration
+   do not see the effect."
+  [sym handler]
+  (swap! effect-handlers assoc sym handler)
+  #?(:clj (swap! extra-breakpoints assoc sym `bp-custom))
+  sym)
+
+(defn custom-effect!
+  [sym args site k ek]
+  (if-let [r (valid-run)]
+    (let [h (or (get @effect-handlers sym)
+                (throw (ex-info "unregistered effect" {:spindel/invalid :effect :effect sym})))
+          op (try (h args {:effect sym :site site :run (g r rw/ID) :effect-index (gl r rw/R-EIDX)})
+                  (catch #?(:clj Throwable :cljs :default) t [:error t]))]
+      (case (when (vector? op) (first op))
+        :value (k (nth op 1))
+        :error (ek (nth op 1))
+        :external (external-effect! (nth op 1) k ek)
+        :savepoint (savepoint-effect! (nth op 1) (nth op 2) k ek)
+        :await (await-effect! (row-of (nth op 1)) k ek)
+        (ek (ex-info "an effect handler returned no op" {:spindel/invalid :effect :effect sym :op op}))))
+    (unwind! ek)))
+
+;; ---------------------------------------------------------------------------
 ;; Body macros (partial-cps)
 
 #?(:clj
@@ -3186,6 +3222,12 @@
        (fn [[f]] `(offload-effect! ~f ~r ~e)))
      (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-external [_ctx r e]
        (fn [[f]] `(external-effect! ~f ~r ~e)))
+     (declare site-of)
+     (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-custom [ctx r e]
+       (let [form (:form ctx)
+             sym (ioc/var-name (:env ctx) (first form))
+             site (site-of form)]
+         (fn [args] `(custom-effect! '~sym [~@args] ~site ~r ~e))))
      (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-sleep [_ctx r e]
        (fn [[ms]] `(sleep-effect! ~ms ~r ~e)))
      (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-consume [_ctx r e]
@@ -3263,7 +3305,7 @@
          :else form))
      (defn- body-fn [env body]
        (let [r (gensym "r") e (gensym "e")
-             params {:r r :e e :env env :breakpoints breakpoints
+             params {:r r :e e :env env :breakpoints (merge breakpoints @extra-breakpoints)
                      :opaque-scopes #{`spin `task}}]
          `(fn [~r ~e] ~(ioc/invert params (binding [*env* env] (register-finally (cons 'do body)))))))
      (def empty-inputs (object-array 0))
@@ -3292,6 +3334,15 @@
          `(let [~s (open-scope!)]
             (~'try (do (enter-finally!) ~@body)
                    (~'finally (exit-finally!) (close-scope-fx! ~s))))))
+     (defmacro defeffect
+       "R3: defines effect `name` in this namespace: `(defeffect choose [args
+        ctx] op-form)`; see register-effect!. It registers at expansion too,
+        so later bodies in the same file see it."
+       [name [args ctx] & body]
+       (let [sym (symbol (str *ns*) (str name))]
+         (swap! extra-breakpoints assoc sym `bp-custom)
+         `(do (defn ~name [& _#] (throw (ex-info ~(str name " outside a body") {})))
+              (register-effect! '~sym (fn [~args ~ctx] ~@body)))))
      (defmacro task
        "A task (T4): started at once; structured child of the creating run."
        [& body]

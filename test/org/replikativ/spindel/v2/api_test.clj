@@ -241,3 +241,41 @@
          (is (= [:ok :forked] (outcome (v2/in-world c t))))
          (complete! :parent-value)
          (is (= [:ok :parent-value] (outcome t)) "the parent's completion is its own"))))))
+
+;; --- R3 custom effects
+
+(v2/defeffect choose [[options] ctx]
+  [:value (first options)])
+
+(v2/defeffect fail-with [[msg] _]
+  [:error (ex-info msg {:custom true})])
+
+(v2/defeffect later [[v] _]
+  [:external (fn [complete!] (future (complete! v)) nil)])
+
+(v2/defeffect ask [[q] _]
+  [:savepoint :ask q])
+
+(v2/defeffect where [_ ctx]
+  [:value (select-keys ctx [:effect :site])])
+
+(deftest custom-effects-return-ops
+  (checked
+   (let [w (vworld) pubs (atom [])]
+     (v2/install-handlers! w {:ask (fn [p] (swap! pubs conj p))})
+     (binding [v2/*world* w]
+       (is (= [:ok :a] (outcome (task (choose [:a :b])))) "[:value v]")
+       (is (= [:err {:custom true}] (outcome (task (fail-with "boom")))) "[:error e]")
+       (is (= [:ok 7] (outcome (task (later 7)))) "[:external f]")
+       (let [t (task (inc (ask 41)))]
+         (is (wait-until #(seq @pubs)))
+         (is (= 41 (:payload (first @pubs))) "[:savepoint site payload]")
+         (v2/resume! (first @pubs) 41)
+         (is (= [:ok 42] (outcome t))))
+       (testing "ctx carries the effect and a site stable per call site"
+         (let [f (fn [] (task [(where) (where)]))
+               [[a b]] [(second (outcome (f)))]
+               [[c _]] [(second (outcome (f)))]]
+           (is (= `where (:effect a)))
+           (is (not= (:site a) (:site b)) "two call sites")
+           (is (= (:site a) (:site c)) "the same call site in another run")))))))
