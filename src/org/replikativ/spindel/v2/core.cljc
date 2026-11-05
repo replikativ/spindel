@@ -2370,7 +2370,11 @@
                  `(throw (released-ex))])
             (hs/held? ~lk) (if (identical? ~w' (cw))
                              (~f')
-                             (let [~prev (enter-world! ~w')
+                             (let [~prev (enter-world! ~w')]
+                               (try (~f') (finally (leave-world! ~prev)))))
+            ;; Fast path preserves FIFO without an ingress node.
+            (and (g ~w' rw/W-INLINE) (hs/mpsc-empty? (ingress ~w')) (hs/try-lock! ~lk))
+            (let [~prev (enter-world! ~w')
                   [~v ~failed?]
                   (try [(do (s! ~w' rw/W-DRAINING true)
                             (let [v# (try (~f') (finally (s! ~w' rw/W-DRAINING false)))]
