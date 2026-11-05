@@ -7,11 +7,13 @@
 (def jobs (atom []))
 (defn- pump! [] (loop [n 1000] (when-let [f (first @jobs)] (assert (pos? n)) (swap! jobs subvec 1) (f) (recur (dec n)))))
 (defn- snapshot [w]
-  {:rank @v2/world-order :next-id (v2/peek-id w)
-   :worlds (:worlds (lt/census (aget w rw/W-FAMILY) (aget w rw/W-WATCHES) nil))
-   :acquisition (:next-child (aget w rw/W-CLOSE))
-   :owned (some-> (aget w rw/W-OWNED) hs/msize)
-   :fork-host (count (filter #(= :fork-host (first (:item %))) (array-seq (aget w rw/W-LOG))))})
+  (let [log (aget w rw/W-LOG)]
+    (assert (some? log) "snapshot commit oracle requires verify? true")
+    {:rank @v2/world-order :next-id (v2/peek-id w)
+     :worlds (:worlds (lt/census (aget w rw/W-FAMILY) (aget w rw/W-WATCHES) nil))
+     :acquisition (:next-child (aget w rw/W-CLOSE))
+     :owned (some-> (aget w rw/W-OWNED) hs/msize)
+     :fork-host (count (filter #(= :fork-host (first (:item %))) (array-seq log)))}))
 
 (defn- read-now [h]
   (let [result (atom [])]
@@ -139,7 +141,7 @@
 
 (defn- unborn! []
   (doseq [phase [:before-intent :intent :claim]]
-    (let [p (v2/world) pubs (atom []) pending (atom []) original-internal v2/internal!]
+    (let [p (v2/world {:verify? true}) pubs (atom []) pending (atom []) original-internal v2/internal!]
       (v2/install-handlers! p {:s #(swap! pubs conj %)})
       (binding [v2/*world* p]
         (let [t (task (v2/savepoint :s nil)) c (v2/instantiate (first @pubs))]
@@ -184,7 +186,7 @@
 
 (defn- noninline-refusal-before-real-activation! []
   (doseq [close-queued? [false true]]
-    (let [p (v2/world) pubs (atom [])]
+    (let [p (v2/world {:verify? true}) pubs (atom [])]
       (v2/install-handlers! p {:s #(swap! pubs conj %)})
       (binding [v2/*world* p]
         (task (v2/savepoint :s nil))
