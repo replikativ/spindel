@@ -82,6 +82,14 @@ jobs:
           name: Run v2 cleanup smoke tests
           command: node target/cleanup-smoke/main.js
       - run:
+          name: Compile v2 World-close smoke tests
+          command: |
+            rm -rf target/world-close-smoke
+            clojure -J-Xmx1g -Sdeps '{:paths ["src" "test-cljs"]}' -M -m cljs.main -co '{:target :nodejs :optimizations :simple :elide-asserts false :output-dir "target/world-close-smoke/out" :output-to "target/world-close-smoke/main.js"}' -c org.replikativ.spindel.v2.world-close-smoke
+      - run:
+          name: Run v2 World-close smoke tests
+          command: node target/world-close-smoke/main.js
+      - run:
           name: Compile v2 cleanup retention probes
           command: >-
             clojure -J-Xmx1g -Sdeps '{:paths ["src" "test-cljs"]}' -M -m cljs.main
@@ -90,6 +98,14 @@ jobs:
       - run:
           name: Verify cleanup retention with real Node garbage collection
           command: node --expose-gc target/cleanup-gc/main.js
+      - run:
+          name: Compile unoptimized v2 cleanup retention probes
+          command: |
+            rm -rf target/cleanup-gc-none
+            clojure -J-Xmx1g -Sdeps '{:paths ["src" "test-cljs"]}' -M -m cljs.main -co '{:target :nodejs :optimizations :none :elide-asserts false :output-dir "target/cleanup-gc-none/out" :output-to "target/cleanup-gc-none/main.js"}' -c org.replikativ.spindel.v2.cleanup-gc
+      - run:
+          name: Verify unoptimized cleanup retention with real Node garbage collection
+          command: node --expose-gc target/cleanup-gc-none/main.js
 
 workflows:
   build-test-and-deploy:
