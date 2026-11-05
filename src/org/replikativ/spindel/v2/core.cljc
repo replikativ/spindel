@@ -14,6 +14,7 @@
              #?@(:clj [:refer [g s! gl alist acount anth aadd! apop! aput! aclear! acopy]])]
             [org.replikativ.spindel.incremental.interval :as iv]
             [org.replikativ.spindel.v2.host :as hs]
+            [org.replikativ.spindel.v2.lifetime :as lt]
             [is.simm.partial-cps.runtime :as pr]
             #?(:clj [is.simm.partial-cps.ioc :as ioc])
             #?(:clj [org.replikativ.spindel.engine.free-vars :as free-vars]))
@@ -23,7 +24,7 @@
 #?(:clj (set! *warn-on-reflection* true))
 
 (declare create-source-top-host! row-of world-of cancel-resource! resource-ack! demand! settle! pending-zero! rule-r! complete! validate!
-         deliver-observe! value cancel! finish-task!)
+         deliver-observe! value cancel! finish-task! request-atom-sweep! finish-metadata!)
 
 ;; ---------------------------------------------------------------------------
 ;; Execution context: the world being processed and the run holding the slice
@@ -121,7 +122,11 @@
      (s! w rw/W-AFTER (alist))
      (s! w rw/W-STATE {})
      (s! w rw/W-ATOMS {})
-     (s! w rw/W-FAMILY #?(:clj (Object.) :cljs (js-obj)))
+     (s! w rw/W-FAMILY (lt/family))
+     (s! w rw/W-WATCHES (lt/index))
+     (s! w rw/W-SWEEP-GEN 0)
+     (s! w rw/W-SWEEP-PENDING (hs/flag false))
+     (s! w rw/W-META-CLOSED false)
      (when verify?
        (s! w rw/W-REG (hs/lmap))
        (s! w rw/W-LOG (alist))
@@ -131,7 +136,35 @@
        (s! w rw/W-HOOK hook))
      (s! w rw/ID (alloc-id! w))
      (s! w rw/W-ROOT (new-scope w (alloc-id! w) :root nil))
+     (lt/register-world! (g w rw/W-FAMILY) w (g w rw/ID) (g w rw/W-WATCHES) 0 request-atom-sweep!)
      w)))
+
+(defn- atom-maintenance!
+  "Metadata only: no ingress, dormant activation, engine drain or callbacks."
+  [w]
+  (let [lk (g w rw/W-LOCK)]
+    (if (hs/try-lock! lk)
+      (try
+        ;; Reset before reading generation/scanning: a new request now queues
+        ;; a second pass, while a request before reset is covered by this one.
+        (hs/flag-set! (g w rw/W-SWEEP-PENDING) false)
+        (let [generation (lt/generation (g w rw/W-FAMILY))]
+          (when-not (g w rw/W-META-CLOSED)
+            (s! w rw/W-ATOMS
+                (persistent!
+                 (reduce-kv (fn [m id entry]
+                              (if (hs/deref-weak (first entry)) (assoc! m id entry) m))
+                            (transient {}) (g w rw/W-ATOMS)))))
+          (s! w rw/W-SWEEP-GEN generation))
+        (finally (hs/unlock! lk)))
+      ;; A busy gate cannot lose the pending request. The dedicated scheduler
+      ;; is asynchronous even when the world's application executor is inline.
+      (hs/metadata-later! #(atom-maintenance! w) 1))))
+
+(defn- request-atom-sweep! [w]
+  (when (and (not (g w rw/W-META-CLOSED))
+             (hs/flag-cas! (g w rw/W-SWEEP-PENDING) false true))
+    (hs/metadata-later! #(atom-maintenance! w))))
 
 (declare host!)
 
@@ -1524,22 +1557,69 @@
 
 (declare host! handle-drop! href)
 
+(defn- watchable-source? [row]
+  (and row (== rw/T-SOURCE (gl row rw/TYPE)) (<= (gl row rw/X-KIND) rw/SRC-CELL)))
+
+(defn- source-token-drop!
+  "The canonical source token's T19 bookkeeping, without an engine turn.
+   A source with no refs/handles can only leave the verify registry: there
+   are no graph edges, slices or callbacks to retire."
+  [w row]
+  (let [lk (g w rw/W-LOCK)]
+    (if (hs/try-lock! lk)
+      (try
+        (when-not (g w rw/W-META-CLOSED)
+          (lt/locked
+           (fn []
+             (let [x (rv w row)]
+               (when (and (pos? (gl x rw/HANDLES))
+                          (not (lt/live-token? (g w rw/W-WATCHES) (g x rw/ID))))
+                 (s! x rw/HANDLES (dec (gl x rw/HANDLES)))
+                 (when (and (zero? (gl x rw/HANDLES)) (zero? (gl x rw/REFS)))
+                   (unregister! w x))
+              ;; Keep the verify ledger, but never call its embedder hook
+              ;; (or commit!/Rule R, which can execute unrelated graph work).
+                 (when-let [log (g w rw/W-LOG)]
+                   (aadd! log {:item [:handle-drop (g x rw/ID)] :accepted true})))))))
+        (finally (hs/unlock! lk)))
+      (hs/metadata-later! #(source-token-drop! w row) 1))))
+
+(defn- attach-watch-token! [w cell row]
+  (when (watchable-source? row)
+    (let [on-death (when (some? (g w rw/W-REG))
+                     (let [ww (hs/weak w) wr (hs/weak row)]
+                       (fn []
+                         (when-let [w (hs/deref-weak ww)]
+                           (when-let [row (hs/deref-weak wr)]
+                             (hs/metadata-later! #(source-token-drop! w row)))))))]
+      ;; Source aliases share one existing logical handle allowance. Its GC
+      ;; drop follows the canonical token, not whichever alias dies first.
+      (lt/source-token! (g w rw/W-WATCHES) (g row rw/ID) cell on-death))))
+
 (defn- new-handle
   "A fresh handle object for `w`; T19 is enqueued when it is collected. The
    cleaning action holds the cell and the flag, never the handle."
   [w row]
-  (let [cell (object-array 1)
+  (let [cell (object-array 3)
         dropped (hs/flag false)
         h (Handle. w cell dropped)]
     (aset cell 0 row)
+    (attach-watch-token! w cell row)
     ;; T19 on collection matters only where the engine keeps rows that have no
     ;; engine reason: the verify registry. In production such rows are held by
     ;; their handles alone, so the host GC frees them with the handle, and no
     ;; Cleaner traffic competes for the gate (§1, G1).
-    (when (some? (g w rw/W-REG))
-      (hs/on-collect! h (fn []
-                          (when (hs/flag-cas! dropped false true)
-                            (host! w #(when-let [x (aget cell 0)] (handle-drop! w x)))))))
+    (when (and (some? (g w rw/W-REG)) (not (watchable-source? row)))
+      (let [ww (hs/weak w)
+            row-cell (object-array [row])]
+        ;; Do not capture cell: its source watch token may capture the handle.
+        ;; Top handles bind the separate cleaning cell when their row commits.
+        (aset cell 2 {:drop-row row-cell})
+        (hs/on-collect! h (fn []
+                            (when-let [row (aget row-cell 0)]
+                              (when (hs/flag-cas! dropped false true)
+                                (when-let [w (hs/deref-weak ww)]
+                                  (host! w #(handle-drop! w row)))))))))
     h))
 
 (defn- handle!
@@ -1548,10 +1628,13 @@
   [w row]
   (or (let [r (g row rw/HREF)] (if (instance? Handle r) r (hs/deref-weak r)))
       (let [h (new-handle w row)
-            again? (some? (g row rw/HREF))]
-        (s! row rw/HANDLES (inc (gl row rw/HANDLES)))
+            again? (some? (g row rw/HREF))
+            acquire? (or (not (watchable-source? row)) (zero? (gl row rw/HANDLES)))]
+        ;; Source aliases share one logical allowance, owned by their token.
+        ;; Replacing a dead canonical HREF does not acquire a second allowance.
+        (when acquire? (s! row rw/HANDLES (inc (gl row rw/HANDLES))))
         (s! row rw/HREF (href w h))
-        (when again? (commit! w [:handle-new (g row rw/ID)]))
+        (when (and again? acquire?) (commit! w [:handle-new (g row rw/ID)]))
         h)))
 
 (defn- href
@@ -1559,7 +1642,10 @@
    drives T19 (Cleaner), strongly otherwise, where nothing depends on it and
    the host GC frees row and handle together."
   [w h]
-  (if (some? (g w rw/W-REG)) (hs/weak h) h))
+  (if (or (some? (g w rw/W-REG))
+          (watchable-source? (aget ^objects (.-cell ^Handle h) 0)))
+    (hs/weak h)
+    h))
 
 (defn- top-handle
   "A handle returned before its creating item commits (H1)."
@@ -1567,9 +1653,18 @@
   (new-handle w nil))
 
 (defn- bind-handle!
-  "The creating item commits: the handle names its row, which holds it weakly."
+  "The creating item commits. Cold pending world-refs receive only the row,
+   never the Handle's source token or foreign-world ownership metadata."
   [h row]
-  (aset ^objects (.-cell ^Handle h) 0 row)
+  (let [cell (.-cell ^Handle h)]
+    (aset ^objects cell 0 row)
+    (when-let [drop-row (:drop-row (aget ^objects cell 2))]
+      (aset ^objects drop-row 0 (when-not (watchable-source? row) row)))
+    (when (:ref-cells (aget ^objects cell 2))
+      (lt/locked #(let [m (aget ^objects cell 2)]
+                    (doseq [ref-cell (:ref-cells m)] (aset ^objects ref-cell 0 row))
+                    (aset ^objects cell 2 (dissoc m :ref-cells)))))
+    (attach-watch-token! (.-w ^Handle h) cell row))
   (s! row rw/HREF (href (.-w ^Handle h) h)))
 
 (defn row-of
@@ -1948,7 +2043,7 @@
             (cond (and (not unborn?) (drain-step! w)) (recur (dec n) false)
                   (run-callbacks! w) (recur n unborn?)
                   :else false))))
-      (finally (s! w rw/W-DRAINING false)))))
+      (finally (finish-metadata! w) (s! w rw/W-DRAINING false)))))
 
 (declare handoff! activate-dormant!)
 
@@ -2289,25 +2384,13 @@
   v)
 
 (defn- notify-watches!
-  "This world's watches on `id` (a signal row or an atom), called at the
-   commit, synchronously, under the gate (as clojure.core watches are called
-   by the mutating thread). A failing watch is reported."
+  "Snapshot under the world gate; callbacks run without metadata locks."
   [w id ref old new]
-  (when-let [ws (g w rw/W-WATCHES)]
-    (when-let [m (get ws id)]
-      (doseq [[k f] m]
-        (try (f k ref old new)
-             (catch #?(:clj Throwable :cljs :default) t
-               #?(:clj (binding [*out* *err*] (println "watch" k "failed:" t))
-                  :cljs (js/console.error "watch" k "failed:" t))))))))
-
-(defn- add-watch* [w id k f]
-  (host-call! w #(s! w rw/W-WATCHES (assoc-in (g w rw/W-WATCHES) [id k] f))))
-
-(defn- remove-watch* [w id k]
-  (host-call! w #(s! w rw/W-WATCHES (let [ws (g w rw/W-WATCHES)
-                                          m (dissoc (get ws id) k)]
-                                      (if (empty? m) (dissoc ws id) (assoc ws id m))))))
+  (doseq [[k f] (lt/callbacks (g w rw/W-WATCHES) id)]
+    (try (f k ref old new)
+         (catch #?(:clj Throwable :cljs :default) t
+           #?(:clj (binding [*out* *err*] (println "watch" k "failed:" t))
+              :cljs (js/console.error "watch" k "failed:" t))))))
 
 (defn write!
   "T2: `version += 1`, fire dep edges and deliver observe edges (§4.5.1)."
@@ -2463,10 +2546,25 @@
 (deftype Ref [^objects cell family])
 
 (defn world-ref
-  "A world-neutral reference to the row of handle `h`, for world state:
-   resolving it in a world gives that world's handle (a fork's own copy)."
+  "A world-neutral row reference. Capsule ownership belongs to Handle
+   objects and must never be copied into a Ref."
   [h]
-  (Ref. (.-cell ^Handle h) (g (.-w ^Handle h) rw/W-FAMILY)))
+  (try
+    (let [cell (.-cell ^Handle h)
+          row (aget ^objects cell 0)
+          ref-cell (object-array [row])]
+      (when-not row
+        ;; The creating item may still be queued. Publish the pending ref
+        ;; before rechecking row publication, closing bind-vs-ref races without
+        ;; a global lock on ordinary handle construction/binding.
+        (lt/locked #(do
+                      (aset ^objects cell 2 (update (aget ^objects cell 2) :ref-cells (fnil conj []) ref-cell))
+                      (when-let [row (aget ^objects cell 0)]
+                        (aset ^objects ref-cell 0 row)
+                        (aset ^objects cell 2 (update (aget ^objects cell 2) :ref-cells
+                                                      (fn [refs] (vec (remove (fn [r] (identical? r ref-cell)) refs)))))))))
+      (Ref. ref-cell (g (.-w ^Handle h) rw/W-FAMILY)))
+    (finally (hs/fence! h))))
 
 (defn ref? [x] (instance? Ref x))
 
@@ -2504,10 +2602,27 @@
   (handle-swap! h #(apply f % args) (fn [old n] (not= old n))))
 
 (defn- handle-row-id [h] (aget ^objects (aget ^objects (.-cell ^Handle h) 0) rw/ID))
-(defn- handle-watch! [h k f] (add-watch* (world-of h) (handle-row-id h) k f))
-(defn- handle-unwatch! [h k] (remove-watch* (world-of h) (handle-row-id h) k))
-(defn- handle-watches [h]
-  (let [w (world-of h)] (host-call! w #(get (g w rw/W-WATCHES) (handle-row-id h) {}))))
+(defn- handle-watch-token [h w]
+  (let [cell (.-cell ^Handle h) row (aget ^objects cell 0)]
+    (when-not (watchable-source? row)
+      (throw (invalid-op :watch "watches are supported on signals and cells")))
+    (if (identical? w (.-w ^Handle h))
+      (aget ^objects cell 1)
+      (let [owner (lt/locked
+                   #(or (:foreign-owner (aget ^objects cell 2))
+                        (let [o (lt/owner)]
+                          (aset ^objects cell 2 (assoc (aget ^objects cell 2) :foreign-owner o)) o)))]
+        (lt/owned-token! (g w rw/W-WATCHES) (g w rw/ID) (g row rw/ID) owner)))))
+
+(defn- handle-watch-op! [h f]
+  (try
+    (let [w (world-of h)]
+      (host-call! w #(f (handle-watch-token h w))))
+    (finally (hs/fence! h))))
+
+(defn- handle-watch! [h k f] (handle-watch-op! h #(lt/add-watch! % k f)))
+(defn- handle-unwatch! [h k] (handle-watch-op! h #(lt/remove-watch! % k)))
+(defn- handle-watches [h] (handle-watch-op! h #(deref (:callbacks %))))
 
 (defn- handle-claim!
   "(d v) delivers a deferred (true when this call delivered it); (mb v)
@@ -2562,45 +2677,46 @@
     (when-not (identical? family (g w rw/W-FAMILY)) (throw (missing-state id)))
     w))
 
-(defn- atom-watch-op!
-  "Runs `(f w)` under the gate of the current world, which must hold the
-   atom's state."
-  [family id f]
-  (let [w (atom-world family id)]
-    (host-call! w #(if (contains? (g w rw/W-ATOMS) id) (f w) (throw (missing-state id))))))
+(defn- atom-watch-op! [ref family id owner f]
+  (try
+    (let [w (atom-world family id)]
+      (host-call! w #(if (contains? (g w rw/W-ATOMS) id)
+                       (f (lt/owned-token! (g w rw/W-WATCHES) (g w rw/ID) id owner))
+                       (throw (missing-state id)))))
+    (finally (hs/fence! ref))))
 
 (defn- atom-op!
-  "Runs `f` on the atom's value in the current world, under the gate; `f`
-   returns [new-value result]. A changed value notifies this world's
-   watches at the commit."
+  "Operate on the value, preserving the wrapper's weak entry. Fence on all
+   paths, including failed user updates and throwing watch callbacks."
   [ref family id f]
-  (let [w (atom-world family id)]
-    (host-call! w #(let [m (g w rw/W-ATOMS)]
-                     (if (contains? m id)
-                       (let [old (get m id)
-                             [v' ret] (f old)]
-                         (when-not (identical? v' old)
-                           ;; f may update another atom under this same gate.
-                           (s! w rw/W-ATOMS (assoc (g w rw/W-ATOMS) id v'))
-                           (notify-watches! w id ref old v'))
-                         ret)
-                       (throw (missing-state id)))))))
+  (try
+    (let [w (atom-world family id)]
+      (host-call! w #(let [m (g w rw/W-ATOMS)]
+                       (if-let [[weak-ref old] (get m id)]
+                         (let [[v' ret] (f old)]
+                           (when-not (identical? v' old)
+                             (s! w rw/W-ATOMS (assoc (g w rw/W-ATOMS) id [weak-ref v']))
+                             (notify-watches! w id ref old v'))
+                           ret)
+                         (throw (missing-state id))))))
+    (finally (hs/fence! ref))))
 
-(deftype RAtom [^long id family ^:volatile-mutable mta]
+(deftype RAtom [^long id family ^:volatile-mutable mta watch-owner]
   #?@(:clj
       [clojure.lang.IDeref
-       (deref [this] (let [v (atom-op! this family id (fn [v] [v v]))] (java.lang.ref.Reference/reachabilityFence this) v))
+       (deref [this] (atom-op! this family id (fn [v] [v v])))
        clojure.lang.IRef
-       (addWatch [this k f] (atom-watch-op! family id (fn [w] (add-watch* w id k f))) this)
-       (removeWatch [this k] (atom-watch-op! family id (fn [w] (remove-watch* w id k))) this)
-       (getWatches [this] (atom-watch-op! family id (fn [w] (get (g w rw/W-WATCHES) id {}))))
-       (getValidator [_] nil)
-       (setValidator [_ _] (throw (ex-info "atoms take no validator" {:spindel/invalid :validator})))
+       (addWatch [this k f] (atom-watch-op! this family id watch-owner #(lt/add-watch! % k f)) this)
+       (removeWatch [this k] (atom-watch-op! this family id watch-owner #(lt/remove-watch! % k)) this)
+       (getWatches [this] (atom-watch-op! this family id watch-owner #(deref (:callbacks %))))
+       (getValidator [this] (hs/fence! this) nil)
+       (setValidator [this _] (try (throw (ex-info "atoms take no validator" {:spindel/invalid :validator}))
+                                   (finally (hs/fence! this))))
        clojure.lang.IMeta
-       (meta [_] mta)
+       (meta [this] (try mta (finally (hs/fence! this))))
        clojure.lang.IReference
-       (alterMeta [_ f args] (set! mta (apply f mta args)) mta)
-       (resetMeta [_ m] (set! mta m) m)
+       (alterMeta [this f args] (try (set! mta (apply f mta args)) mta (finally (hs/fence! this))))
+       (resetMeta [this m] (try (set! mta m) m (finally (hs/fence! this))))
        clojure.lang.IAtom
        (swap [this f] (atom-op! this family id (fn [v] (let [n (f v)] [n n]))))
        (swap [this f a] (atom-op! this family id (fn [v] (let [n (f v a)] [n n]))))
@@ -2618,8 +2734,8 @@
       [IDeref (-deref [this] (atom-op! this family id (fn [v] [v v])))
        IMeta (-meta [_] mta)
        IWatchable
-       (-add-watch [this k f] (atom-watch-op! family id (fn [w] (add-watch* w id k f))) this)
-       (-remove-watch [this k] (atom-watch-op! family id (fn [w] (remove-watch* w id k))) this)
+       (-add-watch [this k f] (atom-watch-op! this family id watch-owner #(lt/add-watch! % k f)) this)
+       (-remove-watch [this k] (atom-watch-op! this family id watch-owner #(lt/remove-watch! % k)) this)
        (-notify-watches [_ _ _] nil)
        IReset (-reset! [this n] (atom-op! this family id (fn [_] [n n])))
        ISwap
@@ -2629,20 +2745,16 @@
        (-swap! [this f a b xs] (atom-op! this family id (fn [v] (let [n (apply f v a b xs)] [n n]))))]))
 
 (defn atom
-  "A fork-safe atom in the current world, initialised to `init`; options as
-   clojure.core/atom: `:meta` (validators are not supported)."
+  "A fork-safe atom in the current world. Values are strong; a value that
+   references its wrapper makes that wrapper application-reachable."
   [init & {:keys [meta]}]
-  (let [w (or (current-world) (throw (ex-info "atom outside a world" {})))
-        id (host-call! w #(let [id (alloc-id! w)]
-                            (s! w rw/W-ATOMS (assoc (g w rw/W-ATOMS) id init))
-                            id))
-        a (RAtom. id (g w rw/W-FAMILY) meta)
-        ww (hs/weak w)]
-    ;; holds the world weakly: an atom table may reach the wrapper
-    (hs/on-collect! a (fn [] (when-let [w (hs/deref-weak ww)]
-                               (try (send-world! w #(s! w rw/W-ATOMS (dissoc (g w rw/W-ATOMS) id)))
-                                    (catch #?(:clj Throwable :cljs :default) _ nil)))))
-    a))
+  (let [w (or (current-world) (throw (ex-info "atom outside a world" {})))]
+    (host-call! w #(let [id (alloc-id! w)
+                         family (g w rw/W-FAMILY)
+                         a (RAtom. id family meta (lt/owner))]
+                     (s! w rw/W-ATOMS (assoc (g w rw/W-ATOMS) id [(hs/weak a) init]))
+                     (lt/clean-atom-on-collection! a family request-atom-sweep!)
+                     a))))
 
 (defn value-async
   "T22/H3: demands `h` through a host wait edge and calls `(cb v err?)` once
@@ -2948,7 +3060,7 @@
     (if (g w rw/W-UNBORN)
       ;; E4: an instance that never ran is discarded as if dropped: nothing
       ;; in it runs, its copied finalizers included
-      (do (commit! w [:release-world]) (s! w rw/W-RELEASED true))
+      (do (commit! w [:release-world]) (s! w rw/W-RELEASED true) (finish-metadata! w))
       (let [ex (released-ex)
             roots (g w rw/W-ROOTS)]
         (doseq [e (map #(rv w %) (hs/mvals roots))]
@@ -2968,6 +3080,17 @@
               (when (zero? (gl x rw/REFS)) (aadd! (g w rw/W-RQ) x)))))
         (commit! w [:release-world])
         (s! w rw/W-RELEASED true)))))
+
+(defn- finish-metadata! [w]
+  (when (and (g w rw/W-RELEASED) (not (g w rw/W-META-CLOSED))
+             (or (g w rw/W-UNBORN)
+                 (let [root (rv w (g w rw/W-ROOT))]
+                   (and (zero? (hs/oset-count (g root rw/S-TASKS)))
+                        (zero? (acount (g root rw/S-CHILDREN)))))))
+    (s! w rw/W-META-CLOSED true)
+    (s! w rw/W-ATOMS {})
+    (lt/clear-index! (g w rw/W-WATCHES) (g w rw/ID))
+    (lt/unregister-world! (g w rw/W-FAMILY) (g w rw/ID))))
 
 (defn open-scope!
   "T16 open: an explicit scope, child of the run's current scope, a root
@@ -3050,7 +3173,9 @@
     (s! c rw/W-AFTER (alist))
     (s! c rw/W-UNBORN false)
     (s! c rw/W-PUB-WORLD nil)
-    (s! c rw/W-WATCHES nil)
+    (s! c rw/W-WATCHES (lt/index))
+    (s! c rw/W-SWEEP-PENDING (hs/flag false))
+    (s! c rw/W-META-CLOSED false)
     (doseq [i [rw/W-READY rw/W-RESUME rw/W-START rw/W-CLEANUP rw/W-RQ]]
       (s! c i (hs/lcopy (g w i))))
     (s! c rw/W-PINS (hs/mcopy (g w rw/W-PINS)))
@@ -3066,6 +3191,8 @@
     (when-let [reg (g w rw/W-REG)]
       (s! c rw/W-REG (hs/mcopy reg))
       (s! c rw/W-LOG (alist)))
+    (lt/register-world! (g c rw/W-FAMILY) c (g c rw/ID) (g c rw/W-WATCHES)
+                        (gl c rw/W-SWEEP-GEN) request-atom-sweep!)
     c))
 
 (defn fork!

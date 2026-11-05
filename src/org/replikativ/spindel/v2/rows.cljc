@@ -91,10 +91,13 @@
 (def ^:const W-AFTER 35)       ; child worlds to schedule after the gate is released (E3)
 (def ^:const W-PUB-WORLD 36)   ; an unborn instance's publication world, its owner at activation
 (def ^:const W-STATE 37)       ; app world state: one persistent map, forked by value (M6 R1)
-(def ^:const W-ATOMS 38)       ; fork-safe atoms: atom id -> value, forked by value (M6 R6)
-(def ^:const W-WATCHES 39)     ; this world's watches: id -> {key fn}; never inherited by a fork
+(def ^:const W-ATOMS 38)       ; fork-safe atoms: atom id -> [weak wrapper, value], forked by value (M6 R6)
+(def ^:const W-WATCHES 39)     ; detached weak watch index, never inherited
 (def ^:const W-FAMILY 40)      ; identity shared by a world and all its forks (handle lineage)
-(def ^:const W-SIZE 41)
+(def ^:const W-SWEEP-GEN 41)  ; last completed family atom sweep
+(def ^:const W-SWEEP-PENDING 42) ; independent coalesced maintenance flag
+(def ^:const W-META-CLOSED 43) ; terminal metadata cleanup completed
+(def ^:const W-SIZE 44)
 
 ;; Scope
 (def ^:const S-PARENT 2)
