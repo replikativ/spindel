@@ -38,9 +38,11 @@
                   (assert (= {} (aget p rw/W-STATE)))
                   (v2/release-world! p) (pump! jobs) (canceled (rest kinds) next))))
     (next)))
-(defn- deferred-fixture []
+(defn- deferred-setup []
+  ;; Persistent savepoint handler/task closures must never share the frame
+  ;; containing the probe's payload (:none retains that shared JS Context).
   (let [p (v2/world) pubs (atom []) jobs (atom []) pending (atom [])
-        original-internal v2/internal! original-prepare v2/prepare-host-entry! entry (atom nil) action (atom nil)]
+        original-internal v2/internal!]
     (v2/install-handlers! p {:s #(swap! pubs conj %)})
     (binding [v2/*world* p]
       (task (v2/savepoint :s nil))
@@ -48,14 +50,19 @@
         (with-redefs [v2/internal! (fn [w f] (if (identical? p w)
                                                (swap! pending conj (pending-action original-internal w f))
                                                (original-internal w f)))] (v2/activate! child :go))
-        (let [payload (js/Uint8Array. (* 1024 1024)) weak (hs/weak payload)]
-          (with-redefs [hs/execute! (fn [_ f] (swap! jobs conj f))
-                        v2/prepare-host-entry! (fn [control f reject intent]
-                                                 (when-not @entry (reset! entry control) (reset! action (hs/weak f)))
-                                                 (original-prepare control f reject intent))]
-            (let [failed? (try (v2/call-in! child (payload-action payload)) false (catch :default _ true))]
-              (assert failed?)))
-          {:p p :child child :jobs jobs :pending @pending :entry @entry :action @action :payload weak})))))
+        {:p p :child child :jobs jobs :pending @pending}))))
+(defn- deferred-fixture []
+  (let [{:keys [child jobs] :as setup} (deferred-setup)
+        entry (atom nil) action (atom nil) original-prepare v2/prepare-host-entry!
+        payload (js/Uint8Array. (* 1024 1024)) weak (hs/weak payload)]
+    (with-redefs [hs/execute! (fn [_ f] (swap! jobs conj f))
+                  v2/prepare-host-entry! (fn [control f reject intent]
+                                           (when-not @entry (reset! entry control) (reset! action (hs/weak f)))
+                                           (original-prepare control f reject intent))]
+      (let [failed? (try (v2/call-in! child (payload-action payload)) false (catch :default _ true))]
+        (assert failed?)))
+    (assoc setup :entry @entry :action @action :payload weak)))
+
 (defn- deferred [next]
   (let [{:keys [p child jobs pending entry action payload]} (deferred-fixture)]
     (until "held S4 canceled ordinary entry releases body and payload before parent admission"

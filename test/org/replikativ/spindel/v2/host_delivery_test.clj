@@ -327,3 +327,91 @@
             (is (zero? @runs))))
         (finally (.countDown proceed) (when @worker (.join ^Thread @worker 5000))
                  (when @c (.join ^Thread (:thread @c) 5000)) (close! e))))))
+
+(deftest failed-inline-and-queued-turns-deliver-waiter-suffix-and-child-outbox
+  (doseq [queued? [false true]]
+    (let [{:keys [p jobs] :as e} (env {}) gate (v2/deferred p) x (v2/signal p 0)
+          marker (atom false) seen (atom []) child (atom nil) accepted-child (atom nil)
+          child-work (atom []) handoffs (atom []) parent-handoffs (atom [])
+          c (atom nil) actor (atom nil) caller-thread (atom nil) caller-jobs (atom nil)
+          enqueued (java.util.concurrent.CountDownLatch. 1)
+          release-caller (java.util.concurrent.CountDownLatch. 1) delegated (java.util.concurrent.CountDownLatch. 1)
+          runs (atom 0) sentinel (Object.) original-own @#'v2/own-child! original-handoff @#'v2/handoff!
+          error (ex-info "combined callback failure" {})
+          t (binding [v2/*world* p]
+              (v2/task (v2/await gate)
+                       (when-not (identical? p (v2/current-world))
+                         (swap! child-work conj [@marker (hs/held? (aget ^objects p rw/W-LOCK))]))))
+          a (v2/observe! x (fn [value failed?]
+                             (when (and (= 1 value) (not failed?))
+                               (reset! actor (Thread/currentThread))
+                               (reset! marker true)
+                               (try
+                                 (swap! seen conj :throw)
+                                 (v2/deliver! gate :ready)
+                                 (reset! child (v2/fork! p))
+                                 (reset! c (caller #(do (reset! caller-thread (Thread/currentThread))
+                                                        (v2/call-in! p (fn [] (swap! runs inc)
+                                                                         (v2/reset-world! p {:waiter true}) sentinel)))))
+                                 (assert (.await enqueued 5 java.util.concurrent.TimeUnit/SECONDS))
+                                 (assert (not (hs/mpsc-empty? (aget ^objects p rw/W-INGRESS))))
+                                 (throw error)
+                                 (finally (reset! marker false))))))
+          b (v2/observe! x (fn [value failed?] (when (and (= 1 value) (not failed?)) (swap! seen conj :suffix))))]
+      (try
+        (with-redefs-fn
+          {#'v2/own-child! (fn [w sc target strong?]
+                             (let [value (original-own w sc target strong?)]
+                               (when (and (identical? p w) (identical? @actor (Thread/currentThread)))
+                                 (reset! accepted-child target)) value))
+           #'v2/handoff! (fn [w]
+                           (cond
+                             (and (identical? w p) (identical? @caller-thread (Thread/currentThread)))
+                             (do
+                               ;; Faithful preemption AFTER enqueue, BEFORE real
+                               ;; submission. No job/flag is dropped or invented.
+                               (assert (not (hs/held? (aget ^objects p rw/W-LOCK))))
+                               (.countDown enqueued) (.await release-caller)
+                               (try (let [before (count @jobs)]
+                                      (original-handoff w)
+                                      (reset! caller-jobs (- (count @jobs) before)))
+                                    (finally (.countDown delegated))))
+                             :else
+                             (do
+                               (when (identical? @actor (Thread/currentThread))
+                                 (let [state [@marker (hs/held? (aget ^objects p rw/W-LOCK)) (#'v2/cw)]]
+                                   (when (identical? w @accepted-child) (swap! handoffs conj state))
+                                   (when (identical? w p) (swap! parent-handoffs conj state))))
+                               (original-handoff w))))}
+          (fn []
+            (is (empty? @jobs))
+            (let [actual (if queued?
+                           (do (v2/send-world! p #(v2/write! x 1)) (outcome #(pump-one! e)))
+                           (outcome #(v2/write! x 1)))]
+              (is (= [:error error] actual))
+              (is (= [:throw] @seen))
+              (is (= 1 (.getCount ^java.util.concurrent.CountDownLatch (:done @c))))
+              (is (= 0 @runs))
+              (is (identical? @child @accepted-child))
+              (is (seq @handoffs)) (is (every? #{[false false nil]} @handoffs))
+              (is (seq @parent-handoffs)) (is (every? #{[false false nil]} @parent-handoffs))
+              (is (empty? @child-work)) (is (seq @jobs))
+              ;; ONLY parent/child jobs already submitted by exception unwind
+              ;; may produce the outcome. Caller handoff remains blocked.
+              (pump! e)
+              (is (= 1 @runs)) (is (= {:waiter true} (aget ^objects p rw/W-STATE)))
+              (is (= [:throw :suffix] @seen)) (is (= [[false false]] @child-work))
+              (let [produced? (= 1 @runs)]
+                (.countDown release-caller)
+                (is (.await delegated 5 java.util.concurrent.TimeUnit/SECONDS))
+                (when produced?
+                  (is (= [[:value sentinel] false] (result! @c)))
+                  (is (= 0 @caller-jobs)) (is (empty? @jobs)))))))
+        (finally
+          ;; Old-source failures are established BEFORE this teardown release.
+          ;; Let its withheld real submission finish, pump, then join; never
+          ;; call a synchronous read/status while the executor is held.
+          (.countDown release-caller)
+          (when @c (.await delegated 5 java.util.concurrent.TimeUnit/SECONDS))
+          (pump! e) (when @c (.join ^Thread (:thread @c) 5000))
+          (a) (b) (close! e) (hs/fence! t))))))
