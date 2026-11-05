@@ -20,12 +20,9 @@
         ;; qualified execution owners across suspension and nested binding exit.
         ;; 0.1.72 diagnoses visible suspension across callback boundaries and
         ;; resolves ClojureScript macro scopes through the compiler expander.
-        ;; Provisional staging pin for the case* dispatch repair (upstream PR #18).
-        ;; Release gate: adopt a released Maven compiler version before publishing
-        ;; Spindel; this Git pin does not produce a publishable dependency POM.
-        org.replikativ/partial-cps
-        {:git/url "https://github.com/replikativ/partial-cps"
-         :git/sha "f859d15ead3f66e01589c18e2a883f423364b192"}
+        ;; 0.1.73 preserves JVM case* dispatch-table ordering across CPS
+        ;; transformation, including keyword cases with more than eight arms.
+        org.replikativ/partial-cps {:mvn/version "0.1.73"}
         ;; is.simm/partial-cps is the same library under its old coordinates: two
         ;; jars with one set of namespaces, whichever comes first on the classpath
         ;; winning. Excluded until the libraries that pull it move over.
