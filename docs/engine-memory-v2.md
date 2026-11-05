@@ -1202,3 +1202,17 @@ The pure model covers the lifecycle/control plane; functional tests remain
 responsible for real CPS execution, values, interval/delta behavior and public
 subsystems. Allocation profiles and retained-heap probes check physical costs
 that logical transition replay cannot establish.
+
+### Ordinary host fork control lifetime
+
+Ordinary `fork!` uses the same cancellable synchronous control bridge as the
+accepted World host controls. JVM waiting is outside gates; same-world host
+callbacks may return a child directly. Node cancellation clears an unclaimed
+allocation closure before refusing an unsupported synchronous turn; a queue
+entry may remain inert until consumed, but no ordinal, epoch, ID, custody or
+metadata registration occurs later. Validate source lifecycle under its gate,
+preflight predictable capacity refusal, then allocate/install weak root custody,
+commit and place exactly the accepted child's handoff in W-AFTER. The outer gate
+owner drains that outbox after unlocking, even if the callback throws. Do not
+retain allocation closure/payload history or turn weak ordinary custody into a
+strong World root. This preserves D3 and does not implement S3R cloning.

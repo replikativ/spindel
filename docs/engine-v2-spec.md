@@ -969,10 +969,21 @@ Each `track` *site* in a run (identified by `at`) has its own edge, with
   - **Handoff:** after releasing the gate, a thread re-checks the queue. If
     the queue is non-empty and no drainer is scheduled, it schedules one.
     Queued work is therefore never stranded.
-  - No host thread ever blocks on a world.
+  - Queue submission and combining never wait for the gate. The explicit
+    synchronous host bridge below may wait for its result outside all gates.
 - **H3 – results.** A host operation that has a result (`swap!`, host
   `deref`) returns a host promise. A blocking host read waits on that promise
   outside the gate, never inside a slice.
+- **Synchronous host bridge (`host-call!`, ordinary `fork!`).** On the JVM,
+  return the committed result after waiting outside all gates if queued execution
+  is necessary. A same-world between-slice host item/result/observer callback may
+  execute the bounded control directly; active engine bodies and foreign held
+  gates may not use ordinary `fork!`. On Node, return a synchronously committed
+  result, otherwise cancel the still-unclaimed control before reporting that a
+  synchronous host turn is unavailable. Later draining of that canceled control
+  performs no validation/allocation/epoch/ordinal/custody/metadata mutation. A
+  completed result is never discarded as an unsupported-sync refusal. This bridge
+  does not grant permission to hold two World gates or block inside a slice.
 - **H4 – cross-world delivery.** A continuation or callback belonging to
   another world is delivered as an ingress item of that world. This replaces
   `in-callers-world`, which ran caller-world code inline on another world's
@@ -1189,6 +1200,21 @@ global wait-for graph or arbitrary independent cross-world join is introduced.
 
 **D3 – fork.** `fork(W, mode)` is an effect of the active slice. By D0 that
 slice is the only one executing, so the fork boundary is the effect's commit.
+
+**Ordinary host form `fork!(W)`.** Validate the concrete World input and reject
+active bodies, lexical finalizers/cleanup registration and foreign held gates at
+entry, before submission. Preserve same-world between-slice callbacks. The source
+control turn validates requested/released and unborn status before mutation;
+activation intent never turns an unborn ordinary fork into delayed admission.
+Preflight acquisition capacity before creation-ordinal allocation, epoch/ID change
+or metadata registration. Install weak root custody, commit `:fork-host`, append
+child handoff to the source's existing after-gate outbox, and return the actual
+child as the synchronous control result. Implicit child execution starts only
+after parent unlock, including when the callback retaining the child throws.
+Close-before-control refuses; control-before-close already owns the child before
+shutdown claims it. Frozen/COW semantics and fresh branch-local controls remain
+unchanged. S3R `clone-unborn!` is a separate operation and is not implemented by
+ordinary `fork!`.
 
 The child `W′` gets:
 - copy-on-write views of `W`'s layer-1 tables (epoch rotation);
