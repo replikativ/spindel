@@ -512,6 +512,15 @@ on this exhaustion rejects its claimed FIFO and disposes only its legitimate sti
 unowned original instance, preserving actual host settlement obligations. Neither
 ordinal guarantee claims that unrelated family entity IDs cannot exhaust.
 Thus independent roots with equal W-ID still report in actual acquisition order.
+S4 is one-shot per concrete instance: `UNBORN` with no publication parent is a
+permanently refused/discarded attempt, while successful birth clears `UNBORN`.
+An ordinary entry classified after intent must reject under that first condition
+even if its first child-gate turn follows rejection and marker clearing. Entries
+classified before intent retain S3 semantics. Every queued activation submission
+reconciles stale public entry checks/marker writes against the current child-gate
+lifecycle: refused/requested clears and rejects any placeholder FIFO; already born
+clears only the marker and preserves accepted replay. No stale submission may
+revive an ownerless barrier. No new authority or historical generation is minted.
 A losing S4 attempt rejects its own queued activation work without reassigning or
 requesting disposal through the losing parent's authority; the current winning
 owner remains responsible for its disposal and physical acknowledgements.

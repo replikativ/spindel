@@ -258,6 +258,56 @@
     (assert (= initial (aget p rw/W-CREATION)))
     (close! p) (pump! e)))
 
+(defn- rejected-activation-items! []
+  (let [{p :world :as e} (manual-world) q (v2/world) pubs (atom []) admission (atom [])
+        original-internal v2/internal! effects (atom []) rejected (atom []) read (atom [])]
+    (v2/install-handlers! p {:s #(swap! pubs conj %)})
+    (binding [v2/*world* p]
+      (let [t (task (v2/savepoint :s nil)) c (v2/instantiate (first @pubs))
+            native (v2/register-world-settlement! (v2/world-host-owner c) c [])]
+        (with-redefs [v2/internal! (fn [w f] (if (identical? w p) (swap! admission conj f) (original-internal w f)))]
+          (v2/activate! c :never))
+        ;; Stop the production winning protocol after child-local custody and
+        ;; before its parent bookkeeping/request, as in the concurrent JVM test.
+        (v2/call-in! q #(v2/own-child! q (aget q rw/W-ROOT) c false))
+        (aset c rw/W-INLINE false)
+        (doseq [f @admission] (original-internal p f))
+        (assert (hs/flag? (aget c rw/W-ACTIVATION-INTENT)))
+        (v2/send-world! c #(swap! effects conj :send))
+        (v2/host! c #(swap! effects conj :host) #(swap! rejected conj %) nil)
+        (v2/value-async (v2/in-world c t) (fn [v failed?] (swap! read conj [v failed?])))
+        (pump! e)
+        (assert (empty? @effects))
+        (assert (= 1 (count @rejected)))
+        (assert (:spindel/released (ex-data (first @rejected))))
+        (assert (:spindel/released (ex-data (ffirst @read))))
+        (assert (not (:requested? (aget c rw/W-CLOSE))))
+        (aset c rw/W-INLINE true)
+        (close! p) (close! q) (pump! e)
+        (v2/acknowledge-world-settlement! native {:settled? true :value :closed}))))
+  (doseq [mode [:custody-rejected :released :born]]
+    (let [{p :world :as e} (manual-world) q (v2/world) pubs (atom []) stopped (atom false)
+          original-set hs/flag-set!]
+      (v2/install-handlers! p {:s #(swap! pubs conj %)})
+      (binding [v2/*world* p]
+        (let [t (task (v2/savepoint :s nil)) c (v2/instantiate (first @pubs))
+              target (aget c rw/W-ACTIVATION-INTENT) read (atom [])]
+          (when (= mode :custody-rejected)
+            (v2/call-in! q #(v2/own-child! q (aget q rw/W-ROOT) c false)))
+          (with-redefs [hs/flag-set! (fn [flag value]
+                                       (when (and (identical? flag target) value (compare-and-set! stopped false true))
+                                        ;; Reenter before the stale first setter
+                                        ;; writes. JS needs no thread to order it.
+                                         (if (= mode :released) (v2/release-world! c) (v2/activate! c :second)))
+                                       (original-set flag value))]
+            (v2/activate! c :stale))
+          (pump! e)
+          (assert (not (hs/flag? target)))
+          (when (= mode :born)
+            (v2/value-async (v2/in-world c t) (fn [v failed?] (swap! read conj [v failed?])))
+            (assert (= [[:second false]] @read)))
+          (close! p) (close! q) (pump! e))))))
+
 (defn -main []
   (with-redefs [hs/execute! (fn [_ f] (swap! jobs conj f))]
     (native-and-preparation!)
@@ -269,6 +319,7 @@
     (replay-failure-and-budget!)
     (preactivation-fifo!)
     (exact-creation-order-and-custody!)
+    (rejected-activation-items!)
     (println "WORLD CLOSE SMOKE OK")))
 
 (set! *main-cli-fn* -main)

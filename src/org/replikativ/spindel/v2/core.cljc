@@ -2410,6 +2410,13 @@
 (defn- ordinary-host-item! [w ^HostIngress entry]
   (when (host-entry-active? entry)
     (cond
+      ;; A one-shot refused instance stays unborn but loses its publication
+      ;; parent. An entry submitted during intent must still reject if its
+      ;; first child-gate turn falls AFTER the rejection cleared the marker.
+      (and (:after-intent? @(.-state entry)) (g w rw/W-UNBORN)
+           (nil? (g w rw/W-PUB-WORLD)))
+      (reject-host-entry! entry)
+
       ;; Classify at SUBMISSION: ordinary work queued before intent retains S3
       ;; ordering even if the marker changes before this item's first turn.
       (and (g w rw/W-UNBORN) (:after-intent? @(.-state entry))
@@ -4376,16 +4383,25 @@
      (internal!
       w
       (fn []
-        (when (and (g w rw/W-UNBORN) (not (:requested? (g w rw/W-CLOSE)))
-                   (nil? (:identity (g w rw/W-ACTIVATION))))
-          (when-let [parent (g w rw/W-PUB-WORLD)]
-            (let [claim #?(:clj (Object.) :cljs (js-obj))]
-              (s! w rw/W-ACTIVATION
-                  {:identity claim
-                   :ordinary (or (:ordinary (g w rw/W-ACTIVATION)) (alist))
-                   :decision (or (:decision (g w rw/W-ACTIVATION)) (clojure.core/atom :pending))})
-              (after-gate-action!
-               (fn [] (internal! parent (fn [] (admit-instance! parent w claim v))))))))))))
+        (cond
+          ;; Public entry checks may precede another caller's birth/refusal or
+          ;; release. Reconcile every stale marker under this child gate.
+          ;; Successful birth already owns replay, so only clear its marker.
+          (not (g w rw/W-UNBORN))
+          (hs/flag-set! (g w rw/W-ACTIVATION-INTENT) false)
+
+          (or (:requested? (g w rw/W-CLOSE)) (nil? (g w rw/W-PUB-WORLD)))
+          (finish-activation-ingress! w false)
+
+          (nil? (:identity (g w rw/W-ACTIVATION)))
+          (let [parent (g w rw/W-PUB-WORLD)
+                claim #?(:clj (Object.) :cljs (js-obj))]
+            (s! w rw/W-ACTIVATION
+                {:identity claim
+                 :ordinary (or (:ordinary (g w rw/W-ACTIVATION)) (alist))
+                 :decision (or (:decision (g w rw/W-ACTIVATION)) (clojure.core/atom :pending))})
+            (after-gate-action!
+             (fn [] (internal! parent (fn [] (admit-instance! parent w claim v)))))))))))
   w)
 
 (defn await-finalization [_] (throw (ex-info "await-finalization outside a body" {})))

@@ -653,6 +653,13 @@ permission and retains no World. Competing losers retain their reservations; old
 outputs require explicit validated disposal/settlement or no-acquisition evidence,
 never automatic ancestor closure or synthetic acknowledgement. A rejected S4 claim
 clears/rejects only its activation entries; winning custody controls disposal.
+Post-intent entries first processed after rejection recognize the one-shot refused
+state (`UNBORN` and nil publication parent) before deferral/body execution, even
+without a materialized claim/decision. Every queued activation submission clears
+stale intent after refusal/release, rejects any placeholder entries, or clears only
+the marker after birth while preserving accepted replay. Pre-intent S3 entries
+retain their original classification; no permanent barrier or generation history
+is introduced.
 
 Current lineage keeps only immediate immutable token/scope evidence and weak
 parent metadata links. Do not retain copied ancestry vectors or a strong chain of
