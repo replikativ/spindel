@@ -556,9 +556,20 @@ forks remains its supported behavior until this slice is implemented.
 
 The dependent second slice adds a narrowly named world close operation and host
 subscribe/withdraw, consumable by the finalizer wait. Existing request-level
-`release-world!`/`discard!` diagnostic returns remain unchanged. World-local close
-state tracks admission revocation, pending local obligations, pending owned-child
-acknowledgements, ordered failures, current subscribers and one terminal outcome.
+`release-world!`/`discard!` diagnostic returns remain unchanged. The operation's
+observation origin and close target are distinct identities: a parent slice's
+`close-world!(child)` yields a parent-origin capability targeting its owned child,
+so the parent's finalizer can join it. Target identity does not set observation
+origin. All capabilities observing that target share one physical close and
+terminal outcome; new observers do not restart it. Copying the parent-origin
+capability into a child still fails `::forked` before registration, including
+when that child is the target. Host construction must explicitly select the
+observation-origin world through an origin argument or selected-world binding;
+it must not infer origin from the target. Host subscription needs no engine slice
+and grants no permission to await in another world. Origin selection leaves the
+ownership/join restrictions in force. World-local close state tracks admission
+revocation, pending local obligations, pending owned-child acknowledgements,
+ordered failures, current subscribers and one terminal outcome.
 Record a child debt before dropping its ownership marker, including a child
 admitted before closure and published afterward. Terminal acknowledgement queues
 after the child's gate is released; no nested foreign gates. A released flag or

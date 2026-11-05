@@ -370,7 +370,10 @@ These belong to yggdrasil and dvergr, which build on §9.
   an explicitly declared, already-owned resource close/join. It is not a Spin,
   Task, deferred, mailbox, signal or arbitrary CPS function. Its adapter has
   finite nonblocking registration; physical close belongs to the operation,
-  independently of its subscribers. This is not a user-extensible scheduler.
+  independently of its subscribers. Its **observation origin** (the world
+  permitted to await it) is distinct from its **target** (the resource/world
+  being closed). Origin checks compare the awaiting world with that observation
+  origin, not with the target's world (§9). This is not a user-extensible scheduler.
 - **Cleanup waiter** `Q` (Z#66, planned): one run's observation of `O`, holding
   a sealed finalizer continuation rather than an ordinary activation or edge.
 - **Handle** `H`: a host object, for example `Spin`, a signal, a fork
@@ -1175,6 +1178,18 @@ the existing in-place resume.
   host observers may subscribe/withdraw. No generic close-ticket protocol and
   no normal-body wait are added by this phase. Repeated close/observation sees
   one terminal outcome; withdrawal affects only that subscriber.
+  **Origin versus target:** `close-world!(child)` invoked in a parent slice
+  returns a parent-origin observation capability targeting that child. The
+  parent's finalizer can await it if the downward owned-join check passes.
+  Origin does not become the child's identity merely because it is the target.
+  All observation capabilities for that target share its single physical close
+  and stable terminal outcome; a new observer does not restart physical close.
+  A copied parent-origin capability still fails `::forked` when awaited in a
+  child, even if that child is its target. A host caller must explicitly select
+  the observation-origin world, by an explicit origin argument or selected-world
+  binding; the target is never an implicit origin. Host subscription/withdrawal
+  requires no engine slice and grants no authority to await in another world.
+  Origin selection also does not bypass the target ownership/join restrictions.
   Terminal close needs all local root-subtree obligations/resources and owned
   child acknowledgements. Record a pending child before dropping its live
   ownership marker; admission before close with publication afterward still
@@ -1301,6 +1316,8 @@ Shaped by the ansatz feasibility read (`ansatz/.internal/design/spindel-v2-feasi
    once-only boundary/waiter consumption through cancel/queued completion;
    cleanup retention independent of reactive demand and ordinary run validity;
    fork-origin isolation including queued completion; and conditional retirement.
+   Origin/target witnesses must admit a parent-origin capability joining its
+   owned child while rejecting that same capability when copied into a child.
    Slice 2 additionally needs conservation of owned-child acknowledgement debt
    through close/late publication and terminal-close soundness. The external
    model must encode these transitions and pin its revision in acceptance
