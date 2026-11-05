@@ -63,8 +63,7 @@
           finals (atom []) calls (atom [])
           a (spin (try (await d1) (finally (swap! finals conj :a))))
           b (spin (try (await d2) (finally (swap! finals conj :b))))
-          r (comb/race a b)
-          owner (task (await r))]
+          owner (task (await (comb/race a b)))]
       (record! owner calls)
       (is (= [] @calls))
       (v2/cancel-task! owner)
@@ -79,8 +78,7 @@
           finals (atom 0) calls (atom [])
           a (spin (try (await d1) (finally (swap! finals inc))))
           b (spin (try (await d2) (finally (swap! finals inc))))
-          r (comb/race a b)
-          owner (task (await r))]
+          owner (task (await (comb/race a b)))]
       (record! owner calls)
       (v2/cancel-task! owner)
       (v2/deliver! d1 :late)
@@ -94,8 +92,7 @@
           owner-ref (atom nil) calls (atom [])
           a (spin (v2/cancel-task! (swap! owner-ref identity)) :a)
           b (spin (await d))
-          r (comb/race a b)
-          owner (task (await start) (await r))]
+          owner (task (await start) (await (comb/race a b)))]
       (reset! owner-ref owner)
       (record! owner calls)
       (v2/deliver! start :go)

@@ -25,19 +25,35 @@
       (is (= [[[1 2] false] [[10 2] false] [[10 20] false]] @seen))
       (finally (stop)))))
 
-(deftest test-race-is-reactive-on-v2
-  ;; Re-ported to v2 semantics: race is a computation, so a change of its
-  ;; winner re-runs it and its awaiters (the old race kept its first winner;
-  ;; a decision of M6 phase A, flagged to the user).
-  (let [fast (v2/signal :fast-1) slow (v2/signal :slow-1) runs (atom 0)
-        outer (spin (swap! runs inc)
-                    (await (comb/race (spin (:new (track fast))) (spin (:new (track slow))))))
-        stop (v2/observe! outer (fn [_ _]))]
+(deftest test-race-keeps-its-first-winner
+  (let [fast (v2/signal :fast-1) slow (v2/signal :slow-1)
+        a (spin (:new (track fast))) b (spin (:new (track slow)))
+        ;; Both are ready before racing: the first input wins.
+        keep-a (v2/observe! a (fn [_ _]))
+        keep-b (v2/observe! b (fn [_ _]))
+        r (comb/race a b)
+        outer (spin (await r))
+        seen (atom []) stop (v2/observe! outer #(swap! seen conj [%1 %2]))]
     (try
-      (is (#{:fast-1 :slow-1} (h/result outer))) (is (= 1 @runs))
+      (is (= :fast-1 (h/result outer)))
       (reset! fast :fast-2)
-      (is (h/wait-until #(= :fast-2 (h/result outer))) "the race re-ran with the new value")
-      (is (= 1 @runs) "outer re-enters at its await site (T11): the counting prefix is not repeated")
+      (reset! slow :slow-2)
+      (is (= :fast-2 (h/result a)))
+      (is (= :slow-2 (h/result b)))
+      (is (= :fast-1 (h/result r)))
+      (is (= :fast-1 (h/result outer)))
+      (is (= [[:fast-1 false]] @seen))
+      (finally (stop) (keep-a) (keep-b)))))
+
+(deftest explicit-await-any-remains-reactive
+  (let [s (v2/signal 1)
+        r (spin (v2/await-any [(spin (:new (track s))) (v2/deferred)]))
+        seen (atom []) stop (v2/observe! r #(swap! seen conj [%1 %2]))]
+    (try
+      (is (= 1 (h/result r)))
+      (reset! s 2)
+      (is (= 2 (h/result r)))
+      (is (= [[1 false] [2 false]] @seen))
       (finally (stop)))))
 
 (deftest test-accumulate-is-reactive

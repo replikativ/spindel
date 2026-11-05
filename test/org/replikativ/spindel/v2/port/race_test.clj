@@ -3,6 +3,7 @@
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [org.replikativ.spindel.v2.core :as v2 :refer [spin task await track]]
             [org.replikativ.spindel.v2.combinators :as comb]
+            [org.replikativ.spindel.v2.rows :as rw]
             [org.replikativ.spindel.incremental.interval :as iv]
             [org.replikativ.spindel.v2.port.support2 :as h]))
 
@@ -50,3 +51,113 @@
     (a [:type-a :value-a])
     (let [v (h/result r)]
       (is (vector? v)) (is (= :type-a (first v))) (is (= :value-a (second v))))))
+
+(deftest ready-ties-use-input-order-including-errors
+  (let [a (v2/deferred) b (v2/deferred)
+        bad (task (throw (ex-info "first error" {:first true})))]
+    (a :a) (b :b)
+    (is (= :a (h/result (comb/race a b))))
+    (is (= :b (h/result (comb/race b a))))
+    (is (= :a (h/result (comb/race a bad))))
+    (let [[status error] (h/outcome (comb/race bad a))]
+      (is (= :err status))
+      (is (= {:first true} (ex-data error))))))
+
+(deftest first-error-wins-and-remains-the-result
+  (let [trigger (v2/deferred) later (v2/deferred)
+        bad (task (await trigger) (throw (ex-info "failed first" {:first true})))
+        r (comb/race bad later)]
+    (trigger :fail)
+    (later :too-late)
+    (dotimes [_ 2]
+      (let [[status error] (h/outcome r)]
+        (is (= :err status))
+        (is (= {:first true} (ex-data error)))))))
+
+(deftest race-does-not-cancel-a-shared-task
+  (let [winner (v2/deferred) finish (v2/deferred)
+        shared (task (await finish))
+        observer (task (await shared))
+        r (comb/race winner shared)]
+    (winner :winner)
+    (is (= :winner (h/result r)))
+    (finish :shared-result)
+    (is (= :shared-result (h/result shared)))
+    (is (= :shared-result (h/result observer)))))
+
+(deftest cancelling-a-race-does-not-cancel-shared-input-tasks
+  (let [finish (v2/deferred) shared (task (await finish))
+        r (comb/race (v2/deferred) shared)]
+    (v2/cancel-task! r)
+    (let [[status error] (h/outcome r)]
+      (is (= :err status))
+      (is (v2/cancelled? error)))
+    (finish :still-running)
+    (is (= :still-running (h/result shared)))))
+
+(deftest race-withdraws-computation-demand-after-resolution
+  (let [s (v2/signal 1) runs (atom 0)
+        winner (spin (swap! runs inc) (:new (track s)))
+        r (comb/race winner (v2/deferred))]
+    (is (= 1 (h/result r)))
+    (is (= 1 @runs))
+    (reset! s 2)
+    (is (= 1 @runs) "the completed race retains no demand on its winner")
+    (is (= 1 (h/result r)))))
+
+(deftest a-losing-computation-retains-demand-from-another-observer
+  (let [finish (v2/deferred) winner (v2/deferred)
+        shared (spin (await finish))
+        seen (atom []) stop (v2/observe! shared #(swap! seen conj [%1 %2]))]
+    (try
+      (let [r (comb/race winner shared)]
+        (winner :winner)
+        (is (= :winner (h/result r)))
+        (finish :shared-result)
+        (is (= :shared-result (h/result shared)))
+        (is (= [[:shared-result false]] @seen)))
+      (finally (stop)))))
+
+(deftest owned-task-children-cancel-on-their-owners-completion
+  (let [finish (v2/deferred) winner (v2/deferred) child (atom nil)
+        owner (task (let [loser (task (await finish))]
+                      (reset! child loser)
+                      (await (comb/race winner loser))))]
+    (winner :winner)
+    (is (= :winner (h/result owner)))
+    (let [[status error] (h/outcome @child)]
+      (is (= :err status))
+      (is (v2/cancelled? error)))))
+
+(deftest timeout-is-one-shot-and-preserves-shared-tasks
+  (let [s (v2/signal :initial)
+        c (spin (:new (track s)))
+        keep-c (v2/observe! c (fn [_ _]))]
+    (try
+      (let [t (comb/timeout c 1000 :fallback)]
+        (is (= :initial (h/result t)))
+        (reset! s :changed)
+        (is (= :changed (h/result c)))
+        (is (= :initial (h/result t))))
+      (finally (keep-c))))
+  (let [finish (v2/deferred) shared (task (await finish))
+        t (comb/timeout shared 1 :fallback)]
+    (is (= :fallback (h/result t)))
+    (finish :finished)
+    (is (= :finished (h/result shared)))
+    (is (= :fallback (h/result t)))))
+
+(deftest timeout-releases-its-timer-and-wait-edges-when-input-wins
+  (let [w v2/*world*
+        census (fn []
+                 (v2/call-in! w
+                              #(frequencies (map (fn [r] (aget ^objects r rw/TYPE))
+                                                 (vals (aget ^objects w rw/W-REG))))))
+        finish (v2/deferred)
+        t (comb/timeout finish 60000 :fallback)]
+    (is (= 1 (get (census) rw/T-RES 0)) "the timeout timer is armed")
+    (finish :in-time)
+    (is (= :in-time (h/result t)))
+    (is (= 0 (get (census) rw/T-RES 0)))
+    (is (= 0 (get (census) rw/T-EDGE 0)))
+    (is (= 0 (get (census) rw/T-RUN 0)))))

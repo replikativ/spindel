@@ -1,8 +1,8 @@
 (ns org.replikativ.spindel.v2.combinators
   "M6 phase A combinators on v2 (.internal/m6-phase-a-design.md R4, R7, R8).
 
-   They take and build computations (spins), like the old ones: lazy, cached
-   and reactive. A combinator owns nothing by reference: a race's losers
+   Most combinators build lazy, cached, reactive computations (spins).
+   Race and timeout build eager, one-shot tasks. A race's losers
    lose its demand, so a loser demanded only by the race goes idle and its
    run is cancelled (§3.3); a loser demanded elsewhere keeps running. Tasks
    passed in are observed, never cancelled."
@@ -19,10 +19,14 @@
     (spin (await-all hs))))
 
 (defn race
-  "A computation of the value of whichever of `hs` settles first."
+  "An eager, one-shot task of the first completion of `hs`, including errors.
+   Already-ready ties use input order. Shared tasks are observed, never
+   cancelled as losers; computations lose this race's demand. Owned task
+   children are cancelled when their owner finishes. For reactive
+   selection, use `(spin (await-any hs))`."
   [& hs]
   (let [hs (vec hs)]
-    (spin (await-any hs))))
+    (task (await-any hs))))
 
 (defn sleep
   "A computation that settles with `value` after `ms` (lazy: the timer arms
@@ -31,7 +35,9 @@
   ([ms value] (spin (v2/sleep ms) value)))
 
 (defn timeout
-  "The value of `h`, or `fallback` if it has not settled within `ms`."
+  "A one-shot task of `h`'s value, or `fallback` after `ms`.
+   A timeout withdraws demand from a computation; it does not cancel a
+   shared task passed as `h`."
   [h ms fallback]
   (race h (sleep ms fallback)))
 
