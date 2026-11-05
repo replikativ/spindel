@@ -187,6 +187,64 @@
                   (is (= [body] (mapv :body-error report))))))
           (is (empty? (runs w))))))))
 
+(defn- consume-report! [{w :world :as env}]
+  (let [report (atom nil)]
+    ;; Internal egress remains admitted after ordinary host admissions close.
+    (#'v2/internal! w #(reset! report (#'v2/take-cleanup-report! w)))
+    (pump! env)
+    @report))
+
+(deftest report-consumption-during-outer-wait-does-not-republish-inner-failure
+  (doseq [outer-fails? [false true] released? [false true]]
+    (let [{w :world :as env} (manual-world)
+          complete (atom nil) body (ex-info "body" {})
+          inner (ex-info "inner" {}) outer (ex-info "outer" {})]
+      (binding [v2/*world* w]
+        (let [t (task
+                 (let [resource (v2/cleanup-resource (fn [cb] (reset! complete cb) nil))]
+                   (try (try (throw body) (finally (throw inner)))
+                        (finally (await-finalization (v2/cleanup-operation resource))))))
+              out (outcome t)]
+          (v2/cancel-task! t)
+          (when released? (v2/release-world! w))
+          (is (= [inner] (mapv :error (consume-report! env))))
+          (is (empty? (consume-report! env)))
+          (is (= 1 (count (runs w))) "the outer finalizer is still pending")
+          (if outer-fails? (@complete outer true) (@complete :closed))
+          (pump! env)
+          (is (v2/cancelled? (ffirst @out)))
+          (let [report (consume-report! env)]
+            (is (= (if outer-fails? [outer] []) (mapv :error report)))
+            (is (= (if outer-fails? [body] []) (mapv :body-error report))))
+          (is (empty? (consume-report! env)))
+          (is (empty? (runs w))))))))
+
+(deftest inherited-unwind-does-not-inherit-parent-report-transfer-authority
+  (let [{w :world :as env} (manual-world)
+        complete (atom nil) body (ex-info "body" {}) inner (ex-info "inner" {})]
+    (binding [v2/*world* w]
+      (let [t (task
+               (let [resource (v2/cleanup-resource (fn [cb] (reset! complete cb) nil))]
+                 (try (try (throw body) (finally (throw inner)))
+                      (finally (await-finalization (v2/cleanup-operation resource))))))]
+        (v2/cancel-task! t)
+        (is (= [inner] (mapv :error (consume-report! env))))
+        (let [child (v2/fork! w)]
+          (v2/host-call! child (fn [] nil))
+          (pump! env)
+          (let [report (consume-report! (assoc env :world child))]
+            (is (= 2 (count report)))
+            (is (= inner (:error (first report))))
+            (is (:spindel/forked (ex-data (:error (second report)))))
+            (is (= [body body] (mapv :body-error report))))
+          (is (empty? (runs child)))
+          (is (empty? (consume-report! (assoc env :world child)))))
+        (is (empty? (consume-report! env)) "child conservation cannot change the parent report")
+        (@complete :closed)
+        (pump! env)
+        (is (empty? (consume-report! env)) "parent outer exit cannot re-add its consumed inner error")
+        (is (empty? (runs w)))))))
+
 (def ^:dynamic *plain-binding* :outer)
 
 (deftest unregistered-binding-matches-ordinary-partial-cps-contract

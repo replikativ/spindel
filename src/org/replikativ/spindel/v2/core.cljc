@@ -902,6 +902,7 @@
       (let [owner (rv w (g x rw/OWNER))]
         (when-not (and owner (comp? owner)) (s! x rw/K-INPUTS nil))))
     (s! r rw/R-UNWIND-OUTCOME nil)
+    (s! r rw/R-CLEANUP-TRANSFER nil)
     (s! r rw/R-REGIONS nil)
     (s! r rw/R-MODE 2)                       ; retired
     (when-let [s (rv w (g r rw/R-SROW))]
@@ -954,7 +955,7 @@
     (let [pending (or (:body-outcome (g r rw/R-FINALIZER))
                       [(cancelled-ex reason) true])]
       (s! r rw/R-UNWIND-OUTCOME pending)
-      (conserve-cleanup! w pending))
+      (conserve-cleanup! w r pending))
     ;; Preserve an already executing/parked finalizer. Ordinary suspension
     ;; loses its activation; sealed unwinding bypasses ordinary body catches.
     (drop-activation! w r)
@@ -1294,11 +1295,22 @@
               :spindel/body-error cause}
              cause)))
 
-(defn- conserve-cleanup! [w [value failed?]]
-  (when failed?
-    (doseq [{:keys [run order release] :as failure} (:spindel/cleanup-provenance (ex-data value))]
-      (s! w rw/W-CLEANUP-FAILURES
-          (assoc (g w rw/W-CLEANUP-FAILURES) [run order release] failure)))))
+(defn- conserve-cleanup! [w r [value failed?]]
+  (when-let [failures (and failed? (seq (:spindel/cleanup-provenance (ex-data value))))]
+    (let [origin (g w rw/W-CLEANUP-IDENTITY)
+          transferred (g r rw/R-CLEANUP-TRANSFER)]
+      (when-not (identical? origin (:origin transferred))
+        (s! r rw/R-CLEANUP-TRANSFER {:origin origin :keys #{}}))
+      (doseq [{:keys [run order release] :as failure} failures
+              :let [key [run order release]]
+              :when (not (contains? (:keys (g r rw/R-CLEANUP-TRANSFER)) key))]
+        (s! w rw/W-CLEANUP-FAILURES
+            (assoc (g w rw/W-CLEANUP-FAILURES) key failure))
+        ;; Ownership transfers once, independently of later report consumption.
+        ;; Immutable keys are bounded by this live unwind and carry no payload;
+        ;; a fork's new origin cannot inherit its parent's transfer authority.
+        (s! r rw/R-CLEANUP-TRANSFER
+            {:origin origin :keys (conj (:keys (g r rw/R-CLEANUP-TRANSFER)) key)})))))
 
 (declare finish-region! begin-region!)
 
@@ -1323,7 +1335,7 @@
                       (:body-outcome region))]
         (when (== rw/ACT-DONE (gl r rw/R-ACT))
           (s! r rw/R-UNWIND-OUTCOME outcome)
-          (conserve-cleanup! w outcome))
+          (conserve-cleanup! w r outcome))
         (s! r rw/R-FINALIZER nil)
         (s! r rw/R-REGIONS (pop (g r rw/R-REGIONS)))
         (s! r rw/R-FINS (dec (fins r)))

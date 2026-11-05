@@ -201,7 +201,8 @@
 (def ^:const R-WAIT-SEQ 21)
 (def ^:const R-UNWIND-OUTCOME 22) ; unpublished error/provenance during sealed cancellation
 (def ^:const R-CLEANUP-SEQ 23) ; lexical finalizer execution order, independent of callback order
-(def ^:const R-SIZE 24)
+(def ^:const R-CLEANUP-TRANSFER 24) ; live-run world-local provenance keys already transferred
+(def ^:const R-SIZE 25)
 
 (def ^:const ACT-ACTIVE 0)
 (def ^:const ACT-PARKED 1)
