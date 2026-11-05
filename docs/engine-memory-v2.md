@@ -1226,3 +1226,13 @@ No fork-specific result flag, capability rollback or retained runtime error hist
 is added. A canceled queue entry retains only its inert phase/result transport,
 never the allocation closure. The separate legacy host-call! and generic callback
 progress limitations are not silently repaired by this lifetime rule.
+
+A JVM interrupted promise wait uses that same claim/cancel cell: cancel a pending
+runnable and propagate interruption, or retain claim-winning result ownership and
+wait outside gates through repeated interruptions. The bridge remembers only a
+wait-state boolean, never a second resource/result flag or interrupt history.
+After retrieving the outcome and reporting a distinct displaced turn error,
+restore interrupt status in the final delivery/finally path, including own-error
+delivery. Only the promise wait catches InterruptedException; f's stored exception
+is not reclassified as cancellation. Already-published outcomes remain owned when
+the caller's interrupt bit is set before awaiting them.

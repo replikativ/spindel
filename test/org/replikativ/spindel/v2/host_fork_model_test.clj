@@ -95,3 +95,44 @@
           (when (:delivered s) (is (= (:delivered s) (:delivered next)))))
         (when (empty? (transport-successors s))
           (is (some? (:delivered s))))))))
+
+(defn- wait-successors [s]
+  (keep identity
+        [(when (= :pending (:entry s)) (assoc s :entry :claimed))
+         (when (and (= :claimed (:entry s)) (= :absent (:outcome s)))
+           (assoc s :outcome (if (:fail? s) :own-error :nil-value)))
+         (when (and (= :waiting (:phase s)) (< (:interrupts s) 2))
+           (-> s (update :interrupts inc) (assoc :flag? true)))
+         (when (and (= :waiting (:phase s)) (:flag? s))
+           (if (= :pending (:entry s))
+             (assoc s :entry :canceled :phase :delivered :delivered :interruption :flag? false)
+             (assoc s :flag? false :remembered? true)))
+         (when (and (= :waiting (:phase s)) (not (:flag? s)) (not= :absent (:outcome s)))
+           (assoc s :phase :reporting))
+         (when (and (= :reporting (:phase s)) (not (:reported? s)))
+           (assoc s :reported? true :log-flag (:flag? s)))
+         (when (and (= :reporting (:phase s)) (:reported? s))
+           (assoc s :phase :delivered :delivered (:outcome s) :flag? (:remembered? s)))]))
+
+(deftest interrupted-wait-cancels-pending-or-preserves-claimed-outcome-and-status
+  (doseq [fail? [false true] published? [false true] transport-interrupted? [false true]]
+    (let [initial {:fail? fail? :entry (if published? :claimed :pending)
+                   :outcome (if published? (if fail? :own-error :nil-value) :absent)
+                   :phase :waiting :interrupts 0 :flag? false :remembered? transport-interrupted?
+                   :reported? false :log-flag nil :delivered nil}
+          states (loop [seen #{initial} todo [initial]]
+                   (if-let [s (peek todo)]
+                     (let [fresh (remove seen (wait-successors s))]
+                       (recur (into seen fresh) (into (pop todo) fresh))) seen))]
+      (doseq [s states]
+        (when (= :canceled (:entry s))
+          (is (= :absent (:outcome s)))
+          (is (= :interruption (:delivered s))))
+        (when (:reported? s) (is (false? (:log-flag s))))
+        (when (and (= :delivered (:phase s)) (= :claimed (:entry s)))
+          (is (= (:outcome s) (:delivered s)))
+          (when (or transport-interrupted? (pos? (:interrupts s))) (is (:flag? s))))
+        (doseq [next (wait-successors s)]
+          (when (= :canceled (:entry s)) (is (= :canceled (:entry next))))
+          (when (:delivered s) (is (= (:delivered s) (:delivered next)))))
+        (when (empty? (wait-successors s)) (is (= :delivered (:phase s))))))))

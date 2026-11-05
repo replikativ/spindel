@@ -995,6 +995,16 @@ Each `track` *site* in a run (identified by `at`) has its own edge, with
   it once through `log/error :engine/host-control-turn-failed {:error error}` after
   gate unwinding, then return/throw the actual control outcome. Direct same-world
   held-gate calls still call the control directly without draining/log duplication.
+  JVM promise waiting catches only wait `InterruptedException`: atomically
+  cancel and propagate if the entry is still unclaimed; if claim won, continue
+  waiting outside gates and remember interruption until the actual outcome is
+  delivered. This includes repeated interrupts and an interrupt flag set before
+  waiting on an already-published outcome. Remember a submission interruption
+  after claim as well. Report displaced turn errors first, then restore caller
+  interrupt status in the final value/own-error delivery path; do not let that
+  remembered status interrupt diagnostic delivery. A stored exception thrown by
+  the control itself, including `InterruptedException`, is its outcome and never
+  enters the promise-wait cancellation catch.
   This reporting grants no cleanup entitlement or physical acknowledgement and
   retains no error-history registry. General `host-call!` callback/error priority
   and generic dispatcher progress after arbitrary callback exceptions remain
