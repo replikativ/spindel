@@ -38,7 +38,7 @@
         (when (:returned? s) (is (= :committed (:phase s))) (is (:owned? s)))
         (when (= :dispatched (:outbox s)) (is (not (:gate? s))))
         (doseq [next (successors s)]
-          (when (#{:canceled :refused} (:phase s)) (is (= (:allocated s) (:allocated next)))))
+          (when (#{:canceled :refused} (:phase s)) (is (= (:allocated s) (:allocated next))))))
       (doseq [s states :when (empty? (successors s))]
         (is (#{:canceled :refused :committed} (:phase s)))
         (when (= :committed (:phase s))

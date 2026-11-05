@@ -4110,21 +4110,34 @@
      c)))
 
 (defn fork!
-  "D3, host form: a frozen fork of `w` between slices. Returns the child
-   world; act on it through `in-world` handles."
+  "D3, host form: return a committed frozen fork between slices. JVM callers
+   wait outside gates; Node requires a synchronous turn. Same-world host
+   callbacks may allocate; child execution is handed off after parent unlock."
   [w]
   (ordinary-admission! :fork)
-  (let [res (volatile! nil)]
-    (gated w
-           (when (active-run) (throw (ex-info "fork! inside a body: use the (fork) effect" {})))
-           (when (g w rw/W-UNBORN) (throw (ex-info "fork! of an unactivated instance" {})))
-           (let [_ (next-acquisition-order w)
-                 c (fork-world* w)]
-             (own-child! w (rv w (g w rw/W-ROOT)) c false)   ; F2: weakly, by the root scope
-             (commit! w [:fork-host (g c rw/ID)])
-             (vreset! res c)))
-    (handoff! @res)
-    @res))
+  (when (active-run) (throw (ex-info "fork! inside a body: use the (fork) effect" {})))
+  (when-not (and #?(:clj (instance? (Class/forName "[Ljava.lang.Object;") w)
+                    :cljs (array? w))
+                 (= (inc rw/W-SIZE) (alength ^objects w))
+                 (= rw/T-WORLD (aget ^objects w rw/TYPE)))
+    (throw (invalid-op :fork "expected a world")))
+  (when (and (holding-gate?) (not (identical? w (cw))))
+    (throw (invalid-op :fork "cannot fork through a foreign world gate")))
+  (internal-call!
+   w
+   (fn []
+     ;; Internal control bypasses ordinary host admission: restore all ordinary
+     ;; lifecycle checks under this source gate, before any allocation/mutation.
+     (when (or (g w rw/W-RELEASED) (:requested? (g w rw/W-CLOSE)))
+       (throw (released-ex)))
+     (when (g w rw/W-UNBORN) (throw (ex-info "fork! of an unactivated instance" {})))
+     (next-acquisition-order w)
+     (let [c (fork-world* w)]
+       (own-child! w (rv w (g w rw/W-ROOT)) c false)
+       (commit! w [:fork-host (g c rw/ID)])
+       ;; The outer gate owner drains this outbox even if a callback throws.
+       (aadd! (g w rw/W-AFTER) c)
+       c))))
 
 (defn fork-effect!
   "D3/Q4 `(fork)` in a task body: the fork boundary is this effect's commit.
