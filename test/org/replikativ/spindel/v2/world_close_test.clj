@@ -795,3 +795,39 @@
         (close! p)
         (pump! e)
         (is (terminal? p))))))
+
+(deftest child-release-between-parent-guard-and-holder-publication-is-joined
+  (let [{p :world :as e} (env) pubs (atom []) ran (atom false)
+        original-own @#'v2/own-child!]
+    (v2/install-handlers! p {:s #(swap! pubs conj %)})
+    (binding [v2/*world* p]
+      (let [t (task (v2/savepoint :s nil) (reset! ran true))
+            c (v2/instantiate (first @pubs))
+            cap (v2/register-world-settlement! (v2/world-host-owner c) c [])
+            error (ex-info "late-owned native error" {})]
+        (with-redefs-fn
+          {#'v2/own-child! (fn [parent scope child strong?]
+                             (when (and (identical? parent p) (identical? child c))
+                               ;; Parent admission already passed its guard. A
+                               ;; separate thread can now release the holderless
+                               ;; child without ever taking the parent's gate.
+                               (let [released (future (#'v2/internal-call! c #(#'v2/release-world* c)))]
+                                 (try (is (not= ::timeout (deref released 5000 ::timeout)))
+                                      (finally (future-cancel released)))))
+                             (original-own parent scope child strong?))}
+          #(v2/activate! c :must-not-run))
+        (pump! e)
+        (is (false? @ran))
+        (is (retired? c))
+        (is (= 0 (:child-execution (status p))))
+        (is (= 1 (:child-terminal (status p))) "stale delivery must reconcile the newly installed owner holder")
+        (v2/acknowledge-world-settlement! cap {:settled? true :error error})
+        (pump! e)
+        (let [owner (v2/world-host-owner p)]
+          (is (= [error] (mapv :error (v2/take-world-cleanup-report! owner p))))
+          (is (empty? (v2/take-world-cleanup-report! owner p))))
+        (close! p)
+        (pump! e)
+        (is (terminal? p))
+        (is (empty? (failures p)))
+        (hs/fence! t)))))

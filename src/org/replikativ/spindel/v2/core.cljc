@@ -4236,6 +4236,10 @@
     c))
 
 (defn- activate-instance! [w claim v]
+  ;; A release can occur after parent admission's guard but before its holder
+  ;; publication. Discard clears the activation identity; current-owner handoff
+  ;; must still run on this child gate independently of that stale identity.
+  (when (:requested? (g w rw/W-CLOSE)) (handoff-owner-close! w))
   ;; Parent admission/holder publication has completed. Recheck cancellation
   ;; under the child gate: a delayed accepted activation cannot undo disposal.
   (when (and (identical? claim (:identity (g w rw/W-ACTIVATION))) (g w rw/W-UNBORN))
