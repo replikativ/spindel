@@ -303,3 +303,40 @@
                         (is (empty? (.getWatches ^clojure.lang.IRef a))))))
      (binding [v2/*world* w] (swap! a inc))
      (is (= 1 (count @seen))))))
+
+(deftest world-neutral-refs-reject-unrelated-families
+  (checked
+   (let [w (vworld) other (vworld) x (v2/signal w :root)
+         r (v2/world-ref x)]
+     (is (= :lineage (:spindel/invalid
+                      (try (v2/resolve-ref other r) nil (catch Exception e (ex-data e))))))
+     (let [child (v2/fork! w) cx (v2/resolve-ref child r)]
+       (v2/write! cx :child)
+       (is (= :child (v2/value cx)))
+       (is (= :root (v2/value x)))))))
+
+(deftest atoms-reject-colliding-ids-in-unrelated-families
+  (checked
+   (let [w (vworld) other (vworld)
+         a (binding [v2/*world* w] (v2/atom :root))
+         b (binding [v2/*world* other] (v2/atom :other))]
+     (binding [v2/*world* other]
+       (doseq [op [#(deref a) #(reset! a :wrong) #(swap! a identity)
+                   #(compare-and-set! a :other :wrong)
+                   #(add-watch a :k (fn [& _])) #(remove-watch a :k)
+                   #(.getWatches ^clojure.lang.IRef a)]]
+         (is (contains? (try (op) {} (catch Exception e (ex-data e))) :spindel/missing-state)))
+       (is (= :other @b)))
+     (binding [v2/*world* w] (is (= :root @a))))))
+
+(deftest atom-update-preserves-other-atom-writes
+  (checked
+   (binding [v2/*world* (vworld)]
+     (let [a (v2/atom 0) b (v2/atom 0) created (atom nil)]
+       (swap! a (fn [v]
+                  (swap! b inc)
+                  (reset! created (v2/atom :created))
+                  (inc v)))
+       (is (= 1 @a))
+       (is (= 1 @b))
+       (is (= :created @@created))))))

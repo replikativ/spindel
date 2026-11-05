@@ -2460,13 +2460,13 @@
 
 (defn handle? [x] (instance? Handle x))
 
-(deftype Ref [^objects cell])
+(deftype Ref [^objects cell family])
 
 (defn world-ref
   "A world-neutral reference to the row of handle `h`, for world state:
    resolving it in a world gives that world's handle (a fork's own copy)."
   [h]
-  (Ref. (.-cell ^Handle h)))
+  (Ref. (.-cell ^Handle h) (g (.-w ^Handle h) rw/W-FAMILY)))
 
 (defn ref? [x] (instance? Ref x))
 
@@ -2480,7 +2480,10 @@
 (defn resolve-ref
   "The handle of `r`'s row in `w` (default: the current world)."
   ([r] (resolve-ref (current-world) r))
-  ([w r] (new-handle w (aget ^objects (.-cell ^Ref r) 0))))
+  ([w r]
+   (when-not (identical? (g w rw/W-FAMILY) (.-family ^Ref r))
+     (throw (ex-info "resolve-ref: the reference belongs to an unrelated world" {:spindel/invalid :lineage})))
+   (new-handle w (aget ^objects (.-cell ^Ref r) 0))))
 
 (defn- handle-swap!
   "swap! on a signal or cell handle: read and write in one host item."
@@ -2554,37 +2557,43 @@
 (defn- missing-state [id]
   (ex-info "this world has no state for the atom" {:spindel/missing-state id}))
 
+(defn- atom-world [family id]
+  (let [w (or (current-world) (throw (ex-info "atom outside a world" {})))]
+    (when-not (identical? family (g w rw/W-FAMILY)) (throw (missing-state id)))
+    w))
+
 (defn- atom-watch-op!
   "Runs `(f w)` under the gate of the current world, which must hold the
    atom's state."
-  [id f]
-  (let [w (or (current-world) (throw (ex-info "atom outside a world" {})))]
+  [family id f]
+  (let [w (atom-world family id)]
     (host-call! w #(if (contains? (g w rw/W-ATOMS) id) (f w) (throw (missing-state id))))))
 
 (defn- atom-op!
   "Runs `f` on the atom's value in the current world, under the gate; `f`
    returns [new-value result]. A changed value notifies this world's
    watches at the commit."
-  [ref id f]
-  (let [w (or (current-world) (throw (ex-info "atom outside a world" {})))]
+  [ref family id f]
+  (let [w (atom-world family id)]
     (host-call! w #(let [m (g w rw/W-ATOMS)]
                      (if (contains? m id)
                        (let [old (get m id)
                              [v' ret] (f old)]
                          (when-not (identical? v' old)
-                           (s! w rw/W-ATOMS (assoc m id v'))
+                           ;; f may update another atom under this same gate.
+                           (s! w rw/W-ATOMS (assoc (g w rw/W-ATOMS) id v'))
                            (notify-watches! w id ref old v'))
                          ret)
                        (throw (missing-state id)))))))
 
-(deftype RAtom [^long id ^:volatile-mutable mta]
+(deftype RAtom [^long id family ^:volatile-mutable mta]
   #?@(:clj
       [clojure.lang.IDeref
-       (deref [this] (let [v (atom-op! this id (fn [v] [v v]))] (java.lang.ref.Reference/reachabilityFence this) v))
+       (deref [this] (let [v (atom-op! this family id (fn [v] [v v]))] (java.lang.ref.Reference/reachabilityFence this) v))
        clojure.lang.IRef
-       (addWatch [this k f] (atom-watch-op! id (fn [w] (add-watch* w id k f))) this)
-       (removeWatch [this k] (atom-watch-op! id (fn [w] (remove-watch* w id k))) this)
-       (getWatches [this] (atom-watch-op! id (fn [w] (get (g w rw/W-WATCHES) id {}))))
+       (addWatch [this k f] (atom-watch-op! family id (fn [w] (add-watch* w id k f))) this)
+       (removeWatch [this k] (atom-watch-op! family id (fn [w] (remove-watch* w id k))) this)
+       (getWatches [this] (atom-watch-op! family id (fn [w] (get (g w rw/W-WATCHES) id {}))))
        (getValidator [_] nil)
        (setValidator [_ _] (throw (ex-info "atoms take no validator" {:spindel/invalid :validator})))
        clojure.lang.IMeta
@@ -2593,31 +2602,31 @@
        (alterMeta [_ f args] (set! mta (apply f mta args)) mta)
        (resetMeta [_ m] (set! mta m) m)
        clojure.lang.IAtom
-       (swap [this f] (atom-op! this id (fn [v] (let [n (f v)] [n n]))))
-       (swap [this f a] (atom-op! this id (fn [v] (let [n (f v a)] [n n]))))
-       (swap [this f a b] (atom-op! this id (fn [v] (let [n (f v a b)] [n n]))))
-       (swap [this f a b xs] (atom-op! this id (fn [v] (let [n (apply f v a b xs)] [n n]))))
-       (compareAndSet [this o n] (atom-op! this id (fn [v] (if (identical? v o) [n true] [v false]))))
-       (reset [this n] (atom-op! this id (fn [_] [n n])))
+       (swap [this f] (atom-op! this family id (fn [v] (let [n (f v)] [n n]))))
+       (swap [this f a] (atom-op! this family id (fn [v] (let [n (f v a)] [n n]))))
+       (swap [this f a b] (atom-op! this family id (fn [v] (let [n (f v a b)] [n n]))))
+       (swap [this f a b xs] (atom-op! this family id (fn [v] (let [n (apply f v a b xs)] [n n]))))
+       (compareAndSet [this o n] (atom-op! this family id (fn [v] (if (identical? v o) [n true] [v false]))))
+       (reset [this n] (atom-op! this family id (fn [_] [n n])))
        clojure.lang.IAtom2
-       (swapVals [this f] (atom-op! this id (fn [v] (let [n (f v)] [n [v n]]))))
-       (swapVals [this f a] (atom-op! this id (fn [v] (let [n (f v a)] [n [v n]]))))
-       (swapVals [this f a b] (atom-op! this id (fn [v] (let [n (f v a b)] [n [v n]]))))
-       (swapVals [this f a b xs] (atom-op! this id (fn [v] (let [n (apply f v a b xs)] [n [v n]]))))
-       (resetVals [this n] (atom-op! this id (fn [v] [n [v n]])))]
+       (swapVals [this f] (atom-op! this family id (fn [v] (let [n (f v)] [n [v n]]))))
+       (swapVals [this f a] (atom-op! this family id (fn [v] (let [n (f v a)] [n [v n]]))))
+       (swapVals [this f a b] (atom-op! this family id (fn [v] (let [n (f v a b)] [n [v n]]))))
+       (swapVals [this f a b xs] (atom-op! this family id (fn [v] (let [n (apply f v a b xs)] [n [v n]]))))
+       (resetVals [this n] (atom-op! this family id (fn [v] [n [v n]])))]
       :cljs
-      [IDeref (-deref [this] (atom-op! this id (fn [v] [v v])))
+      [IDeref (-deref [this] (atom-op! this family id (fn [v] [v v])))
        IMeta (-meta [_] mta)
        IWatchable
-       (-add-watch [this k f] (atom-watch-op! id (fn [w] (add-watch* w id k f))) this)
-       (-remove-watch [this k] (atom-watch-op! id (fn [w] (remove-watch* w id k))) this)
+       (-add-watch [this k f] (atom-watch-op! family id (fn [w] (add-watch* w id k f))) this)
+       (-remove-watch [this k] (atom-watch-op! family id (fn [w] (remove-watch* w id k))) this)
        (-notify-watches [_ _ _] nil)
-       IReset (-reset! [this n] (atom-op! this id (fn [_] [n n])))
+       IReset (-reset! [this n] (atom-op! this family id (fn [_] [n n])))
        ISwap
-       (-swap! [this f] (atom-op! this id (fn [v] (let [n (f v)] [n n]))))
-       (-swap! [this f a] (atom-op! this id (fn [v] (let [n (f v a)] [n n]))))
-       (-swap! [this f a b] (atom-op! this id (fn [v] (let [n (f v a b)] [n n]))))
-       (-swap! [this f a b xs] (atom-op! this id (fn [v] (let [n (apply f v a b xs)] [n n]))))]))
+       (-swap! [this f] (atom-op! this family id (fn [v] (let [n (f v)] [n n]))))
+       (-swap! [this f a] (atom-op! this family id (fn [v] (let [n (f v a)] [n n]))))
+       (-swap! [this f a b] (atom-op! this family id (fn [v] (let [n (f v a b)] [n n]))))
+       (-swap! [this f a b xs] (atom-op! this family id (fn [v] (let [n (apply f v a b xs)] [n n]))))]))
 
 (defn atom
   "A fork-safe atom in the current world, initialised to `init`; options as
@@ -2627,7 +2636,7 @@
         id (host-call! w #(let [id (alloc-id! w)]
                             (s! w rw/W-ATOMS (assoc (g w rw/W-ATOMS) id init))
                             id))
-        a (RAtom. id meta)
+        a (RAtom. id (g w rw/W-FAMILY) meta)
         ww (hs/weak w)]
     ;; holds the world weakly: an atom table may reach the wrapper
     (hs/on-collect! a (fn [] (when-let [w (hs/deref-weak ww)]

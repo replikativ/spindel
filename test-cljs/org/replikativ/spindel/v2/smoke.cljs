@@ -8,6 +8,22 @@
   (let [w (v2/world)
         out (atom [])]
     (binding [v2/*world* w]
+      (let [a (v2/atom 0) seen (atom [])]
+        (v2/host-call! w #(binding [v2/*world* nil]
+                           (add-watch a :k (fn [_ _ o n] (swap! seen conj [o n])))))
+        (swap! a inc)
+        (assert (= [[0 1]] @seen))
+        (remove-watch a :k)
+        (let [b (v2/atom 0)]
+          (swap! a (fn [v] (swap! b inc) (inc v)))
+          (assert (= 1 @b)))
+        (let [other (v2/world)
+              b (binding [v2/*world* other] (v2/atom :other))]
+          (binding [v2/*world* other]
+            (assert (contains? (try (reset! a :wrong) {} (catch :default e (ex-data e))) :spindel/missing-state))
+            (assert (= :other @b)))))
+      (let [p (comb/parallel (spin 10) (spin 20))]
+        (v2/value-async p (fn [v err?] (assert (not err?)) (assert (= [10 20] v)))))
       (let [x (v2/signal 1)
             a (spin (* 10 (iv/get-new (track x))))
             b (spin (+ 1 (await a)))
