@@ -603,7 +603,9 @@
           (aset ms i nil)
           (aset sl i res)
           (s! a rw/A-REMAINING (dec (gl a rw/A-REMAINING)))
-          (when (and (= :any (g a rw/A-MODE)) (nil? (g a rw/A-WINNER)))
+          ;; any: the first fill wins; all: the first err ends it (Z#61)
+          (when (and (nil? (g a rw/A-WINNER))
+                     (or (= :any (g a rw/A-MODE)) (and (= :all (g a rw/A-MODE)) (nth res 1))))
             (s! a rw/A-WINNER i))))
       (when (act-done? a) (resume-at-fill! w a)))))
 
@@ -1255,17 +1257,19 @@
 
 (defn- group-result
   "The delivery of a complete activation: `one` its slot, `all` the vector of
-   values (or the first error in slot order), `any` the winning slot."
+   values (or, fail-fast, its first error: Z#61), `any` the winning slot."
   [mode ^objects slots winner]
   (case mode
     :one (aget slots 0)
     :any (aget slots (int winner))
-    :all (let [n (alength slots)]
-           (loop [i 0 acc (transient [])]
-             (if (< i n)
-               (let [[v err?] (aget slots i)]
-                 (if err? [v true] (recur (inc i) (conj! acc v))))
-               [(persistent! acc) false])))))
+    :all (if (some? winner)
+           (aget slots (int winner))
+           (let [n (alength slots)]
+             (loop [i 0 acc (transient [])]
+               (if (< i n)
+                 (let [[v err?] (aget slots i)]
+                   (if err? [v true] (recur (inc i) (conj! acc v))))
+                 [(persistent! acc) false]))))))
 
 (defn- continue! [res k ek]
   (let [[v err?] res] (if err? (ek v) (k v))))
@@ -1291,7 +1295,8 @@
   (let [r (rv w (g a rw/A-RUN))]
     (s! r rw/R-ACTV nil)
     (s! r rw/R-ACT rw/ACT-ACTIVE)
-    (when (and (= :any (g a rw/A-MODE)) (not (comp? (rv w (g r rw/R-OF)))))
+    (when (and (or (= :any (g a rw/A-MODE)) (and (= :all (g a rw/A-MODE)) (some? (g a rw/A-WINNER))))
+               (not (comp? (rv w (g r rw/R-OF)))))
       (cancel-losers! w r (g a rw/A-MEMBERS)))
     (release-members! w a)
     (s! a rw/A-RESULT (group-result (g a rw/A-MODE) (g a rw/A-SLOTS) (g a rw/A-WINNER)))
@@ -1380,7 +1385,8 @@
                   (aset slots i (debtor-result d))
                   (aset members i nil)
                   (vswap! remaining dec)
-                  (when (= mode :any) (vreset! winner i)))))
+                  (when (or (= mode :any) (and (= mode :all) (nth (aget slots i) 1)))
+                    (vreset! winner i)))))
             (if (or (zero? @remaining) (some? @winner))
               (do
             ;; complete at once: unfilled any-losers and final dep edges go
@@ -2729,19 +2735,25 @@
   "`(offload f)`: runs the plain function `f` on the world's executor,
    outside every world (§4.3). `f` must not call into the world
    synchronously; it may enqueue ingress."
-  [f k ek]
+  [f opts k ek]
   (if-let [r (valid-run)]
     (arm-and-park!
      r :offload k ek
      (fn [w z]
        (let [ctl (hs/offload-ctl)]
          (set-ctl! w z ctl)
-         (hs/execute! (g w rw/W-EXEC)
+         ;; :pool runs f on another executor than the world's (M6 R8, blocking)
+         (hs/execute! (or (:pool opts) (g w rw/W-EXEC))
                       (fn []
                         (when (hs/ctl-start! ctl)
                           (let [res (try [(f) false] (catch #?(:clj Throwable :cljs :default) t [t true]))]
-                            (hs/ctl-finish! ctl)
-                            (join! w z res))))))))
+                            #?(:clj (do (hs/ctl-finish! ctl) (join! w z res))
+                               ;; a returned promise is awaited (old blocking on JS)
+                               :cljs (if (and (not (second res)) (instance? js/Promise (first res)))
+                                       (.then (first res)
+                                              (fn [v] (hs/ctl-finish! ctl) (join! w z [v false]))
+                                              (fn [e] (hs/ctl-finish! ctl) (join! w z [e true])))
+                                       (do (hs/ctl-finish! ctl) (join! w z res)))))))))))
     (unwind! ek)))
 
 (defn sleep-effect!
@@ -3152,7 +3164,7 @@
                  (refuse! w [:activate aid [:opaque v]]))))))
   w)
 
-(defn offload [_] (throw (ex-info "offload outside a body" {})))
+(defn offload [& _] (throw (ex-info "offload outside a body" {})))
 
 (defn external [_] (throw (ex-info "external outside a body" {})))
 
@@ -3219,7 +3231,7 @@
      (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-fork [_ctx r e]
        (fn [_] `(fork-effect! ~r ~e)))
      (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-offload [_ctx r e]
-       (fn [[f]] `(offload-effect! ~f ~r ~e)))
+       (fn [[f opts]] `(offload-effect! ~f ~opts ~r ~e)))
      (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-external [_ctx r e]
        (fn [[f]] `(external-effect! ~f ~r ~e)))
      (declare site-of)

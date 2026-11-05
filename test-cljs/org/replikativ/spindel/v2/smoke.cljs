@@ -1,6 +1,7 @@
 (ns org.replikativ.spindel.v2.smoke
   "Node smoke run of engine v2 (CLJS)."
   (:require [org.replikativ.spindel.v2.core :as v2 :refer [spin task track await await-all take!]]
+            [org.replikativ.spindel.v2.combinators :as comb]
             [org.replikativ.spindel.incremental.interval :as iv]))
 
 (defn -main []
