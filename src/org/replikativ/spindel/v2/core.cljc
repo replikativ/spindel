@@ -1345,7 +1345,11 @@
   (ordinary-admission! :finally)
   (if-let [r (valid-run)]
     (let [id (inc (long (or (g r rw/R-REGION-SEQ) 0)))
-          region {:id id :cleanup cleanup :k k :ek ek}
+          ;; Cancellation bypasses the body's scope-wrapped continuations.
+          ;; Capture only registered lexical adapters for this additional entry;
+          ;; execution authority still comes from the runner's selected world.
+          entry (pr/scope-continuation (fn [[resolve reject]] (cleanup resolve reject)))
+          region {:id id :cleanup (fn [resolve reject] (entry [resolve reject])) :k k :ek ek}
           done (fn [outcome]
                  (pr/->thunk
                   #(if (== rw/ACT-DONE (gl (active-run) rw/R-ACT))
@@ -3518,6 +3522,7 @@
   "D3, host form: a frozen fork of `w` between slices. Returns the child
    world; act on it through `in-world` handles."
   [w]
+  (ordinary-admission! :fork)
   (let [res (volatile! nil)]
     (gated w
            (when (active-run) (throw (ex-info "fork! inside a body: use the (fork) effect" {})))
@@ -3667,6 +3672,7 @@
 (defn resume!
   "S2: continues the publication's own world with `v`, at most once."
   [pub v]
+  (ordinary-admission! :resume)
   (let [w (:world pub)]
     (when (compare-and-set! (:state pub) :pending :resumed)
       (gated w
@@ -3696,6 +3702,7 @@
    run's copy is parked on its savepoint, which is the fork's pending
    activation. Any number of instances are independent."
   [pub]
+  (ordinary-admission! :instantiate)
   (let [b (:basis pub)
         c (fork-world* b)]
     (s! c rw/W-PENDING-ACT (:act pub))
@@ -3710,6 +3717,7 @@
   "S4: resumes an instantiated fork's pending activation with `v`. The fork
    is born here: the root scope of the publication's world owns it (F2)."
   [w v]
+  (ordinary-admission! :activate)
   (gated w
          (when-let [pw (g w rw/W-PUB-WORLD)]
            (s! w rw/W-PUB-WORLD nil)

@@ -17,14 +17,17 @@
         (is (empty? @(:divergences env))
             (str "cleanup invariant/reachability violations: " @(:divergences env)))))))
 
-(defn- manual-world []
-  (let [jobs (atom []) divergences (atom [])]
-    (let [env {:world (v2/world {:verify? true :hook (verify/checking-hook divergences)
-                                 :executor (reify java.util.concurrent.Executor
-                                             (execute [_ f] (swap! jobs conj f)))})
-               :jobs jobs :divergences divergences}]
-      (when *checked-worlds* (swap! *checked-worlds* conj env))
-      env)))
+(defn- manual-world
+  ([] (manual-world true))
+  ([verify?]
+   (let [jobs (atom []) divergences (atom [])
+         env {:world (v2/world {:verify? verify?
+                                :hook (when verify? (verify/checking-hook divergences))
+                                :executor (reify java.util.concurrent.Executor
+                                            (execute [_ f] (swap! jobs conj f)))})
+              :jobs jobs :divergences divergences}]
+     (when *checked-worlds* (swap! *checked-worlds* conj env))
+     env)))
 
 (defn- pump! [{:keys [jobs]}]
   (loop [fuel 1000]
@@ -568,18 +571,18 @@
         (let [gate (v2/deferred) signal (v2/signal :value)
               t (task (try (await gate)
                            (finally
-                             (case kind
-                               :await (await gate)
-                               :track (v2/track signal)
-                               :external (v2/external (fn [_] (is false "unadmitted external")))
-                               :sleep (v2/sleep 1)
-                               :spawn (task :bad)
-                               :spin (v2/spin :bad)
-                               :fork (v2/fork)
-                               :savepoint (v2/savepoint :bad nil)
-                               :scope (v2/with-scope :bad)
-                               :custom (forbidden-cleanup-effect)
-                               :custom-helper (hidden-custom-effect)))))
+                             (cond
+                               (= kind :await) (await gate)
+                               (= kind :track) (v2/track signal)
+                               (= kind :external) (v2/external (fn [_] (is false "unadmitted external")))
+                               (= kind :sleep) (v2/sleep 1)
+                               (= kind :spawn) (task :bad)
+                               (= kind :spin) (v2/spin :bad)
+                               (= kind :fork) (v2/fork)
+                               (= kind :savepoint) (v2/savepoint :bad nil)
+                               (= kind :scope) (v2/with-scope :bad)
+                               (= kind :custom) (forbidden-cleanup-effect)
+                               (= kind :custom-helper) (hidden-custom-effect)))))
               out (outcome t)]
           (v2/cancel-task! t)
           (pump! env)
@@ -589,3 +592,281 @@
                  (mapv (comp :spindel/invalid ex-data :error)
                        (vals (aget ^objects w rw/W-CLEANUP-FAILURES)))))
           (is (empty? (runs w))))))))
+
+(def ^:dynamic *cleanup-context* {:lexical :ambient :world nil})
+
+(defn capture-cleanup-context [value] (:lexical value))
+(defn restore-cleanup-context [captured _runner]
+  {:lexical captured :world (v2/cw)})
+
+(ioc/register-binding-scope! 'org.replikativ.spindel.v2.cleanup-test/*cleanup-context*
+                             'org.replikativ.spindel.v2.cleanup-test/capture-cleanup-context
+                             'org.replikativ.spindel.v2.cleanup-test/restore-cleanup-context)
+
+(defn- cleanup-scope-read [position]
+  [position *cleanup-binding* (:lexical *cleanup-context*)
+   (identical? (:world *cleanup-context*) (v2/cw)) (aget ^objects (v2/cw) rw/ID)])
+
+(defn- complete-on-foreign-runner! [env complete]
+  (let [foreign (v2/world) error (atom nil) after (atom nil)
+        thread (Thread.
+                (fn []
+                  (binding [v2/*world* foreign *cleanup-binding* :runner
+                            *cleanup-context* {:lexical :runner :world foreign}]
+                    (try
+                      (complete :closed)
+                      (pump! env)
+                      (reset! after [*cleanup-binding* (:lexical *cleanup-context*)
+                                     (identical? foreign (:world *cleanup-context*)) (v2/cw)])
+                      (catch Throwable e (reset! error e))))))]
+    (.start thread)
+    (.join thread)
+    (is (nil? @error) (str "foreign runner failed: " @error))
+    (is (= [:runner :runner true nil] @after) "cleanup scope must exit back to runner bindings")
+    (v2/release-world! foreign)))
+
+(deftest bindings-surrounding-try-enter-nested-finalizers-on-selected-runner
+  (doseq [cancel? [false true]]
+    (let [{w :world :as env} (manual-world) callbacks (atom {}) events (atom [])]
+      (binding [v2/*world* w]
+        (let [gate (v2/deferred)
+              t (task
+                 (let [inner (v2/cleanup-resource (fn [cb] (swap! callbacks assoc :inner cb) nil))
+                       outer (v2/cleanup-resource (fn [cb] (swap! callbacks assoc :outer cb) nil))]
+                   (binding [*cleanup-binding* :outer-scope
+                             *cleanup-context* {:lexical :outer-scope :world (v2/cw)}]
+                     (try
+                       (binding [*cleanup-binding* :inner-scope
+                                 *cleanup-context* {:lexical :inner-scope :world (v2/cw)}]
+                         (try (await gate)
+                              (finally
+                                (swap! events conj (cleanup-scope-read :inner-before))
+                                (await-finalization (v2/cleanup-operation inner))
+                                (swap! events conj (cleanup-scope-read :inner-after)))))
+                       (finally
+                         (swap! events conj (cleanup-scope-read :outer-before))
+                         (await-finalization (v2/cleanup-operation outer))
+                         (swap! events conj (cleanup-scope-read :outer-after)))))))
+              out (outcome t)
+              wid (aget ^objects w rw/ID)]
+          (if cancel? (v2/cancel-task! t) (v2/deliver! gate :body))
+          (is (= [[:inner-before :inner-scope :inner-scope true wid]] @events))
+          (complete-on-foreign-runner! env (get @callbacks :inner))
+          (complete-on-foreign-runner! env (get @callbacks :outer))
+          (is (= [[:inner-before :inner-scope :inner-scope true wid]
+                  [:inner-after :inner-scope :inner-scope true wid]
+                  [:outer-before :outer-scope :outer-scope true wid]
+                  [:outer-after :outer-scope :outer-scope true wid]] @events))
+          (if cancel? (is (v2/cancelled? (ffirst @out))) (is (= [[:body false]] @out)))
+          (is (= :outer *cleanup-binding*))
+          (is (empty? (runs w))))))))
+
+(deftest copied-cleanup-entry-restores-lexical-data-with-child-origin
+  (let [{w :world :as env} (manual-world) complete (atom nil) calls (atom 0)
+        events (atom []) copied-errors (atom [])]
+    (binding [v2/*world* w]
+      (let [gate (v2/deferred)
+            t (task
+               (let [resource (v2/cleanup-resource (fn [cb] (swap! calls inc) (reset! complete cb) nil))]
+                 (binding [*cleanup-binding* :fork-scope
+                           *cleanup-context* {:lexical :fork-scope :world (v2/cw)}]
+                   (try (await gate)
+                        (finally
+                          (swap! events conj (cleanup-scope-read :before))
+                          (try (await-finalization (v2/cleanup-operation resource))
+                               (catch Throwable e
+                                 (swap! copied-errors conj [(aget ^objects (v2/cw) rw/ID)
+                                                            (:spindel/forked (ex-data e))])))
+                          (swap! events conj (cleanup-scope-read :after)))))))
+            child (v2/fork! w)
+            child-task (v2/in-world child t)
+            child-out (outcome child-task)
+            child-id (aget ^objects child rw/ID)
+            parent-out (outcome t)]
+        (v2/cancel-task! child-task)
+        (pump! env)
+        (is (v2/cancelled? (ffirst @child-out)))
+        (is (= [[:before :fork-scope :fork-scope true child-id]
+                [:after :fork-scope :fork-scope true child-id]] @events))
+        (is (= [[child-id true]] @copied-errors))
+        (is (zero? @calls) "a copied target cannot register its parent's close")
+        (is (empty? (runs child)))
+        (v2/cancel-task! t)
+        (complete-on-foreign-runner! env @complete)
+        (is (= 1 @calls))
+        (is (v2/cancelled? (ffirst @parent-out)))
+        (is (= [[:before :fork-scope :fork-scope true (aget ^objects w rw/ID)]
+                [:after :fork-scope :fork-scope true (aget ^objects w rw/ID)]]
+               (subvec @events 2)))
+        (is (empty? (runs w)))))))
+
+(defn- creation-snapshot [w publication instance]
+  {:next (.get ^java.util.concurrent.atomic.AtomicLong (aget ^objects w rw/W-NEXT))
+   :worlds (hs/msize (:worlds (aget ^objects w rw/W-FAMILY)))
+   :basis-epoch (aget ^objects (:basis publication) rw/W-EPOCH)
+   :publication @(:state publication)
+   :unborn (aget ^objects instance rw/W-UNBORN)
+   :activation (aget ^objects instance rw/W-PENDING-ACT)
+   :activation-owner (aget ^objects instance rw/W-PUB-WORLD)
+   :owned (when-let [owned (aget ^objects w rw/W-OWNED)]
+            (mapv (fn [[id entry]]
+                    [id (mapv (fn [holder]
+                                [(some-> (aget ^objects holder 0) (aget rw/ID))
+                                 (hs/flag? (aget ^objects holder 2))])
+                              (aget ^objects entry 0))])
+                  (hs/mentries owned)))})
+
+(deftest callable-fork-and-savepoint-boundaries-refuse-before-mutation
+  (doseq [cancel? [false true] kind [:instantiate :activate :resume :fork]]
+    (let [{w :world :as env} (manual-world) publication (atom nil)
+          snapshots (atom nil) refusal (atom nil)]
+      (v2/install-handlers! w {:seed #(reset! publication %)})
+      (binding [v2/*world* w]
+        (let [publisher (task (v2/savepoint :seed :pending))
+              instance (v2/instantiate @publication)
+              gate (v2/deferred)
+              t (task
+                 (try (if cancel? (await gate) :body)
+                      (finally
+                        (let [before (creation-snapshot w @publication instance)]
+                          (try
+                            (case kind
+                              :instantiate (v2/instantiate @publication)
+                              :activate (v2/activate! instance :forbidden)
+                              :resume (v2/resume! @publication :forbidden)
+                              :fork (v2/fork! w))
+                            (catch Throwable e (reset! refusal e)))
+                          (reset! snapshots [before (creation-snapshot w @publication instance)])))))
+              out (outcome t)]
+          (when cancel? (v2/cancel-task! t))
+          (pump! env)
+          (is (= :finalizer-effect (:spindel/invalid (ex-data @refusal))))
+          (is (= (first @snapshots) (second @snapshots)) (str "creation/activation changed state: " kind))
+          (is (= :pending @(:state @publication)))
+          (is (true? (aget ^objects instance rw/W-UNBORN)))
+          (if cancel? (is (v2/cancelled? (ffirst @out))) (is (= [[:body false]] @out)))
+          (v2/discard! instance)
+          (v2/abandon! @publication)
+          (is (v2/cancelled? (ffirst @(outcome publisher)))))))))
+
+(deftest adapter-registration-cannot-create-or-activate-worlds
+  (doseq [cancel? [false true] kind [:fork :instantiate :activate :resume]]
+    (let [{w :world :as env} (manual-world) publication (atom nil)
+          snapshots (atom nil) refusal (atom nil)]
+      (v2/install-handlers! w {:seed #(reset! publication %)})
+      (binding [v2/*world* w]
+        (let [publisher (task (v2/savepoint :seed :pending))
+              instance (v2/instantiate @publication)
+              gate (v2/deferred)
+              t (task
+                 (let [resource
+                       (v2/cleanup-resource
+                        (fn [_]
+                          (is (nil? (v2/active-run)))
+                          (is (not (hs/held? (aget ^objects w rw/W-LOCK))))
+                          (let [before (creation-snapshot w @publication instance)]
+                            (try
+                              (case kind
+                                :fork (v2/fork! w)
+                                :instantiate (v2/instantiate @publication)
+                                :activate (v2/activate! instance :forbidden)
+                                :resume (v2/resume! @publication :forbidden))
+                              (catch Throwable e (reset! refusal e) (throw e))
+                              (finally (reset! snapshots [before (creation-snapshot w @publication instance)]))))))]
+                   (try (if cancel? (await gate) :body)
+                        (finally (await-finalization (v2/cleanup-operation resource))))))
+              out (outcome t)]
+          (when cancel? (v2/cancel-task! t))
+          (pump! env)
+          (is (= :finalizer-effect (:spindel/invalid (ex-data @refusal))))
+          (is (= (first @snapshots) (second @snapshots)) (str "registration admitted ordinary work: " kind))
+          (if cancel?
+            (do (is (v2/cancelled? (ffirst @out)))
+                (is (= [@refusal] (mapv :error (v2/call-in! w #(#'v2/take-cleanup-report! w))))))
+            (is (= [@refusal] (:spindel/cleanup-failures (ex-data (ffirst @out))))))
+          (v2/discard! instance)
+          (v2/abandon! @publication)
+          (is (v2/cancelled? (ffirst @(outcome publisher)))))))))
+
+(defn- cleanup-failure-payload-fixture [env mode]
+  (let [w (:world env) public (byte-array 65536) private (byte-array 65536)
+        public-weak (java.lang.ref.WeakReference. public)
+        private-weak (java.lang.ref.WeakReference. private)
+        error (ex-info "physical close failed" {:payload public})
+        complete (atom nil) operation (atom nil) detached (atom 0)]
+    (binding [v2/*world* w]
+      (let [t (task
+               (let [resource (v2/cleanup-resource
+                               (fn [cb]
+                                 (reset! complete cb)
+                                 (fn [] (swap! detached + (alength private)))))
+                     op (v2/cleanup-operation resource)]
+                 (reset! operation op)
+                 (try :body (finally (await-finalization op)))))
+            out (outcome t)]
+        (when (= mode :cancel) (v2/cancel-task! t))
+        (@complete error true)
+        (pump! env)
+        (is (= 65536 @detached))
+        {:public public-weak :private private-weak
+         :holder (atom {:task t :result @out :operation @operation :callback @complete})}))))
+
+(defn- report-count [w]
+  (v2/call-in! w #(:unreported-failures (#'v2/cleanup-diagnostics* w))))
+
+(defn- all-live? [weaks]
+  (every? (fn [^java.lang.ref.WeakReference r] (some? (.get r))) weaks))
+
+(defn- collected-many? [weaks]
+  (loop [n 0]
+    (System/gc)
+    (if (every? (fn [^java.lang.ref.WeakReference r] (nil? (.get r))) weaks)
+      true
+      (if (= n 50) false (do (Thread/sleep 10) (recur (inc n)))))))
+
+(deftest canceled-cleanup-errors-retain-only-current-unconsumed-report-payloads
+  (let [{w :world :as env} (manual-world false)]
+    (dotimes [_round 3]
+      (let [fixtures (mapv (fn [_] (cleanup-failure-payload-fixture env :cancel)) (range 12))
+            public (mapv :public fixtures) private (mapv :private fixtures)]
+        ;; Keep canceled results, but drop the optional terminal error observers.
+        (doseq [f fixtures] (swap! (:holder f) select-keys [:task :result]))
+        (is (= 12 (report-count w)))
+        (is (= 12 (report-count w)) "diagnostic reads cannot consume failures")
+        (is (all-live? public) "unreported close failures remain actual retention obligations")
+        (is (collected-many? private) "reports must not retain registration/detach payloads")
+        (let [reports (atom (v2/call-in! w #(#'v2/take-cleanup-report! w)))]
+          (is (= 12 (count @reports)))
+          (is (zero? (report-count w)))
+          (is (all-live? public) "a held returned report owns its public error payloads")
+          (reset! reports nil)
+          (is (collected-many? public) "acknowledged reports collect with world and canceled results held"))
+        (doseq [f fixtures]
+          (is (v2/cancelled? (ffirst (:result @(:holder f)))))
+          (is (nil? (aget ^objects (v2/row-of (:task @(:holder f))) rw/K-RUN)))))
+      (is (zero? (report-count w))))))
+
+(deftest normal-cleanup-failure-does-not-create-a-global-error-history
+  (let [{w :world :as env} (manual-world false)]
+    (dotimes [_round 3]
+      (let [fixtures (mapv (fn [_] (cleanup-failure-payload-fixture env :normal)) (range 12))]
+        (is (zero? (report-count w)))
+        (doseq [f fixtures]
+          (swap! (:holder f) select-keys [:task :result])
+          (is (seq (:spindel/cleanup-failures (ex-data (ffirst (:result @(:holder f))))))))
+        (is (all-live? (mapv :public fixtures)) "held failed results intentionally retain their public error")
+        (is (collected-many? (mapv :private fixtures)))
+        (doseq [f fixtures] (reset! (:holder f) nil))
+        (is (collected-many? (mapv :public fixtures)) "world does not keep delivered errors after results drop")
+        (is (zero? (report-count w)))))))
+
+(deftest failure-terminal-operation-and-callback-release-private-registration-captures
+  (let [{w :world :as env} (manual-world false)
+        {:keys [public private holder]} (cleanup-failure-payload-fixture env :normal)]
+    (swap! holder select-keys [:operation :callback])
+    (is (zero? (report-count w)))
+    (is (= :settled (:phase (v2/cleanup-operation-status (:operation @holder)))))
+    (is (collected? private))
+    (is (all-live? [public]) "the public terminal error is still observed by the held operation/callback")
+    (reset! holder nil)
+    (is (collected? public) "dropping public terminal observers permits collection without dropping world")))
