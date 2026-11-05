@@ -668,3 +668,130 @@
           (is (not (:activation-pending? (status c))))
           (is (zero? (:deferred-host (status c))))
           (hs/fence! t))))))
+
+(defn- pending-instance [e]
+  (let [p (:world e) pubs (atom []) admission (atom []) original-internal @#'v2/internal!]
+    (v2/install-handlers! p {:s #(swap! pubs conj %)})
+    (binding [v2/*world* p]
+      (let [t (task (v2/savepoint :s nil)) c (v2/instantiate (first @pubs))]
+        (with-redefs-fn
+          {#'v2/internal! (fn [w f]
+                            (if (identical? w p) (do (swap! admission conj f) nil)
+                                (original-internal w f)))}
+          #(v2/activate! c :result))
+        {:parent p :child c :task t :admit (fn [] (doseq [f @admission] (original-internal p f)))}))))
+
+(deftest replay-failure-preserves-later-read-and-host-call-promise
+  (let [e (env) {:keys [parent child task admit]} (pending-instance e)
+        read (atom []) order (atom []) arrived (promise) caller (atom nil)
+        original-host v2/host!]
+    (try
+      (v2/host! child #(throw (ex-info "first queued body" {})))
+      (v2/host! child #(swap! order conj :middle))
+      (v2/host! child #(throw (ex-info "middle queued body" {})))
+      (with-redefs-fn
+        {#'v2/host! (fn [& args]
+                      (let [result (apply original-host args)]
+                        (when (identical? child (first args)) (deliver arrived true)) result))}
+        (fn []
+          (reset! caller (future (try [:ok (v2/host-call! child #(do (swap! order conj :promise) :value))]
+                                      (catch Throwable error [:error error]))))
+          (is (= true (deref arrived 5000 ::timeout)))))
+      (v2/value-async (v2/in-world child task) (fn [v failed?] (swap! read conj [v failed?])))
+      (admit)
+      (pump! e)
+      (is (= [:middle :promise] @order))
+      (is (= [:ok :value] (deref @caller 1000 ::timeout)))
+      (is (= [[:result false]] @read))
+      (close! parent)
+      (pump! e)
+      (is (terminal? parent))
+      (finally (when @caller (future-cancel @caller))))))
+
+(deftest replay-obeys-budget-and-allows-release-and-physical-ack-to-interleave
+  (let [e (env) {:keys [parent child admit]} (pending-instance e) bodies (atom [])
+        cap (v2/register-world-settlement! (v2/world-host-owner child) child [])]
+    (aset ^objects child rw/W-BUDGET 2)
+    (dotimes [i 12] (v2/host! child #(swap! bodies conj i)))
+    (admit)
+    (is (<= (count @bodies) 2) "activation does not replay the backlog in its one ingress unit")
+    (let [before (count @bodies)]
+      (#'v2/internal! child #(#'v2/release-world* child))
+      (is (= before (count @bodies)) "internal release revokes the remaining ordinary bodies")
+      (v2/acknowledge-world-settlement! cap {:settled? true :value :physical-exit})
+      (pump! e)
+      (is (= before (count @bodies)))
+      (is (terminal? child)))
+    (close! parent)
+    (pump! e)
+    (is (terminal? parent))))
+
+(defn- queued-controls [w operations]
+  (let [entered (promise) unlock (java.util.concurrent.CountDownLatch. 1)
+        submitted (vec (repeatedly (count operations) promise)) count-submitted (atom -1)
+        callers (atom []) original-internal @#'v2/internal!
+        holder (future (#'v2/internal-call! w (fn [] (deliver entered true) (.await unlock))))]
+    (try
+      (is (= true (deref entered 5000 ::timeout)))
+      (with-redefs-fn
+        {#'v2/internal! (fn [target f]
+                          (let [result (original-internal target f)]
+                            (when (identical? w target)
+                              (let [i (swap! count-submitted inc)]
+                                (when (< i (count submitted)) (deliver (nth submitted i) true))))
+                            result))}
+        (fn []
+          (doseq [[i operation] (map-indexed vector operations)]
+            (swap! callers conj (future (try [:ok (operation)] (catch Throwable error [:error error]))))
+            (is (= true (deref (nth submitted i) 5000 ::timeout))
+                "each contender captured pending authority before the target gate opens"))
+          (.countDown unlock)))
+      (mapv #(deref % 5000 ::timeout) @callers)
+      (finally (.countDown unlock)
+               (future-cancel holder)
+               (doseq [caller @callers] (future-cancel caller))))))
+
+(deftest queued-duplicate-acknowledgements-recheck-terminal-phase-under-gate
+  (let [w (v2/world) cap (v2/register-world-settlement! (v2/world-host-owner w) w [])
+        error (ex-info "one physical error" {})]
+    (close! w)
+    (is (= [[:ok nil] [:ok nil]]
+           (queued-controls w [#(v2/acknowledge-world-settlement! cap {:settled? true :error error})
+                               #(v2/acknowledge-world-settlement! cap {:settled? true :error error})])))
+    (is (terminal? w))
+    (is (= [error] (mapv :error (failures w))))))
+
+(deftest queued-preparation-completions-and-update-after-ack-are-inert
+  (let [w (v2/world) cap (v2/register-world-settlement! (v2/world-host-owner w) w [:a])
+        reservation (:a (v2/world-preparations cap))]
+    (close! w)
+    (is (= [[:ok nil] [:ok nil]]
+           (queued-controls w [#(v2/finish-world-preparation! reservation {:disposed? true})
+                               #(v2/finish-world-preparation! reservation {:disposed? true})])))
+    (is (retired? w))
+    (is (= [[:ok nil] [:ok nil]]
+           (queued-controls w [#(v2/acknowledge-world-settlement! cap {:settled? true :value :closed})
+                               #(v2/update-world-settlement! cap {:id :late-notification :phase :pending})])))
+    (is (terminal? w))
+    (is (empty? (:recovery (status w))))))
+
+(deftest queued-before-intent-reads-and-writes-retain-preactivation-semantics
+  (let [{p :world :as e} (env) pubs (atom []) before (atom []) after (atom [])]
+    (v2/install-handlers! p {:s #(swap! pubs conj %)})
+    (binding [v2/*world* p]
+      (let [x (v2/signal :initial) t (task (v2/savepoint :s nil))
+            c (v2/instantiate (first @pubs)) local-x (v2/in-world c x) local-t (v2/in-world c t)]
+        (aset ^objects c rw/W-INLINE false)
+        (v2/write! local-x :preactivate)
+        (v2/value-async local-t (fn [v failed?] (swap! before conj [v failed?])))
+        (v2/activate! c :result)
+        (v2/value-async local-t (fn [v failed?] (swap! after conj [v failed?])))
+        (pump! e)
+        (is (= 1 (count @before)))
+        (is (:spindel/unborn (ex-data (ffirst @before))))
+        (is (= [[:result false]] @after))
+        (aset ^objects c rw/W-INLINE true)
+        (is (= :preactivate (v2/value local-x)))
+        (close! p)
+        (pump! e)
+        (is (terminal? p))))))

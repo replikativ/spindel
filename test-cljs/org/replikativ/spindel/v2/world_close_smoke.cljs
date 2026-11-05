@@ -123,6 +123,92 @@
         (assert (:terminal? (aget p rw/W-CLOSE)))
         (assert (:terminal? (aget c rw/W-CLOSE)))))))
 
+(defn- refused-synchronous-controls! []
+  (let [{w :world :as e} (manual-world) owner (v2/world-host-owner w)]
+    (aset w rw/W-INLINE false)
+    (assert (try (v2/register-world-settlement! owner w [:orphan]) false (catch :default _ true)))
+    (pump! e)
+    (assert (empty? (:settlements (aget w rw/W-CLOSE))))
+    (assert (empty? (:preparations (aget w rw/W-CLOSE))))
+    (assert (try (v2/close-world! owner w) false (catch :default _ true)))
+    (pump! e)
+    (assert (not (:requested? (aget w rw/W-CLOSE))))
+    (aset w rw/W-INLINE true)
+    (let [cap (v2/register-world-settlement! owner w [:a])
+          reservation (:a (v2/world-preparations cap))]
+      (aset w rw/W-INLINE false)
+      (assert (try (v2/update-world-settlement! cap {:id :late :phase :ambiguous}) false (catch :default _ true)))
+      (assert (try (v2/finish-world-preparation! reservation {:disposed? true}) false (catch :default _ true)))
+      (pump! e)
+      (assert (= 1 (count (:preparations (aget w rw/W-CLOSE)))))
+      (assert (every? (fn [debt] (nil? (:recovery debt))) (vals (:settlements (aget w rw/W-CLOSE)))))
+      (v2/release-world! w)
+      (pump! e)
+      (assert (not (:execution-retired? (aget w rw/W-CLOSE))))
+      (aset w rw/W-INLINE true)
+      (v2/finish-world-preparation! reservation {:disposed? true})
+      (assert (:execution-retired? (aget w rw/W-CLOSE)))
+      (aset w rw/W-INLINE false)
+      (assert (try (v2/acknowledge-world-settlement! cap {:settled? true :value :must-not-commit}) false (catch :default _ true)))
+      (pump! e)
+      (assert (= 1 (count (:settlements (aget w rw/W-CLOSE)))))
+      (assert (not (:terminal? (aget w rw/W-CLOSE))))
+      (aset w rw/W-INLINE true)
+      (v2/acknowledge-world-settlement! cap {:settled? true :value :physically-closed})
+      (assert (:terminal? (aget w rw/W-CLOSE))))))
+
+(defn- replay-failure-and-budget! []
+  (let [{p :world :as e} (manual-world) pubs (atom []) submit (atom []) result (atom []) effects (atom [])]
+    (v2/install-handlers! p {:s #(swap! pubs conj %)})
+    (binding [v2/*world* p]
+      (let [t (task (v2/savepoint :s nil)) c (v2/instantiate (first @pubs))]
+        (with-redefs [v2/after-gate-action! (fn [f] (swap! submit conj f))]
+          (v2/activate! c :value))
+        (v2/host! c #(throw (ex-info "queued body" {})))
+        (v2/host! c #(swap! effects conj :after-throw))
+        (v2/value-async (v2/in-world c t) (fn [v failed?] (swap! result conj [v failed?])))
+        (doseq [f @submit] (f))
+        (pump! e)
+        (assert (= [:after-throw] @effects))
+        (assert (= [[:value false]] @result))
+        (close! p)
+        (pump! e))))
+  (let [{p :world :as e} (manual-world) pubs (atom []) submit (atom []) effects (atom [])]
+    (v2/install-handlers! p {:s #(swap! pubs conj %)})
+    (binding [v2/*world* p]
+      (task (v2/savepoint :s nil))
+      (let [c (v2/instantiate (first @pubs)) cap (v2/register-world-settlement! (v2/world-host-owner c) c [])]
+        (aset c rw/W-BUDGET 2)
+        (with-redefs [v2/after-gate-action! (fn [f] (swap! submit conj f))]
+          (v2/activate! c :value))
+        (dotimes [i 12] (v2/host! c #(swap! effects conj i)))
+        (doseq [f @submit] (f))
+        (assert (<= (count @effects) 2))
+        (let [before (count @effects)]
+          (v2/release-world! c)
+          (v2/acknowledge-world-settlement! cap {:settled? true :value :closed})
+          (pump! e)
+          (assert (= before (count @effects)))
+          (assert (:terminal? (aget c rw/W-CLOSE))))
+        (close! p)
+        (pump! e)))))
+
+(defn- preactivation-fifo! []
+  (let [{p :world :as e} (manual-world) pubs (atom []) before (atom []) after (atom [])]
+    (v2/install-handlers! p {:s #(swap! pubs conj %)})
+    (binding [v2/*world* p]
+      (let [x (v2/signal :before) t (task (v2/savepoint :s nil)) c (v2/instantiate (first @pubs))]
+        (aset c rw/W-INLINE false)
+        (v2/write! (v2/in-world c x) :preactivate)
+        (v2/value-async (v2/in-world c t) (fn [v failed?] (swap! before conj [v failed?])))
+        (v2/activate! c :value)
+        (v2/value-async (v2/in-world c t) (fn [v failed?] (swap! after conj [v failed?])))
+        (pump! e)
+        (assert (:spindel/unborn (ex-data (ffirst @before))))
+        (assert (= [[:value false]] @after))
+        (close! p)
+        (pump! e)))))
+
 (defn -main []
   (with-redefs [hs/execute! (fn [_ f] (swap! jobs conj f))]
     (native-and-preparation!)
@@ -130,6 +216,9 @@
     (cycle-and-error-route! false)
     (fork-unborn!)
     (queued-activation-barrier!)
+    (refused-synchronous-controls!)
+    (replay-failure-and-budget!)
+    (preactivation-fifo!)
     (println "WORLD CLOSE SMOKE OK")))
 
 (set! *main-cli-fn* -main)

@@ -105,7 +105,8 @@
 (def ^:const W-ANCESTRY 49) ; immutable ownership witnesses, no worlds/scopes
 (def ^:const W-ACTIVATION 50) ; first activation claim, child-gate owned and never inherited
 (def ^:const W-ACTIVATION-INTENT 51) ; atomic submission marker; grants no execution/ownership
-(def ^:const W-SIZE 52)
+(def ^:const W-HOST-REPLAY 52) ; owned ordinary entries, budgeted after activation
+(def ^:const W-SIZE 53)
 
 ;; Scope
 (def ^:const S-PARENT 2)
