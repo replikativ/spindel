@@ -1260,12 +1260,17 @@ A savepoint publishes the rest of a body to a handler (see `savepoints.md`).
   host ingress waits FIFO behind the claim before demand or row allocation.
   Pre-intent unborn writes retain S3 semantics and reads/observation still refuse.
   Internal shutdown, admission and acknowledgement ingress bypass this barrier.
-  Birth replays deferred ordinary items before later ordinary ingress; refusal
-  clears them without running bodies, delivering existing released completions to
-  reads/observers/host-call promises and dropping fire-and-forget items. Withdrawal
-  or timeout cancels a deferred wait before replay, with no stale edge/callback or
-  double completion. Clear all deferred bodies/controls on birth or disposal; do
-  not spin or repeatedly reschedule a blocked claim. An accepted holder keeps
+  Classify pre/post-intent order at ordinary submission, preserving S3 for items
+  already queued before the marker. Birth/disposal transfers deferred entries into
+  a world-owned FIFO consumed one item per H2 budget unit; later ordinary ingress
+  joins behind it while internal control/acknowledgement can interleave. A throwing
+  item cannot erase or strand later entries. Refusal executes no body, delivering
+  existing released completions to reads/observers/host-call promises and dropping
+  fire-and-forget items. Each entry has clearable body/rejection storage: claim,
+  withdrawal or timeout atomically clears payloads before any later replay. Queued
+  cancellation is pruned without stale edges, double completion or retained callback
+  payloads. Keep ownership until each entry is consumed/rejected/canceled; no inline
+  unbounded replay, spinning or repeated rescheduling of a blocked claim. An accepted holder keeps
   child execution owed through parent request until actual stop. Instantiating
   `P` `n` times gives `n` independent particles. I10 still holds: the copied run
   is the run, so nothing is added (R#7).
@@ -1335,6 +1340,15 @@ authority, not an engine run, numeric descriptor or arbitrary callback:
 | `update-world-settlement!(cap, recovery)` | T29 records current unresolved substeps and stable recovery IDs/owner. No ack and no timeout-based completion. |
 | `acknowledge-world-settlement!(cap, settled-outcome)` | T29, only after target execution retirement and actual settlement of all covered foreign work. One accepted ack; duplicate inert; wrong target/generation or premature ack refuses before mutation. |
 | `world-close-status(target-or-operation)` | Immutable milestones, counters/debts, unresolved recovery IDs and ordered current failures. No closures/control cells, consuming reads or token-to-world registry. |
+
+Synchronous host control must acquire the operation's execution claim or refuse
+without a later mutation. In particular a queued Node item whose synchronous result
+is unavailable is canceled before it can register an inaccessible obligation or
+perform a delayed preparation/acknowledgement. This does not certify physical close.
+Accepted terminal capability phases are rechecked under the actual target gate,
+before live-debt validation: concurrent accepted duplicate acknowledgements or
+preparation completions are inert, including an update queued behind accepted ack.
+Wrong live target/generation/capability still refuses before mutation.
 
 The capability states are `pending -> recovery-pending -> pending` as necessary,
 and `pending/recovery-pending -> acknowledged` only with actual reconciled physical

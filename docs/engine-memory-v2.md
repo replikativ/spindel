@@ -631,11 +631,14 @@ admission rechecks the seal under the parent gate and installs its holder before
 after-gate child delivery. Rejection disposes an unborn instance without adding
 fresh parent debt. Accepted publication is owed through a racing parent request;
 child delivery rechecks claim and cancellation before birth. Internal control,
-release and settlement bypass the ordinary barrier. Birth replays queued items
-before later ordinary ingress; disposal rejects waiting reads/observers/promises
-once and drops fire-and-forget bodies. Withdrawal/timeout cancels queued work before
-replay. Clear pending bodies, completion controls and publication pointers on birth
-or disposal. A blocked barrier is a bounded current obligation, never a spinning
+release and settlement bypass the ordinary barrier. Submission-time classification preserves S3/FIFO for already-queued pre-intent
+items. Birth/disposal transfers entries to an owned replay FIFO, with one entry per
+H2 budget unit and internal control interleaving; a throwing body cannot drop later
+entries. Disposal rejects waiting reads/observers/promises once and drops
+fire-and-forget bodies. Withdrawal/timeout atomically clears an entry's body and
+rejection payload before later replay, then prunes its inert queue entry. Clear
+publication pointers on birth/disposal and keep replay ownership until every entry
+is consumed/rejected/canceled. A blocked barrier is a bounded current obligation, never a spinning
 queue or retained activation history. Fork resets these controls in O(1).
 
 Before clearing a child holder/list or deleting a scope, transfer each live child
