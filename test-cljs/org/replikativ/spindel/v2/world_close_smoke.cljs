@@ -100,12 +100,36 @@
         (assert (= 1 @fins))
         (v2/release! t)))))
 
+(defn- queued-activation-barrier! []
+  (let [{p :world :as e} (manual-world) pubs (atom []) seen (atom []) result (atom []) canceled (atom [])]
+    (v2/install-handlers! p {:s #(swap! pubs conj %)})
+    (binding [v2/*world* p]
+      (let [x (v2/signal :before) t (task (v2/savepoint :s nil))
+            c (v2/instantiate (first @pubs)) local-x (v2/in-world c x) local-t (v2/in-world c t)]
+        (aset c rw/W-INLINE false)
+        (v2/activate! c :value)
+        (assert (nil? (aget c rw/W-ACTIVATION)))
+        (v2/write! local-x :after)
+        (v2/observe! local-x (fn [v failed?] (swap! seen conj [v failed?])))
+        (let [withdraw (v2/value-async local-t (fn [v failed?] (swap! canceled conj [v failed?])))] (withdraw))
+        (v2/value-async local-t (fn [v failed?] (swap! result conj [v failed?])))
+        (assert (empty? @seen))
+        (pump! e)
+        (assert (= [[:after false]] @seen))
+        (assert (= [[:value false]] @result))
+        (assert (empty? @canceled))
+        (close! p)
+        (pump! e)
+        (assert (:terminal? (aget p rw/W-CLOSE)))
+        (assert (:terminal? (aget c rw/W-CLOSE)))))))
+
 (defn -main []
   (with-redefs [hs/execute! (fn [_ f] (swap! jobs conj f))]
     (native-and-preparation!)
     (cycle-and-error-route! true)
     (cycle-and-error-route! false)
     (fork-unborn!)
+    (queued-activation-barrier!)
     (println "WORLD CLOSE SMOKE OK")))
 
 (set! *main-cli-fn* -main)

@@ -397,8 +397,7 @@
     ;; FIFO puts the release transition first; admission must be checked again
     ;; at authoritative creation, before any run/resource/row mutation.
     (hs/mpsc-add! (aget ^objects w rw/W-INGRESS) #(v2/release-world! w))
-    (v2/host! w #(try (v2/signal w :late)
-                      (catch Throwable t (reset! refused t))))
+    (v2/host! w #(v2/signal w :late) #(reset! refused %) nil)
     (pump! e)
     (is (:spindel/released (ex-data @refused)))
     (is (terminal? w))
@@ -427,3 +426,245 @@
       (is (= before (status w))))
     (v2/acknowledge-world-settlement! cap {:settled? true :value :closed})
     (is (terminal? w))))
+
+(deftest activation-needs-parent-admission-and-has-one-winning-value
+  (doseq [mode [:accept :parent-closed :child-closed]]
+    (testing (name mode)
+      (let [{p :world :as e} (env) pubs (atom []) suffix (atom [])
+            queued (atom []) original-host v2/host! original-internal @#'v2/internal!]
+        (v2/install-handlers! p {:s #(swap! pubs conj %)})
+        (binding [v2/*world* p]
+          (let [t (task (let [v (v2/savepoint :s nil)] (swap! suffix conj v) v))
+                c (v2/instantiate (first @pubs)) owner (v2/world-host-owner c)
+                native (v2/register-world-settlement! owner c [])
+                intercept (fn [original]
+                            (fn [w f]
+                              (if (identical? w p) (do (swap! queued conj f) nil) (original w f))))]
+            (with-redefs-fn
+              {#'v2/host! (intercept original-host) #'v2/internal! (intercept original-internal)}
+              (fn []
+                (is (identical? c (v2/activate! c :first)))
+                (v2/activate! c :duplicate)
+                (is (aget ^objects c rw/W-UNBORN) "queued parent admission cannot execute the instance")
+                (is (empty? @suffix))
+                (is (= 1 (count @queued)) "one child-gate claim owns the first activation value")
+                (case mode
+                  :parent-closed (original-internal p #(#'v2/release-world* p))
+                  :child-closed (original-internal c #(#'v2/release-world* c))
+                  :accept nil)))
+            (doseq [admit @queued] (original-internal p admit))
+            (pump! e)
+            (if (= :accept mode)
+              (do (is (= [:first] @suffix))
+                  (is (not (aget ^objects c rw/W-UNBORN))))
+              (do (is (empty? @suffix))
+                  (is (aget ^objects c rw/W-UNBORN))
+                  (is (retired? c))
+                  (is (not (terminal? c)))
+                  (is (nil? (aget ^objects c rw/W-HOLDER)))))
+            (close! p)
+            (pump! e)
+            (if (= :accept mode)
+              (is (not (terminal? p)) "accepted publication owns child's physical settlement")
+              (is (terminal? p) "a refused unborn publication creates no late parent debt"))
+            (v2/acknowledge-world-settlement! native {:settled? true :value :native-disposed})
+            (pump! e)
+            (is (terminal? c))
+            (is (terminal? p))
+            (hs/fence! t)))))))
+
+(deftest parent-request-after-admission-prevents-delayed-child-birth
+  (let [{p :world :as e} (env) pubs (atom []) suffix (atom []) queued (atom [])
+        original-internal @#'v2/internal!]
+    (v2/install-handlers! p {:s #(swap! pubs conj %)})
+    (binding [v2/*world* p]
+      (let [t (task (swap! suffix conj (v2/savepoint :s nil)))
+            c (v2/instantiate (first @pubs))]
+        ;; Permit the initial child claim, hold the parent admission, then hold
+        ;; child delivery after accepting its holder. Every boundary is manual.
+        (with-redefs-fn
+          {#'v2/internal! (fn [w f]
+                            (if (identical? w p) (do (swap! queued conj f) nil)
+                                (original-internal w f)))}
+          #(v2/activate! c :must-not-run))
+        (let [admit (first @queued)]
+          (reset! queued [])
+          (with-redefs-fn
+            {#'v2/internal! (fn [w f]
+                              (if (identical? w c) (do (swap! queued conj f) nil)
+                                  (original-internal w f)))}
+            (fn []
+              (original-internal p admit)
+              (is (some? (aget ^objects c rw/W-HOLDER)))
+              (is (aget ^objects c rw/W-UNBORN))
+              (original-internal p #(#'v2/release-world* p))
+              (is (not (:execution-retired? (aget ^objects p rw/W-CLOSE))))))
+          (doseq [delivery @queued] (original-internal c delivery)))
+        (pump! e)
+        (is (empty? @suffix))
+        (is (terminal? c))
+        (is (terminal? p))
+        (hs/fence! t)))))
+
+(deftest activation-barrier-orders-ordinary-work-and-withdraws-before-admission
+  (doseq [accept? [false true]]
+    (let [{p :world :as e} (env true) pubs (atom []) suffix (atom []) queued (atom [])
+          original-internal @#'v2/internal! observed (atom []) read (atom []) canceled (atom [])
+          bodies (atom 0) host-effects (atom [])]
+      (v2/install-handlers! p {:s #(swap! pubs conj %)})
+      (binding [v2/*world* p]
+        (let [x (v2/signal :before)
+              t (task (v2/savepoint :s nil))
+              c (v2/instantiate (first @pubs)) local-x (v2/in-world c x) local-t (v2/in-world c t)]
+          (is (thrown? clojure.lang.ExceptionInfo (v2/observe! local-x (fn [_ _] nil))))
+          (with-redefs-fn
+            {#'v2/internal! (fn [w f]
+                              (if (identical? w p) (do (swap! queued conj f) nil)
+                                  (original-internal w f)))}
+            (fn []
+              (v2/activate! c :result)
+              (v2/write! local-x :after)
+              (v2/pin! local-x)
+              (v2/unpin! local-x)
+              (v2/observe! local-x (fn [v failed?] (swap! observed conj [v failed?])))
+              (let [withdraw (v2/value-async local-t (fn [v failed?] (swap! canceled conj [v failed?])))]
+                (withdraw))
+              (is (= ::timeout (v2/value local-t 0 ::timeout)))
+              (v2/value-async local-t (fn [v failed?] (swap! read conj [v failed?])))
+              (binding [v2/*world* c] (task (swap! bodies inc)))
+              (v2/host! c #(swap! host-effects conj :ordinary))
+              (is (zero? @bodies))
+              (is (empty? @read))
+              (is (empty? @observed))
+              (is (empty? @host-effects))
+              (when-not accept? (original-internal p #(#'v2/release-world* p)))))
+          (doseq [admit @queued] (original-internal p admit))
+          (pump! e)
+          (is (empty? @canceled) "withdrawal/timeout wins before any stale replay")
+          (is (= 1 (count @read)))
+          (is (= 1 (count @observed)))
+          (if accept?
+            (do (is (= [[:result false]] @read))
+                (is (= [[:after false]] @observed))
+                (is (= 1 @bodies))
+                (is (= [:ordinary] @host-effects)))
+            (do (is (:spindel/released (ex-data (ffirst @read))))
+                (is (:spindel/released (ex-data (ffirst @observed))))
+                (is (zero? @bodies))
+                (is (empty? @host-effects))))
+          (close! p)
+          (pump! e)
+          (is (terminal? p))
+          (is (terminal? c))
+          (is (zero? (:deferred-host (status c))))
+          (is (empty? (verify/world-close-violations c)))
+          (hs/fence! t))))))
+
+(deftest post-activation-observation-enrolls-before-the-first-child-turn
+  (let [{p :world :as e} (env) pubs (atom []) seen (atom []) result (atom []) withdrawn (atom [])]
+    (v2/install-handlers! p {:s #(swap! pubs conj %)})
+    (binding [v2/*world* p]
+      (let [x (v2/signal :before) t (task (v2/savepoint :s nil))
+            c (v2/instantiate (first @pubs)) local-x (v2/in-world c x) local-t (v2/in-world c t)]
+        (aset ^objects c rw/W-INLINE false)
+        (v2/activate! c :value)
+        (is (nil? (aget ^objects c rw/W-ACTIVATION)) "the child claim has not executed")
+        (is (hs/flag? (aget ^objects c rw/W-ACTIVATION-INTENT)))
+        (v2/observe! local-x (fn [v failed?] (swap! seen conj [v failed?])))
+        (let [withdraw (v2/observe! local-x (fn [v failed?] (swap! withdrawn conj [v failed?])))]
+          (withdraw))
+        (v2/value-async local-t (fn [v failed?] (swap! result conj [v failed?])))
+        (is (empty? @seen))
+        (pump! e)
+        (is (= [[:before false]] @seen))
+        (is (= [[:value false]] @result))
+        (is (empty? @withdrawn))
+        (close! p)
+        (pump! e)
+        (is (:terminal? (aget ^objects p rw/W-CLOSE)))
+        (is (:terminal? (aget ^objects c rw/W-CLOSE)))
+        (hs/fence! t)))))
+
+(deftest activation-refusal-completes-a-deferred-host-call-promise
+  (doseq [accept? [false true]]
+    (let [{p :world :as e} (env) pubs (atom []) pending (atom []) effect (atom 0)
+          arrived (promise) caller (atom nil)
+          original-internal @#'v2/internal! original-host v2/host!]
+      (v2/install-handlers! p {:s #(swap! pubs conj %)})
+      (binding [v2/*world* p]
+        (let [t (task (v2/savepoint :s nil)) c (v2/instantiate (first @pubs))]
+          (with-redefs-fn
+            {#'v2/internal! (fn [w f]
+                              (if (identical? w p) (do (swap! pending conj f) nil)
+                                  (original-internal w f)))
+             #'v2/host! (fn [& args]
+                          (let [result (apply original-host args)]
+                            (when (identical? c (first args)) (deliver arrived true))
+                            result))}
+            (fn []
+              (v2/activate! c :value)
+              (reset! caller (future (try [:value (v2/host-call! c #(swap! effect inc))]
+                                          (catch Throwable t [:error t]))))
+              (is (= true (deref arrived 5000 ::timeout)) "host-call is actually queued behind the claim")
+              (is (zero? @effect))
+              (when-not accept? (original-internal p #(#'v2/release-world* p)))))
+          (doseq [admit @pending] (original-internal p admit))
+          (pump! e)
+          (let [[kind value] (deref @caller 5000 [::timeout nil])]
+            (if accept?
+              (do (is (= [:value 1] [kind value])) (is (= 1 @effect)))
+              (do (is (= :error kind))
+                  (is (:spindel/released (ex-data value)))
+                  (is (zero? @effect)))))
+          (close! p)
+          (pump! e)
+          (is (terminal? p))
+          (hs/fence! t))))))
+
+(deftest activation-intent-before-claim-submission-never-grants-demand
+  (doseq [mode [:accept :parent-closed :child-closed]]
+    (let [{p :world :as e} (env true) pubs (atom []) read (atom []) observed (atom [])
+          submit (atom []) bodies (atom 0)]
+      (v2/install-handlers! p {:s #(swap! pubs conj %)})
+      (binding [v2/*world* p]
+        (let [x (v2/signal :value) t (task (v2/savepoint :s nil))
+              c (v2/instantiate (first @pubs)) local-x (v2/in-world c x) local-t (v2/in-world c t)]
+          ;; Pause the submitter after its atomic intent but BEFORE it queues
+          ;; any child claim. Other host threads can enter this exact window.
+          (with-redefs-fn {#'v2/after-gate-action! (fn [f] (swap! submit conj f))}
+            #(v2/activate! c :result))
+          (is (= 1 (count @submit)))
+          (is (nil? (aget ^objects c rw/W-ACTIVATION)))
+          (v2/observe! local-x (fn [v failed?] (swap! observed conj [v failed?])))
+          (v2/value-async local-t (fn [v failed?] (swap! read conj [v failed?])))
+          (v2/host! c #(swap! bodies inc))
+          (pump! e)
+          (is (nil? (:identity (aget ^objects c rw/W-ACTIVATION))))
+          (is (= 3 (:deferred-host (status c))))
+          (is (:activation-pending? (status c)))
+          (is (zero? (hs/msize (aget ^objects c rw/W-ROOTS))) "no observer/wait edge or demand before admission")
+          (is (empty? @read))
+          (is (empty? @observed))
+          (is (zero? @bodies))
+          (case mode
+            :parent-closed (close! p)
+            :child-closed (v2/release-world! c)
+            :accept nil)
+          (doseq [enqueue @submit] (enqueue))
+          (pump! e)
+          (if (= :accept mode)
+            (do (is (= [[:result false]] @read))
+                (is (= [[:value false]] @observed))
+                (is (= 1 @bodies)))
+            (do (is (= 1 (count @read)))
+                (is (= 1 (count @observed)))
+                (is (:spindel/released (ex-data (ffirst @read))))
+                (is (:spindel/released (ex-data (ffirst @observed))))
+                (is (zero? @bodies))))
+          (close! p)
+          (pump! e)
+          (is (terminal? p))
+          (is (terminal? c))
+          (is (not (:activation-pending? (status c))))
+          (is (zero? (:deferred-host (status c))))
+          (hs/fence! t))))))

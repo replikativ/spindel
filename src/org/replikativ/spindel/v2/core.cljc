@@ -147,6 +147,7 @@
      (s! w rw/W-ROOTS (hs/lmap))
      (s! w rw/W-RELEASED false)
      (s! w rw/W-UNBORN false)
+     (s! w rw/W-ACTIVATION-INTENT (hs/flag false))
      (s! w rw/W-AFTER (alist))
      (s! w rw/W-STATE {})
      (s! w rw/W-ATOMS {})
@@ -2308,15 +2309,44 @@
 (defn- ingress* [w f admit?]
   (ingress-body w f admit?))
 
+(defn- claim-host-item! [flag]
+  (or (nil? flag) (hs/flag-cas! flag true false)))
+
+(defn- reject-host-item! [reject flag]
+  (when (claim-host-item! flag)
+    (when reject (after-gate-action! (fn [] (reject (released-ex)))))))
+
+(defn- ordinary-host-item! [w f reject flag]
+  (when (or (nil? flag) (hs/flag? flag))
+    (if (and (g w rw/W-UNBORN) (hs/flag? (g w rw/W-ACTIVATION-INTENT)))
+      ;; Submission intent also covers an activation claim still in ingress.
+      ;; The first child turn allocates this queue before any ordinary body.
+      (let [activation (or (g w rw/W-ACTIVATION) {:identity nil :ordinary (alist)})]
+        (s! w rw/W-ACTIVATION activation)
+        (aadd! (:ordinary activation) [f reject flag]))
+      (if (and (:requested? (g w rw/W-CLOSE))
+               (not (and (identical? w (cw)) (active-run))))
+        (reject-host-item! reject flag)
+        (when (claim-host-item! flag) (f))))))
+
+(defn- finish-activation-ingress! [w accepted?]
+  (hs/flag-set! (g w rw/W-ACTIVATION-INTENT) false)
+  (when-let [activation (g w rw/W-ACTIVATION)]
+    (s! w rw/W-ACTIVATION nil)
+    (let [pending (:ordinary activation)]
+      (dotimes [i (acount pending)]
+        (let [[f reject flag] (anth pending i)]
+          (if accepted? (ordinary-host-item! w f reject flag)
+              (reject-host-item! reject flag))))
+      (aclear! pending))))
+
 (defn host!
-  "H1: a host operation `f` of world `w`. A thread that already holds the
-   world (inside a slice or a callback) runs it at once; any other thread
-   enqueues it, then tries the gate (H2) unless the world is not inline. A
-   released world refuses host operations (T21), except the effects of a
-   run's own slice: a finalizer of a cleanup entry may still deliver, post,
-   release and write (Z#40, Z#56)."
-  [w f]
-  (ingress* w f true))
+  "H1 ordinary ingress. An accepted activation claim holds subsequent ordinary
+   items FIFO until birth; internal control ingress remains independent. Optional
+   reject/cancellation state belongs to the submitting operation, not the body."
+  ([w f] (host! w f nil nil))
+  ([w f reject flag]
+   (ingress* w (fn [] (ordinary-host-item! w f reject flag)) true)))
 
 (defn- internal!
   "A completion of an outstanding resource: not an admission, so it is
@@ -2600,22 +2630,25 @@
   [h cb]
   (ordinary-admission! :observe!)
   (let [w (world-of h)
-        ev (volatile! nil)]
-    (when (g w rw/W-UNBORN) (throw (unborn-ex)))
-    (gated w
-           (let [d (row-of h)
-                 e (link! w rw/EK-OBSERVE cb d 0)]
-             (vreset! ev e)
-             (when (and (comp? d) (g d rw/C-IDLE)) (validate! w d))
-             (deliver-observe! w e)
-             (commit! w [:observe (g d rw/ID) [:opaque cb] (g e rw/ID)])
-             (demand! w d)))
+        ev (volatile! nil) flag (hs/flag true)]
+    (when (and (g w rw/W-UNBORN) (not (hs/flag? (g w rw/W-ACTIVATION-INTENT))))
+      (throw (unborn-ex)))
+    (host! w (fn []
+               (let [d (row-of h)
+                     e (link! w rw/EK-OBSERVE cb d 0)]
+                 (vreset! ev e)
+                 (when (and (comp? d) (g d rw/C-IDLE)) (validate! w d))
+                 (deliver-observe! w e)
+                 (commit! w [:observe (g d rw/ID) [:opaque cb] (g e rw/ID)])
+                 (demand! w d)))
+           (fn [error] (after-gate-action! (fn [] (cb error true)))) flag)
     (fn []
-      (gated w
-             (when-let [e @ev]
-               (when (linked? w e)
-                 (unlink! w e)
-                 (commit! w [:unobserve (g e rw/ID)]))))
+      (hs/flag-set! flag false)
+      (internal! w (fn []
+                     (when-let [e @ev]
+                       (when (linked? w e)
+                         (unlink! w e)
+                         (commit! w [:unobserve (g e rw/ID)])))))
       nil)))
 
 (defn pin!
@@ -2695,12 +2728,15 @@
                     {:spindel/invalid :host-call}))
     :else
     #?(:clj (let [p (promise)]
-              (host! w #(deliver p (try [(f) nil] (catch Throwable t [nil t]))))
+              (host! w #(deliver p (try [(f) nil] (catch Throwable t [nil t])))
+                     (fn [error] (deliver p [nil error])) nil)
               (let [[v t] @p] (if t (throw t) v)))
-       :cljs (let [box (volatile! ::none)]
-               (host! w #(vreset! box (try [(f) nil] (catch :default t [nil t]))))
+       :cljs (let [box (volatile! ::none) flag (hs/flag true)]
+               (host! w #(vreset! box (try [(f) nil] (catch :default t [nil t])))
+                      (fn [error] (vreset! box [nil error])) flag)
                (if (= ::none @box)
-                 (throw (ex-info "host-call!: the world did not process the item synchronously" {}))
+                 (do (hs/flag-set! flag false)
+                     (throw (ex-info "host-call!: the world did not process the item synchronously" {})))
                  (let [[v t] @box] (if t (throw t) v)))))))
 
 (defn call-in!
@@ -2717,7 +2753,7 @@
   [w f]
   (ordinary-admission! :send-world)
   (when (g w rw/W-RELEASED) (throw (released-ex)))
-  (hs/mpsc-add! (g w rw/W-INGRESS) f)
+  (hs/mpsc-add! (g w rw/W-INGRESS) (fn [] (ordinary-host-item! w f nil nil)))
   (if (holding-gate?)
     (when-not (identical? w (cw)) (aadd! (g (cw) rw/W-AFTER) w))
     (handoff! w))
@@ -2949,38 +2985,40 @@
   [h cb]
   (ordinary-admission! :value-async)
   (let [w (world-of h)
-        ev (volatile! nil)]
-    (gated w
-           (let [d (row-of h)]
-             (cond
-               (g w rw/W-UNBORN)
-               (aadd! (g w rw/W-CALLBACKS) [cb [(unborn-ex) true]])
-               (consuming? d)
-               (aadd! (g w rw/W-CALLBACKS) [cb [(invalid-op :value "a host read of a mailbox or semaphore (Z#54)") true]])
-               (and (source? d) (not (deferred? d)))
-               (aadd! (g w rw/W-CALLBACKS) [cb (debtor-result d)])
-               :else
+        ev (volatile! nil) flag (hs/flag true)]
+    (host! w (fn []
+               (let [d (row-of h)]
+                 (cond
+                   (g w rw/W-UNBORN)
+                   (aadd! (g w rw/W-CALLBACKS) [cb [(unborn-ex) true]])
+                   (consuming? d)
+                   (aadd! (g w rw/W-CALLBACKS) [cb [(invalid-op :value "a host read of a mailbox or semaphore (Z#54)") true]])
+                   (and (source? d) (not (deferred? d)))
+                   (aadd! (g w rw/W-CALLBACKS) [cb (debtor-result d)])
+                   :else
           ;; T22 allocates the host-wait edge first (the model's order); a
           ;; debtor that is settled consumes it at once, so no edge row is made.
-               (let [eid (alloc-id! w)
-                     idle? (and (comp? d) (g d rw/C-IDLE))]
-                 (if (and (not idle?) (settled? d))
-                   (do (aadd! (g w rw/W-CALLBACKS) [cb (debtor-result d)])
-                       (commit! w [:host-await (g d rw/ID) eid]))
-                   (let [e (link-id! w eid rw/EK-WAIT cb d 0)]
-                     (vreset! ev e)
-                     (when idle? (validate! w d))
-                     (if (settled? d)
-                       (do (fire-wait! w e)
-                           (commit! w [:host-await (g d rw/ID) (g e rw/ID)]))
-                       (do (commit! w [:host-await (g d rw/ID) (g e rw/ID)])
-                           (demand! w d)))))))))
+                   (let [eid (alloc-id! w)
+                         idle? (and (comp? d) (g d rw/C-IDLE))]
+                     (if (and (not idle?) (settled? d))
+                       (do (aadd! (g w rw/W-CALLBACKS) [cb (debtor-result d)])
+                           (commit! w [:host-await (g d rw/ID) eid]))
+                       (let [e (link-id! w eid rw/EK-WAIT cb d 0)]
+                         (vreset! ev e)
+                         (when idle? (validate! w d))
+                         (if (settled? d)
+                           (do (fire-wait! w e)
+                               (commit! w [:host-await (g d rw/ID) (g e rw/ID)]))
+                           (do (commit! w [:host-await (g d rw/ID) (g e rw/ID)])
+                               (demand! w d)))))))))
+           (fn [error] (after-gate-action! (fn [] (cb error true)))) flag)
     (fn []
-      (gated w
-             (when-let [e @ev]
-               (when (linked? w e)
-                 (unlink! w e)
-                 (commit! w [:host-unawait (g e rw/ID)]))))
+      (hs/flag-set! flag false)
+      (internal! w (fn []
+                     (when-let [e @ev]
+                       (when (linked? w e)
+                         (unlink! w e)
+                         (commit! w [:host-unawait (g e rw/ID)])))))
       nil)))
 
 (defn value
@@ -3482,6 +3520,8 @@
     {:requested? (:requested? c) :execution-retired? (:execution-retired? c)
      :terminal? (:terminal? c) :runs (:runs c) :resources (:resources c)
      :preparations (count (:preparations c))
+     :activation-pending? (hs/flag? (g w rw/W-ACTIVATION-INTENT))
+     :deferred-host (if-let [activation (g w rw/W-ACTIVATION)] (acount (:ordinary activation)) 0)
      :child-execution (count (filter :execution-pending? (vals (:children c))))
      :child-terminal (count (filter :terminal-pending? (vals (:children c))))
      :settlements (count (:settlements c))
@@ -3724,7 +3764,7 @@
   [w]
   ;; idempotent: releasing a released world does nothing (old discard)
   (when-not (g w rw/W-RELEASED)
-    (gated w (release-world* w)))
+    (internal! w (fn [] (release-world* w))))
   ;; the root scope is the administrative allowance (I11a): not a row left
   (fn [] (when-let [reg (g w rw/W-REG)] (dec (hs/msize reg)))))
 
@@ -3736,6 +3776,7 @@
 (defn- discard-unborn-storage! [w]
   ;; An unentered snapshot owns no physical cleanup. Drop inherited retention
   ;; wholesale, without traversing runs or invoking parent detach/close code.
+  (finish-activation-ingress! w false)
   (doseq [i [rw/W-READY rw/W-RESUME rw/W-START rw/W-CLEANUP rw/W-RQ rw/W-CALLBACKS]]
     (s! w i (alist)))
   (doseq [i [rw/W-FWD rw/W-DORMANT rw/W-ARMED rw/W-SAVEPOINTS rw/W-SP-DORMANT
@@ -3751,22 +3792,26 @@
     (s! root rw/S-OPEN false)
     (s! w rw/W-ROOT root)))
 
+(defn- handoff-owner-close! [w]
+  (when-let [^objects h (g w rw/W-HOLDER)]
+    (when-not (hs/flag? (aget h 2))
+        ;; Bounded direct-release handoff: keep the child strong until the
+        ;; parent's gate replaces its holder with both acknowledgement debts.
+      (aset h 0 w)
+      (when-let [parent (hs/deref-weak (aget h 3))]
+        (after-gate-action!
+         #(do (hs/mpsc-add! (g parent rw/W-INGRESS)
+                            (fn [] (claim-child! parent w h)))
+              (handoff! parent)))))))
+
 (defn- release-world*
   "T21 inside `w`'s gate. Also the owner-close release of a fork (F2)."
   [w]
+  (when (g w rw/W-RELEASED) (handoff-owner-close! w))
   (when-not (g w rw/W-RELEASED)
     ;; Seal all fresh admission before any cancellation or outbox dispatch.
     (s! w rw/W-CLOSE (assoc (g w rw/W-CLOSE) :requested? true))
-    (when-let [^objects h (g w rw/W-HOLDER)]
-      (when-not (hs/flag? (aget h 2))
-        ;; Bounded direct-release handoff: keep the child strong until the
-        ;; parent's gate replaces its holder with both acknowledgement debts.
-        (aset h 0 w)
-        (when-let [parent (hs/deref-weak (aget h 3))]
-          (after-gate-action!
-           #(do (hs/mpsc-add! (g parent rw/W-INGRESS)
-                              (fn [] (claim-child! parent w h)))
-                (handoff! parent))))))
+    (handoff-owner-close! w)
     (if (g w rw/W-UNBORN)
       ;; E4: an instance that never ran is discarded as if dropped: nothing
       ;; in it runs, its copied finalizers included
@@ -3897,6 +3942,8 @@
         (seq (concat (vals (g w rw/W-CLEANUP-WAITS)) (g w rw/W-CLEANUP-DORMANT))))
     (s! c rw/W-UNBORN false)
     (s! c rw/W-PUB-WORLD nil)
+    (s! c rw/W-ACTIVATION nil)
+    (s! c rw/W-ACTIVATION-INTENT (hs/flag false))
     (s! c rw/W-WATCHES (lt/index))
     (s! c rw/W-SWEEP-PENDING (hs/flag false))
     (s! c rw/W-META-CLOSED false)
@@ -4114,37 +4161,62 @@
     (s! c rw/W-PUB-WORLD (:world pub))
     c))
 
+(defn- activate-instance! [w claim v]
+  ;; Parent admission/holder publication has completed. Recheck cancellation
+  ;; under the child gate: a delayed accepted activation cannot undo disposal.
+  (when (and (identical? claim (:identity (g w rw/W-ACTIVATION))) (g w rw/W-UNBORN))
+    (let [holder (g w rw/W-HOLDER)]
+      (if (or (:requested? (g w rw/W-CLOSE))
+              (nil? (g w rw/W-PENDING-ACT))
+              (and holder (hs/flag? (aget ^objects holder 2))))
+        (release-world* w)
+        (let [aid (g w rw/W-PENDING-ACT)
+              a (rv w (get (g w rw/W-FWD) aid
+                           (some #(when (== (id-of %) (long aid)) %)
+                                 (concat (g w rw/W-SP-DORMANT)
+                                         (some-> (g w rw/W-SAVEPOINTS) hs/oset-vals)))))]
+          (s! w rw/W-PUB-WORLD nil)
+          (s! w rw/W-UNBORN false)
+          (when (or (g w rw/W-DORMANT) (g w rw/W-SP-DORMANT) (g w rw/W-CLEANUP-DORMANT))
+            (activate-dormant! w))
+          (s! w rw/W-PENDING-ACT nil)
+          (if (and a (sp-deliver! w a [v false]))
+            (commit! w [:activate aid [:opaque v]])
+            (refuse! w [:activate aid [:opaque v]]))
+          (finish-activation-ingress! w true))))))
+
 (defn activate!
-  "S4: resumes an instantiated fork's pending activation with `v`. The fork
-   is born here: the root scope of the publication's world owns it (F2)."
+  "S4: claim one activation value under the child gate, then obtain its
+   publication parent's admission before scheduling any child execution."
   [w v]
   (ordinary-admission! :activate)
-  (gated w
-         (when-let [pw (g w rw/W-PUB-WORLD)]
-           (s! w rw/W-PUB-WORLD nil)
-      ;; F2: the owner's table is the publication world's; its gate is only
-      ;; tried, never waited for. A released owner releases the instance.
-           (try (host! pw #(own-child! pw (rv pw (g pw rw/W-ROOT)) w false))
-                (catch #?(:clj Exception :cljs :default) _
-                  (release-world* w))))                 ; still unborn: nothing runs
-         (let [aid (when-not (g w rw/W-RELEASED) (g w rw/W-PENDING-ACT))
-          ;; looked up before the dormant pass below empties the dormant list
-               a (when aid
-                   (rv w (get (g w rw/W-FWD) aid
-                              (some #(when (== (id-of %) (long aid)) %)
-                                    (concat (g w rw/W-SP-DORMANT)
-                                            (some-> (g w rw/W-SAVEPOINTS) hs/oset-vals))))))]
-           (when (and (g w rw/W-UNBORN) (not (g w rw/W-RELEASED)))
-             (s! w rw/W-UNBORN false)
-        ;; inherited resources and savepoints: this item is the first turn's
-        ;; work, so they are activated here, not at a later turn entry
-             (when (or (g w rw/W-DORMANT) (g w rw/W-SP-DORMANT) (g w rw/W-CLEANUP-DORMANT)) (activate-dormant! w)))
-           (when aid
-             (s! w rw/W-PENDING-ACT nil)
-             (do
-               (if (and a (sp-deliver! w a [v false]))
-                 (commit! w [:activate aid [:opaque v]])
-                 (refuse! w [:activate aid [:opaque v]]))))))
+  (when (g w rw/W-RELEASED) (throw (released-ex)))
+  ;; This atomic marker preserves ordinary submission ordering even when the
+  ;; first claim item has not run yet. It grants no ownership or language work.
+  (when (g w rw/W-UNBORN) (hs/flag-set! (g w rw/W-ACTIVATION-INTENT) true))
+  (after-gate-action!
+   #(internal!
+     w
+     (fn []
+       (when (and (g w rw/W-UNBORN) (not (:requested? (g w rw/W-CLOSE)))
+                  (nil? (:identity (g w rw/W-ACTIVATION))))
+         (when-let [parent (g w rw/W-PUB-WORLD)]
+           (let [claim #?(:clj (Object.) :cljs (js-obj))]
+             (s! w rw/W-ACTIVATION {:identity claim :ordinary (or (:ordinary (g w rw/W-ACTIVATION)) (alist))})
+             (after-gate-action!
+              (fn []
+                (internal!
+                 parent
+                 (fn []
+                   ;; Queued ingress must validate HERE, not merely when the
+                   ;; host submitted it. Refusal adds no post-T31 parent debt.
+                   (if (or (:requested? (g parent rw/W-CLOSE))
+                           (g w rw/W-RELEASED)
+                           (not (g (rv parent (g parent rw/W-ROOT)) rw/S-OPEN)))
+                     (after-gate-action! (fn [] (internal! w (fn [] (release-world* w)))))
+                     (do
+                       (own-child! parent (rv parent (g parent rw/W-ROOT)) w false)
+                       (after-gate-action! (fn [] (internal! w (fn [] (activate-instance! w claim v)))))))))))))))))
   w)
 
 (defn await-finalization [_] (throw (ex-info "await-finalization outside a body" {})))

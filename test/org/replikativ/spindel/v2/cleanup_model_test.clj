@@ -155,3 +155,66 @@
     ;; The declared dependency order admits C ack without P execution retirement.
     (is (some #(and (not (:execution? %)) (= :requested (:child %))
                     (not (:child-run? %)) (:child-host? %) (close-step % :child-ack)) states))))
+
+(defn- activation-step [s event]
+  (letfn [(complete [s outcome]
+            (cond-> s
+              (= :pending (:ordinary s))
+              (-> (assoc :ordinary outcome) (update :completions inc))))]
+    (case event
+      :submit (when-not (:intent? s) (assoc s :intent? true))
+      :ordinary (when (and (:intent? s) (= :none (:ordinary s)))
+                  (case (:child s)
+                    :born (assoc s :ordinary :accepted :completions 1)
+                    :released (assoc s :ordinary :released :completions 1)
+                    (assoc s :ordinary :pending)))
+      :withdraw (when (= :pending (:ordinary s)) (assoc s :ordinary :withdrawn))
+      :claim (when (and (:intent? s) (not (:claim? s))) (assoc s :claim? true))
+      :parent-request (when (= :open (:parent s)) (assoc s :parent :requested))
+      :admit (when (and (:claim? s) (nil? (:decision s)) (= :open (:parent s)) (= :unborn (:child s)))
+               (assoc s :decision :accepted :execution-debt? true :terminal-debt? true))
+      :reject (when (and (:claim? s) (nil? (:decision s))
+                         (or (= :requested (:parent s)) (= :released (:child s))))
+                (complete (assoc s :decision :rejected :child :released) :released))
+      :birth (when (and (= :accepted (:decision s)) (= :unborn (:child s)))
+               (if (= :requested (:parent s))
+                 (complete (assoc s :child :released) :released)
+                 (complete (assoc s :child :born :body 1) :accepted)))
+      :child-release (when-not (= :released (:child s))
+                       (complete (assoc s :child :released) :released))
+      :execution-ack (when (and (:execution-debt? s) (= :released (:child s)))
+                       (assoc s :execution-debt? false))
+      :native-ack (when (and (:native? s) (= :released (:child s))) (assoc s :native? false))
+      :terminal-ack (when (and (:terminal-debt? s) (= :released (:child s)) (not (:native? s)))
+                      (assoc s :execution-debt? false :terminal-debt? false))
+      :parent-retired (when (and (= :requested (:parent s)) (not (:retired? s)) (not (:execution-debt? s)))
+                        (assoc s :retired? true))
+      :parent-terminal (when (and (:retired? s) (not (:terminal? s)) (not (:terminal-debt? s)))
+                         (assoc s :terminal? true)))))
+
+(deftest activation-handoff-finite-no-unowned-execution-or-late-admission
+  (let [initial {:intent? false :claim? false :ordinary :none :completions 0
+                 :parent :open :child :unborn :decision nil :body 0 :native? true
+                 :execution-debt? false :terminal-debt? false :retired? false :terminal? false}
+        events [:submit :ordinary :withdraw :claim :parent-request :admit :reject :birth
+                :child-release :execution-ack :native-ack :terminal-ack :parent-retired :parent-terminal]
+        successors (fn [s] (set (keep #(activation-step s %) events)))
+        states (loop [seen #{initial} todo [initial]]
+                 (if-let [s (peek todo)]
+                   (let [fresh (remove seen (successors s))]
+                     (recur (into seen fresh) (into (pop todo) fresh))) seen))]
+    (is (> (count states) 100))
+    (is (some #(and (:intent? %) (not (:claim? %)) (= :pending (:ordinary %))) states))
+    (doseq [s states]
+      (is (<= (:body s) 1))
+      (is (<= (:completions s) 1))
+      (when (= :born (:child s)) (is (= :accepted (:decision s))))
+      (when (:retired? s) (is (not (:execution-debt? s))))
+      (when (:terminal? s) (is (and (:retired? s) (not (:terminal-debt? s)))))
+      (doseq [next (successors s)]
+        (when (:retired? s)
+          (is (:retired? next))
+          (is (= (:body s) (:body next)) "no fresh execution after parent retirement")))
+      (when (empty? (successors s))
+        (is (:terminal? s))
+        (is (not= :pending (:ordinary s)))))))

@@ -103,7 +103,9 @@
 (def ^:const W-CLEANUP-IDENTITY 47) ; immutable world identity; never owner epoch or family-local ID
 (def ^:const W-CLOSE 48) ; production staged-close accounting; never copied controls
 (def ^:const W-ANCESTRY 49) ; immutable ownership witnesses, no worlds/scopes
-(def ^:const W-SIZE 50)
+(def ^:const W-ACTIVATION 50) ; first activation claim, child-gate owned and never inherited
+(def ^:const W-ACTIVATION-INTENT 51) ; atomic submission marker; grants no execution/ownership
+(def ^:const W-SIZE 52)
 
 ;; Scope
 (def ^:const S-PARENT 2)
