@@ -641,6 +641,30 @@ publication pointers on birth/disposal and keep replay ownership until every ent
 is consumed/rejected/canceled. A blocked barrier is a bounded current obligation, never a spinning
 queue or retained activation history. Fork resets these controls in O(1).
 
+Custody is child-local and one-shot: an atomic unowned-to-owner claim precedes
+parent reservation removal/debt installation. Every World/fork/instance has a fresh
+immutable exact creation ordinal; only earlier-parent/later-child custody edges
+are admissible. Two unsigned32 words provide exact JVM/CLJS ordering, with clean
+nonwrapping exhaustion before publication/source mutation. Rank confers no target
+permission and retains no World. Competing losers retain their reservations; older
+outputs require explicit validated disposal/settlement or no-acquisition evidence,
+never automatic ancestor closure or synthetic acknowledgement. A rejected S4 claim
+clears/rejects only its activation entries; winning custody controls disposal.
+
+Current lineage keeps only immediate immutable token/scope evidence and weak
+parent metadata links. Do not retain copied ancestry vectors or a strong chain of
+ancestor Tokens/Worlds. A held last root fork must permit older Worlds and obsolete
+ancestor metadata to collect. Weak traversal can build a temporary current path,
+but an operation stores only its relevant origin witness and actual target, never
+a historical chain. Populated-root adoption must preserve transitive joins while
+that ownership path is live. Parent-local successful-acquisition ordinals order
+reports even when independent child Worlds have identical numeric IDs.
+
+Holder handoff promotes the child before reading the monotone claimed flag and
+clears that slot when already claimed. No child write may restore a strong holder
+after a concurrent parent claim has cleared it. Pending close still retains its
+strong child debt; terminal control clearing leaves only the weak ordinary holder.
+
 Before clearing a child holder/list or deleting a scope, transfer each live child
 to a bounded pending record with target token, generation, immutable owner witness,
 execution/terminal channels and report route. This applies when child close precedes

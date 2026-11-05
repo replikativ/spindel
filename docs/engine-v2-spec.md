@@ -468,6 +468,47 @@ with a globally unique family ID and unique child ID within that family (or
 UUID-equivalent IDs). Deserialization confers no token or physical ownership.
 No strong token-to-world lookup registry is introduced.
 
+**Creation-ordered single-owner custody (approved construction-order decision).**
+Every concrete World, including frozen bases, forks and instances, gets a fresh
+immutable exact process-local creation ordinal. Custody installation centrally
+requires `parent.order < child.order` and one successful child-local atomic claim
+from unowned to an immutable owner/holder witness. Validate order and win custody
+before consuming any parent reservation or installing parent debt. Rank is neither
+World identity nor authority, and no public/serialized option supplies it. An exact
+pair of unsigned32 words is sufficient: carry is exact on JVM and CLJS; exhaustion
+refuses creation before publication or parent mutation, never wraps/reuses. Forks
+allocate fresh ordinals before changing their source, never inherit the basis rank.
+Each custody edge increases rank, so a cycle would imply `order(P) < order(P)`;
+this is independent of timing, ancestry snapshots and numeric W-ID. No global
+publication mutex, World registry or cycle graph is introduced.
+
+A losing competing publication keeps its preparation pending/recoverable and
+cannot overwrite the winner's holder/ancestry or consume another route. A World
+which ever won custody cannot be reparented, including after terminal. A younger
+already-closed unowned output remains admissible for joined disposal. An older
+output (including a closed one) refuses explicitly: rejection never requests its
+close, consumes the reservation or certifies disposal. Its responsible host must
+validate actual acquisition/custody and acyclic target/downward prerequisites;
+only known joined disposal or certified no acquisition can finish the preparation.
+An older output may already be an ancestor, so blindly closing/joining it could
+reintroduce a host-controller cycle. Creation order proves engine-custody
+acyclicity, not arbitrary hidden host-disposal prerequisites.
+
+Current transitive authorization uses child-local immutable token/scope custody
+evidence through weak parent metadata links, not copied full ancestry vectors or
+rank. Populated younger roots may be adopted: their existing descendants observe
+the newly installed live parent chain without rewriting foreign rows. Operations
+capture only the relevant origin's scope witness plus actual target identity;
+they do not retain whole historical ancestor paths, Worlds or controllers. Weak
+links can end when an intermediate owner is no longer live; historical membership
+alone grants no new join authority. A previously authorized pending operation keeps
+its bounded immutable witness. Parent-local acquisition ordinals are assigned only
+after successful custody claim, independently of child numeric W-ID/audit UUID.
+Thus independent roots with equal W-ID still report in actual acquisition order.
+A losing S4 attempt rejects its own queued activation work without reassigning or
+requesting disposal through the losing parent's authority; the current winning
+owner remains responsible for its disposal and physical acknowledgements.
+
 Production accounting, independent of verify-only row census, conserves these
 current obligations under the target gate. Allocate this record at world creation
 with zero counters, empty sets and all milestones false; never reconstruct past
