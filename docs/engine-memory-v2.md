@@ -4,9 +4,12 @@ Status: design candidate. The target v2 contract in
 [engine-v2-spec.md](engine-v2-spec.md) is authoritative; the existing native
 lifetime profile is described by [engine-formalism.md](engine-formalism.md).
 This file specifies representations and their refinement obligations, and
-records bounded prototype support. **The Z#66 restricted-cleanup operation API
-and Z#67 staged world close/join amendments below are planned, not implemented
-or formally accepted.** No runtime API is changed by these spec-first amendments.
+records bounded prototype support. **Z#66 slice 1—lexical cleanup waits,
+declared external resource operations and fork isolation—is implemented and tested
+in campaign source `af6f1fb`; its external formal proofs remain open.** This does
+not establish full lifecycle acceptance. **Z#67 staged world close/settlement is
+planned, with no runtime implementation yet.** These status clarifications and
+spec-first amendments change no runtime API.
 
 ## Goal and unit of publication
 
@@ -493,16 +496,17 @@ cached spin after item removal, despite releasing its track subscriptions and
 observers. This reproduces on the unchanged baseline; the replacement must
 close this reclamation gap before claiming the full GC acceptance gate.
 
-## Planned restricted cleanup operations (Z#66)
+## Restricted cleanup operations (Z#66 slice 1 implemented)
 
-The campaign's first cleanup slice is the explicit operation contract in
-[engine-v2-spec.md](engine-v2-spec.md) §2–3, T12–T14/T23–T26 and B8. Its
+The campaign's implemented and tested first cleanup slice is the explicit operation
+contract in [engine-v2-spec.md](engine-v2-spec.md) §2–3, T12–T14/T23–T26 and B8. Its
 `await-finalization` accepts only an opaque one-shot operation for a declared
 already-owned resource close/join, within a lexical finalizer. It does not
 accept ordinary Spins/Tasks, deferreds, mailboxes, signals or arbitrary CPS
 functions. Adapter registration must be finite and nonblocking; it owns
-physical close independently of its subscribers. This planned API is distinct
-from the native protected-thunk prototype described below.
+physical close independently of its subscribers. Its external formal proofs remain
+open. This implemented API is distinct from the older native protected-thunk
+prototype described below; broader world-close/settlement integration remains Z#67.
 
 All lexical finalizers have the same restricted admission on normal return,
 error and cancellation. Permit write/deliver/post/release/close and this wait;
@@ -570,8 +574,10 @@ only the parent. Frozen/unborn discard invokes no finalizer/detach/physical clos
 activated children finish their own chain and retire independently. A later use
 of a captured parent operation fails `::forked` before registration. Child-local
 owners must allocate child-local operation/resource adapters; COW does not make
-raw captured resource handles branch-local. Existing prototype refusal of such
-forks remains its supported behavior until this slice is implemented.
+raw captured resource handles branch-local. The campaign Z#66 implementation tests
+this inherited-wait isolation; the older native prototype's fork refusal described
+below does not describe that implementation. Formal proof and broader lifecycle
+acceptance remain open.
 
 ### Planned staged world close (Z#67)
 

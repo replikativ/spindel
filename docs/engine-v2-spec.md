@@ -1,14 +1,14 @@
 # Spindel engine v2: specification
 
 Status: **v1.5.1, signed off 2026-11-04, with numbered spec patches.**
-Q4 and Q6–Q9 proceed with their proposals (§12). **Z#66 is the planned
-restricted-cleanup contract (2026-11-05), specified before implementation.**
-Its first slice is lexical cleanup operations and fork isolation; its dependent
-second slice is world close/join, refined by **planned Z#67 staged close** below.
-Neither slice nor Z#67 is claimed implemented or formally accepted here.
-References to Z#66 below state the target contract;
-they do not describe shipped runtime behavior. Existing native protected-wait
-prototypes are not acceptance evidence for this smaller operation API.
+Q4 and Q6–Q9 proceed with their proposals (§12). **Z#66's first slice—lexical
+cleanup waits, declared external resource operations and fork isolation—is
+implemented and tested in campaign source `af6f1fb` (2026-11-05).** Its external
+formal proof obligations remain open (§11); this is not acceptance of the full
+lifecycle. The dependent world close/join runtime, refined by **planned Z#67 staged
+close** below, is not implemented. Existing native protected-wait prototypes are
+distinct from the implemented explicit-operation slice. These status clarifications
+and Z#67 spec-first amendments change no runtime API.
 
 ## History and tags
 
@@ -201,13 +201,14 @@ prototypes are not acceptance evidence for this smaller operation API.
     its owning task/scope to propagate cancellation; an externally created
     race is shared. Explicit `spin (await-any ...)` remains reactive.
   - Z#66 (§2–3, T12–T14, T21, T23–T26, B3/B8/B9, I6/I9/I11, §8.1,
-    L2): planned explicit one-shot cleanup operations may be awaited only in
+    L2): explicit one-shot cleanup operations may be awaited only in
     lexical finalizers, including on normal entry. Cancellation publishes its
     result before cleanup retires, and preserves a sealed cleanup continuation.
     Inherited waits fail locally with `::forked`, including queued completions.
     World close/join additionally needs owned-child terminal acknowledgement
-    (second slice). This supersedes Z#35's one-slice unwind and Z#40's prohibition
-    of all cleanup waiting; ordinary offload remains forbidden. Formal obligations
+    (planned second slice, refined by Z#67). Slice 1 is implemented and tested;
+    its formal proof obligations remain open. This supersedes Z#35's one-slice
+    unwind and Z#40's prohibition of all cleanup waiting; ordinary offload remains forbidden. Formal obligations
     for these transitions are pending (§11), alongside the existing Z#64/I15 work.
   - Z#67 (§2–3, T21/T27–T32, §7–9, I6/I9/I11, L2; planned): world
     shutdown request, execution retirement and terminal settlement are separate
@@ -374,16 +375,17 @@ These belong to yggdrasil and dvergr, which build on §9.
   - a native operation.
 - **Finalizer** `F`: a lexical `finally` region that is open in a run; its
   boundary remains open until its body returns or throws, including while waiting.
-- **Cleanup operation** `O` (Z#66, planned): an opaque one-shot capability for
-  an explicitly declared, already-owned resource close/join. It is not a Spin,
+- **Cleanup operation** `O` (Z#66 slice 1 implemented; Z#67 world variant planned):
+  an opaque one-shot capability for an explicitly declared, already-owned resource
+  close/join. It is not a Spin,
   Task, deferred, mailbox, signal or arbitrary CPS function. Its adapter has
   finite nonblocking registration; physical close belongs to the operation,
   independently of its subscribers. Its **observation origin** (the world
   permitted to await it) is distinct from its **target** (the resource/world
   being closed). Origin checks compare the awaiting world with that observation
   origin, not with the target's world (§9). This is not a user-extensible scheduler.
-- **Cleanup waiter** `Q` (Z#66, planned): one run's observation of `O`, holding
-  a sealed finalizer continuation rather than an ordinary activation or edge.
+- **Cleanup waiter** `Q` (Z#66 slice 1 implemented): one run's observation of `O`,
+  holding a sealed finalizer continuation rather than an ordinary activation or edge.
 - **Handle** `H`: a host object, for example `Spin`, a signal, a fork
   handle or a savepoint publication. Handles are weak and are never liveness
   reasons (§3.4), except that an armed publication's handles make it a root
@@ -494,8 +496,8 @@ and pending/queued cleanup under §8.1. Unborn discard removes only inherited
 engine obligations, without executing their copied callbacks; fresh host
 settlements/preparations remain owed. No traversal of all runs is added to fork.
 
-**Planned finalizer state (Z#66).** A boundary records the pending body
-outcome separately from the entity's published result. Entry marks an already
+**Finalizer state (Z#66 slice 1; implemented, formal proofs open).** A boundary
+records the pending body outcome separately from the entity's published result. Entry marks an already
 registered region active; only exit removes it, on either success or exception.
 Generated exit bookkeeping is not another finally region. A normally entered
 finalizer may wait with `mode = normal`; cancellation converts its admission to
@@ -955,7 +957,7 @@ Transitions are built from a small set of primitive table edits (§11).
 | T21 | `release-world` | **Request:** sets `released := true`. **Roots revoked:** `observe` callbacks receive `::released`, pins are dropped, `pending-activation` is abandoned. **Host admissions revoked:** remaining handles become released handles, whose operations fail with `::released`, and their rows are removed. **Still admitted (Z#56, Z#66/Z#67):** B8 cleanup effects, existing/new explicit cleanup waits inside finalizers, their sealed completions, outstanding resource/child acknowledgements, completion or joined disposal of prior preparation reservations, and the settlement-only roles of preregistered host capabilities (§9). These roles admit no ordinary work or new spending. Then T16 closes the root scope; it remains the administrative allowance (I11a). Request return does not certify terminal close. **Planned staged close:** request linearizes once under the target gate, sealing reservations and host settlement registration before cancellation/outbox dispatch. T31 records execution retirement separately; T32 publishes terminal settlement only after all child terminal and registered host acknowledgements (§9). A released marker, emptied owner list or `released` flag is not acknowledgement; pending obligations remain observable until then. |
 | T22 | `host-await(d)` / `host-unawait(E)` (Z#27) | **Await:** adds a `wait` edge with creditor host on `d` (demanding it, T5/T11), and validates `d` if it is idle. A root while it exists. **Fire:** when `d` settles or becomes final, the edge is consumed and the host promise receives the result. **Unawait:** a host that stops waiting removes the edge. |
 
-**Planned cleanup transitions (Z#66, slice 1; not yet implemented/modelled):**
+**Cleanup transitions (Z#66 slice 1; implemented and tested, external formal proofs open):**
 
 | # | Item | Effect |
 |---|---|---|
@@ -1165,8 +1167,8 @@ The child `W′` gets:
     counterpart in `W′`, so no acknowledgement is invented.
 - **Inherited `savepoint` edges**, other than `W′.pending-activation`, also
   fire `err ::forked`: the child has no publication for them (W#8).
-- **Z#66 inherited cleanup waits (planned slice 1):** fork captures descriptors
-  lazily, preserving O(1) creation. The child has fresh close state and inherits
+- **Z#66 inherited cleanup waits (implemented slice 1; formal proofs open):** fork
+  captures descriptors lazily, preserving O(1) creation. The child has fresh close state and inherits
   no parent physical controller, callback or host subscription authority.
   First local activation resumes each inherited pending **or already queued but
   not resumed** wait through its sealed error continuation with `::forked`
