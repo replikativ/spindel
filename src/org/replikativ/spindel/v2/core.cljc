@@ -15,6 +15,8 @@
             [org.replikativ.spindel.incremental.interval :as iv]
             [org.replikativ.spindel.v2.host :as hs]
             [org.replikativ.spindel.v2.lifetime :as lt]
+            [org.replikativ.spindel.v2.cleanup :as cleanup]
+            [replikativ.logging :as log]
             [is.simm.partial-cps.runtime :as pr]
             #?(:clj [is.simm.partial-cps.ioc :as ioc])
             #?(:clj [org.replikativ.spindel.engine.free-vars :as free-vars]))
@@ -24,7 +26,7 @@
 #?(:clj (set! *warn-on-reflection* true))
 
 (declare create-source-top-host! row-of world-of cancel-resource! resource-ack! demand! settle! pending-zero! rule-r! complete! validate!
-         deliver-observe! value cancel! finish-task! request-atom-sweep! finish-metadata!)
+         deliver-observe! value cancel! finish-task! request-atom-sweep! finish-metadata! unwind-regions! resume-cleanup! cleanup-admission! ordinary-admission! conserve-cleanup!)
 
 ;; ---------------------------------------------------------------------------
 ;; Execution context: the world being processed and the run holding the slice
@@ -57,6 +59,7 @@
 ;; World, ids, gate
 
 (def ^:dynamic *world* nil)
+(def ^:dynamic ^:private *cleanup-registration?* false)
 
 (defn- alloc-id!
   "A fresh id from the family counter, shared by a world and its forks."
@@ -95,6 +98,7 @@
    (test only); `:hook` runs after every commit in verify mode."
   ([] (world {}))
   ([{:keys [verify? hook inline? budget executor] :or {inline? true budget 4096}}]
+   (ordinary-admission! :world)
    (let [ep #?(:clj (Object.) :cljs (js-obj))
          w (rw/new-row ep rw/W-SIZE)
          next #?(:clj (java.util.concurrent.atomic.AtomicLong. 1)
@@ -107,6 +111,9 @@
      (s! w rw/W-RESUME (alist))
      (s! w rw/W-START (alist))
      (s! w rw/W-CLEANUP (alist))
+     (s! w rw/W-CLEANUP-WAITS {})
+     (s! w rw/W-CLEANUP-FAILURES (sorted-map))
+     (s! w rw/W-CLEANUP-IDENTITY #?(:clj (Object.) :cljs (js-obj)))
      (s! w rw/W-DRAINING false)
      (s! w rw/W-RQ (alist))
      (s! w rw/W-PINS (hs/vmap))
@@ -290,6 +297,14 @@
     (when (and (== rw/T-RES (long (aget c rw/TYPE)))
                (not= (aget c rw/Z-ORIGIN) (aget ^objects w rw/ID)))
       (aset c rw/Z-CTL nil))
+    (when (and (== rw/T-RUN (long (aget c rw/TYPE)))
+               (some? (aget c rw/R-CLEANUP-WAIT))
+               (not= (:origin (aget c rw/R-CLEANUP-WAIT)) (aget ^objects w rw/W-CLEANUP-IDENTITY)))
+      ;; Immutable descriptor only; no parent's physical subscription authority.
+      (aset c rw/R-CLEANUP-WAIT
+            (-> (aget c rw/R-CLEANUP-WAIT)
+                (assoc :origin (aget ^objects w rw/W-CLEANUP-IDENTITY) :operation nil :withdraw nil
+                       :inherited? true :outcome nil))))
     (aset ^objects w rw/W-FWD (assoc (aget ^objects w rw/W-FWD) (aget c rw/ID) c))
     (when-let [reg (aget ^objects w rw/W-REG)]
       (when (some? (hs/mget reg (aget c rw/ID))) (hs/mput! reg (aget c rw/ID) c)))
@@ -880,6 +895,15 @@
     (if (comp? x)
       (when (identical? r (rv w (g x rw/C-RUN))) (s! x rw/C-RUN nil))
       (when (identical? r (rv w (g x rw/K-RUN))) (s! x rw/K-RUN nil)))
+    (when (task? x)
+      ;; Tasks are one-shot. Comp-owned inputs remain the adoption key; tasks
+      ;; owned by scopes cannot be adopted and keep only their cached result.
+      (s! x rw/K-BODY nil)
+      (let [owner (rv w (g x rw/OWNER))]
+        (when-not (and owner (comp? owner)) (s! x rw/K-INPUTS nil))))
+    (s! r rw/R-UNWIND-OUTCOME nil)
+    (s! r rw/R-CLEANUP-TRANSFER nil)
+    (s! r rw/R-REGIONS nil)
     (s! r rw/R-MODE 2)                       ; retired
     (when-let [s (rv w (g r rw/R-SROW))]
       (s! s rw/S-HELD false)
@@ -891,10 +915,11 @@
 (defn- fins ^long [r] (let [n (g r rw/R-FINS)] (if n (long n) 0)))
 
 (defn- retire-check!
-  "T13: retired iff done, no slice, no finalizers, no resources."
+  "T13: done, no slice/regions/active boundary/waiter, and no resources."
   [w r]
   (when (and (== rw/ACT-DONE (gl r rw/R-ACT)) (not (g r rw/R-SLICE))
-             (zero? (fins r)) (nil? (g r rw/R-RES)) (not (== 2 (gl r rw/R-MODE))))
+             (zero? (fins r)) (nil? (g r rw/R-FINALIZER)) (nil? (g r rw/R-CLEANUP-WAIT))
+             (nil? (g r rw/R-RES)) (not (== 2 (gl r rw/R-MODE))))
     (retire! w r)))
 
 (defn- release-members!
@@ -927,12 +952,15 @@
   (when-not (== rw/ACT-DONE (gl r rw/R-ACT))
     (s! r rw/R-ACT rw/ACT-DONE)
     (s! r rw/R-MODE 1)
-    ;; Finalizers (T14, B3): a parked run with open finally regions unwinds
-    ;; in a cleanup slice through its activation's error continuation. A run
-    ;; whose slice is on the stack unwinds at its next effect.
-    (when-let [a (drop-activation! w r)]
-      (when (pos? (fins r))
-        (aadd! (g w rw/W-CLEANUP) [r (g a rw/A-E) (cancelled-ex reason)])))
+    (let [pending (or (:body-outcome (g r rw/R-FINALIZER))
+                      [(cancelled-ex reason) true])]
+      (s! r rw/R-UNWIND-OUTCOME pending)
+      (conserve-cleanup! w r pending))
+    ;; Preserve an already executing/parked finalizer. Ordinary suspension
+    ;; loses its activation; sealed unwinding bypasses ordinary body catches.
+    (drop-activation! w r)
+    (when (and (pos? (fins r)) (not (g r rw/R-FINALIZER)) (not (g r rw/R-SLICE)))
+      (aadd! (g w rw/W-CLEANUP) [:unwind r]))
     ;; Resources are told to cancel; they join through their acknowledgement.
     (when-let [zs (g r rw/R-RES)]
       (doseq [z (vec zs)] (cancel-resource! w (rv w z))))   ; M5: this world's copy, never the basis
@@ -1158,7 +1186,7 @@
   [ek]
   (let [r (active-run)]
     (when (and r (g r rw/R-SLICE) (== rw/ACT-DONE (gl r rw/R-ACT)) (pos? (fins r)))
-      (ek (cancelled-ex ::cancelled)))))
+      (unwind-regions!))))
 
 (defn- next-at! ^long [r]
   (let [at (gl r rw/R-EIDX)]
@@ -1238,25 +1266,120 @@
   [r k]
   (when (and (zero? (fins r)) (nil? (g r rw/R-RES))) k))
 
-(defn enter-finally!
-  "Body contract: a `finally` region opens (rewritten by the body macros)."
-  []
-  (when-let [r (active-run)]
-    (s! r rw/R-FINS (inc (fins r)))
-    (commit! (cw) [:finally-enter (g r rw/ID)])))
+(defn- in-finalizer? []
+  (boolean (when-let [r (active-run)] (g r rw/R-FINALIZER))))
 
-(defn exit-finally!
-  "A `finally` region closes; its block runs now."
-  []
-  (when-let [r (active-run)]
-    (s! r rw/R-FINS (max 0 (dec (fins r))))
-    (commit! (cw) [:finally-exit (g r rw/ID)])))
+(defn- ordinary-admission! [op]
+  (when (or (in-finalizer?) *cleanup-registration?*)
+    (throw (ex-info "ordinary effect/creation inside a finalizer"
+                    {:spindel/invalid :finalizer-effect :effect op}))))
+
+(defn- cleanup-admission! []
+  (let [r (active-run)]
+    (when-not (and r (g r rw/R-SLICE) (g r rw/R-FINALIZER))
+      (throw (ex-info "cleanup wait outside a lexical finalizer"
+                      {:spindel/invalid :finalizer})))
+    r))
+
+(defn- cleanup-error [r region body error]
+  (let [[value failed?] body
+        prior (:spindel/cleanup-failures (ex-data value))
+        cause (if (seq prior) (:spindel/body-error (ex-data value))
+                  (when (and failed? (not (cancelled? value))) value))
+        provenance {:run (g r rw/ID) :region (:id region) :order (:order region)
+                    :release (or (g r rw/R-WAIT-SEQ) 0) :error error :body-error cause}]
+    (ex-info "finalization failed"
+             {:spindel/cleanup-failures (conj (vec prior) error)
+              :spindel/cleanup-provenance
+              (conj (vec (:spindel/cleanup-provenance (ex-data value))) provenance)
+              :spindel/body-error cause}
+             cause)))
+
+(defn- conserve-cleanup! [w r [value failed?]]
+  (when-let [failures (and failed? (seq (:spindel/cleanup-provenance (ex-data value))))]
+    (let [origin (g w rw/W-CLEANUP-IDENTITY)
+          transferred (g r rw/R-CLEANUP-TRANSFER)]
+      (when-not (identical? origin (:origin transferred))
+        (s! r rw/R-CLEANUP-TRANSFER {:origin origin :keys #{}}))
+      (doseq [{:keys [run order release] :as failure} failures
+              :let [key [run order release]]
+              :when (not (contains? (:keys (g r rw/R-CLEANUP-TRANSFER)) key))]
+        (s! w rw/W-CLEANUP-FAILURES
+            (assoc (g w rw/W-CLEANUP-FAILURES) key failure))
+        ;; Ownership transfers once, independently of later report consumption.
+        ;; Immutable keys are bounded by this live unwind and carry no payload;
+        ;; a fork's new origin cannot inherit its parent's transfer authority.
+        (s! r rw/R-CLEANUP-TRANSFER
+            {:origin origin :keys (conj (:keys (g r rw/R-CLEANUP-TRANSFER)) key)})))))
+
+(declare finish-region! begin-region!)
+
+(defn- invoke-region! [f k ek]
+  ;; Exit continuations bounce out of this try before executing an outer body.
+  (try (f k ek) (catch #?(:clj Throwable :cljs :default) t (ek t))))
+
+(defn- begin-region! [region outcome]
+  (let [r (active-run) order (inc (long (or (g r rw/R-CLEANUP-SEQ) 0)))]
+    (s! r rw/R-CLEANUP-SEQ order)
+    (s! r rw/R-FINALIZER (assoc region :order order :body-outcome outcome))
+    (commit! (cw) [:cleanup-enter (g r rw/ID) (:id region)])
+    (invoke-region! (:cleanup region)
+                    (fn [_] (pr/->thunk #(finish-region! (:id region) nil)))
+                    (fn [error] (pr/->thunk #(finish-region! (:id region) [error]))))))
+
+(defn- finish-region! [id failure]
+  (let [w (cw) r (active-run) region (g r rw/R-FINALIZER)]
+    (when (= id (:id region))
+      (let [outcome (if failure
+                      [(cleanup-error r region (:body-outcome region) (first failure)) true]
+                      (:body-outcome region))]
+        (when (== rw/ACT-DONE (gl r rw/R-ACT))
+          (s! r rw/R-UNWIND-OUTCOME outcome)
+          (conserve-cleanup! w r outcome))
+        (s! r rw/R-FINALIZER nil)
+        (s! r rw/R-REGIONS (pop (g r rw/R-REGIONS)))
+        (s! r rw/R-FINS (dec (fins r)))
+        (commit! w [:finally-exit (g r rw/ID)])
+        (if (== rw/ACT-DONE (gl r rw/R-ACT))
+          (unwind-regions!)
+          (let [[v failed?] outcome]
+            (if failed? ((:ek region) v) ((:k region) v))))))))
+
+(defn- unwind-regions! []
+  (let [r (active-run)]
+    (when-not (g r rw/R-FINALIZER)
+      (when-let [region (peek (g r rw/R-REGIONS))]
+        (begin-region! region (or (g r rw/R-UNWIND-OUTCOME) [(cancelled-ex ::cancelled) true]))))))
+
+(defn finalizer-region-effect!
+  "Compiler boundary: separately lowered lexical cleanup and sealed unwinding."
+  [body cleanup k ek]
+  (ordinary-admission! :finally)
+  (if-let [r (valid-run)]
+    (let [id (inc (long (or (g r rw/R-REGION-SEQ) 0)))
+          ;; Cancellation bypasses the body's scope-wrapped continuations.
+          ;; Capture only registered lexical adapters for this additional entry;
+          ;; execution authority still comes from the runner's selected world.
+          entry (pr/scope-continuation (fn [[resolve reject]] (cleanup resolve reject)))
+          region {:id id :cleanup (fn [resolve reject] (entry [resolve reject])) :k k :ek ek}
+          done (fn [outcome]
+                 (pr/->thunk
+                  #(if (== rw/ACT-DONE (gl (active-run) rw/R-ACT))
+                     (unwind-regions!)
+                     (begin-region! region outcome))))]
+      (s! r rw/R-REGION-SEQ id)
+      (s! r rw/R-REGIONS (conj (or (g r rw/R-REGIONS) []) region))
+      (s! r rw/R-FINS (inc (fins r)))
+      (commit! (cw) [:finally-enter (g r rw/ID)])
+      (invoke-region! body #(done [% false]) #(done [% true])))
+    (unwind-regions!)))
 
 (defn- invalid-op [op msg] (ex-info msg {:spindel/invalid op}))
 
 (defn track-effect!
   "T7, on signals and cells (Z#54)."
   [x k ek]
+  (ordinary-admission! :track)
   (if-not (and (source? x) (<= (gl x rw/X-KIND) rw/SRC-CELL))
     (ek (invalid-op :track "track is for signals and cells"))
     (if-let [r (valid-run)]
@@ -1483,6 +1606,7 @@
 (defn await-effect!
   "T6 with mode `one`; on a mailbox it is `take` (Z#54)."
   [d k ek]
+  (ordinary-admission! :await)
   (if (consuming? d)
     (if (== rw/SRC-MAILBOX (gl d rw/X-KIND))
       (consume-effect! d k ek)
@@ -1490,6 +1614,7 @@
     (await-group! [d] :one k ek)))
 
 (defn- group-effect! [ds mode k ek]
+  (ordinary-admission! :await)
   (let [ds (vec ds)]
     (if (some #(consuming? (row-of %)) ds)
       (ek (invalid-op mode "a group await cannot take from a mailbox or semaphore"))
@@ -1729,6 +1854,7 @@
 (defn create-comp!
   "T3. `site` is a macro-time int, `inputs` the captured values."
   [site inputs body]
+  (ordinary-admission! :computation)
   (if-let [r (active-run)]
     (when (valid-run)
       (let [w (cw)
@@ -1793,6 +1919,7 @@
    adopted by later runs (§5.2); inside a task run it is a structured child
    of the run scope (Q10); at top level it is owned by the root scope."
   [site inputs body]
+  (ordinary-admission! :task)
   (if-let [r (active-run)]
     (when (valid-run)
       (let [w (cw)
@@ -1963,9 +2090,10 @@
       ;; cancelled between its resumption and its slice, with open finally
       ;; regions: it unwinds through the error continuation (T14)
       (and (== rw/ACT-DONE (gl r rw/R-ACT)) (pos? (fins r)) (not (g r rw/R-SLICE)))
-      (do (s! r rw/R-SLICE true)
-          (commit! w [:finalize (g r rw/ID)])
-          (slice! r #(ek (cancelled-ex ::cancelled))))
+      (when-not (g r rw/R-FINALIZER)
+        (s! r rw/R-SLICE true)
+        (commit! w [:finalize (g r rw/ID)])
+        (slice! r unwind-regions!))
       :else (retire-check! w r))))
 
 (defn- start! [w r]
@@ -1990,13 +2118,16 @@
         cleanup (g w rw/W-CLEANUP)]
     (cond
       (pos? (acount cleanup))
-      (let [[r ek ex :as entry] (pop-first! w cleanup)]
-        (if (nil? ek)
-          ;; T15 for a resource that joined at its cancel (Z#55): [z]
-          (resource-ack! w (rv w r))
-          (do (s! r rw/R-SLICE true)
-              (commit! w [:finalize (g r rw/ID)])
-              (slice! r #(ek ex))))
+      (let [entry (pop-first! w cleanup)]
+        (case (first entry)
+          :cleanup-resume (resume-cleanup! w (second entry) (nth entry 2))
+          :unwind (let [r (rv w (second entry))]
+                    (when (and (pos? (fins r)) (not (g r rw/R-FINALIZER)))
+                      (s! r rw/R-SLICE true)
+                      (commit! w [:finalize (g r rw/ID)])
+                      (slice! r unwind-regions!)))
+          ;; Existing resource acknowledgements remain distinct from continuation ingress.
+          (resource-ack! w (rv w (first entry))))
         (rule-r! w)
         true)
       (pos? (acount start)) (do (start! w (pop-first! w start)) (rule-r! w) true)
@@ -2033,7 +2164,7 @@
   (let [unborn? (g w rw/W-UNBORN)]
     ;; E4: an unborn instance commits host items only: its inherited work and
     ;; dormant resources wait for activate!
-    (when (and (not unborn?) (or (g w rw/W-DORMANT) (g w rw/W-SP-DORMANT))) (activate-dormant! w))
+    (when (and (not unborn?) (or (g w rw/W-DORMANT) (g w rw/W-SP-DORMANT) (g w rw/W-CLEANUP-DORMANT))) (activate-dormant! w))
     (try
       (loop [n (gl w rw/W-BUDGET) unborn? unborn?]
         (if (zero? n)
@@ -2055,9 +2186,18 @@
       (let [cs (acopy l)] (aclear! l) cs))))
 
 (defn- run-after!
-  "After the gate is released: schedule the released children's drains."
+  "After the gate: child drains and tagged cleanup registration/detach actions.
+   Failure of one action must not suppress the rest of this bounded outbox."
   [cs]
-  (when cs (dotimes [i (acount cs)] (handoff! (anth cs i)))))
+  (when cs
+    (dotimes [i (acount cs)]
+      (let [entry (anth cs i)]
+        (try
+          (if (and (vector? entry) (= :cleanup-action (first entry)))
+            ((second entry))
+            (handoff! entry))
+          (catch #?(:clj Throwable :cljs :default) t
+            (log/error :engine/cleanup-action-failed {:error t})))))))
 
 (defn- process!
   "H2: try the gate; the winner runs a bounded turn, then hands off."
@@ -2193,6 +2333,7 @@
    runs in creation order) or by the task run's current scope, which retains
    it only through edges and handles (§5.2)."
   [r kind v init]
+  (ordinary-admission! :source)
   (let [w (cw)
         x (rv w (g r rw/R-OF))
         at (next-at! r)]
@@ -2226,6 +2367,7 @@
           h)))))
 
 (defn- create-source-top! [w kind v init]
+  (ordinary-admission! :source)
   (if-let [r (active-run)]
     (if (valid-run) (create-source-in-run! r kind v init) (throw (ex-info "source creation in a cancelled run" {})))
     (create-source-top-host! w kind v init)))
@@ -2264,6 +2406,7 @@
   "`take!` (mailbox) or `acquire!` (semaphore): a consuming operation, always
    a wait edge, never a dependency (§4.3). Waiters are served FIFO."
   [x k ek]
+  (ordinary-admission! :consume)
   (if-let [r (valid-run)]
     (let [w (cw)
           at (next-at! r)
@@ -2417,6 +2560,7 @@
 (defn observe!
   "T8: `cb` receives (value err?) on each change. Returns an unobserve fn."
   [h cb]
+  (ordinary-admission! :observe!)
   (let [w (world-of h)
         ev (volatile! nil)]
     (when (g w rw/W-UNBORN) (throw (unborn-ex)))
@@ -2439,6 +2583,7 @@
 (defn pin!
   "T20: a row is a root while its pin count is positive (Z#16)."
   [h]
+  (ordinary-admission! :pin!)
   (gated (world-of h)
          (let [x (row-of h) w (cw)
                pins (g w rw/W-PINS)
@@ -2530,6 +2675,7 @@
    body or callback of another world: the item is only scheduled after the
    current gate is left, so no thread processes two worlds at once."
   [w f]
+  (ordinary-admission! :send-world)
   (when (g w rw/W-RELEASED) (throw (released-ex)))
   (hs/mpsc-add! (g w rw/W-INGRESS) f)
   (if (holding-gate?)
@@ -2748,6 +2894,7 @@
   "A fork-safe atom in the current world. Values are strong; a value that
    references its wrapper makes that wrapper application-reachable."
   [init & {:keys [meta]}]
+  (ordinary-admission! :atom)
   (let [w (or (current-world) (throw (ex-info "atom outside a world" {})))]
     (host-call! w #(let [id (alloc-id! w)
                          family (g w rw/W-FAMILY)
@@ -2760,6 +2907,7 @@
   "T22/H3: demands `h` through a host wait edge and calls `(cb v err?)` once
    it settles. Returns a fn that withdraws the wait (host-unawait)."
   [h cb]
+  (ordinary-admission! :value-async)
   (let [w (world-of h)
         ev (volatile! nil)]
     (gated w
@@ -2838,6 +2986,24 @@
    wait) never had a physical counterpart here: it fires err ::forked into
    its edges and joins at once."
   [w]
+  ;; A waiter remains captured through queued readiness. Forks inherit no
+  ;; subscription; activation fails locally once, even across an unborn basis.
+  (when-let [rs (g w rw/W-CLEANUP-DORMANT)]
+    (s! w rw/W-CLEANUP-DORMANT nil)
+    (let [ids (set (map id-of rs))
+          queue (g w rw/W-CLEANUP)
+          kept (vec (remove #(and (= :cleanup-resume (first %))
+                                  (contains? ids (id-of (second %)))) queue))]
+      (aclear! queue)
+      (doseq [item kept] (aadd! queue item))
+      (doseq [r0 rs]
+        (let [r (rv w r0) q (g r rw/R-CLEANUP-WAIT)]
+          (when q
+            (s! r rw/R-CLEANUP-WAIT
+                (assoc q :inherited? true :registered? true :operation nil :withdraw nil
+                       :outcome [(forked-ex) true]))
+            (s! w rw/W-CLEANUP-WAITS (assoc (g w rw/W-CLEANUP-WAITS) (g r rw/ID) r))
+            (aadd! queue [:cleanup-resume r (:sequence q)]))))))
   ;; S3/§8.1: pending savepoints a fork inherited, other than its pending
   ;; activation, fail with err ::forked (the child has no publication for them)
   (when-let [as (g w rw/W-SP-DORMANT)]
@@ -2966,6 +3132,7 @@
    outside every world (§4.3). `f` must not call into the world
    synchronously; it may enqueue ingress."
   [f opts k ek]
+  (ordinary-admission! :offload)
   (if-let [r (valid-run)]
     (arm-and-park!
      r :offload k ek
@@ -2991,6 +3158,7 @@
 (defn sleep-effect!
   "`(sleep ms)`: a timer resource."
   [ms k ek]
+  (ordinary-admission! :sleep)
   (if-let [r (valid-run)]
     (arm-and-park!
      r :timer k ek
@@ -3010,6 +3178,7 @@
    physical completion, whose value is dropped. If `f` throws, the effect
    fails with that error."
   [f k ek]
+  (ordinary-admission! :external)
   (if-let [r (valid-run)]
     (arm-and-park!
      r :external k ek
@@ -3033,6 +3202,145 @@
                (set-ctl! w z (assoc ctl :cancel (first res)))))))))
     (unwind! ek)))
 
+;; ---------------------------------------------------------------------------
+;; Restricted lexical cleanup (Z#66): operations are not reactive graph rows.
+
+(defn- after-gate-action! [f]
+  (if (holding-gate?)
+    (aadd! (g (cw) rw/W-AFTER) [:cleanup-action f])
+    (f)))
+
+(defn cleanup-resource
+  "Declares an already-owned external resource's one-shot close adapter.
+   `(register-close complete)` is finite/nonblocking and may return detachable
+   observation control; `complete` accepts value and optional failed? flag.
+   Declare in an ordinary open owner; the host form explicitly names its world.
+   The adapter owner must arrange a finalizer/close call: declaration alone does
+   not register automatic engine teardown. No engine-resource registry is added."
+  ([register-close] (cleanup-resource (current-world) register-close))
+  ([w register-close]
+   (ordinary-admission! :cleanup-resource)
+   (when-not (and w (fn? register-close))
+     (throw (invalid-op :cleanup-resource "explicit world and close registration required")))
+   (host-call!
+    w
+    #(let [r (active-run)
+           _ (when (and r (not (valid-run)))
+               (throw (invalid-op :cleanup-resource "closed resource owner")))
+           owner (if r (current-scope! w r) (rv w (g w rw/W-ROOT)))]
+       (when-not (and (not (g w rw/W-RELEASED)) (g owner rw/S-OPEN))
+         (throw (invalid-op :cleanup-resource "closed resource owner")))
+       (cleanup/resource (g w rw/W-CLEANUP-IDENTITY) (g owner rw/ID)
+                         (loop [s owner ids []]
+                           (if s (recur (rv w (g s rw/S-PARENT)) (conj ids (g s rw/ID))) ids))
+                         register-close after-gate-action!)))))
+
+(defn cleanup-operation
+  "Observe a declared resource's shared close in the selected origin world.
+   May wrap an existing capability inside a finalizer; admits no ordinary work.
+   Arbitrary descriptors and engine/world targets are unsupported in slice 1."
+  [resource]
+  (when-not (cleanup/resource? resource)
+    (throw (invalid-op :cleanup-operation "expected a declared external resource capability")))
+  (let [w (or (current-world) (throw (invalid-op :cleanup-operation "select an observation origin world")))]
+    (when-not (= (g w rw/W-CLEANUP-IDENTITY) (cleanup/resource-origin resource))
+      (throw (forked-ex)))
+    (cleanup/operation (g w rw/W-CLEANUP-IDENTITY) resource)))
+
+(defn cleanup-operation-status [operation] (cleanup/status operation))
+
+(defn- cleanup-ready! [w r sequence outcome]
+  (let [r (rv w r) q (g r rw/R-CLEANUP-WAIT)]
+    (when (and q (= (:origin q) (g w rw/W-CLEANUP-IDENTITY)) (= sequence (:sequence q))
+               (nil? (:outcome q)) (not (:inherited? q)))
+      (s! r rw/R-CLEANUP-WAIT (assoc q :outcome outcome))
+      (when (:registered? q)
+        (aadd! (g w rw/W-CLEANUP) [:cleanup-resume r sequence]))
+      (commit! w [:cleanup-ready (g r rw/ID) sequence]))))
+
+(defn- cleanup-registered! [w r sequence withdraw]
+  (let [r (rv w r) q (g r rw/R-CLEANUP-WAIT)]
+    (if (and q (= (:origin q) (g w rw/W-CLEANUP-IDENTITY)) (= sequence (:sequence q)) (not (:inherited? q)))
+      (do (s! r rw/R-CLEANUP-WAIT (assoc q :registered? true :withdraw withdraw))
+          (when (:outcome q) (aadd! (g w rw/W-CLEANUP) [:cleanup-resume r sequence]))
+          (commit! w [:cleanup-registered (g r rw/ID) sequence]))
+      (after-gate-action! withdraw))))
+
+(defn await-finalization-effect!
+  [operation k ek]
+  (let [r (cleanup-admission!) w (cw)]
+    (when-not (cleanup/operation? operation)
+      (throw (invalid-op :cleanup-operation "await-finalization requires an explicit cleanup operation")))
+    (when-not (= (g w rw/W-CLEANUP-IDENTITY) (cleanup/origin operation)) (throw (forked-ex)))
+    (when-not (= :resource (:kind (cleanup/target operation)))
+      (throw (invalid-op :cleanup-target "engine cleanup targets require slice 2")))
+    (when-not (= (g w rw/W-CLEANUP-IDENTITY) (:origin (cleanup/target operation)))
+      (throw (forked-ex)))
+    (when-not (some #{(g (current-scope! w r) rw/ID)} (:ancestors (cleanup/target operation)))
+      (throw (invalid-op :cleanup-target "cleanup target is not owned below the current scope")))
+    (when (g r rw/R-CLEANUP-WAIT)
+      (throw (invalid-op :cleanup-wait "one cleanup waiter per run")))
+    (let [sequence (inc (long (or (g r rw/R-WAIT-SEQ) 0)))
+          cell (doto (object-array 2) (aset 0 w) (aset 1 r))
+          claimed (hs/flag false)
+          callback (fn [outcome]
+                     (when (hs/flag-cas! claimed false true)
+                       (let [w (aget cell 0) r (aget cell 1)]
+                         (aset cell 0 nil) (aset cell 1 nil)
+                         ;; Readiness is ingress, not invocation from registration.
+                         (hs/mpsc-add! (g w rw/W-INGRESS) #(cleanup-ready! w r sequence outcome))
+                         (handoff! w))))]
+      (s! r rw/R-WAIT-SEQ sequence)
+      (s! r rw/R-CLEANUP-WAIT {:origin (g w rw/W-CLEANUP-IDENTITY) :generation (g r rw/ID)
+                               :sequence sequence :region (:id (g r rw/R-FINALIZER))
+                               :operation operation :k k :ek ek :registered? false})
+      (s! w rw/W-CLEANUP-WAITS (assoc (g w rw/W-CLEANUP-WAITS) (g r rw/ID) r))
+      (when-not (== rw/ACT-DONE (gl r rw/R-ACT)) (s! r rw/R-ACT rw/ACT-PARKED))
+      (s! r rw/R-SLICE false)
+      (after-gate-action!
+       #(let [withdraw (binding [*cleanup-registration?* true]
+                         (cleanup/subscribe! operation callback))]
+          (internal! w (fn [] (cleanup-registered! w r sequence withdraw)))))
+      (commit! w [:cleanup-wait (g r rw/ID) sequence])
+      nil)))
+
+(defn- resume-cleanup! [w r sequence]
+  (let [r (rv w r) q (g r rw/R-CLEANUP-WAIT)]
+    (when (and q (= (g w rw/W-CLEANUP-IDENTITY) (:origin q)) (= (g r rw/ID) (:generation q))
+               (= sequence (:sequence q)) (:registered? q) (:outcome q)
+               (= (:region q) (:id (g r rw/R-FINALIZER))))
+      (when (and (not (== rw/ACT-DONE (gl r rw/R-ACT))) (not (run-current? w r)))
+        (cancel! w r ::cancelled))
+      (s! r rw/R-CLEANUP-WAIT nil)
+      (s! w rw/W-CLEANUP-WAITS (dissoc (g w rw/W-CLEANUP-WAITS) (g r rw/ID)))
+      (when-let [withdraw (:withdraw q)] (after-gate-action! withdraw))
+      (when-not (== rw/ACT-DONE (gl r rw/R-ACT)) (s! r rw/R-ACT rw/ACT-ACTIVE))
+      (s! r rw/R-SLICE true)
+      (commit! w [:cleanup-resume (g r rw/ID) sequence])
+      (slice! r #(let [[v failed?] (:outcome q)]
+                   (if failed? ((:ek q) v) ((:k q) v)))))))
+
+(defn- cleanup-diagnostics* [w]
+  {:waits (into (sorted-map)
+                (map (fn [[id r]]
+                       (let [q (g (rv w r) rw/R-CLEANUP-WAIT)]
+                         [id {:sequence (:sequence q) :region (:region q)
+                              :registered? (:registered? q) :ready? (some? (:outcome q))}])))
+                (g w rw/W-CLEANUP-WAITS))
+   :unreported-failures (count (g w rw/W-CLEANUP-FAILURES))})
+
+(defn- take-cleanup-report!
+  "Internal acknowledged report egress, under this world's gate. Slice 2 will
+   own the public API. Unconsumed reports are explicit retained obligations;
+   ordinary result errors are not duplicated here. Read-only diagnostics do
+   not consume. Returned payloads belong to the caller after this transition."
+  [w]
+  (when-not (and (identical? w (cw)) (hs/held? (g w rw/W-LOCK)))
+    (throw (invalid-op :cleanup-report "report consumption requires its world gate")))
+  (let [report (vec (vals (g w rw/W-CLEANUP-FAILURES)))]
+    (s! w rw/W-CLEANUP-FAILURES (sorted-map))
+    report))
+
 (defn release-world!
   "T21: revokes the roots (observe callbacks and host waits receive
    ::released, pins are dropped), closes the root scope, and lets Rule R
@@ -3050,6 +3358,23 @@
   [w]
   (release-world! w))
 
+(defn- discard-unborn-storage! [w]
+  ;; An unentered snapshot owns no physical cleanup. Drop inherited retention
+  ;; wholesale, without traversing runs or invoking parent detach/close code.
+  (doseq [i [rw/W-READY rw/W-RESUME rw/W-START rw/W-CLEANUP rw/W-RQ rw/W-CALLBACKS]]
+    (s! w i (alist)))
+  (doseq [i [rw/W-FWD rw/W-DORMANT rw/W-ARMED rw/W-SAVEPOINTS rw/W-SP-DORMANT
+             rw/W-PENDING-ACT rw/W-CLEANUP-DORMANT rw/W-PUB-WORLD rw/W-SP-HANDLERS]]
+    (s! w i nil))
+  (s! w rw/W-CLEANUP-WAITS {})
+  (s! w rw/W-PINS (hs/vmap))
+  (s! w rw/W-ROOTS (hs/lmap))
+  (s! w rw/W-STATE {})
+  (when-let [reg (g w rw/W-REG)] (hs/mclear! reg))
+  (let [root (new-scope w (id-of (g w rw/W-ROOT)) :root nil)]
+    (s! root rw/S-OPEN false)
+    (s! w rw/W-ROOT root)))
+
 (defn- release-world*
   "T21 inside `w`'s gate. Also the owner-close release of a fork (F2)."
   [w]
@@ -3060,7 +3385,10 @@
     (if (g w rw/W-UNBORN)
       ;; E4: an instance that never ran is discarded as if dropped: nothing
       ;; in it runs, its copied finalizers included
-      (do (commit! w [:release-world]) (s! w rw/W-RELEASED true) (finish-metadata! w))
+      (do (commit! w [:release-world])
+          (s! w rw/W-RELEASED true)
+          (discard-unborn-storage! w)
+          (finish-metadata! w))
       (let [ex (released-ex)
             roots (g w rw/W-ROOTS)]
         (doseq [e (map #(rv w %) (hs/mvals roots))]
@@ -3096,6 +3424,7 @@
   "T16 open: an explicit scope, child of the run's current scope, a root
    while open (§3.1). Used by `with-scope`."
   []
+  (ordinary-admission! :scope)
   (let [r (or (active-run) (throw (ex-info "with-scope outside a body" {})))
         w (cw)
         s (new-scope w (alloc-id! w) :explicit (current-scope! w r))]
@@ -3119,6 +3448,7 @@
   "Q10: re-owns a running task to an outer scope `s` (an explicit scope, or
    the world's root with `(root-scope w)`), so it outlives its creator."
   [h s]
+  (ordinary-admission! :detach)
   (let [w (world-of h)]
     (gated w
            (let [k (row-of h)
@@ -3171,6 +3501,11 @@
     (s! c rw/W-OWNED nil)
     (s! c rw/W-HOLDER nil)
     (s! c rw/W-AFTER (alist))
+    (s! c rw/W-CLEANUP-FAILURES (sorted-map))
+    (s! c rw/W-CLEANUP-IDENTITY #?(:clj (Object.) :cljs (js-obj)))
+    (s! c rw/W-CLEANUP-WAITS {})
+    (s! c rw/W-CLEANUP-DORMANT
+        (seq (concat (vals (g w rw/W-CLEANUP-WAITS)) (g w rw/W-CLEANUP-DORMANT))))
     (s! c rw/W-UNBORN false)
     (s! c rw/W-PUB-WORLD nil)
     (s! c rw/W-WATCHES (lt/index))
@@ -3199,6 +3534,7 @@
   "D3, host form: a frozen fork of `w` between slices. Returns the child
    world; act on it through `in-world` handles."
   [w]
+  (ordinary-admission! :fork)
   (let [res (volatile! nil)]
     (gated w
            (when (active-run) (throw (ex-info "fork! inside a body: use the (fork) effect" {})))
@@ -3215,6 +3551,7 @@
    The parent continues with [:parent child-world]; in the child the run
    exists parked at the effect and resumes with [:child nil] (Q4)."
   [k ek]
+  (ordinary-admission! :fork)
   (if-let [r (valid-run)]
     (cond
       (comp? (rv (cw) (g r rw/R-OF)))
@@ -3285,6 +3622,7 @@
    called with the publication after the publishing commit (H3). `:default`
    matches every site without its own entry."
   [w table]
+  (ordinary-admission! :savepoint-handler)
   (s! w rw/W-SP-HANDLERS (merge (g w rw/W-SP-HANDLERS) table))
   w)
 
@@ -3312,6 +3650,7 @@
    and a publication is offered to it, holding a frozen basis of the world at
    this commit; without one the effect is the identity on `payload`."
   [site payload k ek]
+  (ordinary-admission! :savepoint)
   (if-let [r (valid-run)]
     (let [w (cw)
           handlers (g w rw/W-SP-HANDLERS)
@@ -3345,6 +3684,7 @@
 (defn resume!
   "S2: continues the publication's own world with `v`, at most once."
   [pub v]
+  (ordinary-admission! :resume)
   (let [w (:world pub)]
     (when (compare-and-set! (:state pub) :pending :resumed)
       (gated w
@@ -3374,6 +3714,7 @@
    run's copy is parked on its savepoint, which is the fork's pending
    activation. Any number of instances are independent."
   [pub]
+  (ordinary-admission! :instantiate)
   (let [b (:basis pub)
         c (fork-world* b)]
     (s! c rw/W-PENDING-ACT (:act pub))
@@ -3388,6 +3729,7 @@
   "S4: resumes an instantiated fork's pending activation with `v`. The fork
    is born here: the root scope of the publication's world owns it (F2)."
   [w v]
+  (ordinary-admission! :activate)
   (gated w
          (when-let [pw (g w rw/W-PUB-WORLD)]
            (s! w rw/W-PUB-WORLD nil)
@@ -3407,7 +3749,7 @@
              (s! w rw/W-UNBORN false)
         ;; inherited resources and savepoints: this item is the first turn's
         ;; work, so they are activated here, not at a later turn entry
-             (when (or (g w rw/W-DORMANT) (g w rw/W-SP-DORMANT)) (activate-dormant! w)))
+             (when (or (g w rw/W-DORMANT) (g w rw/W-SP-DORMANT) (g w rw/W-CLEANUP-DORMANT)) (activate-dormant! w)))
            (when aid
              (s! w rw/W-PENDING-ACT nil)
              (do
@@ -3415,6 +3757,10 @@
                  (commit! w [:activate aid [:opaque v]])
                  (refuse! w [:activate aid [:opaque v]]))))))
   w)
+
+(defn await-finalization [_] (throw (ex-info "await-finalization outside a body" {})))
+
+(defn finalizer-region [& _] (throw (ex-info "compiler-only finalizer boundary" {})))
 
 (defn offload [& _] (throw (ex-info "offload outside a body" {})))
 
@@ -3445,12 +3791,14 @@
    (S1, multi-shot) or [:await h]. Bodies compiled before the registration
    do not see the effect."
   [sym handler]
+  (ordinary-admission! :register-effect)
   (swap! effect-handlers assoc sym handler)
   #?(:clj (swap! extra-breakpoints assoc sym `bp-custom))
   sym)
 
 (defn custom-effect!
   [sym args site k ek]
+  (ordinary-admission! :custom-effect)
   (if-let [r (valid-run)]
     (let [h (or (get @effect-handlers sym)
                 (throw (ex-info "unregistered effect" {:spindel/invalid :effect :effect sym})))
@@ -3496,8 +3844,21 @@
        (fn [[ms]] `(sleep-effect! ~ms ~r ~e)))
      (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-consume [_ctx r e]
        (fn [[x]] `(consume-effect! (row-of ~x) ~r ~e)))
+     (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-finalization [_ctx r e]
+       (fn [[operation]] `(await-finalization-effect! ~operation ~r ~e)))
+     (defn bp-finalizer-region [ctx r e]
+       (let [[_ [_ body] [_ cleanup]] (:form ctx)
+             br (gensym "body-r") be (gensym "body-e")
+             fr (gensym "cleanup-r") fe (gensym "cleanup-e")]
+         (fn [_]
+           `(finalizer-region-effect!
+             (fn [~br ~be] ~(ioc/invert (assoc ctx :r br :e be) body))
+             (fn [~fr ~fe] ~(ioc/invert (assoc ctx :r fr :e fe) cleanup))
+             ~r ~e))))
      (def ^:private breakpoints
-       {'org.replikativ.spindel.v2.core/track `bp-track
+       {'org.replikativ.spindel.v2.core/await-finalization `bp-finalization
+        'org.replikativ.spindel.v2.core/finalizer-region `bp-finalizer-region
+        'org.replikativ.spindel.v2.core/track `bp-track
         'org.replikativ.spindel.v2.core/await `bp-await
         'org.replikativ.spindel.v2.core/await-all `bp-await-all
         'org.replikativ.spindel.v2.core/await-any `bp-await-any
@@ -3518,29 +3879,42 @@
                        (#{'org.replikativ.spindel.v2.core/spin 'org.replikativ.spindel.v2.core/task}
                         (symbol (str (.-ns ^clojure.lang.Var v)) (str (.-sym ^clojure.lang.Var v)))))))))
      (defn- has-finally?
-       "Whether a form contains a `try` with a `finally` outside closures."
+       "Lexical finally, including binding initializers; never opaque closures."
        [form]
-       (and (seq? form)
-            (or (and (= 'try (first form)) (some #(and (seq? %) (= 'finally (first %))) form))
-                (and (not (opaque-head? (first form))) (some has-finally? form)))))
+       (cond
+         (seq? form)
+         (and (not (opaque-head? (first form)))
+              (or (and (= 'try (first form)) (some #(and (seq? %) (= 'finally (first %))) form))
+                  (some has-finally? form)))
+         (coll? form) (some has-finally? form)
+         :else false))
      (def ^:private ^:dynamic *env* nil)
+     (def ^:private ^:dynamic *cleanup-form?* false)
      (defn- user-macro
-       "The macro var a form calls, unless it is a local, a special form, our
-        own body macro, or the target is ClojureScript."
+       "Use each target compiler's macro resolution. partial-cps retains binding
+        lowering; expanding it here would unbalance thread bindings on resume."
        [h]
-       (when (and (symbol? h) (not (contains? *env* h)) (not (special-symbol? h))
-                  (not (:ns *env*)))
-         (let [v (resolve h)]
-           (when (and (var? v) (:macro (meta v)) (not (opaque-head? h))
-                      (not (#{'org.replikativ.spindel.v2.core/with-scope}
-                            (symbol (str (.-ns ^clojure.lang.Var v)) (str (.-sym ^clojure.lang.Var v))))))
+       (when (and (symbol? h) (not (contains? *env* h))
+                  (not (contains? (:locals *env*) h)) (not (special-symbol? h)))
+         (let [v (if (:ns *env*)
+                   (when-let [m (ioc/resolve-macro-var-cljs *env* h)] (resolve (:name m)))
+                   (resolve h))
+               m (when (var? v) (meta v))
+               name (when (and (:ns m) (:name m))
+                      (symbol (str (:ns m)) (str (:name m))))]
+           (when (and (:macro m)
+                      (not (#{'clojure.core/binding 'clojure.core/with-redefs
+                              'cljs.core/binding 'cljs.core/with-redefs
+                              'org.replikativ.spindel.v2.core/spin
+                              'org.replikativ.spindel.v2.core/task} name)))
              v))))
      (defn- register-finally
        "Body contract (§7): each `try` with a `finally` registers its region
         with the run, so cancellation can unwind through it (T14). A user
-        macro whose expansion has one (`with-open`, `binding`, ...) is
-        expanded so its region registers too (JVM). Nested bodies and
-        closures are left alone (they register their own)."
+        macro whose expansion has one (`with-open`, `with-scope`, ...) is
+        expanded through the target compiler. binding stays on partial-cps's
+        balanced scope path. Nested bodies and closures register their own;
+        pure helper finally inside cleanup adds no engine obligation."
        [form]
        (cond
          (seq? form)
@@ -3551,17 +3925,15 @@
              (opaque-head? h) form
              (and expanded (has-finally? expanded)) (register-finally expanded)
              (= 'try h)
-             (let [clauses (map register-finally (rest form))
-                   [body cfs] (split-with (complement catch-or-finally?) clauses)]
-               (if (some #(= 'finally (first %)) cfs)
-                 (with-meta
-                   `(~'try (do (enter-finally!) ~@body)
-                           ~@(map (fn [c] (if (= 'finally (first c))
-                                            (list* 'finally `(exit-finally!) (rest c))
-                                            c))
-                                  cfs))
-                   (meta form))
-                 (with-meta (cons 'try clauses) (meta form))))
+             (let [[body cfs] (split-with (complement catch-or-finally?) (rest form))
+                   fin (when (= 'finally (ffirst (reverse cfs))) (last cfs))
+                   catches (if fin (butlast cfs) cfs)]
+               (if (and fin (not *cleanup-form?*))
+                 (let [body (register-finally (cons 'try (concat body catches)))
+                       cleanup (binding [*cleanup-form?* true]
+                                 (register-finally (cons 'do (rest fin))))]
+                   (with-meta `(finalizer-region '~body '~cleanup) (meta form)))
+                 (with-meta (cons 'try (map register-finally (rest form))) (meta form))))
              :else (with-meta (apply list (map register-finally form)) (meta form))))
          (vector? form) (with-meta (mapv register-finally form) (meta form))
          (map? form) (with-meta (into {} (map (fn [[k v]] [(register-finally k) (register-finally v)])) form) (meta form))
@@ -3596,8 +3968,7 @@
        [& body]
        (let [s (gensym "scope")]
          `(let [~s (open-scope!)]
-            (~'try (do (enter-finally!) ~@body)
-                   (~'finally (exit-finally!) (close-scope-fx! ~s))))))
+            (~'try ~@body (~'finally (close-scope-fx! ~s))))))
      (defmacro defeffect
        "R3: defines effect `name` in this namespace: `(defeffect choose [args
         ctx] op-form)`; see register-effect!. It registers at expansion too,

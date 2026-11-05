@@ -69,7 +69,7 @@
 (def ^:const W-INTERN 13)    ; verify mode: opaque value -> nat
 (def ^:const W-HOOK 14)      ; verify mode: (fn [w item]) after every commit
 (def ^:const W-START 15)     ; task runs whose first slice is pending
-(def ^:const W-CLEANUP 16)   ; [run ek]: cleanup slices of cancelled runs with finalizers
+(def ^:const W-CLEANUP 16)   ; tagged unwind/resume items, or [resource] acknowledgement
 (def ^:const W-INGRESS 17)   ; H1: MPSC queue of host items (fns)
 (def ^:const W-SCHEDULED 18) ; H2: AtomicBoolean, a drainer is scheduled
 (def ^:const W-EXEC 19)      ; the world's executor (drainer, offload)
@@ -88,7 +88,7 @@
 (def ^:const W-OWNED 32)       ; fork ownership: owner scope id -> [holders prune-threshold] (F2, E1)
 (def ^:const W-HOLDER 33)      ; this fork's holder in its owner's table (E1)
 (def ^:const W-UNBORN 34)      ; an instance before activate! (E4)
-(def ^:const W-AFTER 35)       ; child worlds to schedule after the gate is released (E3)
+(def ^:const W-AFTER 35)       ; child worlds or tagged cleanup actions, executed after the gate (E3)
 (def ^:const W-PUB-WORLD 36)   ; an unborn instance's publication world, its owner at activation
 (def ^:const W-STATE 37)       ; app world state: one persistent map, forked by value (M6 R1)
 (def ^:const W-ATOMS 38)       ; fork-safe atoms: atom id -> [weak wrapper, value], forked by value (M6 R6)
@@ -97,7 +97,11 @@
 (def ^:const W-SWEEP-GEN 41)  ; last completed family atom sweep
 (def ^:const W-SWEEP-PENDING 42) ; independent coalesced maintenance flag
 (def ^:const W-META-CLOSED 43) ; terminal metadata cleanup completed
-(def ^:const W-SIZE 44)
+(def ^:const W-CLEANUP-WAITS 44) ; persistent run-id -> run, through queued continuation consumption
+(def ^:const W-CLEANUP-DORMANT 45) ; lazy inherited waiter descriptors; no physical authority
+(def ^:const W-CLEANUP-FAILURES 46) ; ordered current unreported cleanup failures
+(def ^:const W-CLEANUP-IDENTITY 47) ; immutable world identity; never owner epoch or family-local ID
+(def ^:const W-SIZE 48)
 
 ;; Scope
 (def ^:const S-PARENT 2)
@@ -190,7 +194,15 @@
 (def ^:const R-ORD 14)       ; creation ordinals per site
 (def ^:const R-SROW 15)      ; the run scope row, once materialized
 (def ^:const R-SCOPES 16)    ; open explicit scopes of the run, innermost last
-(def ^:const R-SIZE 17)
+(def ^:const R-REGIONS 17)    ; immutable lexical region stack, outermost first
+(def ^:const R-FINALIZER 18)  ; active region + saved body outcome; survives cancellation
+(def ^:const R-CLEANUP-WAIT 19) ; sealed waiter, never an activation/dependency
+(def ^:const R-REGION-SEQ 20)
+(def ^:const R-WAIT-SEQ 21)
+(def ^:const R-UNWIND-OUTCOME 22) ; unpublished error/provenance during sealed cancellation
+(def ^:const R-CLEANUP-SEQ 23) ; lexical finalizer execution order, independent of callback order
+(def ^:const R-CLEANUP-TRANSFER 24) ; live-run world-local provenance keys already transferred
+(def ^:const R-SIZE 25)
 
 (def ^:const ACT-ACTIVE 0)
 (def ^:const ACT-PARKED 1)

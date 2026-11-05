@@ -66,6 +66,31 @@ jobs:
           name: Verify v2 ownership with real Node garbage collection
           command: node --expose-gc target/lifetime-gc/main.js
 
+
+  v2-cleanup:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci/
+      - run:
+          name: Compile v2 cleanup smoke tests
+          command: >-
+            clojure -J-Xmx1g -Sdeps '{:paths ["src" "test-cljs"]}' -M -m cljs.main
+            -co '{:target :nodejs :optimizations :simple :elide-asserts false :output-dir "target/cleanup-smoke/out" :output-to "target/cleanup-smoke/main.js"}'
+            -c org.replikativ.spindel.v2.smoke
+      - run:
+          name: Run v2 cleanup smoke tests
+          command: node target/cleanup-smoke/main.js
+      - run:
+          name: Compile v2 cleanup retention probes
+          command: >-
+            clojure -J-Xmx1g -Sdeps '{:paths ["src" "test-cljs"]}' -M -m cljs.main
+            -co '{:target :nodejs :optimizations :simple :elide-asserts false :output-dir "target/cleanup-gc/out" :output-to "target/cleanup-gc/main.js"}'
+            -c org.replikativ.spindel.v2.cleanup-gc
+      - run:
+          name: Verify cleanup retention with real Node garbage collection
+          command: node --expose-gc target/cleanup-gc/main.js
+
 workflows:
   build-test-and-deploy:
     jobs:
@@ -93,6 +118,10 @@ workflows:
           context: docker-deploy
           requires:
             - tools/build
+      - v2-cleanup:
+          context: docker-deploy
+          requires:
+            - tools/build
       - tools/deploy:
           context:
             - clojars-deploy
@@ -105,6 +134,7 @@ workflows:
             - tools/unittest
             - tools/cljstest
             - v2-lifetime
+            - v2-cleanup
       - tools/release:
           context:
             - github-token
