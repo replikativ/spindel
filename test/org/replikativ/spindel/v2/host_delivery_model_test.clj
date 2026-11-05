@@ -57,9 +57,7 @@
 
 (defn- callback-step [s]
   (keep identity
-        [(when (and (not (:gate? s)) (seq (:queue s)))
-           (assoc s :gate? true :context? true :batch (:queue s) :queue []))
-         (when (and (:gate? s) (seq (:batch s)) (not (:failed? s)))
+        [(when (and (:gate? s) (seq (:batch s)) (not (:failed? s)))
            (let [head (first (:batch s)) tail (vec (rest (:batch s)))
                  next (-> s (update :seen conj head) (assoc :batch tail))]
              (if (and (= head (:fail-at s)) (not (:thrown? s)))
@@ -76,7 +74,7 @@
   (doseq [fail-at [:a :b :c]]
     (let [states (reachable callback-step {:queue [:a :b :c] :batch [] :seen [] :fail-at fail-at
                                            :gate? false :context? false :failed? false
-                                           :thrown? false :handoff? false :scheduled? false})]
+                                           :thrown? false :handoff? false :scheduled? true})]
       (doseq [s states]
         (is (= (count (:seen s)) (count (distinct (:seen s)))))
         (is (= (:seen s) (subvec [:a :b :c :new] 0 (count (:seen s)))))
