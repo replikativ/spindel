@@ -4,9 +4,61 @@
             [org.replikativ.spindel.v2.combinators :as comb]
             [org.replikativ.spindel.incremental.interval :as iv]))
 
+(defn- cleanup-smoke! [done]
+  (let [w (v2/world) complete (atom nil) events (atom []) result (atom nil)]
+    (binding [v2/*world* w]
+      (let [t (task
+               (let [resource (v2/cleanup-resource (fn [cb] (reset! complete cb) nil))]
+                 (try
+                   (try
+                     (try :body
+                          (finally
+                            (swap! events conj :inner-enter)
+                            (v2/await-finalization (v2/cleanup-operation resource))
+                            (swap! events conj :inner-exit)))
+                     (catch :default _ (swap! events conj :resurrected)))
+                   (swap! events conj :suffix)
+                   (finally
+                     (swap! events conj :outer)
+                     (assert (= [:inner-enter :inner-exit :outer] @events))
+                     (assert (v2/cancelled? (first @result)))
+                     (reset! done true)))))]
+        (v2/value-async t (fn [v failed?] (reset! result [v failed?])))
+        (v2/cancel-task! t)
+        (assert (v2/cancelled? (first @result)))
+        (@complete :closed)
+        (@complete :duplicate)))))
+
+(defn- cleanup-fork-smoke! [done]
+  (let [w (v2/world) complete (atom nil) registrations (atom 0) inherited (atom [])]
+    (binding [v2/*world* w]
+      (let [t (task
+               (let [resource (v2/cleanup-resource
+                               (fn [cb] (swap! registrations inc) (reset! complete cb) nil))]
+                 (try :body
+                      (finally
+                        (try (v2/await-finalization (v2/cleanup-operation resource))
+                             (catch :default e
+                               (swap! inherited conj (:spindel/forked (ex-data e)))))))))
+            child (v2/fork! w)
+            child-result (atom nil)]
+        (v2/host-call! child (fn [] nil))
+        (v2/value-async (v2/in-world child t) #(reset! child-result [%1 %2]))
+        (assert (= [:body false] @child-result))
+        (assert (= [true] @inherited))
+        (v2/value-async t
+                        (fn [v failed?]
+                          (assert (= [:body false] [v failed?]))
+                          (assert (= 1 @registrations))
+                          (assert (= [true] @inherited))
+                          (reset! done true)))
+        (@complete :closed)))))
+
 (defn -main []
   (let [w (v2/world)
-        out (atom [])]
+        out (atom []) cleanup-done (atom false) fork-cleanup-done (atom false)]
+    (cleanup-smoke! cleanup-done)
+    (cleanup-fork-smoke! fork-cleanup-done)
     (binding [v2/*world* w]
       (let [a (v2/atom 0) seen (atom [])]
         (v2/host-call! w #(binding [v2/*world* nil]
@@ -67,6 +119,8 @@
          (fn []
            (let [expected [[:b 11] [:b 21] [:t 1111 false]]]
              (println "observed" @out)
+             (assert @cleanup-done "shielded cleanup smoke did not finish")
+             (assert @fork-cleanup-done "inherited cleanup smoke did not finish")
              (if (= expected @out)
                (println "SMOKE OK")
                (do (println "SMOKE FAIL, expected" expected) (js/process.exit 1)))))

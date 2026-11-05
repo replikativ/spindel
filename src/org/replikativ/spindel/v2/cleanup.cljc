@@ -76,8 +76,8 @@
             (if (compare-and-set! state old next-state)
               (do (when register (register! state dispatch register))
                   (fn [] (swap! state (fn [s]
-                                      (if (= :settled (:phase s)) s
-                                          (update s :subscribers dissoc id)))) nil))
+                                        (if (= :settled (:phase s)) s
+                                            (update s :subscribers dissoc id)))) nil))
               (recur))))))))
 
 (defn status

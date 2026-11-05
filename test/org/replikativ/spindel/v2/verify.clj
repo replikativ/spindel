@@ -132,11 +132,53 @@
              :when (not (.containsKey ^java.util.Map reg (f row rw/ID)))]
          {:type (t row) :id (f row rw/ID) :removed true})))))
 
+(defn cleanup-violations
+  "Z#66 checks independent of hotness/reachability and the older formal oracle.
+   A waiter must retain exactly its boundary, with no ordinary activation."
+  [w]
+  (binding [*reg* (f w rw/W-REG)]
+    (vec
+     (mapcat
+      (fn [r]
+        (when (== rw/T-RUN (t r))
+          (let [q (f r rw/R-CLEANUP-WAIT)
+                boundary (f r rw/R-FINALIZER)
+                regions (f r rw/R-REGIONS)
+                n (long (or (f r rw/R-FINS) 0))
+                kept (get (f w rw/W-CLEANUP-WAITS) (f r rw/ID))
+                dormant? (some #(= (f r rw/ID) (f % rw/ID)) (f w rw/W-CLEANUP-DORMANT))]
+            (cond-> []
+              (not= n (count regions))
+              (conj {:id (f r rw/ID) :cleanup :region-count})
+              (and boundary (not= (:id boundary) (:id (peek regions))))
+              (conj {:id (f r rw/ID) :cleanup :wrong-boundary})
+              (and q (or (nil? boundary) (some? (f r rw/R-ACTV))
+                         (not= (:region q) (:id boundary))
+                         (and (nil? kept) (not dormant?))))
+              (conj {:id (f r rw/ID) :cleanup :unretained-waiter})
+              (and kept (nil? q))
+              (conj {:id (f r rw/ID) :cleanup :obsolete-waiter})))))
+      (rows w)))))
+
+(defn cleanup-projection
+  "Explicit projection for the new finite cleanup contract. This is additional
+   evidence, not a claim that the external pre-Z#66 oracle understands it."
+  [w]
+  {:runs (into (sorted-map)
+               (for [r (rows w) :when (== rw/T-RUN (t r))]
+                 [(f r rw/ID)
+                  {:regions (mapv :id (f r rw/R-REGIONS))
+                   :active (:id (f r rw/R-FINALIZER))
+                   :wait (when-let [q (f r rw/R-CLEANUP-WAIT)]
+                           (select-keys q [:generation :sequence :region :registered? :inherited?]))
+                   :unwinding? (= 1 (f r rw/R-MODE))}]))
+   :unreported (count (f w rw/W-CLEANUP-FAILURES))})
+
 (defn checking-hook
   "A world hook that records Rule R divergences per commit into `acc`."
   [acc]
   (fn [w item]
-    (let [v (violations w)]
+    (let [v (into (violations w) (cleanup-violations w))]
       (when (seq v) (swap! acc conj {:item item :violations v})))))
 
 ;; ---------------------------------------------------------------------------
