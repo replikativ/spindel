@@ -25,17 +25,27 @@
   (Operation. origin {:kind :resource :origin (.-origin r) :owner (.-owner r)
                       :ancestors (.-ancestors r) :identity (.-identity r)} (.-state r) (.-dispatch r)))
 
+(defn observation-state
+  "An externally driven observation. No registration callback can manufacture
+   settlement: only its owning world publishes a milestone."
+  []
+  (atom {:phase :pending :subscribers {} :next 0}))
+
+(defn observation [origin target state dispatch]
+  (Operation. origin target state dispatch))
+
 (defn- safely! [f]
   (when f
     (try (f)
          (catch #?(:clj Throwable :cljs :default) t
            (log/error :engine/cleanup-callback-failed {:error t})))))
 
-(defn- settle! [state dispatch outcome]
+(defn settle-observation! [state dispatch outcome]
   (loop []
     (let [old @state]
       (when-not (= :settled (:phase old))
-        (if (compare-and-set! state old {:phase :settled :outcome outcome})
+        (if (compare-and-set! state old (cond-> {:phase :settled :outcome outcome}
+                                    (:diagnostics old) (assoc :diagnostics (:diagnostics old))))
           (dispatch
            #(do (safely! (:detach old))
                 (doseq [[_ cb] (:subscribers old)]
@@ -46,7 +56,7 @@
 (defn- register! [state dispatch register]
   (let [complete (fn complete
                    ([value] (complete value false))
-                   ([value failed?] (settle! state dispatch [value (boolean failed?)])))
+                   ([value failed?] (settle-observation! state dispatch [value (boolean failed?)])))
         detach (try (register complete)
                     (catch #?(:clj Throwable :cljs :default) t
                       (complete t true)

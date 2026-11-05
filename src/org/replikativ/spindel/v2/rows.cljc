@@ -101,7 +101,9 @@
 (def ^:const W-CLEANUP-DORMANT 45) ; lazy inherited waiter descriptors; no physical authority
 (def ^:const W-CLEANUP-FAILURES 46) ; ordered current unreported cleanup failures
 (def ^:const W-CLEANUP-IDENTITY 47) ; immutable world identity; never owner epoch or family-local ID
-(def ^:const W-SIZE 48)
+(def ^:const W-CLOSE 48) ; production staged-close accounting; never copied controls
+(def ^:const W-ANCESTRY 49) ; immutable ownership witnesses, no worlds/scopes
+(def ^:const W-SIZE 50)
 
 ;; Scope
 (def ^:const S-PARENT 2)
