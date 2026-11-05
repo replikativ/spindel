@@ -82,6 +82,25 @@
      :cljs (js/setTimeout f 0))
   nil)
 
+#?(:clj
+   (def ^:private metadata-executor
+     (delay (java.util.concurrent.ScheduledThreadPoolExecutor.
+             1 (reify java.util.concurrent.ThreadFactory
+                 (newThread [_ r]
+                   (doto (Thread. ^Runnable r "spindel-v2-metadata") (.setDaemon true))))))))
+
+(defn metadata-later!
+  "Dedicated asynchronous metadata dispatch. Never uses an inline/user
+   executor; retries never block a world gate or drain engine work."
+  ([f] (metadata-later! f 0))
+  ([f delay-ms]
+   #?(:clj (.schedule ^java.util.concurrent.ScheduledExecutorService @metadata-executor
+                      ^Runnable f (long delay-ms) java.util.concurrent.TimeUnit/MILLISECONDS)
+      :cljs (js/setTimeout f delay-ms))
+   nil))
+
+(defn fence! [x] #?(:clj (java.lang.ref.Reference/reachabilityFence x) :cljs nil))
+
 ;; ---------------------------------------------------------------------------
 ;; Weak handles (§1): a weak reference and a collection callback
 
