@@ -48,6 +48,7 @@
          @ygit  ; => git system on the forked overlay branch (automatic!)
          (d/transact! @@ydb [{:foo/bar 1}]))
        (ygg/merge-fork! fork))                       ; merge each overlay down"
+  (:refer-clojure :exclude [await])
   (:require [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.state-backend :as backend]
             [org.replikativ.spindel.engine.protocols :as rtp]
