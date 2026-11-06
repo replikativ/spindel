@@ -130,6 +130,30 @@ jobs:
       - run:
           name: Verify unoptimized host-fork retention with real Node garbage collection
           command: node --expose-gc target/host-fork-gc-none/main.js
+      - run:
+          name: Compile v2 ordinary host delivery smoke tests
+          command: |
+            rm -rf target/host-delivery-smoke
+            clojure -J-Xmx1g -Sdeps '{:paths ["src" "test-cljs"]}' -M -m cljs.main -co '{:target :nodejs :optimizations :simple :elide-asserts false :output-dir "target/host-delivery-smoke/out" :output-to "target/host-delivery-smoke/main.js"}' -c org.replikativ.spindel.v2.host-delivery-smoke
+      - run:
+          name: Run v2 ordinary host delivery smoke tests
+          command: node target/host-delivery-smoke/main.js
+      - run:
+          name: Compile v2 ordinary host delivery retention probes
+          command: |
+            rm -rf target/host-delivery-gc
+            clojure -J-Xmx1g -Sdeps '{:paths ["src" "test-cljs"]}' -M -m cljs.main -co '{:target :nodejs :optimizations :simple :elide-asserts false :output-dir "target/host-delivery-gc/out" :output-to "target/host-delivery-gc/main.js"}' -c org.replikativ.spindel.v2.host-delivery-gc
+      - run:
+          name: Verify ordinary host delivery retention with real Node garbage collection
+          command: node --expose-gc target/host-delivery-gc/main.js
+      - run:
+          name: Compile unoptimized v2 ordinary host delivery retention probes
+          command: |
+            rm -rf target/host-delivery-gc-none
+            clojure -J-Xmx1g -Sdeps '{:paths ["src" "test-cljs"]}' -M -m cljs.main -co '{:target :nodejs :optimizations :none :elide-asserts false :output-dir "target/host-delivery-gc-none/out" :output-to "target/host-delivery-gc-none/main.js"}' -c org.replikativ.spindel.v2.host-delivery-gc
+      - run:
+          name: Verify unoptimized ordinary host delivery retention with real Node garbage collection
+          command: node --expose-gc target/host-delivery-gc-none/main.js
 
 workflows:
   build-test-and-deploy:
