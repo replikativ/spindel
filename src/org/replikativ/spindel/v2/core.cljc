@@ -2234,14 +2234,25 @@
       :else false)))
 
 (defn- run-callbacks!
-  "Host callbacks run between items, on the processing thread (H3)."
+  "Host callbacks run between items, on the processing thread (H3). A failed
+   invocation is consumed; its untouched suffix remains owned by the world."
   [w]
   (let [cbs (g w rw/W-CALLBACKS)]
     (when (pos? (acount cbs))
-      (let [batch (acopy cbs)]
+      (let [batch (acopy cbs) n (acount batch)]
         (aclear! cbs)
-        (dotimes [i (acount batch)]
-          (let [[cb [v err?]] (rv w (anth batch i))] (cb v err?)))
+        (dotimes [i n]
+          (let [[cb [v err?]] (rv w (anth batch i))]
+            (aput! batch i nil)
+            (try (cb v err?)
+                 (catch #?(:clj Throwable :cljs :default) error
+                   (let [newer (acopy cbs)]
+                     (aclear! cbs)
+                     (dotimes [j (- n (inc i))]
+                       (aadd! cbs (anth batch (+ (inc i) j))))
+                     (dotimes [j (acount newer)] (aadd! cbs (anth newer j)))
+                     (aclear! batch))
+                   (throw error)))))
         true))))
 
 (defn- ingress [w] (g w rw/W-INGRESS))
@@ -2296,16 +2307,31 @@
           (catch #?(:clj Throwable :cljs :default) t
             (log/error :engine/cleanup-action-failed {:error t})))))))
 
+(defn- handoff-after-turn!
+  "After unlock/context restoration, preserve a failed turn over a distinct
+   handoff failure. A lone executor/next-turn error still propagates."
+  [w value failed?]
+  (try (handoff! w)
+       (catch #?(:clj Throwable :cljs :default) error
+         (if failed?
+           (when-not (identical? value error)
+             (log/error :engine/host-handoff-failed {:error error}))
+           (throw error)))))
+
 (defn- process!
-  "H2: try the gate; the winner runs a bounded turn, then hands off."
+  "H2: try the gate; both normal and exceptional turns hand off after unlock."
   [w]
   (let [lk (g w rw/W-LOCK)]
-    (when (hs/try-lock! lk)
-      (let [prev (enter-world! w)]
-        (try (run-turn! w)
-             (finally (let [cs (take-after! w)]
-                        (hs/unlock! lk) (leave-world! prev) (run-after! cs))))))
-    (handoff! w)))
+    (if (hs/try-lock! lk)
+      (let [prev (enter-world! w)
+            [value failed?]
+            (try [(run-turn! w) false]
+                 (catch #?(:clj Throwable :cljs :default) error [error true])
+                 (finally (let [cs (take-after! w)]
+                            (hs/unlock! lk) (leave-world! prev) (run-after! cs))))]
+        (handoff-after-turn! w value failed?)
+        (when failed? (throw value)))
+      (handoff! w))))
 
 (defn- work-pending? [w]
   (or (not (hs/mpsc-empty? (ingress w)))
@@ -2331,7 +2357,7 @@
       check folds away for internal items."
      [w f admit?]
      (let [w' (gensym "w") f' (gensym "f") lk (gensym "lk") prev (gensym "prev")
-           v (gensym "v") l (gensym "l") cs (gensym "cs")]
+           v (gensym "v") failed? (gensym "failed") cs (gensym "cs")]
        `(let [~w' ~w ~f' ~f ~lk (g ~w' rw/W-LOCK)]
           (cond
             ~@(cond
@@ -2344,23 +2370,22 @@
                  `(throw (released-ex))])
             (hs/held? ~lk) (if (identical? ~w' (cw))
                              (~f')
-                             (let [~prev (enter-world! ~w')] (try (~f') (finally (leave-world! ~prev)))))
-            ;; Fast path: nothing queued and the gate is free, so running the
-            ;; item now keeps FIFO order without an ingress node.
+                             (let [~prev (enter-world! ~w')]
+                               (try (~f') (finally (leave-world! ~prev)))))
+            ;; Fast path preserves FIFO without an ingress node.
             (and (g ~w' rw/W-INLINE) (hs/mpsc-empty? (ingress ~w')) (hs/try-lock! ~lk))
             (let [~prev (enter-world! ~w')
-                  ~v (try (s! ~w' rw/W-DRAINING true)
-                          (let [~v (try (~f') (finally (s! ~w' rw/W-DRAINING false)))]
-                            (run-turn! ~w')
-                            ~v)
-                          (finally
-                            (let [~l (g ~w' rw/W-AFTER)]
-                              (if (zero? (acount ~l))
-                                (do (hs/unlock! ~lk) (leave-world! ~prev))
-                                (let [~cs (take-after! ~w')]
-                                  (hs/unlock! ~lk) (leave-world! ~prev) (run-after! ~cs))))))]
-              (handoff! ~w')
-              ~v)
+                  [~v ~failed?]
+                  (try [(do (s! ~w' rw/W-DRAINING true)
+                            (let [v# (try (~f') (finally (s! ~w' rw/W-DRAINING false)))]
+                              (run-turn! ~w')
+                              v#)) false]
+                       (catch ~(if (:ns &env) :default `Throwable) error# [error# true])
+                       (finally
+                         (let [~cs (take-after! ~w')]
+                           (hs/unlock! ~lk) (leave-world! ~prev) (run-after! ~cs))))]
+              (handoff-after-turn! ~w' ~v ~failed?)
+              (if ~failed? (throw ~v) ~v))
             :else
             (do (hs/mpsc-add! (ingress ~w') ~f')
                 (if (g ~w' rw/W-INLINE) (process! ~w') (handoff! ~w'))
@@ -2844,6 +2869,29 @@
   []
   (when-let [c (cw)] (hs/held? (g c rw/W-LOCK))))
 
+#?(:clj
+   (defn- await-host-result [entry result interrupted?]
+     (loop [interrupted? interrupted?]
+       (let [[outcome wait-interrupted?]
+             (try [@result false] (catch InterruptedException error [error true]))]
+         (if wait-interrupted?
+           (do
+             (cancel-host-entry! entry)
+             (if (= :canceled (:phase @(.-state ^HostIngress entry)))
+               (throw outcome)
+               (recur true)))
+           [outcome interrupted?])))))
+
+(defn- host-result-action [f result]
+  (fn []
+    (let [outcome (try [(f) false]
+                       (catch #?(:clj Throwable :cljs :default) error [error true]))]
+      #?(:clj (deliver result outcome) :cljs (vreset! result outcome)))))
+
+(defn- host-result-rejection [result]
+  (fn [error]
+    #?(:clj (deliver result [error true]) :cljs (vreset! result [error true]))))
+
 (defn host-call!
   "R5: runs `(f)` as a host item of `w` and returns its value. Inside `w`
    (its slice, item or callback) it runs at once. Elsewhere the JVM caller
@@ -2857,17 +2905,29 @@
     (throw (ex-info "host-call! while processing another world (B7): use send-world!"
                     {:spindel/invalid :host-call}))
     :else
-    #?(:clj (let [p (promise)]
-              (host! w #(deliver p (try [(f) nil] (catch Throwable t [nil t])))
-                     (fn [error] (deliver p [nil error])) nil)
-              (let [[v t] @p] (if t (throw t) v)))
-       :cljs (let [box (volatile! ::none) control (host-control)]
-               (host! w #(vreset! box (try [(f) nil] (catch :default t [nil t])))
-                      (fn [error] (vreset! box [nil error])) control)
-               (if (= ::none @box)
-                 (do (cancel-host-entry! control)
-                     (throw (ex-info "host-call!: the world did not process the item synchronously" {})))
-                 (let [[v t] @box] (if t (throw t) v)))))))
+    (let [result #?(:clj (promise) :cljs (volatile! nil))
+          entry (host-control)
+          [turn-error turn-failed?]
+          (try (host! w (host-result-action f result) (host-result-rejection result) entry)
+               [nil false]
+               (catch #?(:clj Throwable :cljs :default) error [error true]))]
+      (when turn-failed?
+        (cancel-host-entry! entry)
+        (when (= :canceled (:phase @(.-state ^HostIngress entry))) (throw turn-error)))
+      #?(:cljs
+         (when-not @result
+           (cancel-host-entry! entry)
+           ;; Claimed actions and after-gate rejection complete synchronously
+           ;; before host! unwinds on Node. Only unclaimed work can remain.
+           (assert (= :canceled (:phase @(.-state ^HostIngress entry))))
+           (throw (ex-info "host-call!: the world did not process the item synchronously" {}))))
+      (let [[outcome interrupted?]
+            #?(:clj (await-host-result entry result (and turn-failed? (instance? InterruptedException turn-error)))
+               :cljs [@result false])]
+        (try
+          (when turn-failed? (log/error :engine/host-call-turn-failed {:error turn-error}))
+          (let [[value failed?] outcome] (if failed? (throw value) value))
+          (finally #?(:clj (when interrupted? (.interrupt (Thread/currentThread))) :cljs nil)))))))
 
 (defn call-in!
   "Tooling and tests: host-call!."
@@ -3588,19 +3648,6 @@
                          (catch #?(:clj Throwable :cljs :default) error [error true]))]
         #?(:clj (deliver result outcome) :cljs (vreset! result outcome))))))
 
-#?(:clj
-   (defn- await-internal-result [entry result interrupted?]
-     (loop [interrupted? interrupted?]
-       (let [[outcome wait-interrupted?]
-             (try [@result false] (catch InterruptedException error [error true]))]
-         (if wait-interrupted?
-           (do
-             (cancel-host-entry! entry)
-             (if (= :canceled (:phase @(.-state ^HostIngress entry)))
-               (throw outcome)
-               (recur true)))
-           [outcome interrupted?])))))
-
 (defn- internal-call! [w f]
   (cond
     (and (identical? w (cw)) (holding-gate?)) (f)
@@ -3624,7 +3671,7 @@
       ;; A JVM executor may have claimed before cancellation and not yet
       ;; published. This wait is outside all gates. Nil success is a real pair.
       (let [[outcome interrupted?]
-            #?(:clj (await-internal-result entry result (and turn-failed? (instance? InterruptedException turn-error)))
+            #?(:clj (await-host-result entry result (and turn-failed? (instance? InterruptedException turn-error)))
                :cljs [@result false])]
         (try
           (when turn-failed? (log/error :engine/host-control-turn-failed {:error turn-error}))

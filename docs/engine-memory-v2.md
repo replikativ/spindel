@@ -1224,8 +1224,8 @@ gates. Completed success (including nil) or own exception takes priority over a
 distinct later turn error, which is logged once through the stable engine event.
 No fork-specific result flag, capability rollback or retained runtime error history
 is added. A canceled queue entry retains only its inert phase/result transport,
-never the allocation closure. The separate legacy host-call! and generic callback
-progress limitations are not silently repaired by this lifetime rule.
+never the allocation closure. Ordinary host-call! now applies the same outcome
+lifetime through ordinary admission, as specified below.
 
 A JVM interrupted promise wait uses that same claim/cancel cell: cancel a pending
 runnable and propagate interruption, or retain claim-winning result ownership and
@@ -1236,3 +1236,23 @@ restore interrupt status in the final delivery/finally path, including own-error
 delivery. Only the promise wait catches InterruptedException; f's stored exception
 is not reclassified as cancellation. Already-published outcomes remain owned when
 the caller's interrupt bit is set before awaiting them.
+
+### Ordinary result and callback suffix ownership
+
+Ordinary host-call! uses one clearable HostIngress cell and one boolean-tagged
+outcome through host!/S3/S4. Cancellation clears both action and rejection
+closures before later replay. A claimed rejection owns its after-gate completion;
+:rejected cannot be erased to :canceled while that completion is pending. JVM
+wait interruption retains claimed/rejected ownership and restores status only
+after scoped displaced-error reporting and final outcome delivery. Held inert
+entries must not retain the submitted payload. No durable result/error history
+is added.
+
+A callback snapshot owns each invocation until it is consumed. On a throw, the
+current invocation is consumed and the uninvoked suffix returns FIFO to the
+world before newly appended callbacks; the local failed batch is not retained
+as history or retried. Process and inline exits unlock and restore current
+context before child outbox and parent handoff, including exceptional exits.
+Distinct secondary handoff failure is reported once while preserving the
+original error. Executor refusal remains observable; no available-executor
+progress claim is made for a permanently refused/scheduled world.
