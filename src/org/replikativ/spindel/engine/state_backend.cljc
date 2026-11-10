@@ -903,12 +903,16 @@
   view and, for a frozen fork, its fork-time view of the parent. A world's
   descendants keep its context for lineage (`:parent-ctx`), so without this a
   long line of forks — a particle filter resampling for hours — holds every
-  ancestor's state. Only for a world nobody reads any more: released, and
-  without a following fork (those read through this backend). Reads of a
-  retired world find nothing."
+  ancestor's state. Only for a world nobody reads any more: released,
+  quiescent (no drain, task or queued event), and without a following fork
+  (those read through this backend). Reads of a retired world find nothing
+  but an empty event queue."
   [backend]
   (when (instance? OverlayBackend backend)
-    (reset! (:overlay-atom backend) {})
+    ;; an empty event queue stays: an event that still reaches the world
+    ;; (a late callback) is dequeued and fails once, where a missing queue
+    ;; would turn into a list that no drain can pop
+    (reset! (:overlay-atom backend) {:engine/pending []})
     (some-> (:view-cache backend) (reset! nil))
     (let [parent (:parent-backend backend)]
       (when (instance? FrozenViewBackend parent)

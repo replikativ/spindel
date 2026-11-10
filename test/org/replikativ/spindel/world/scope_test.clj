@@ -3,6 +3,7 @@
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.protocols :as rtp]
+            [org.replikativ.spindel.engine.quiescence :as quiescence]
             [org.replikativ.spindel.engine.state-backend :as backend]
             [org.replikativ.spindel.world.scope :as scope]
             [org.replikativ.spindel.yggdrasil :as ygg]))
@@ -381,7 +382,7 @@
 
 (defn- retired? [ctx]
   (let [b (:backend ctx)]
-    (and (empty? @(:overlay-atom b))
+    (and (= {:engine/pending []} @(:overlay-atom b))
          (nil? (backend/backend-deref (:parent-backend b))))))
 
 (deftest a-released-world-gives-back-its-state
@@ -407,6 +408,33 @@
         (is (= depth (count (rtp/get-state live [:payload])))
             "the live world still reads what its ancestors wrote")
         (is (not (retired? live))))
+      (scope/end-activity! world-scope session)
+      (await-cps (scope/discard-when-quiescent! world-scope))
+      (finally
+        (context/stop-context! root)))))
+
+(deftest a-world-released-while-it-drains-is-retired-once-quiescent
+  ;; A world released from its own terminal handler is still draining: what
+  ;; the drain enqueues after the release must find its queue, and the world
+  ;; gives its state back only once the drain is through.
+  (let [root (context/create-execution-context)
+        world-scope (scope/create {:purpose :search :fork-opts {:systems :none}})
+        session (scope/begin-activity! world-scope :session)
+        world (:child-ctx (binding [ec/*execution-context* root] (fork! world-scope root)))]
+    (try
+      (rtp/swap-state! world [:payload] (constantly :mine))
+      (quiescence/begin! world)                 ; its drain is running
+      (await-cps (scope/release! world-scope world))
+      (is (not (retired? world)) "not while it drains")
+      (is (= :mine (rtp/get-state world [:payload])))
+      (rtp/swap-state! world [:engine/pending] #(conj % :late-event))
+      (is (vector? (rtp/get-state world [:engine/pending])) "the queue is still a queue")
+      (rtp/swap-state! world [:engine/pending] (constantly []))
+      (quiescence/end! world)                   ; the drain is through
+      (is (retired? world) "retired once quiescent")
+      (rtp/swap-state! world [:engine/pending] #(conj % :later-event))
+      (is (= [:later-event] (rtp/get-state world [:engine/pending]))
+          "a retired world keeps a queue an event can still be popped from")
       (scope/end-activity! world-scope session)
       (await-cps (scope/discard-when-quiescent! world-scope))
       (finally
