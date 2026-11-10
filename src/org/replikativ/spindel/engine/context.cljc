@@ -697,8 +697,9 @@
         ;; overridden by `forked-nodes` above, so their handles are never copied
         ;; as writable aliases into the child view.
         parent-view-backend
+        ;; (a view `backend/retire!` can drop once the child is released)
         (if (= :frozen mode)
-          (backend/create-immutable-backend
+          (backend/create-frozen-view
            (apply dissoc (backend/backend-deref (:backend parent-ctx))
                   backend/non-inherited-paths)
            {:source-fork-id (:fork-id parent-ctx)

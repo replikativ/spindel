@@ -452,11 +452,11 @@
         (add! w "book" (draft :w-1 1 :x))
         (is (= ::ygg/stamp-failed (thrown-type #(ygg/merge-fork! w opts))))
         (let [frozen-base (atom nil)
-              create-immutable backend/create-immutable-backend
-              child (with-redefs [backend/create-immutable-backend
+              create-view backend/create-frozen-view
+              child (with-redefs [backend/create-frozen-view
                                   (fn [state metadata]
                                     (reset! frozen-base state)
-                                    (create-immutable state metadata))]
+                                    (create-view state metadata))]
                       (ctx/fork-context parent :mode mode))
               snapshot (ctx/snapshot-context parent :clean-in-flight? false)]
           (when (= mode :frozen)
