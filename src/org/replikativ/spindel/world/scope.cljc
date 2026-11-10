@@ -11,6 +11,7 @@
   (:require [is.simm.partial-cps.async :as pcps-async]
             [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.engine.state-backend :as backend]
+            [org.replikativ.spindel.engine.quiescence :as quiescence]
             [org.replikativ.spindel.engine.executor :as executor]
             [org.replikativ.spindel.yggdrasil :as ygg]
             [org.replikativ.spindel.yggdrasil.construction :as construction]
@@ -765,9 +766,15 @@
                                      (add-handle handle))))
                     ;; the world is gone and its descriptor taken: give back
                     ;; its state, which its descendants would otherwise hold
-                    ;; through their lineage
-                    (when (and released? (not (ec/following-forks? (:child-ctx handle))))
-                      (backend/retire! (:backend (:child-ctx handle))))
+                    ;; through their lineage. Once it is quiescent: a world
+                    ;; released from its own terminal handler is still
+                    ;; draining, and what that drain enqueues must find its
+                    ;; queue.
+                    (when released?
+                      (let [ctx (:child-ctx handle)]
+                        (quiescence/on-quiescent
+                         ctx #(when-not (ec/following-forks? ctx)
+                                (backend/retire! (:backend ctx))))))
                     (try (callback value)
                          (finally (maybe-complete-quiescence! scope))))]
       (if-let [error (:error result)]
