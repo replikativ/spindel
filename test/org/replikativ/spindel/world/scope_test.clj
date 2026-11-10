@@ -2,6 +2,8 @@
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.spindel.engine.context :as context]
             [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.protocols :as rtp]
+            [org.replikativ.spindel.engine.state-backend :as backend]
             [org.replikativ.spindel.world.scope :as scope]
             [org.replikativ.spindel.yggdrasil :as ygg]))
 
@@ -374,6 +376,55 @@
       (await-cps (scope/discard-when-quiescent! world-scope))
       (is (= :discarded (:status @world-scope)))
       (is (= 2 (count (scope/descriptors world-scope))))
+      (finally
+        (context/stop-context! root)))))
+
+(defn- retired? [ctx]
+  (let [b (:backend ctx)]
+    (and (empty? @(:overlay-atom b))
+         (nil? (backend/backend-deref (:parent-backend b))))))
+
+(deftest a-released-world-gives-back-its-state
+  ;; A line of forks, each released once its child exists — a particle
+  ;; resampled over and over. Each child keeps its parent for lineage; the
+  ;; released ancestors must not keep their state with it.
+  (let [root (context/create-execution-context)
+        world-scope (scope/create {:purpose :search :fork-opts {:systems :none}})
+        session (scope/begin-activity! world-scope :session)
+        depth 50
+        live (loop [i 0 parent root]
+               (if (= i depth)
+                 parent
+                 (let [child (:child-ctx (binding [ec/*execution-context* root] (fork! world-scope parent)))]
+                   (rtp/swap-state! child [:payload] (fn [v] (conj (or v []) (vec (range 1000)))))
+                   (when-not (identical? parent root)
+                     (await-cps (scope/release! world-scope parent)))
+                   (recur (inc i) child))))]
+    (try
+      (let [ancestors (butlast (take-while some? (iterate :parent-ctx (:parent-ctx live))))]
+        (is (= (dec depth) (count ancestors)) "lineage is kept")
+        (is (every? retired? ancestors) "every released ancestor gave its state back")
+        (is (= depth (count (rtp/get-state live [:payload])))
+            "the live world still reads what its ancestors wrote")
+        (is (not (retired? live))))
+      (scope/end-activity! world-scope session)
+      (await-cps (scope/discard-when-quiescent! world-scope))
+      (finally
+        (context/stop-context! root)))))
+
+(deftest a-world-a-following-fork-reads-is-not-retired
+  (let [root (context/create-execution-context)
+        world-scope (scope/create {:purpose :search :fork-opts {:systems :none}})
+        session (scope/begin-activity! world-scope :session)
+        world (:child-ctx (binding [ec/*execution-context* root] (fork! world-scope root)))
+        _ (rtp/swap-state! world [:payload] (constantly :mine))
+        follower (context/fork-context world)]
+    (try
+      (await-cps (scope/release! world-scope world))
+      (is (not (retired? world)))
+      (is (= :mine (rtp/get-state follower [:payload])) "the follower still reads through it")
+      (scope/end-activity! world-scope session)
+      (await-cps (scope/discard-when-quiescent! world-scope))
       (finally
         (context/stop-context! root)))))
 

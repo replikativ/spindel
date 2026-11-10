@@ -10,6 +10,7 @@
    audit projection retained after successful cleanup."
   (:require [is.simm.partial-cps.async :as pcps-async]
             [org.replikativ.spindel.engine.core :as ec]
+            [org.replikativ.spindel.engine.state-backend :as backend]
             [org.replikativ.spindel.engine.executor :as executor]
             [org.replikativ.spindel.yggdrasil :as ygg]
             [org.replikativ.spindel.yggdrasil.construction :as construction]
@@ -762,6 +763,11 @@
                                      ;; still owned: the scope's discard retries it
                                      (not released?)
                                      (add-handle handle))))
+                    ;; the world is gone and its descriptor taken: give back
+                    ;; its state, which its descendants would otherwise hold
+                    ;; through their lineage
+                    (when (and released? (not (ec/following-forks? (:child-ctx handle))))
+                      (backend/retire! (:backend (:child-ctx handle))))
                     (try (callback value)
                          (finally (maybe-complete-quiescence! scope))))]
       (if-let [error (:error result)]

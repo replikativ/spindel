@@ -867,6 +867,54 @@
   (backend-type [_]
     :immutable))
 
+;; A frozen fork's fork-time view of its parent: immutable to every reader, but
+;; owned by that one fork, so it can be dropped when the fork is released
+;; (`retire!`). The cell holds the state map; nil once retired.
+(defrecord FrozenViewBackend [cell metadata]
+  PStateBackend
+
+  (backend-read [_ path]
+    (get-in @cell path))
+
+  (backend-write! [_ path _f]
+    (throw (ex-info "Cannot write to immutable backend - use thaw-snapshot first"
+                    {:backend-type :immutable
+                     :path path})))
+
+  (backend-write-2! [_ path-a path-b _f2]
+    (throw (ex-info "Cannot write to immutable backend - use thaw-snapshot first"
+                    {:backend-type :immutable
+                     :path [path-a path-b]})))
+
+  (backend-deref [_]
+    @cell)
+
+  (backend-type [_]
+    :immutable))
+
+(defn create-frozen-view
+  "The immutable fork-time view of a frozen fork's parent, `state-map`. Reads
+  as an ImmutableBackend; `retire!` drops it."
+  [state-map metadata]
+  (->FrozenViewBackend (volatile! state-map) metadata))
+
+(defn retire!
+  "Drop what a released world's backend holds: its own writes, its cached
+  view and, for a frozen fork, its fork-time view of the parent. A world's
+  descendants keep its context for lineage (`:parent-ctx`), so without this a
+  long line of forks — a particle filter resampling for hours — holds every
+  ancestor's state. Only for a world nobody reads any more: released, and
+  without a following fork (those read through this backend). Reads of a
+  retired world find nothing."
+  [backend]
+  (when (instance? OverlayBackend backend)
+    (reset! (:overlay-atom backend) {})
+    (some-> (:view-cache backend) (reset! nil))
+    (let [parent (:parent-backend backend)]
+      (when (instance? FrozenViewBackend parent)
+        (vreset! (:cell parent) nil))))
+  nil)
+
 (defn create-immutable-backend
   "Create ImmutableBackend from state map."
   ([state-map]
