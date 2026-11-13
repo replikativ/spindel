@@ -213,6 +213,12 @@
            (fb-move zl zf zd zs w (edge-upd w x f) (fm-edge-upd w x f)
              (ep-edge-upd (fb-e zs zf) w x f (fb-e-keep zs zf f hid hk hd) (fb-er zl zf zd zs w (fb-rest-of zl zf zd zs w h)))
              (fb-rest-of zl zf zd zs w h)))))
+(a/theorem fb-act-upd-m [zl :- (List Nat), zf :- (List Nat), zd :- (List Nat), zs :- (List Nat), w :- World, x :- Nat, f :- (=> ActRow ActRow),
+                         hid :- (forall [r :- ActRow] (= (act-id (f r)) (act-id r))), hfm :- (h3-fm w (act-upd w x f))]
+  (=> (= (fb zl zf zd zs w) true) (= (fb zl zf zd zs (act-upd w x f)) true))
+  (intro h)
+  (exact (fb-intro zl zf zd zs _ (inv-act-upd w x f hid (fb-sample zl zf zd zs w h))
+           (fb-move zl zf zd zs w (act-upd w x f) hfm (fb-er zl zf zd zs w (fb-rest-of zl zf zd zs w h)) (fb-rest-of zl zf zd zs w h)))))
 
 (def FB (mk-bundle 'fb '[zl :- (List Nat), zf :- (List Nat), zd :- (List Nat), zs :- (List Nat)] "fb-" {}))
 (swap! (:renames FB) assoc 'inv-parts 'fb-parts 'inv-task-upd 'fb-task-upd 'inv-edge-upd 'fb-edge-upd
@@ -242,5 +248,153 @@
                                more))))
        (subst-forms (fn [y] (and (seq? y) (= 'inv-run-upd (first y)) (>= (count y) 5)))
                     (fn [[_ w x f hid & more]]
-                      (apply list 'fb-run-upd-m 'zl 'zf 'zd 'zs w x f hid '(fn [q :- RunRow] (Eq.refl (rk3 q))) more)))))
+                      (apply list 'fb-run-upd-m 'zl 'zf 'zd 'zs w x f hid '(fn [q :- RunRow] (Eq.refl (rk3 q))) more)))
+       (subst-forms (fn [y] (and (seq? y) (= 'inv-act-upd (first y)) (>= (count y) 5) (seq? (nth y 3)) (= 'act-fill (first (nth y 3)))))
+                    (fn [[_ w x f hid & more]]
+                      (apply list 'fb-act-upd-m 'zl 'zf 'zd 'zs w x f hid (apply list 'fm-act-fill w x (rest f)) more)))))
 (doseq [[n _] @@#'spindel.v2.lit/source-theorems] (patch! FB n fb-patch))
+(lcopy! FB 'inv-demote)
+
+;; ===========================================================================
+;; demote of a stray x (x is in the list)
+;; ===========================================================================
+(a/theorem h18-single [d :- Nat, x :- Nat, L :- (List Nat)]
+  (=> (= (reach-mem d (List.cons Nat x (List.nil Nat))) true) (= (reach-mem x L) true) (= (reach-mem d L) true))
+  (intros hd hx)
+  (simp only [reach-mem-cons reach-mem Bool.or_false] at hd)
+  (rw [(Nat.eq_of_beq_eq_true hd)]) (exact hx))
+(a/theorem h18-list-in [L :- (List Nat), w :- World, x :- Nat]
+  (=> (= (reach-mem x L) true) (= (h3 (List.cons Nat x L) w) true) (= (h3 L w) true))
+  (intros hx h)
+  (have hs := (h3-sample _ w h))
+  (have hr (= (h3-rest (List.append Nat (List.cons Nat x (List.nil Nat)) L) w) true)) (exact (h3-rest-of _ w h))
+  (apply (h3-intro L w hs))
+  (apply (h16-dis L w (List.cons Nat x (List.nil Nat)) hs))
+  (intros d hd) (apply Or.inl) (exact (h18-single d x L hd hx))
+  (exact hr))
+(a/theorem h18-comp-upd-in [L :- (List Nat), w :- World, x :- Nat, f :- (=> CompRow CompRow),
+                            hid :- (forall [c :- CompRow] (= (comp-id (f c)) (comp-id c))),
+                            hp :- (forall [c :- CompRow] (= (:pending (f c)) (:pending c))),
+                            hep :- (forall [c :- CompRow] (<= (:epoch c) (:epoch (f c))))]
+  (=> (= (reach-mem x L) true) (= (h3 L w) true) (= (h3 L (comp-upd w x f)) true))
+  (intros hx h) (exact (h18-list-in L _ x hx (h16-comp-upd-x L w x f hid hp hep h))))
+;; a dep edge of an exempt creditor is free; a non-dep edge whose creditor is a computation is free
+(a/theorem h18-free-cred-in [L :- (List Nat), w :- World, e :- EdgeRow]
+  (=> (= (h3-rest L w) true) (List.Mem e (:edges w)) (= (Nat.beq (:kind e) ek-dep) true) (= (reach-mem (:creditor e) L) true)
+      (= (h3-free L w (:id e)) true))
+  (intros hr me kd hc)
+  (apply (h3-free-by L w (:id e)))
+  (intros b r mb mr ir hxo hcur hmem hxx)
+  (have u := (h3-ob-use L w b r (:id e) e hr mb mr ir hxo hcur hmem hxx me (Eq.refl (:id e))))
+  (have sk := (And.left u))
+  (simp only [h3-s Bool.and_eq_true] at sk)
+  (have c2 := (And.left (And.right sk)))
+  (simp only [kd Bool.not_true Bool.false_or rk3] at c2)
+  (rw [(Nat.eq_of_beq_eq_true c2)] at hc) (rw [hxo] at hc) (cases hc))
+(a/theorem h18-free-wait-comp [L :- (List Nat), w :- World, e :- EdgeRow]
+  (=> (= (inv-sample w) true) (= (h3-rest L w) true) (List.Mem e (:edges w)) (= (Nat.beq (:kind e) ek-dep) false)
+      (= (tbl-has comp-id (:creditor e) (:comps w)) true) (= (h3-free L w (:id e)) true))
+  (intros hs hr me kd hc)
+  (apply (h3-free-by L w (:id e)))
+  (intros b r mb mr ir hxo hcur hmem hxx)
+  (have u := (h3-ob-use L w b r (:id e) e hr mb mr ir hxo hcur hmem hxx me (Eq.refl (:id e))))
+  (have sk := (And.left u))
+  (simp only [h3-s Bool.and_eq_true] at sk)
+  (have c3 := (And.left (And.right (And.right sk))))
+  (simp only [kd Bool.false_or] at c3)
+  (have z := (act-not-comp w (:id b) hs (has-of-mem ActRow act-id b (:acts w) mb)))
+  (rw [(Nat.eq_of_beq_eq_true c3)] at hc) (rw [z] at hc) (cases hc))
+
+(a/theorem h18-fr-dep [L :- (List Nat), w :- World, x :- Nat]
+  (=> (= (h3-rest L w) true) (= (reach-mem x L) true)
+      (forall [e :- EdgeRow] (=> (List.Mem e (:edges w)) (= (not-dep-of x e) false) (= (h3-free L w (:id e)) true))))
+  (intros hr hx e me hn)
+  (simp only [not-dep-of dep-of] at hn)
+  (have hn2 := (bnot-false _ hn))
+  (simp only [Bool.and_eq_true] at hn2)
+  (have hc (= (reach-mem (:creditor e) L) true)) (rw [(Nat.eq_of_beq_eq_true (And.right hn2))]) (exact hx)
+  (exact (h18-free-cred-in L w e hr me (And.left hn2) hc)))
+(a/theorem h18-fr-avoid [S :- (List Nat), R :- (List Nat), F :- (List Nat), D :- (List Nat), W :- World, x :- Nat]
+  (=> (= (reach-mem x S) true) (= (tbl-all (rm-in S) R) true) (= (vr S R W) true) (= (h3 (List.append Nat S (List.nil Nat)) W) true)
+      (= (fb (List.append Nat S (List.nil Nat)) F D S W) true) (= (tbl-has comp-id x (:comps W)) true)
+      (forall [e :- EdgeRow] (=> (List.Mem e (:edges W)) (= (edge-avoids x e) false) (= (h3-free (List.append Nat S (List.nil Nat)) W (:id e)) true))))
+  (intros hx hR hv h hfb hcx e me ha)
+  (have hs := (h3-sample _ W h))
+  (have hr := (h3-rest-of _ W h))
+  (have p := (vrk-parts _ _ _ _ _ (vr-rest-of _ _ W hv)))
+  (cases kd (Nat.beq (:kind e) ek-dep))
+  (case [true]
+    (have hc (= (reach-mem (:creditor e) (List.append Nat S (List.nil Nat))) true))
+    (cases hcx2 (Nat.beq (:creditor e) x))
+    (case [true] (rw [(Nat.eq_of_beq_eq_true hcx2)]) (exact (rm-app-l x S (List.nil Nat) hx)))
+    (case [false]
+      (simp only [edge-avoids hcx2 Bool.not_false Bool.true_and] at ha)
+      (have hd := (bnot-false _ ha))
+      (have dS (= (reach-mem (:debtor e) S) true)) (rw [(Nat.eq_of_beq_eq_true hd)]) (exact hx)
+      (have db := (tbl-all-mem EdgeRow _ e (:edges W) (And.left (And.right p)) me))
+      (simp only [dnb14 kd dS Bool.not_true Bool.false_or Bool.true_or Bool.true_and] at db)
+      (have cS := (all-reach-mem (rm-in S) (:creditor e) R hR db))
+      (simp only [rm-in] at cS)
+      (exact (rm-app-l (:creditor e) S (List.nil Nat) cS)))
+    (exact (h18-free-cred-in (List.append Nat S (List.nil Nat)) W e hr me kd hc)))
+  (case [false]
+    (cases hd (Nat.beq (:debtor e) x))
+    (case [true]
+      (have dS (= (reach-mem (:debtor e) S) true)) (rw [(Nat.eq_of_beq_eq_true hd)]) (exact hx)
+      (have fe := (tbl-all-mem EdgeRow _ e (:edges W) (fb-er (List.append Nat S (List.nil Nat)) F D S W (fb-rest-of (List.append Nat S (List.nil Nat)) F D S W hfb)) me))
+      (simp only [fb-e kd dS Bool.not_true Bool.false_or] at fe)
+      (exact (all-reach-mem (h3-free (List.append Nat S (List.nil Nat)) W) (:id e) F (fb-fr (List.append Nat S (List.nil Nat)) F D S W (fb-rest-of (List.append Nat S (List.nil Nat)) F D S W hfb)) fe)))
+    (case [false]
+      (simp only [edge-avoids hd Bool.not_false Bool.and_true] at ha)
+      (have hc := (bnot-false _ ha))
+      (have hcc (= (tbl-has comp-id (:creditor e) (:comps W)) true)) (rw [(Nat.eq_of_beq_eq_true hc)]) (exact hcx)
+      (exact (h18-free-wait-comp (List.append Nat S (List.nil Nat)) W e hs hr me kd hcc)))))
+
+(a/theorem h18-demote-x [S :- (List Nat), R :- (List Nat), gx :- (List Nat), gk :- (List Nat), F :- (List Nat), D :- (List Nat), W :- World, x :- Nat]
+  (=> (= (reach-mem x S) true) (= (tbl-all (rm-in S) R) true) (= (inv-rank W) true) (= (vr S (List.cons Nat x R) W) true)
+      (= (hmk (List.append Nat S (List.nil Nat)) W) true) (= (g10 gx gk W) true) (= (ekb W) true) (= (fb (List.append Nat S (List.nil Nat)) F D S W) true)
+      (= (h3 (List.append Nat S (List.nil Nat)) W) true) (= (h3 (List.append Nat S (List.nil Nat)) (demote W x)) true))
+  (intros hx hR hk hv hm hg he hfb h)
+  (have hX := (rm-app-l x S (List.nil Nat) hx))
+  (cases hf (comp-find W x))
+  (case [none] (simp only [demote hf]) (exact h))
+  (case [some c]
+    (cases hi (:idle c))
+    (case [true] (simp only [demote hf hi]) (exact h))
+    (case [false]
+      (simp only [demote hf hi demote-edges])
+      (have h1 := (h3-run-cascade-g (List.append Nat S (List.nil Nat)) (List.append Nat S (List.nil Nat)) gx gk W (cancel-jobs (demote-cancels W c)) hg hm he h))
+      (have m1 := (hmk-run-cascade (List.append Nat S (List.nil Nat)) W (cancel-jobs (demote-cancels W c)) hm))
+      (have v1 := (vr-run-cascade S (List.cons Nat x R) W (cancel-jobs (demote-cancels W c)) hv))
+      (have f1 := (fb-run-cascade (List.append Nat S (List.nil Nat)) F D S W (cancel-jobs (demote-cancels W c)) hfb))
+      (have h2 (= (h3 (List.append Nat S (List.nil Nat)) (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c))) true))
+      (cases hb (demote-cur W c))
+      (case [false] (simp only [demote-epoch]) (exact h1))
+      (case [true] (simp only [demote-epoch])
+        (exact (h18-comp-upd-in (List.append Nat S (List.nil Nat)) (run-cascade W (cancel-jobs (demote-cancels W c))) x comp-inc-epoch (fn [q :- CompRow] (Eq.refl (comp-id q))) (fn [q :- CompRow] (Eq.refl (:pending q)))
+                 comp-inc-epoch-h3ep hX h1)))
+      (have m2 := (hmk-demote-epoch (List.append Nat S (List.nil Nat)) (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c) m1))
+      (have v2 := (vr-demote-epoch S (List.cons Nat x R) (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c) v1))
+      (have f2 := (fb-demote-epoch (List.append Nat S (List.nil Nat)) F D S (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c) f1))
+      (have dk (= (tbl-all (hk-dok (List.append Nat S (List.nil Nat)) (:comps (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c))) (not-dep-of x)) (:edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)))) true))
+      (apply (all-of-mem EdgeRow _ (:edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c))))) (intros e me) (exact (hk-dok-own _ _ x e hX))
+      (have h3x := (h3-drop-edges (List.append Nat S (List.nil Nat)) (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x) dk (h18-fr-dep (List.append Nat S (List.nil Nat)) (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) x (h3-rest-of _ _ h2) hX) h2))
+      (have m3 := (hmk-drop-edges (List.append Nat S (List.nil Nat)) (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x) dk m2))
+      (have v3 := (vr-drop-r S R (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) x (ncd-drop (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) x) (vr-drop-edges S (List.cons Nat x R) (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x) v2)))
+      (have f3 := (fb-drop-edges (List.append Nat S (List.nil Nat)) F D S (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x) f2))
+      (have nc := (ncd-drop (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) x))
+      (cases hf3 (comp-find (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) x))
+      (case [none] (simp only [demote-finish hf3]) (exact h3x))
+      (case [some c3]
+        (cases hkp (demote-keep (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) c3))
+        (case [true]
+          (simp only [demote-finish hf3 hkp])
+          (exact (h18-comp-upd-in (List.append Nat S (List.nil Nat)) (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) x _ (comp-make-idle-id _) (comp-make-idle-pending _) (fn [q :- CompRow] (Nat.le_refl (:epoch q))) hX h3x)))
+        (case [false]
+          (simp only [demote-finish hf3 hkp])
+          (have hcx := (tbl-find-has CompRow comp-id x c3 (:comps (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x))) hf3))
+          (have h4 := (h3-drop-edges (List.append Nat S (List.nil Nat)) (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) (edge-avoids x) (hk-dok-avoid S R (List.nil Nat) (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) x hx hR v3 nc m3)
+                        (h18-fr-avoid S R F D (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) x hx hR v3 h3x f3 hcx) h3x))
+          (have s4 := (h3-sample _ _ h4))
+          (exact (h3-intro (List.append Nat S (List.nil Nat)) _ (inv-comp-del-unref (drop-edges (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) (edge-avoids x)) x (drop-edges-avoids (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) x) s4)
+                   (h3r-comp-del (List.append Nat S (List.nil Nat)) (drop-edges (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) (edge-avoids x)) x (h3-db-of (drop-edges (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) (edge-avoids x)) s4) (h3-rest-of _ _ h4)))))))))
