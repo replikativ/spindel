@@ -3230,13 +3230,19 @@
       :else
       (let [w (cw)
             owner (current-scope! w r)            ; F2: materialized before the boundary
+            ;; in the child the effect is a resource its run arms, fired and acknowledged at
+            ;; once: the ids in T17's order (resource, activation, wait edge)
+            _ (alloc-id! w)
             aid (alloc-id! w)
-            a (new-activation! w aid r :one k ek (object-array 1) (object-array 1) 0)]
+            _ (alloc-id! w)
+            a (new-activation! w aid r :one k ek (object-array 1) (object-array 1) 0)
+            eidx (gl r rw/R-EIDX)]
         ;; the child's view: the run resumed at the effect with its delivery
         (s! a rw/A-RESULT [[:child nil] false])
         (s! a rw/A-RESUMED true)
         (s! a rw/A-INLINE false)
         (s! r rw/R-SLICE false)
+        (s! r rw/R-EIDX (inc eidx))       ; the child's run took the effect; the parent's did not
         (aadd! (g w rw/W-RESUME) a)
         (unregister! w a)                 ; a delivery carrier, not a parked activation
         (let [child (fork-world* w)]
@@ -3245,6 +3251,7 @@
           (remove-row! (g w rw/W-RESUME) a)
           (let [r (rv w r)]
             (s! r rw/R-SLICE true)
+            (s! r rw/R-EIDX eidx)
             (set-active! r)
             (commit! w [:fork (g r rw/ID) (g child rw/ID)])
             ;; scheduled after the parent's gate is released (E3)

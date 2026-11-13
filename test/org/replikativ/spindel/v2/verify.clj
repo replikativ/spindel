@@ -254,7 +254,9 @@
    (fn [w item]
      (let [^java.util.ArrayList log (f w rw/W-LOG)
            i (dec (.size log))]
-       (.set log i (assoc (.get log i) :proj (projection w))))
+       ;; T21 commits before the world's flag is set: the committed state is released
+       (.set log i (assoc (.get log i) :proj (cond-> (projection w)
+                                               (= :release-world (first item)) (assoc :released true)))))
      (when inner (inner w item)))))
 
 (defn log
