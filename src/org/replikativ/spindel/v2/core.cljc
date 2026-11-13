@@ -915,9 +915,6 @@
 (defn- drop-activation! [w r]
   (when-let [a (rv w (g r rw/R-ACTV))]
     (s! r rw/R-ACTV nil)
-    ;; a savepoint activation leaves the pending set: its publication can no
-    ;; longer resume the run
-    (when-let [sps (g w rw/W-SAVEPOINTS)] (hs/oset-del! sps (id-of a)))
     (release-members! w a)
     a))
 
@@ -2037,7 +2034,7 @@
   (let [unborn? (g w rw/W-UNBORN)]
     ;; E4: an unborn instance commits host items only: its inherited work and
     ;; dormant resources wait for activate!
-    (when (and (not unborn?) (or (g w rw/W-DORMANT) (g w rw/W-SP-DORMANT))) (activate-dormant! w))
+    (when (and (not unborn?) (g w rw/W-DORMANT)) (activate-dormant! w))
     (try
       (loop [n (gl w rw/W-BUDGET) unborn? unborn?]
         (if (zero? n)
@@ -2829,8 +2826,6 @@
 
 (declare join! cancel-resource! resource-fire! resource-ack!)
 
-(declare sp-deliver!)
-
 (defn- set-ctl!
   "A resource's physical controller, owned by world `w` (copies elsewhere
    drop it, F1)."
@@ -2841,19 +2836,10 @@
 (defn- activate-dormant!
   "§8.1: a fork's inherited armed resources, at its first turn. A timer
    re-arms for its remaining time; any other resource (offload, external
-   wait) never had a physical counterpart here: it fires err ::forked into
-   its edges and joins at once."
+   wait, savepoint: S3) never had a physical counterpart here: it fires err
+   ::forked into its edges and joins at once. An instance's pending
+   savepoint has fired by then (activate!)."
   [w]
-  ;; S3/§8.1: pending savepoints a fork inherited, other than its pending
-  ;; activation, fail with err ::forked (the child has no publication for them)
-  (when-let [as (g w rw/W-SP-DORMANT)]
-    (s! w rw/W-SP-DORMANT nil)
-    (let [pending (g w rw/W-PENDING-ACT)]
-      (doseq [a0 as]
-        (when-not (and pending (== (id-of a0) (long pending)))
-          (let [a (rv w a0) r (rv w (g a rw/A-RUN))]
-            (when (and (identical? a (rv w (g r rw/R-ACTV))) (== rw/ACT-PARKED (gl r rw/R-ACT)))
-              (sp-deliver! w a [(forked-ex) true])))))))
   (when-let [zs (g w rw/W-DORMANT)]
     (s! w rw/W-DORMANT nil)
     (doseq [z0 zs]
@@ -3187,13 +3173,10 @@
     (s! c rw/W-PINS (hs/mcopy (g w rw/W-PINS)))
     (s! c rw/W-ROOTS (hs/mcopy (g w rw/W-ROOTS)))
     (s! c rw/W-ARMED nil)
-    ;; dormant: this world's armed resources and pending savepoints, plus what
-    ;; it still holds dormant itself (a basis is never run, only forked)
+    ;; dormant: this world's armed resources (savepoints among them), plus
+    ;; what it still holds dormant itself (a basis is never run, only forked)
     (s! c rw/W-DORMANT (seq (concat (when armed (hs/oset-vals armed)) (g w rw/W-DORMANT))))
-    (let [sps (g w rw/W-SAVEPOINTS)]
-      (s! c rw/W-SAVEPOINTS nil)
-      (s! c rw/W-PENDING-ACT nil)
-      (s! c rw/W-SP-DORMANT (seq (concat (when sps (hs/oset-vals sps)) (g w rw/W-SP-DORMANT)))))
+    (s! c rw/W-PENDING-ACT nil)
     (when-let [reg (g w rw/W-REG)]
       (s! c rw/W-REG (hs/mcopy reg))
       (s! c rw/W-LOG (alist)))
@@ -3301,29 +3284,12 @@
   (s! w rw/W-SP-HANDLERS (merge (g w rw/W-SP-HANDLERS) table))
   w)
 
-(defn- sp-deliver!
-  "Resumes the run parked on savepoint activation `a` with `res` (T9's
-   savepoint branch): the activation goes, the run becomes active and its
-   slice is scheduled. Only a run still parked on `a` resumes; false
-   otherwise (it was cancelled meanwhile)."
-  [w a res]
-  (let [r (rv w (g a rw/A-RUN))]
-    (if (and (== rw/ACT-PARKED (gl r rw/R-ACT))
-             (some-> (rv w (g r rw/R-ACTV)) (identical? a)))
-      (do (when-let [sps (g w rw/W-SAVEPOINTS)] (hs/oset-del! sps (id-of a)))
-          (s! r rw/R-ACTV nil)
-          (s! r rw/R-ACT rw/ACT-ACTIVE)
-          (s! a rw/A-RESULT res)
-          (s! a rw/A-RESUMED true)
-          (unregister! w a)                  ; resumed: a delivery carrier now
-          (aadd! (g w rw/W-RESUME) a)
-          true)
-      false)))
-
 (defn savepoint-effect!
-  "S1 `(savepoint site payload)`: with a handler for `site`, the run parks
-   and a publication is offered to it, holding a frozen basis of the world at
-   this commit; without one the effect is the identity on `payload`."
+  "S1 `(savepoint site payload)`: with a handler for `site`, the run arms a
+   savepoint resource and parks on it (T17), and a publication is offered to
+   the handler, holding a frozen basis of the world at this commit; without
+   one the effect is the identity on `payload`. The resource has no
+   controller: cancelled, it joins at once."
   [site payload k ek]
   (if-let [r (valid-run)]
     (let [w (cw)
@@ -3334,47 +3300,54 @@
         (comp? (rv w (g r rw/R-OF))) (ek (ex-info "savepoint in a computation body is not supported" {}))
         (> (long (or (aget (ctx) 2) 0)) 1) (ek (ex-info "savepoint in a nested slice is not supported yet" {}))
         :else
-        (let [aid (alloc-id! w)
-              a (new-activation! w aid r :one k ek (object-array 1) (object-array 1) 1)]
-          (s! a rw/A-INLINE false)
-          (park! r a)
-          (hs/oset-add! (or (g w rw/W-SAVEPOINTS) (let [s (hs/oset)] (s! w rw/W-SAVEPOINTS s) s)) aid a)
-          (commit! w [:savepoint (g r rw/ID) [:opaque site] [:opaque payload] aid])
-          ;; the basis is a fork of this commit that is never run, only forked
-          (let [basis (fork-world* w)
-                pub (publication w aid site payload basis)]
-            ;; the parent's own copy of the run keeps no slice (it is parked)
-            (set-active! (rv w r))
-            (aadd! (g w rw/W-CALLBACKS) [(fn [_ _] (h pub)) [nil false]])
-            nil))))
+        (arm-and-park! r :savepoint k ek
+                       (fn [w z]
+                         ;; the basis is a fork of this commit that is never run, only forked
+                         (let [basis (fork-world* w)
+                               pub (publication w (id-of z) site payload basis)]
+                           ;; the parent's own copy of the run keeps no slice (it is parked)
+                           (set-active! (rv w r))
+                           (aadd! (g w rw/W-CALLBACKS) [(fn [_ _] (h pub)) [nil false]]))))))
     (unwind! ek)))
 
 (defn savepoint [_ _] (throw (ex-info "savepoint outside a body" {})))
 
-(defn- sp-act [w aid]
-  (let [a (get (g w rw/W-FWD) aid)]
-    (rv w (or a (some #(when (== (id-of %) (long aid)) %) (some-> (g w rw/W-SAVEPOINTS) hs/oset-vals))))))
+(defn- sp-res
+  "The savepoint resource `zid` as `w` holds it while armed: its own row, or
+   one it inherited (dormant)."
+  [w zid]
+  (let [zid (long zid)
+        z (some #(when (== (id-of %) zid) %)
+                (concat (some-> (g w rw/W-ARMED) hs/oset-vals) (g w rw/W-DORMANT)))]
+    (when z
+      (let [z (rv w z)] (when (== rw/Z-ARMED (gl z rw/Z-PHASE)) z)))))
+
+(defn- sp-fire!
+  "S2/S4 = T18 then T15: the savepoint fires `ok v` and joins."
+  [w zid v]
+  (if-let [z (sp-res w zid)]
+    (do (resource-fire! w z [v false]) (resource-ack! w z))
+    (refuse! w [:resource-fire zid])))
 
 (defn resume!
   "S2: continues the publication's own world with `v`, at most once."
   [pub v]
   (let [w (:world pub)]
     (when (compare-and-set! (:state pub) :pending :resumed)
-      (gated w
-             (let [a (sp-act w (:act pub))]
-               (if (and a (sp-deliver! w a [v false]))
-                 (commit! w [:resume-savepoint (:act pub) [:opaque v]])
-                 (refuse! w [:resume-savepoint (:act pub) [:opaque v]])))))
+      (gated w (sp-fire! w (:act pub) v)))
     nil))
 
-(defn- abandon-act! [w aid state]
+(defn- abandon-act!
+  "S7 = T14: the run parked on the savepoint is cancelled; the resource joins
+   at once."
+  [w zid state]
   (when (compare-and-set! state :pending :abandoned)
     (gated w
-           (when-let [a (sp-act w aid)]
-             (let [r (rv w (g a rw/A-RUN))]
-               (when-let [sps (g w rw/W-SAVEPOINTS)] (hs/oset-del! sps aid))
+           (if-let [z (sp-res w zid)]
+             (let [r (rv w (g z rw/OWNER))]
                (cancel! w r ::abandoned)
-               (commit! w [:abandon-savepoint aid])))))
+               (commit! w [:cancel (g r rw/ID)]))
+             (refuse! w [:cancel zid]))))
   nil)
 
 (defn abandon!
@@ -3409,24 +3382,16 @@
            (try (host! pw #(own-child! pw (rv pw (g pw rw/W-ROOT)) w false))
                 (catch #?(:clj Exception :cljs :default) _
                   (release-world* w))))                 ; still unborn: nothing runs
-         (let [aid (when-not (g w rw/W-RELEASED) (g w rw/W-PENDING-ACT))
-          ;; looked up before the dormant pass below empties the dormant list
-               a (when aid
-                   (rv w (get (g w rw/W-FWD) aid
-                              (some #(when (== (id-of %) (long aid)) %)
-                                    (concat (g w rw/W-SP-DORMANT)
-                                            (some-> (g w rw/W-SAVEPOINTS) hs/oset-vals))))))]
-           (when (and (g w rw/W-UNBORN) (not (g w rw/W-RELEASED)))
-             (s! w rw/W-UNBORN false)
-        ;; inherited resources and savepoints: this item is the first turn's
-        ;; work, so they are activated here, not at a later turn entry
-             (when (or (g w rw/W-DORMANT) (g w rw/W-SP-DORMANT)) (activate-dormant! w)))
-           (when aid
+         (let [zid (when-not (g w rw/W-RELEASED) (g w rw/W-PENDING-ACT))
+               born? (and (g w rw/W-UNBORN) (not (g w rw/W-RELEASED)))]
+           (when born? (s! w rw/W-UNBORN false))
+           ;; the pending savepoint fires first, while it is still dormant
+           (when zid
              (s! w rw/W-PENDING-ACT nil)
-             (do
-               (if (and a (sp-deliver! w a [v false]))
-                 (commit! w [:activate aid [:opaque v]])
-                 (refuse! w [:activate aid [:opaque v]]))))))
+             (sp-fire! w zid v))
+           ;; the other inherited resources: this item is the first turn's
+           ;; work, so they are settled here, not at a later turn entry
+           (when (and born? (g w rw/W-DORMANT)) (activate-dormant! w))))
   w)
 
 (defn offload [& _] (throw (ex-info "offload outside a body" {})))
