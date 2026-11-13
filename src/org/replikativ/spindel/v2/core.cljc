@@ -886,7 +886,9 @@
       (close-scope! w s))
     (unregister! w r)
     ;; the tombstone and its owner chain go with the run (Z#56)
-    (when (and (task? x) (g x rw/K-DONE)) (release-ownership! w x))))
+    (when (and (task? x) (g x rw/K-DONE)) (release-ownership! w x))
+    ;; a computation kept only as this run's tombstone (§3.2) goes now
+    (when (and (comp? x) (zero? (gl x rw/REFS))) (aadd! (g w rw/W-RQ) x))))
 
 (defn- fins ^long [r] (let [n (g r rw/R-FINS)] (if n (long n) 0)))
 
@@ -1926,7 +1928,8 @@
                                          (every? (comp some? second) validity))
                                   validity
                                   :invalid))))
-      (unregister! w c))))
+      ;; a run in cleanup keeps it as a tombstone (§3.2); it goes at retirement
+      (when-not (rv w (g c rw/C-RUN)) (unregister! w c)))))
 
 (defn- rule-r!
   "Processes rows whose retention count reached 0."
@@ -1939,7 +1942,8 @@
             (cond
               (comp? row)
               (do (when-not (g row rw/C-IDLE) (demote! w row))
-                  (when (and (g row rw/C-IDLE) (zero? (gl row rw/HANDLES)))
+                  ;; a run in cleanup keeps its computation as a tombstone (§3.2)
+                  (when (and (g row rw/C-IDLE) (zero? (gl row rw/HANDLES)) (nil? (rv w (g row rw/C-RUN))))
                     (unregister! w row)))
               (task? row)
               (when (and (g row rw/K-DONE) (zero? (gl row rw/HANDLES)))
