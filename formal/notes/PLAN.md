@@ -964,3 +964,26 @@ No counterexample. Tripwire: i10_test random drivers (g10r and lit-i10-current o
      `step-p3m`, `p3m-empty`, `l5-safety-total`.
 - No counterexample found (every override so far went through with invariants already proved).
 - Suite (main merged, up to date at eb05b78; hm5 included): 138 tests / 162,224 assertions, green.
+
+### `hm14` (2026-11-13): T11 dispatch keeps h3 through `raw`
+- **Proved** (spindel.v2.hm14, statements = notes/hm14-contracts.edn, test hm14_test): `h14-dispatch-raw-h3`,
+  `h14-t11-outcome`, `h14-raw0g-dispatch-outcome`, `h14-raw-dispatch-accepted`, `h14-raw-dispatch-outcome`
+  (p3la w, h3 xm w -> h3 xm at `raw w (dispatch-comp c fresh)`; a refusal is the input world).
+- Argument: after `cancel-pred` no activation holds a run of C (`ar-cancel-pred-none` + acts-alive), so every dep
+  edge of C is free (`h14-free-dep-no-holder`: a member dep edge's creditor is the run's `of`, h3-s); the cut drops
+  only such edges (`hk-dok-cut`), the entry edge is gone or still a dep edge of C (bundle `kc`: an edge id keeps
+  kind and creditor, copied through cancel-pred and the cut like p3's `kx`), so its removal on a final debtor is
+  free; the re-arm keeps keys and armedness; the new run and scope are fresh rows, `comp-set-run` keeps epoch,
+  pending and waiting.
+- **Deviation from the contracts**: the three edge-predicate helpers (job-apply, cascade, cancel-pred keys) are
+  replaced by the `kc` bundle; the other 16 statements are literal.
+- **Remaining for h-mem2 through the step**: items 6 (T12), 8 (release-world, Rule R) and 9 (integration) above.
+
+### `hm15` (2026-11-13): raw lifts, T22 host await, T8 observe
+- **Proved** (spindel.v2.hm15): `h15-raw0g-lift` (h3 at raw0's world -> at raw0g's), `h15-raw-lift` (p3la w, h3 at
+  raw0g's world -> at raw's, via `h13-raw0g-support` + `h13-post-h3`): the assembly over all items is now one case per
+  item at `raw0`. `h15-host-await-raw-h3`, `h15-raw0-host-await-h3` (T22), `h15-t8-full-h3` (T8): the fresh edge
+  (`hm3-insert-edge-checked`, `insert-edge-fresh-h3`), the demand (`h3-demand-reactive` with g7 and aha of the world
+  after the insert), the fire (`h3-fire-edge`).
+- **Remaining**: T12 (complete-comp/-task, settle with the queue as exemption list, retire-after, the cascade,
+  fin-if-final), release-world (`revoke-roots`), `raw0-h3` by cases, then Rule R (`finish`).
