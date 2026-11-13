@@ -82,6 +82,8 @@
 (def ^:const W-ARMED 26)     ; armed resources: ordered set by ID (dormant in a fork, §8.1)
 (def ^:const W-DORMANT 27)   ; a fork's inherited armed resources, activated at its first turn
 (def ^:const W-SP-HANDLERS 28) ; savepoint handlers {site handler} (§8.2)
+(def ^:const W-MBASE 29)       ; a mergeable fork's basis: inherited source id -> its row at the fork (L12)
+(def ^:const W-MPARENT 30)     ; the world this fork merges into (its ID)
 (def ^:const W-PENDING-ACT 31) ; an instantiated fork's pending activation (S3)
 (def ^:const W-OWNED 32)       ; fork ownership: owner scope id -> [holders prune-threshold] (F2, E1)
 (def ^:const W-HOLDER 33)      ; this fork's holder in its owner's table (E1)
