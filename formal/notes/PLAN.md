@@ -1059,3 +1059,18 @@ No counterexample. Tripwire: i10_test random drivers (g10r and lit-i10-current o
     false, or no row), freeness of x, per-edge condition.
   - filter at the normalized world: a kept current activation's member edges and their debtors are kept (closure of
     the live list; check what keeps an activation besides liveness: cleanup-rows / storage).
+  - **Refinement (same day)** after reading the code: the exemption by debtor hides `h3-m` for edges on a stray x, so
+    the freeness of the non-dep edges on x must be taken at the pass start (list [], `h3-m`: a current member edge on a
+    computation is a dep edge) and carried. No frame through the cascade exists as a lemma (`h3-run-cascade-g` is a
+    copier lift), but `h3-fm w (op w)` exists for nearly every primitive (hm6: fm-run-upd, -act-del, -comp-upd,
+    -edge-upd, -remove-edge, -drop-act, -drop-edges, -cancel-mid, -same, ...). Plan:
+    R1. copier bundle `fb L F S w` = inv-sample, every id of F is `h3-free L w`, every edge is dep or has its debtor
+        outside S or its id in F (F = ids of the non-dep edges on S at the pass start); prims from the fm lemmas;
+        lift inv-run-cascade / inv-demote. (Only tasks' activations hold such edges: await-edge's as-dep.)
+    R2. no holder at the pass end: per demoted d "no alive run of d" (idle.clj: after demote's cancel cascade
+        `not-alive-of`, line ~1834; the KDB bundle `kdb d kl kd` lifts through cascades) carried to the end, then
+        acts-alive gives `h16-nh`; check the no-row / idle-at-its-turn cases (g7's a7-one for idle).
+    R3. `h18-demote-x` with L = S: cascade, epoch step and make-idle by `h16-comp-upd-x` + `h16-dis` (x already in
+        L), dep-edge drop (creditor exempt; `hk-dok-own`), delete branch (`hk-dok-avoid`; debtor-x dep: creditor in R
+        by vr; debtor-x non-dep: fb; creditor-x non-dep: an act id is no computation id), `h3r-comp-del`.
+    R4. fold, discharge (`h16-dis`), norm-round, norm-loop, normalize. R5. filter. R6. rr-loop, rule-r, step, p3m.
