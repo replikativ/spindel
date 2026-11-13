@@ -888,7 +888,7 @@
     ;; the tombstone and its owner chain go with the run (Z#56)
     (when (and (task? x) (g x rw/K-DONE)) (release-ownership! w x))
     ;; a computation kept only as this run's tombstone (§3.2) goes now
-    (when (and (comp? x) (zero? (gl x rw/REFS))) (aadd! (g w rw/W-RQ) x))))
+    (when (and (comp? x) (zero? (gl x rw/REFS)) (zero? (gl x rw/HANDLES))) (aadd! (g w rw/W-RQ) x))))
 
 (defn- fins ^long [r] (let [n (g r rw/R-FINS)] (if n (long n) 0)))
 
