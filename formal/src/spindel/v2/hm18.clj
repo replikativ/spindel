@@ -654,3 +654,27 @@
                   (And.left fold)))
   (simp only [norm-round norm-round-lv])
   (exact (h18-detach (List.nil Nat) (List.nil Nat) (nat-fold demote (run-cascade w (cancel-jobs (tbl-scan run-id (run-stray (live-list w)) (:runs w)))) (tbl-scan comp-id (comp-stray (live-list w)) (:comps w))) m0 hend)))
+
+(a/theorem h18-norm-loop [fuel :- (List Nat)]
+  (forall [w :- World]
+    (=> (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (hmk (List.nil Nat) w) true) (= (g10 (List.nil Nat) (List.nil Nat) w) true) (= (ekb w) true)
+      (= (acts-alive w) true) (= (g7 w) true) (= (h3 (List.nil Nat) w) true) (= (h3 (List.nil Nat) (norm-loop fuel w)) true)))
+  (induction fuel)
+  (case [nil] (intros w hk hv hm hg he haa h7 h) (simp only [norm-loop]) (exact h))
+  (case [cons u f ih]
+    (intros w hk hv hm hg he haa h7 h)
+    (cases hn (normalized w))
+    (case [true] (simp only [norm-loop hn]) (exact h))
+    (case [false]
+      (simp only [norm-loop hn])
+      (exact (ih (norm-round w) (rk-norm-round w hk) (vr-norm-round w hk hv) (hmk-norm-round (List.nil Nat) w hk hv hm) (g10-norm-round (List.nil Nat) (List.nil Nat) w hg)
+               (ekb-norm-round w he) (And.right (bn-round w (h3-sample _ w h) haa)) (g7-norm-round w haa h7)
+               (h18-norm-round w hk hv hm hg he haa h7 h))))))
+(a/theorem h18-normalize [w :- World]
+  (=> (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (hmk (List.nil Nat) w) true) (= (g10 (List.nil Nat) (List.nil Nat) w) true) (= (ekb w) true)
+      (= (acts-alive w) true) (= (g7 w) true) (= (h3 (List.nil Nat) w) true) (= (h3 (List.nil Nat) (normalize w)) true))
+  (intros hk hv hm hg he haa h7 h)
+  (have p := (bn-parts _ _ _ (bn-detach (alive-cnt w) (act-cnt w) w (bn-intro _ _ w (h3-sample _ w h) haa (Nat.le_refl _) (Nat.le_refl _)))))
+  (simp only [normalize])
+  (exact (h18-norm-loop (norm-fuel (detach w)) (detach w) (rk-detach w hk) (vr-detach (List.nil Nat) (List.nil Nat) w hv) (hmk-detach (List.nil Nat) w hm)
+           (g10-detach (List.nil Nat) (List.nil Nat) w hg) (ekb-detach w he) (And.left (And.right p)) (g7-detach w h7) (h18-detach (List.nil Nat) (List.nil Nat) w hm h))))
