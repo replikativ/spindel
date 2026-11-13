@@ -170,7 +170,9 @@
        (let [s (v2/semaphore 1)]
          (is (= [:ok :acquired] (outcome (task (v2/acquire! s)))))
          (v2/sem-release! s)
-         (v2/sem-release! s)                         ; at the maximum: refused
+         (is (= :over-release (:spindel/invalid (try (v2/sem-release! s) nil (catch Exception e (ex-data e)))))
+             "a release at the maximum is refused and throws")
+         (is (= 1 (v2/permits s)))
          (is (= [:ok :acquired] (outcome (task (v2/acquire! s)))))
          (is (= :pending (v2/value (task (v2/acquire! s)) 100 :pending))
              "only one permit existed, so a third acquire waits"))))))
@@ -241,3 +243,100 @@
          (is (= [:ok :forked] (outcome (v2/in-world c t))))
          (complete! :parent-value)
          (is (= [:ok :parent-value] (outcome t)) "the parent's completion is its own"))))))
+
+;; --- R3 custom effects
+
+(v2/defeffect choose [[options] ctx]
+  [:value (first options)])
+
+(v2/defeffect fail-with [[msg] _]
+  [:error (ex-info msg {:custom true})])
+
+(v2/defeffect later [[v] _]
+  [:external (fn [complete!] (future (complete! v)) nil)])
+
+(v2/defeffect ask [[q] _]
+  [:savepoint :ask q])
+
+(v2/defeffect where [_ ctx]
+  [:value (select-keys ctx [:effect :site])])
+
+(deftest custom-effects-return-ops
+  (checked
+   (let [w (vworld) pubs (atom [])]
+     (v2/install-handlers! w {:ask (fn [p] (swap! pubs conj p))})
+     (binding [v2/*world* w]
+       (is (= [:ok :a] (outcome (task (choose [:a :b])))) "[:value v]")
+       (is (= [:err {:custom true}] (outcome (task (fail-with "boom")))) "[:error e]")
+       (is (= [:ok 7] (outcome (task (later 7)))) "[:external f]")
+       (let [t (task (inc (ask 41)))]
+         (is (wait-until #(seq @pubs)))
+         (is (= 41 (:payload (first @pubs))) "[:savepoint site payload]")
+         (v2/resume! (first @pubs) 41)
+         (is (= [:ok 42] (outcome t))))
+       (testing "ctx carries the effect and a site stable per call site"
+         (let [f (fn [] (task [(where) (where)]))
+               [[a b]] [(second (outcome (f)))]
+               [[c _]] [(second (outcome (f)))]]
+           (is (= `where (:effect a)))
+           (is (not= (:site a) (:site b)) "two call sites")
+           (is (= (:site a) (:site c)) "the same call site in another run")))))))
+
+(deftest atom-watches-in-host-items-without-an-ambient-binding
+  (checked
+   (let [w (vworld)
+         a (binding [v2/*world* w] (v2/atom 0))
+         seen (atom [])
+         watch (fn [k ref old new] (swap! seen conj [k (identical? a ref) old new]))]
+     (v2/host-call! w
+                    (fn []
+                      (binding [v2/*world* nil]
+                        (is (identical? w (v2/current-world)))
+                        (is (identical? a (add-watch a :k watch)))
+                        (is (= {:k watch} (.getWatches ^clojure.lang.IRef a))))))
+     (binding [v2/*world* w] (swap! a inc))
+     (is (= [[:k true 0 1]] @seen))
+     (v2/host-call! w
+                    (fn []
+                      (binding [v2/*world* nil]
+                        (is (identical? a (remove-watch a :k)))
+                        (is (empty? (.getWatches ^clojure.lang.IRef a))))))
+     (binding [v2/*world* w] (swap! a inc))
+     (is (= 1 (count @seen))))))
+
+(deftest world-neutral-refs-reject-unrelated-families
+  (checked
+   (let [w (vworld) other (vworld) x (v2/signal w :root)
+         r (v2/world-ref x)]
+     (is (= :lineage (:spindel/invalid
+                      (try (v2/resolve-ref other r) nil (catch Exception e (ex-data e))))))
+     (let [child (v2/fork! w) cx (v2/resolve-ref child r)]
+       (v2/write! cx :child)
+       (is (= :child (v2/value cx)))
+       (is (= :root (v2/value x)))))))
+
+(deftest atoms-reject-colliding-ids-in-unrelated-families
+  (checked
+   (let [w (vworld) other (vworld)
+         a (binding [v2/*world* w] (v2/atom :root))
+         b (binding [v2/*world* other] (v2/atom :other))]
+     (binding [v2/*world* other]
+       (doseq [op [#(deref a) #(reset! a :wrong) #(swap! a identity)
+                   #(compare-and-set! a :other :wrong)
+                   #(add-watch a :k (fn [& _])) #(remove-watch a :k)
+                   #(.getWatches ^clojure.lang.IRef a)]]
+         (is (contains? (try (op) {} (catch Exception e (ex-data e))) :spindel/missing-state)))
+       (is (= :other @b)))
+     (binding [v2/*world* w] (is (= :root @a))))))
+
+(deftest atom-update-preserves-other-atom-writes
+  (checked
+   (binding [v2/*world* (vworld)]
+     (let [a (v2/atom 0) b (v2/atom 0) created (atom nil)]
+       (swap! a (fn [v]
+                  (swap! b inc)
+                  (reset! created (v2/atom :created))
+                  (inc v)))
+       (is (= 1 @a))
+       (is (= 1 @b))
+       (is (= :created @@created))))))

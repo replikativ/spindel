@@ -44,6 +44,28 @@ jobs:
             - .npm
             - replikativ
 
+  v2-lifetime:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci/
+      - run:
+          name: Run v2 JVM acceptance independently of legacy engine tests
+          command: >-
+            clojure -J-Xmx1g -X:test
+            :patterns '["org.replikativ.spindel.v2.*"]'
+            :excludes '[:gap]'
+      - run:
+          name: Compile v2 Node lifetime acceptance probe
+          command: >-
+            clojure -J-Xmx1g -Sdeps '{:paths ["src" "test-cljs"]}'
+            -M -m cljs.main
+            -co '{:target :nodejs :optimizations :simple :output-dir "target/lifetime-gc/out" :output-to "target/lifetime-gc/main.js"}'
+            -c org.replikativ.spindel.v2.lifetime-gc
+      - run:
+          name: Verify v2 ownership with real Node garbage collection
+          command: node --expose-gc target/lifetime-gc/main.js
+
 workflows:
   build-test-and-deploy:
     jobs:
@@ -67,6 +89,10 @@ workflows:
           context: docker-deploy
           requires:
             - tools/build
+      - v2-lifetime:
+          context: docker-deploy
+          requires:
+            - tools/build
       - tools/deploy:
           context:
             - clojars-deploy
@@ -78,6 +104,7 @@ workflows:
             - tools/format
             - tools/unittest
             - tools/cljstest
+            - v2-lifetime
       - tools/release:
           context:
             - github-token
