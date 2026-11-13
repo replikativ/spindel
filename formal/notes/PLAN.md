@@ -1074,3 +1074,17 @@ No counterexample. Tripwire: i10_test random drivers (g10r and lit-i10-current o
         L), dep-edge drop (creditor exempt; `hk-dok-own`), delete branch (`hk-dok-avoid`; debtor-x dep: creditor in R
         by vr; debtor-x non-dep: fb; creditor-x non-dep: an act id is no computation id), `h3r-comp-del`.
     R4. fold, discharge (`h16-dis`), norm-round, norm-loop, normalize. R5. filter. R6. rr-loop, rule-r, step, p3m.
+
+### hm18 done (2026-11-13): Rule R keeps h3; P11 closed
+
+- Pass: `h18-nh-demote` (after its demote no activation holds a current run of x), `h18-demote-fold` (accumulator
+  `h18-acc` collects the demoted strays in the bundle's zd), `h18-fb-init` (F = the strays plus the ids of the non-dep edges
+  on a stray; free at a world with `h3 []` by `h3-m`), `h18-pass-end` (`h16-dis` with L = nil), `h18-norm-round`,
+  `h18-norm-loop`, `h18-normalize`. The carried freeness is at the empty list (`h18-free-nil` weakens it where needed).
+- Filter: `h18-filter-k` for a generic K under two premises (K keeps every run; K keeps the member edges of an activation
+  whose run row exists) and `h18-filter` for `keep-fn` at a normalized world (`run-kept` from gr0; the member edges are live
+  through run -> activation -> member edge). `h18-awm-keep`: the first activation with a member survives the filter.
+- `h18-rule-r-round`, `h18-rr-loop`, `h18-rule-r` (threaded: inv-rank, vr [] [], hmk [], g10 [] [], ekb, acts-alive, g7, gr0).
+- **`step-h3`**, `p3m = p3la && h3 []`, `step-p3m`, `p3m-empty`, `step-h3-total`, and
+  **`l5-safety-total : p3m w -> quiescent w -> ... -> False`** with no honest hypothesis (h-mark and h-mem2 are invariants).
+- Open after P11: I15 as a literal statement over `p3m`, random lockstep in CI, the formal CI job, spec §8 rows.
