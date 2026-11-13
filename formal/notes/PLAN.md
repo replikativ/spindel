@@ -987,3 +987,24 @@ No counterexample. Tripwire: i10_test random drivers (g10r and lit-i10-current o
   after the insert), the fire (`h3-fire-edge`).
 - **Remaining**: T12 (complete-comp/-task, settle with the queue as exemption list, retire-after, the cascade,
   fin-if-final), release-world (`revoke-roots`), `raw0-h3` by cases, then Rule R (`finish`).
+
+### `hm16` (2026-11-13, in progress): T12 complete + settle for h3
+- **Proved**: `h16-undo-c` (undo of a COMPUTATION's exemption x: no activation holds a run of x, x free as a member
+  id, every edge on x unarmed / host / h3-m): hm6's `h3-undo-d` with the no-holder premise in place of "x is no
+  computation". The no-holder premise comes from acts-alive + "no alive run of x" (hm14's `h14-acts-alive-no-holder`).
+- **Design for the rest** (hmk2 Part E is the template; an id in xm exempts three roles: `of` of a run, member id,
+  debtor of a member edge):
+  1. `complete-raw`: exempt `(:of r)`, then `h3-run-kill` for `run-upd r run-complete-row` (its premise: every task
+     with run r is exempt), complete-body, `hm3-retire-after`, `h3-run-cascade-g` (needs g10, hmk, ekb of that world:
+     the hmk/gd/g7 copies of complete-body exist), `h3-fin-if-final`.
+  2. task case: `task-upd` result row, `cancel-res`, the fold of `h3-fire-edge` over the edges on the task; then the
+     task's exemption is undone by `h3-undo-d` (every edge on it is fired, so unarmed).
+  3. comp case C: `comp-upd` result row with C exempt (done-epoch := epoch breaks h3-cs for C's holders and hk-wif
+     for member edges on C), `cancel-res`, then settle: settle-edge = settle-fire (`h3-fire-dep`) + `h3-unmark-edge`
+     (premise hk-safe of the creditor: exempt the creditors of the marked out-edges, as hmk2's `hk-se-fold`).
+     Discharge per id y of the list: still queued (ready), or not ready: then y has no holder (completed, ar: no
+     alive run) and is waiting (hk-wif, pending /= 0), so `h16-undo-c`. For C itself: no holder, and after
+     settle-one no armed member-current edge has debtor C (each was fired by `member-current`): `h16-undo-c` needs
+     its edge premise restricted to contrib members of obligated activations (generalize the premise as in
+     `h3-undo-g`), plus a fold invariant "a processed out-dep edge of C is not (armed and member-current)".
+  4. the loop: the queue is the exemption list (hk-settle-loop's shape, `settle-done-ok` empties it).
