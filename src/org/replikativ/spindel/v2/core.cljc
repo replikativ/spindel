@@ -291,6 +291,13 @@
                (not= (aget c rw/Z-ORIGIN) (aget ^objects w rw/ID)))
       (aset c rw/Z-CTL nil))
     (aset ^objects w rw/W-FWD (assoc (aget ^objects w rw/W-FWD) (aget c rw/ID) c))
+    ;; L12: a mergeable fork keeps the basis row of every source it inherited
+    ;; and touches: the version at the fork, and the row its parent resolves
+    (when-let [mb (aget ^objects w rw/W-MBASE)]
+      (when (and (== rw/T-SOURCE (long (aget c rw/TYPE)))
+                 (< (long (aget c rw/ID)) (long (aget ^objects w rw/ID)))
+                 (nil? (get mb (aget c rw/ID))))
+        (aset ^objects w rw/W-MBASE (assoc mb (aget c rw/ID) r))))
     (when-let [reg (aget ^objects w rw/W-REG)]
       (when (some? (hs/mget reg (aget c rw/ID))) (hs/mput! reg (aget c rw/ID) c)))
     c))
@@ -2393,23 +2400,28 @@
            #?(:clj (binding [*out* *err*] (println "watch" k "failed:" t))
               :cljs (js/console.error "watch" k "failed:" t))))))
 
+(defn- write-row!
+  "T2 on the open source row `x` of `w`; `ref` is what its watches receive."
+  [w x ref v]
+  (let [old (g x rw/X-VALUE)]
+    (s! x rw/X-VALUE v)
+    (s! x rw/VERSION (inc (gl x rw/VERSION)))
+    (let [outs (acopy (g x rw/OUTS))]
+      (dotimes [i (acount outs)]
+        (let [e (rv w (anth outs i)) k (gl e rw/E-KIND)]
+          (cond (== k rw/EK-DEP) (fire-dep! w e)
+                (== k rw/EK-OBSERVE) (deliver-observe! w e)))))
+    (commit! w [:write (g x rw/ID) [:opaque v]])
+    (notify-watches! w (g x rw/ID) ref old v)))
+
 (defn write!
   "T2: `version += 1`, fire dep edges and deliver observe edges (§4.5.1)."
   [h v]
   (gated (world-of h)
-         (let [x (row-of h) w (cw) old (g x rw/X-VALUE)]
+         (let [x (row-of h) w (cw)]
            (if (closed? x)
              (refuse! w [:write (g x rw/ID) [:opaque v]])
-             (do
-               (s! x rw/X-VALUE v)
-               (s! x rw/VERSION (inc (gl x rw/VERSION)))
-               (let [outs (acopy (g x rw/OUTS))]
-                 (dotimes [i (acount outs)]
-                   (let [e (rv w (anth outs i)) k (gl e rw/E-KIND)]
-                     (cond (== k rw/EK-DEP) (fire-dep! w e)
-                           (== k rw/EK-OBSERVE) (deliver-observe! w e)))))
-               (commit! w [:write (g x rw/ID) [:opaque v]])
-               (notify-watches! w (g x rw/ID) h old v)))))
+             (write-row! w x h v))))
   v)
 
 (defn unborn-ex []
@@ -3177,6 +3189,8 @@
     ;; what it still holds dormant itself (a basis is never run, only forked)
     (s! c rw/W-DORMANT (seq (concat (when armed (hs/oset-vals armed)) (g w rw/W-DORMANT))))
     (s! c rw/W-PENDING-ACT nil)
+    (s! c rw/W-MBASE nil)
+    (s! c rw/W-MPARENT nil)
     (when-let [reg (g w rw/W-REG)]
       (s! c rw/W-REG (hs/mcopy reg))
       (s! c rw/W-LOG (alist)))
@@ -3186,17 +3200,77 @@
 
 (defn fork!
   "D3, host form: a frozen fork of `w` between slices. Returns the child
-   world; act on it through `in-world` handles."
-  [w]
-  (let [res (volatile! nil)]
-    (gated w
-           (when (active-run) (throw (ex-info "fork! inside a body: use the (fork) effect" {})))
-           (when (g w rw/W-UNBORN) (throw (ex-info "fork! of an unactivated instance" {})))
-           (let [c (fork-world* w)]
-             (own-child! w (rv w (g w rw/W-ROOT)) c false)   ; F2: weakly, by the root scope
-             (commit! w [:fork-host (g c rw/ID)])
-             (vreset! res c)))
-    (handoff! @res)
+   world; act on it through `in-world` handles. With `{:mergeable? true}`
+   the child keeps the basis of every source it inherited and touches, so
+   `merge!` can adopt its writes into `w`."
+  ([w] (fork! w nil))
+  ([w opts]
+   (let [res (volatile! nil)]
+     (gated w
+            (when (active-run) (throw (ex-info "fork! inside a body: use the (fork) effect" {})))
+            (when (g w rw/W-UNBORN) (throw (ex-info "fork! of an unactivated instance" {})))
+            (let [c (fork-world* w)]
+              (when (:mergeable? opts)
+                (s! c rw/W-MPARENT (g w rw/ID))
+                (s! c rw/W-MBASE {}))
+              (own-child! w (rv w (g w rw/W-ROOT)) c false)   ; F2: weakly, by the root scope
+              (commit! w [:fork-host (g c rw/ID)])
+              (vreset! res c)))
+     (handoff! @res)
+     @res)))
+
+(defn- merge-entries
+  "L12 under both gates: [[parent-row value] ...] for every inherited source
+   `child` changed, or nil when the merge is refused: the child is not a
+   quiescent, born, live mergeable fork of `parent`, or a changed source is
+   not an open signal the parent still holds at its version of the fork."
+  [parent child]
+  (when (and (g child rw/W-MBASE)
+             (== (long (g parent rw/ID)) (long (g child rw/W-MPARENT)))
+             (not (g child rw/W-RELEASED)) (not (g child rw/W-UNBORN)) (not (g child rw/W-DRAINING))
+             (not (work-pending? child)))
+    (let [pfwd (g parent rw/W-FWD)
+          cfwd (g child rw/W-FWD)
+          reg (g parent rw/W-REG)]
+      (reduce-kv
+       (fn [acc id basis]
+         (let [cx (get cfwd id)
+               base (gl basis rw/VERSION)]
+           (if (or (nil? cx) (== base (gl cx rw/VERSION)))
+             acc
+             ;; the parent's view without copying: its copy, or the shared basis
+             (let [px (or (get pfwd id) basis)]
+               (if (and (== base (gl px rw/VERSION))
+                        (== rw/SRC-SIGNAL (gl px rw/X-KIND)) (== rw/SRC-SIGNAL (gl cx rw/X-KIND))
+                        (g px rw/X-OPEN)
+                        (if reg (some? (hs/mget reg id)) (or (pos? (gl px rw/REFS)) (pos? (gl px rw/HANDLES)))))
+                 (conj acc [basis (g cx rw/X-VALUE)])
+                 (reduced nil))))))
+       ;; in id order: the writes are items, and their order is part of the log
+       [] (into (sorted-map) (g child rw/W-MBASE))))))
+
+(defn merge!
+  "L12: adopts the writes of the mergeable fork `child` into its parent
+   `parent`: every inherited signal the child changed is written in the
+   parent with the child's value (T2 each, one host item), then the child is
+   released. Refused, changing neither world, unless the child is quiescent
+   and each changed source is still an open signal the parent has not
+   written since the fork. Sources created in the child are not merged.
+   True when merged (when the item ran before return, as every host item)."
+  [parent child]
+  (let [res (volatile! false)]
+    (gated parent
+           (let [lk (g child rw/W-LOCK)]
+             (when (and (not (active-run)) (not (identical? parent child))
+                        (not (hs/held? lk)) (hs/try-lock! lk))
+               (let [es (try (merge-entries parent child) (finally (hs/unlock! lk)))]
+                 (when es
+                   (doseq [[basis v] es]
+                     (let [x (rv parent basis)
+                           ref (let [r (g x rw/HREF)] (if (instance? Handle r) r (some-> r hs/deref-weak)))]
+                       (write-row! parent x ref v)))
+                   (release-child! parent child)
+                   (vreset! res true))))))
     @res))
 
 (defn fork-effect!
