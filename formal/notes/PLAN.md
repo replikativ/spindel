@@ -1023,3 +1023,11 @@ No counterexample. Tripwire: i10_test random drivers (g10r and lit-i10-current o
      `hk-wif-nready`; queue elements need only "not strong at B".
   3. loop (`hk-settle-loop` shape), `settle`, complete-body comp case (result row with C exempt via comp-upd lemma),
      `complete-raw` wrapper (`h3-run-kill`, `hm3-retire-after`, `h3-run-cascade-g`, `h3-fin-if-final`), `t12`.
+- **hm16 done (2026-11-13)**: `h16-t12-h3` — T12 complete keeps h3 (premises: `res-tag-ok tag`, g10r, g10, ga, gd, g7,
+  hmk, ekb of the input world). Path: `h16-J` bundle + `h16-settle-step` / `-loop` / `h16-settle-x`,
+  `h16-complete-comp-x`, `h16-complete-pre` (cases: no owner row / task / stale computation / current computation),
+  `h16-g10-body` (g10 at the complete-body world, from i10's cmp-* cases), `h16-complete-raw-x`.
+  Note for the assembly: T12's h3 needs `res-tag-ok` (as `gl`'s T12 in lit.clj): the `raw` case must take it from
+  the step guard `complete-refused`.
+- **Left for h-mem2 through the step**: release-world (`inv-revoke-roots`, `t-release-world-inv`), then the
+  assembly `raw0-h3` over the 38 items, Rule R, `p3m`, `l5-safety-total`.
