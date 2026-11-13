@@ -6,7 +6,7 @@
 
 (def theorems '[h18-detach-source h18-detach h18-demote-x h18-nh-demote h18-demote-fold h18-fb-init h18-pass-end
                 h18-norm-round h18-normalize h18-filter-k h18-filter h18-rule-r step-h3 step-p3m p3m-empty
-                step-h3-total l5-safety-total])
+                step-h3-total l5-safety-total step-h-mem2-total])
 
 (deftest proved-without-sorry
   (let [src (slurp "src/spindel/v2/hm18.clj")]

@@ -911,3 +911,9 @@
   (have pc := (p3i-ctx w (And.left pj)))
   (have h3c (= (p3c w) true)) (simp only [p3c (And.left pc) (And.right pc) Bool.and_self])
   (exact (h3-l5-safety w c0 c h3c (And.right pj) (And.right p) hq (p3l-h-mark w hl) hf hw nb ne tb)))
+;; the literal h-mem2 of l5.clj, after every step
+(a/theorem step-h-mem2-total [w :- World, it :- Item] (=> (= (p3m w) true) (= (h-mem2 (:world (world-step w it))) true))
+  (intro h)
+  (have p := (p3m-parts _ (step-p3m w it h)))
+  (have pj := (p3j-parts _ (And.left (p3k-parts _ (And.left (p3l-parts _ (p3la-p3l _ (And.left p))))))))
+  (exact (h3-h-mem2 _ (And.right p) (And.right pj))))
