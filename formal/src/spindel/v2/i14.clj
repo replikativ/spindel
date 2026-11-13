@@ -2342,7 +2342,7 @@
         (rw [vr0])
         (exact (And.intro (And.right (And.right (And.right pz)))
                  (root-any-c (:next-id w) (:comps w) cq r (:validity c) mq iq (And.right pq) (iv-ent w x c h hf hi) (And.left (And.right (And.right pz)))))))))
-  (case [step p q hp ihp hq]
+  (case [step p q hp hq ihp]
     (have z := (vsucc-mem w p q hq))
     (cases z)
     (case [intro cp pz]
@@ -2380,7 +2380,7 @@
   (intro hr)
   (induction hr)
   (case [root r hm] (cases hm))
-  (case [step p q hp ihp hq] (exact ihp)))
+  (case [step p q hp hq ihp] (exact ihp)))
 
 ;; Theorem (I14): in a v14 world no idle computation reaches itself through the validity graph
 (a/theorem i14-acyclic [w :- World, x :- Nat]
@@ -2458,7 +2458,7 @@
   (induction hr)
   (case [root r hm]
     (cases hm) (case [head] (apply Or.inl) (rfl)) (case [tail b] (cases b)))
-  (case [step p q hp ihp hq]
+  (case [step p q hp hq ihp]
     (apply Or.inr)
     (have z := (mem-scan-row ScopeRow scope-id (open-explicit-child p) q (:scopes w) hq))
     (cases z)

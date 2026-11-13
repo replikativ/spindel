@@ -1,6 +1,6 @@
 {:paths ["src"]
  :deps {org.clojure/clojure {:mvn/version "1.12.6"}
-        org.replikativ/ansatz {:mvn/version "0.2.613"}}
+        org.replikativ/ansatz {:mvn/version "0.2.634"}}
  :aliases
  {;; check against the local ansatz checkout instead of the release
   :ansatz-local {:override-deps {org.replikativ/ansatz {:local/root "../ansatz"}}}
