@@ -1044,3 +1044,18 @@ No counterexample. Tripwire: i10_test random drivers (g10r and lit-i10-current o
      per-edge condition as in hm16.
   3. `inv-filter-world` (Rule R's filter): an `h3-filter-world` from `filter-safe` (precedent `hmk-filter-world`).
   Then `h3-rr-loop` / `h3-rule-r` (inv-rank and `vr [] []` threaded as in hmk2), `step-h3`, `p3m`, `l5-safety-total`.
+- **hm18 design (2026-11-13; detach done: `h18-detach`)**. Rule R is where h-mem2 needs liveness, not only frames:
+  - demote x (x in the round's stray set S, exempt): cascade (`h3-run-cascade-g`), epoch step and make-idle by
+    `h16-comp-upd-x`, drop of x's dep edges: free because the creditor is exempt (a current member dep edge has
+    creditor = of k). Delete branch (`edge-avoids x`): creditor-x edges as before (non-dep: creditor would be an act
+    id); debtor-x dep edges have a stray creditor (vr's dnb14), free; **debtor-x non-dep edges (waits, observes) need
+    a new fact NW(S, W)**: no activation has a member non-dep edge whose debtor is in S. At the pass start (after the
+    stray-run cascade): the holder's run is alive (acts-alive), a stray run was cancelled (cancel-acts removed the
+    activation; needs "a cancel cascade leaves the listed runs dead", idle.clj's casc-kill is the per-computation
+    precedent), a live run makes act -> member edge -> debtor live (retain-succ: run-contrib, act-contrib,
+    edge-contrib; closure as in `vr-pass-start` / i1's `live-parent`), contradicting stray. NW is kept along the fold
+    by frames (acts only removed, edges keep id/kind/debtor).
+  - discharge of S at the pass end by `h16-dis`: `h16-nh` (epoch step + `h3-e1`, or i10's ncq when demote-cur is
+    false, or no row), freeness of x, per-edge condition.
+  - filter at the normalized world: a kept current activation's member edges and their debtors are kept (closure of
+    the live list; check what keeps an activation besides liveness: cleanup-rows / storage).
