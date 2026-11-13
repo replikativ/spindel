@@ -92,3 +92,28 @@
     (is (true? (sys/idle-world w2)) "idle once the host let go")
     (is (false? (:live ((sys/sys-idle-release (cells w2) 2) 2))) "an idle world is released")
     (is (true? (:live ((sys/sys-idle-release (cells w2) 2) 3))) "and no other cell")))
+
+;; sample 17 (engine feat/v2-merge): a mergeable host fork. The child writes s (twice) and t and its
+;; observed computation reruns; the parent writes u; `merge!` adopts s and t as two host writes in
+;; the parent (ascending id) and releases the child. The model's `merge-world` of the parent's
+;; world before the merge, the child's last world and the basis is the engine's world after the
+;; two writes.
+(deftest sample-17-merge
+  (let [pl (o/read-log "test/spindel/v2/oracle/log-sample-17-parent.edn")
+        cl (vec (filter :proj (o/read-log "test/spindel/v2/oracle/log-sample-17-child.edn")))
+        pr (o/replay pl :family? true :worlds? true)
+        at (first (keep-indexed (fn [i c] (when (= :fork-host (first (:item c))) i)) pl))
+        basis (nth (:worlds pr) at)
+        cr (o/replay cl :family? true :init basis :worlds? true)
+        child (peek (:worlds cr))
+        before (nth (:worlds pr) (inc at))
+        after (nth (:worlds pr) (+ at 3))]
+    (is (= [19 0 0] ((juxt :checked :n-divergences :resyncs) pr)) "the parent, across fork and merge")
+    (is (= [15 0 0] ((juxt :checked :n-divergences :resyncs) cr)) "the child, from the basis")
+    (is (= [[:write 5 20] [:write 3 15] [:write 4 18]] (map :item (subvec pl (inc at) (+ at 4))))
+        "the parent's own write, then the merge's two writes by ascending id")
+    (is (= #{3 4} (set (sys/diff child basis))) "the child changed s and t")
+    (is (true? (sys/merge-ok before child basis)))
+    (is (= (o/world->proj after) (o/world->proj (sys/merge-world before child basis)))
+        "the model's merge is the engine's world after the merge")
+    (is (false? (sys/merge-ok after child basis)) "a second merge conflicts: the parent's s and t moved")))
