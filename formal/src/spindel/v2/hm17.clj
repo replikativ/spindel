@@ -1,5 +1,6 @@
 (ns spindel.v2.hm17
-  "release-world for the h-mem2 bundle h3 (P11): the dropped host edges are no member edges."
+  "release-world for the h-mem2 bundle h3 (P11): the dropped host edges are no member edges; and the
+  assembly over the 38 items: raw0, raw0g and raw keep h3 on a world that satisfies p3la (h17-raw-h3)."
   (:require [ansatz.core :as a]
             [spindel.v2.state :refer :all]
             [spindel.v2.edits :refer :all]
@@ -120,3 +121,80 @@
     (exact (h3-run-cascade-g xm hx gx gk _ _ (g10-zero-handles gx gk _ (g10-revoke-roots gx gk w hg))
              (hmk-zero-handles hx _ (hmk-revoke-roots hx w hk)) (ekb-zero-handles _ (ekb-revoke-roots w he))
              (hm3-zero-handles xm _ (h17-revoke-roots xm hx w hk he h))))))
+
+;; ===========================================================================
+;; The assembly: every item keeps h3 (raw0), through the host guard (raw0g) and post (raw)
+;; ===========================================================================
+(doseq [t '[t1-full-inv t1-top-inv t19-inv t20-pin-inv t20-unpin-inv t3-inv t3-top-inv t4-inv t4-top-inv t5-inv sched-inv
+            t-handle-new-inv t-post-inv t-release-inv t-finalize-inv t-open-scope-inv t-detach-inv t-finally-enter-inv
+            t-finally-exit-inv]]
+  (lcopy! H3 t))
+
+(a/theorem h17-raw0-h3 [xm :- (List Nat), w :- World, it :- Item]
+  (=> (= (p3la w) true) (= (h3 xm w) true) (= (h3 xm (:world (raw0 w it))) true))
+  (intros hp h)
+  (have hgd := (p3la-gd w hp))
+  (have hg7 := (p3la-g7 w hp))
+  (have hga := (p3la-ga w hp))
+  (have har := (p3la-ar w hp))
+  (have hke := (p3la-ekb w hp))
+  (have hk := (p3la-hmk w hp))
+  (have hgr := (p3la-g10r w hp))
+  (have hg10 := (p3la-g10r w hp)) (simp only [g10r] at hg10)
+  (cases it)
+  (case [create-source st kind v fresh] (simp only [raw0]) (cases hc (body-shut w st))
+    (case [false] (simp only [hc]) (exact (t1-full-h3 xm w _ _ _ _ h)))
+    (case [true] (simp only [hc refuse]) (exact h)))
+  (case [create-source-top scope kind v fresh] (simp only [raw0]) (exact (t1-top-h3 xm w _ _ _ _ h)))
+  (case [write x v] (simp only [raw0]) (exact (t2-h3 xm w _ _ h)))
+  (case [track st x k fresh] (simp only [raw0]) (cases hc (in-cleanup w st))
+    (case [false] (simp only [hc]) (exact (t7-h3 xm w _ _ _ _ hc hg7 hga har hk h)))
+    (case [true] (simp only [hc refuse]) (exact h)))
+  (case [observe d cb fresh] (simp only [raw0]) (exact (h15-t8-full-h3 xm w _ _ _ hp h)))
+  (case [unobserve e] (simp only [raw0]) (exact (t8-unobserve-hm3 xm w _ hg7 h)))
+  (case [fire e tag val] (simp only [raw0]) (exact (t9-h3 xm w _ _ _ h)))
+  (case [resource-ack z] (simp only [raw0]) (exact (t15-full-h3 xm (List.nil Nat) (List.nil Nat) (List.nil Nat) w _ hk hg10 hke h)))
+  (case [arm st kind k fresh] (simp only [raw0]) (cases hc (in-cleanup w st))
+    (case [false] (simp only [hc]) (exact (t17-h3 xm w _ _ _ _ hgr hgd h)))
+    (case [true] (simp only [hc refuse]) (exact h)))
+  (case [resource-fire z tag val] (simp only [raw0]) (exact (t18-h3 xm w _ _ _ h)))
+  (case [handle-drop x] (simp only [raw0]) (exact (t19-h3 xm w _ h)))
+  (case [pin x] (simp only [raw0]) (exact (t20-pin-h3 xm w _ h)))
+  (case [unpin x] (simp only [raw0]) (exact (t20-unpin-h3 xm w _ h)))
+  (case [create-comp st c i b] (simp only [raw0]) (cases hc (in-cleanup w st))
+    (case [false] (simp only [hc]) (exact (t3-h3 xm w _ _ _ _ h)))
+    (case [true] (simp only [hc refuse]) (exact h)))
+  (case [create-comp-top sc c i b] (simp only [raw0]) (exact (t3-top-h3 xm w _ _ _ _ h)))
+  (case [spawn st b fresh ins] (simp only [raw0]) (cases hc (body-shut w st))
+    (case [false] (simp only [hc]) (exact (t4-h3 xm w _ _ _ _ h)))
+    (case [true] (simp only [hc refuse]) (exact h)))
+  (case [spawn-top sc b fresh ins] (simp only [raw0]) (exact (t4-top-h3 xm w _ _ _ _ h)))
+  (case [start c fresh] (simp only [raw0]) (exact (t5-h3 xm w _ _ h)))
+  (case [await st ds m k fresh mine] (exact (And.left (h12-raw0-await-outcome xm w st ds m k fresh mine hp h))))
+  (case [dispatch-comp c fresh] (simp only [raw0]) (exact (And.left (h14-t11-outcome xm w c fresh hp h))))
+  (case [complete st tag val] (simp only [raw0]) (cases hc (complete-refused w st tag))
+    (case [false] (simp only [hc])
+      (exact (h16-t12-h3 xm (List.nil Nat) (List.nil Nat) (List.nil Nat) w st tag val (refused-tag-ok w st tag hc) hgr hg10 hga hgd hg7 hk hke h)))
+    (case [true] (simp only [hc refuse]) (exact h)))
+  (case [schedule r] (simp only [raw0]) (exact (sched-h3 xm w _ h)))
+  (case [host-await d fresh] (exact (h15-raw0-host-await-h3 xm w d fresh hp h)))
+  (case [host-unawait e] (simp only [raw0]) (exact (t22-un-hm3 xm w _ h)))
+  (case [handle-new x] (simp only [raw0]) (exact (t-handle-new-h3 xm w _ h)))
+  (case [deliver x v] (simp only [raw0]) (exact (t-deliver-h3 xm (List.nil Nat) w _ _ hk h)))
+  (case [post x v] (simp only [raw0]) (exact (t-post-h3 xm w _ _ h)))
+  (case [take st x k fresh] (simp only [raw0]) (exact (t-take-h3 xm w _ _ _ _ hgr hgd h)))
+  (case [release x] (simp only [raw0]) (exact (t-release-h3 xm w _ h)))
+  (case [finalize r] (simp only [raw0]) (exact (t-finalize-h3 xm w _ h)))
+  (case [cancel r] (simp only [raw0]) (exact (t-cancel-h3 xm (List.nil Nat) (List.nil Nat) (List.nil Nat) w _ hk hg10 hke h)))
+  (case [release-world] (simp only [raw0]) (exact (h17-t-release-world xm (List.nil Nat) (List.nil Nat) (List.nil Nat) w hg10 hk hke h)))
+  (case [open-scope st s] (simp only [raw0]) (exact (t-open-scope-h3 xm w _ _ h)))
+  (case [close-scope s] (simp only [raw0]) (exact (t-close-scope-h3 xm (List.nil Nat) (List.nil Nat) (List.nil Nat) w _ hk hg10 hke h)))
+  (case [detach k s] (simp only [raw0]) (exact (t-detach-h3 xm w _ _ h)))
+  (case [finally-enter st] (simp only [raw0]) (exact (t-finally-enter-h3 xm w _ h)))
+  (case [finally-exit st] (simp only [raw0]) (exact (t-finally-exit-h3 xm w _ h)))
+  (case [slice-exit r] (simp only [raw0]) (exact (t-slice-exit-h3 xm (List.nil Nat) (List.nil Nat) (List.nil Nat) w _ hk hg10 hke h))))
+
+(a/theorem h17-raw-h3 [xm :- (List Nat), w :- World, it :- Item]
+  (=> (= (p3la w) true) (= (h3 xm w) true) (= (h3 xm (:world (raw w it))) true))
+  (intros hp h)
+  (exact (h15-raw-lift xm w it hp (h15-raw0g-lift xm w it h (h17-raw0-h3 xm w it hp h)))))
