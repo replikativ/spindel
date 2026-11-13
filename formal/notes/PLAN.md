@@ -1008,3 +1008,18 @@ No counterexample. Tripwire: i10_test random drivers (g10r and lit-i10-current o
      its edge premise restricted to contrib members of obligated activations (generalize the premise as in
      `h3-undo-g`), plus a fold invariant "a processed out-dep edge of C is not (armed and member-current)".
   4. the loop: the queue is the exemption list (hk-settle-loop's shape, `settle-done-ok` empties it).
+- **hm16 status (2026-11-13, later)**: proved (34 forms, REPL): `h16-complete-task-x` (task half), `h16-free-fire-dep`,
+  `h16-free-nmc`, the frame `h16-fm-settle-*`, `h16-se-fold` (fold over out-dep edges: h3 under Lst and every processed
+  edge id FREE; a delivered dep edge is re-armed, so "free" replaces "unarmed"), `h16-nh` (no current holder) with
+  `-fm`/`-done`, `h16-free-mono/-drop`, `h16-undo2` (generalized undo), `h16-dis` (list discharge).
+- **Remaining for the comp half** (design fixed):
+  1. `h16-J xm B W` bundle, B = comps at the settle start: (a) strong_B c => strong_W c; (b) not-strong_B c => nh W c;
+     (c) comp y at W => h3-free xm W y; (d) every edge at W is dep, or its debtor no comp / in xm, or its id free under
+     xm; (e) comp-has equal to B. Stable under settle-one (fm, hk-ek back relation, hk-cs closure). Init: (c),(d) at
+     the pre-world from h3 xm, moved by fm; (b) by `h16-nh-done` (acts-alive from ga + `ga-run-upd-free`).
+  2. `h16-settle-step`: h3 (d :: Lq) W -> h3 (next ++ Lq) (settle-one W d ch), Lst = (d :: NS) ++ Lq with NS = the
+     creditors of marked out-edges not strong at W (never exempt a strong = running creditor: its holders' member
+     facts would be lost). Discharge by `h16-dis`: d via free edge ids (`h16-free-drop`), a not-ready creditor via
+     `hk-wif-nready`; queue elements need only "not strong at B".
+  3. loop (`hk-settle-loop` shape), `settle`, complete-body comp case (result row with C exempt via comp-upd lemma),
+     `complete-raw` wrapper (`h3-run-kill`, `hm3-retire-after`, `h3-run-cascade-g`, `h3-fin-if-final`), `t12`.
