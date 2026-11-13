@@ -1514,6 +1514,7 @@
                (And.right (And.right (And.right pf))) aaW hcW hep cdW hk)))))
 
 ;; ---- complete-raw and T12
+(lcopy! H3 'inv-retire-after)
 (a/theorem h16-complete-raw-x [xm :- (List Nat), hx :- (List Nat), gx :- (List Nat), gk :- (List Nat), w :- World, r :- RunRow, res :- RunResult]
   (=> (List.Mem r (:runs w)) (= (run-alive r) true) (= (tbl-any (act-of-run (:id r)) (:acts w)) false)
       (= (Bool.or (Bool.not (gd-cce w r)) (tbl-all (gd-u1 r) (:runs w))) true) (= (Nat.beq (:tag res) res-none) false)
