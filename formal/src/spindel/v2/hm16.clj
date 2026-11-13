@@ -1277,3 +1277,189 @@
         (have m := (And.right ek))
         (simp only [hx Bool.false_or h3-m hh Bool.not_true hk Bool.false_and Bool.and_false] at m)
         (cases m)))))
+
+;; ===========================================================================
+;; T12: complete-body and complete-raw
+;; ===========================================================================
+
+;; ---- g10 at the world after complete-body (the four cases of i10's cmp-* lemmas, without the tail)
+(a/theorem h16-g10-body [gxz :- (List Nat), gkz :- (List Nat), w :- World, r :- RunRow, res :- RunResult]
+  (=> (List.Mem r (:runs w)) (= (g10 gxz gkz w) true) (= (g10 gxz gkz (:world (complete-body (run-upd w (:id r) run-complete-row) r res))) true))
+  (intros mr h)
+  (have hs := (g10-sample gxz gkz w h))
+  (have ef (= (comp-find (run-upd w (:id r) run-complete-row) (:of r)) (comp-find w (:of r)))) (rfl)
+  (have et (= (task-find (run-upd w (:id r) run-complete-row) (:of r)) (task-find w (:of r)))) (rfl)
+  (cases hc (comp-find w (:of r)))
+  (case [none]
+    (have h0 := (g10-kill gxz gkz w (:id r) run-complete-row run-complete-row-id run-complete-rk10 (kill-none gxz gkz w r hs mr hc) h))
+    (cases hk (task-find w (:of r)))
+    (case [none] (simp only [complete-body ef hc et hk]) (exact h0))
+    (case [some k]
+      (simp only [complete-body ef hc et hk complete-task])
+      (exact (nat-fold-g10 gxz gkz (fire-edge res) (g10-fire-edge gxz gkz res) _ _
+               (g10-cancel-res gxz gkz _ r (g10-task-upd gxz gkz _ (:id k) (task-result-row res) (task-result-row-id res)
+                                              (fn [t :- TaskRow] (Eq.refl (tk10 t))) h0))))))
+  (case [some c]
+    (cases he (Nat.beq (:epoch r) (:epoch c)))
+    (case [false]
+      (have h0 := (g10-kill gxz gkz w (:id r) run-complete-row run-complete-row-id run-complete-rk10 (kill-stale gxz gkz w r c hs mr hc he) h))
+      (simp only [complete-body ef hc he]) (exact h0))
+    (case [true]
+      (have mc := (tbl-find-mem CompRow comp-id (:of r) c (:comps w) hc))
+      (have ec (= (:id c) (:of r))) (exact (tbl-find-id CompRow comp-id (:of r) c (:comps w) hc))
+      (have h0 := (g10-kill (List.cons Nat (:of r) gxz) gkz w (:id r) run-complete-row run-complete-row-id run-complete-rk10
+                    (kill-cur gxz gkz w r hs mr) (g10-gx-cons gxz gkz (:of r) w h)))
+      (have h0c (= (g10 (List.cons Nat (:id c) gxz) gkz (run-upd w (:id r) run-complete-row)) true)) (rw [ec]) (exact h0)
+      (have ee (= (:epoch c) (:epoch r))) (exact (Eq.symm (Nat.eq_of_beq_eq_true he)))
+      (have mc0 (List.Mem c (:comps (run-upd w (:id r) run-complete-row)))) (exact mc)
+      (simp only [complete-body ef hc he complete-comp])
+      (exact (g10-settle gxz gkz _ (:id c) _ (g10-cancel-res gxz gkz _ r (g10-result gxz gkz (run-upd w (:id r) run-complete-row) c res (:epoch r) h0c mc0 ee)))))))
+
+;; ---- a row edit of computation x with x exempt: only identity, pending and the epoch bound are needed
+(a/theorem h16-all-upd-other [P :- (=> CompRow Bool), x :- Nat, f :- (=> CompRow CompRow), cs :- (List CompRow)]
+  (=> (forall [c :- CompRow] (=> (= (Nat.beq (comp-id c) x) true) (= (P (f c)) true))) (= (tbl-all P cs) true)
+      (= (tbl-all P (tbl-upd comp-id x f cs)) true))
+  (induction cs)
+  (case [nil] (intros hp h) (simp only [tbl-upd tbl-all]))
+  (case [cons hd t ih]
+    (intros hp h)
+    (simp only [tbl-all Bool.and_eq_true] at h)
+    (cases hx (Nat.beq (comp-id hd) x))
+    (case [true] (simp only [tbl-upd hx tbl-all Bool.and_eq_true]) (exact (And.intro (hp hd hx) (ih hp (And.right h)))))
+    (case [false] (simp only [tbl-upd hx tbl-all Bool.and_eq_true]) (exact (And.intro (And.left h) (ih hp (And.right h)))))))
+(a/theorem h16-comp-upd-x [xm :- (List Nat), w :- World, x :- Nat, f :- (=> CompRow CompRow),
+                           hid :- (forall [c :- CompRow] (= (comp-id (f c)) (comp-id c))),
+                           hp :- (forall [c :- CompRow] (= (:pending (f c)) (:pending c))),
+                           hep :- (forall [c :- CompRow] (<= (:epoch c) (:epoch (f c))))]
+  (=> (= (h3 xm w) true) (= (h3 (List.cons Nat x xm) (comp-upd w x f)) true))
+  (intro h)
+  (have hs := (h3-sample xm w h))
+  (have h0 := (h3-rest-of _ w (h3-xm-cons xm x w h)))
+  (have a1 (forall [y :- Nat] (=> (< y (:next-id w)) (= (tbl-has comp-id y (:comps (comp-upd w x f))) true) (= (tbl-has comp-id y (:comps w)) true))))
+  (intros y hy q) (exact (Eq.trans (Eq.symm (tbl-has-upd CompRow comp-id x y f hid (:comps w))) q))
+  (have a2 (forall [y :- Nat] (=> (< y (:next-id w)) (= (reach-mem y (List.cons Nat x xm)) false) (= (tbl-all (hk-wif y) (:comps w)) true)
+                                 (= (tbl-all (hk-wif y) (:comps (comp-upd w x f))) true))))
+  (intros y hy hx q)
+  (simp only [reach-mem-cons Bool.or_eq_false_iff] at hx)
+  (have hpw (forall [c :- CompRow] (=> (= (Nat.beq (comp-id c) x) true) (= (hk-wif y (f c)) true))))
+  (intros c hc)
+  (have i1 (= (Nat.beq (:id (f c)) y) false))
+  (have e1 (= (:id (f c)) (:id c))) (exact (hid c))
+  (rw [e1]) (have e2 (= (:id c) x)) (exact (Nat.eq_of_beq_eq_true hc)) (rw [e2]) (rw [beq-comm]) (exact (And.left hx))
+  (simp only [hk-wif i1 Bool.not_false Bool.true_or])
+  (exact (h16-all-upd-other (hk-wif y) x f (:comps w) hpw q))
+  (have a5 (forall [k2 :- RK3] (=> (< (:of k2) (:next-id w)) (= (reach-mem (:of k2) (List.cons Nat x xm)) false) (= (tbl-all (h3-cs k2) (:comps w)) true)
+                                  (= (tbl-all (h3-cs k2) (:comps (comp-upd w x f))) true))))
+  (intros k2 hy hx q)
+  (simp only [reach-mem-cons Bool.or_eq_false_iff] at hx)
+  (have hpw (forall [c :- CompRow] (=> (= (Nat.beq (comp-id c) x) true) (= (h3-cs k2 (f c)) true))))
+  (intros c hc)
+  (have i1 (= (Nat.beq (:id (f c)) (:of k2)) false))
+  (have e1 (= (:id (f c)) (:id c))) (exact (hid c))
+  (rw [e1]) (have e2 (= (:id c) x)) (exact (Nat.eq_of_beq_eq_true hc)) (rw [e2]) (rw [beq-comm]) (exact (And.left hx))
+  (simp only [h3-cs i1 Bool.not_false Bool.true_or])
+  (exact (h16-all-upd-other (h3-cs k2) x f (:comps w) hpw q))
+  (have hrk (forall [r2 :- RunRow] (=> (List.Mem r2 (:runs (comp-upd w x f)))
+                                       (Or (= (Nat.ble (:next-id w) (:id r2)) true) (= (tbl-any (h3-rkq r2) (:runs w)) true)))))
+  (intros r2 m) (exact (Or.inr (any-elim-of RunRow (h3-rkq r2) r2 (:runs w) m (h3-rkq-refl r2))))
+  (exact (h3-intro _ _ (inv-comp-upd w x f hid hp hs)
+           (h3-rest-rel-x (List.cons Nat x xm) w (comp-upd w x f) (h3-db-of w hs) a1 a2
+             (fn [y :- Nat, hy :- (< y (:next-id w)), hx :- (= (reach-mem y (List.cons Nat x xm)) false), q :- (= (tbl-all (h3-tk (:runs w) y) (:tasks w)) true)] q)
+             (rfl)
+             (h3-hef-all (List.cons Nat x xm) w (:edges w) (fn [y :- Nat, q :- (= (tbl-has edge-id y (:edges w)) true)] q))
+             (h3-heb-of (List.cons Nat x xm) w (:edges w) (h3-heb-refl (:edges w))) (Nat.le_refl _)
+             (h3-c2-upd w x f hid hep) (h3-c3-upd w x f hid hep) a5 hrk h0))))
+
+;; ---- a computation that is not strong has no current holder
+(a/theorem h16-nh-ns [xm :- (List Nat), W :- World, c :- Nat]
+  (=> (= (gd W) true) (= (acts-alive W) true) (= (h3-rest xm W) true) (= (tbl-all (hk-sif c) (:comps W)) false) (h16-nh W c))
+  (intros hg haa hr hns)
+  (have hs := (gd-sample W hg))
+  (apply h16-nh-mk)
+  (intros a r ma mr ir ho hc)
+  (apply (any-elim CompRow (h3-cur (rk3 r)) _ (:comps W) hc))
+  (intros c2 mc2 hq)
+  (simp only [h3-cur rk3 Bool.and_eq_true] at hq)
+  (have ic (= (:id c2) c)) (exact (Eq.trans (Nat.eq_of_beq_eq_true (And.left hq)) ho))
+  (cases st (hk-strong c2))
+  (case [true]
+    (have u := (gd-same-id W c2 hk-strong hs mc2 st))
+    (have t (= (tbl-all (hk-sif c) (:comps W)) true))
+    (apply (tbl-all-mono CompRow _ (hk-sif c) _ (:comps W) u))
+    (intros q hq2)
+    (cases hx (Nat.beq (:id q) c))
+    (case [false] (simp only [hk-sif hx Bool.not_false Bool.true_or]))
+    (case [true]
+      (have hx2 (= (Nat.beq (comp-id q) (:id c2)) true)) (rw [ic]) (exact hx)
+      (simp only [same-id-then hx2 Bool.not_true Bool.false_or] at hq2)
+      (simp only [hk-sif hx hq2 Bool.not_true Bool.false_or]))
+    (rw [hns] at t) (cases t))
+  (case [false]
+    (have p := (gdk-parts _ _ _ (gd-rest-of W hg)))
+    (have qa := (And.right p)) (rw [all-gdkeys] at qa)
+    (have pc := (gd-c-parts _ _ _ (tbl-all-mem CompRow (fn [x :- CompRow] (gd-c (:runs W) (:next-id W) (gdkey x))) c2 (:comps W) qa mc2)))
+    (have dl := (And.left pc)) (simp only [gd-dle gdkey Bool.and_eq_true] at dl)
+    (have l1 := (gd-le-of _ _ (And.left dl)))
+    (cases hde (Nat.beq (:done-epoch c2) (:epoch c2)))
+    (case [false]
+      (have ne := (Nat.ne_of_beq_eq_false hde))
+      (have lt (= (Nat.blt (:done-epoch c2) (:epoch c2)) true)) (apply gd-blt-of) (omega)
+      (simp only [hk-strong lt Bool.or_true] at st) (cases st))
+    (case [true]
+      (have n1 := (h16-nh-done xm W c2 hg haa hr mc2 hde))
+      (exact (h16-nh-use W (:id c2) n1 a r ma mr ir (Eq.trans ho (Eq.symm ic)) hc)))))
+
+;; ---- J at the settle start, and the move of its base facts
+(a/theorem h16-J-init [xm :- (List Nat), xm2 :- (List Nat), W :- World]
+  (=> (= (gd W) true) (= (acts-alive W) true) (= (h3-rest xm2 W) true)
+      (forall [y :- Nat] (=> (= (tbl-has comp-id y (:comps W)) true) (= (h3-free xm W y) true)))
+      (forall [e :- EdgeRow] (=> (List.Mem e (:edges W)) (Or (= (Nat.beq (:kind e) ek-dep) true) (Or (= (tbl-has comp-id (:debtor e) (:comps W)) false) (Or (= (reach-mem (:debtor e) xm) true) (= (h3-free xm W (:id e)) true))))))
+      (h16-J xm (:comps W) W))
+  (intros hg haa hr hC hD)
+  (apply h16-J-mk)
+  (apply And.intro) (intros c s) (exact s)
+  (apply And.intro) (intros c s) (exact (h16-nh-ns xm2 W c hg haa hr s))
+  (apply And.intro) (exact hC)
+  (apply And.intro) (exact hD)
+  (intro y) (rfl))
+(a/theorem h16-CD-move [xm :- (List Nat), w :- World, w2 :- World]
+  (=> (h3-fm w w2) (= (:edges w2) (:edges w))
+      (forall [y :- Nat] (= (tbl-has comp-id y (:comps w2)) (tbl-has comp-id y (:comps w))))
+      (And (forall [y :- Nat] (=> (= (tbl-has comp-id y (:comps w)) true) (= (h3-free xm w y) true)))
+           (forall [e :- EdgeRow] (=> (List.Mem e (:edges w)) (Or (= (Nat.beq (:kind e) ek-dep) true) (Or (= (tbl-has comp-id (:debtor e) (:comps w)) false) (Or (= (reach-mem (:debtor e) xm) true) (= (h3-free xm w (:id e)) true)))))))
+      (And (forall [y :- Nat] (=> (= (tbl-has comp-id y (:comps w2)) true) (= (h3-free xm w2 y) true)))
+           (forall [e :- EdgeRow] (=> (List.Mem e (:edges w2)) (Or (= (Nat.beq (:kind e) ek-dep) true) (Or (= (tbl-has comp-id (:debtor e) (:comps w2)) false) (Or (= (reach-mem (:debtor e) xm) true) (= (h3-free xm w2 (:id e)) true))))))))
+  (intros hf he hhas hcd)
+  (apply And.intro)
+  (intros y hy) (exact (fm-free xm w w2 y hf ((And.left hcd) y (Eq.trans (Eq.symm (hhas y)) hy))))
+  (intros e2 me2)
+  (rw [he] at me2)
+  (have z := ((And.right hcd) e2 me2))
+  (cases z)
+  (case [inl z1] (exact (Or.inl z1)))
+  (case [inr z1]
+    (apply Or.inr)
+    (cases z1)
+    (case [inl z2] (apply Or.inl) (rw [(hhas (:debtor e2))]) (exact z2))
+    (case [inr z2]
+      (apply Or.inr)
+      (cases z2)
+      (case [inl z3] (exact (Or.inl z3)))
+      (case [inr z3] (exact (Or.inr (fm-free xm w w2 (:id e2) hf z3)))))))
+(a/theorem h16-fold-acts [f :- (=> World Nat World), hf :- (forall [w :- World, x :- Nat] (= (:acts (f w x)) (:acts w))), xs :- (List Nat)]
+  (forall [w :- World] (= (:acts (nat-fold f w xs)) (:acts w)))
+  (induction xs)
+  (case [nil] (intro w) (simp only [nat-fold]))
+  (case [cons y t ih] (intro w) (simp only [nat-fold]) (exact (Eq.trans (ih (f w y)) (hf w y)))))
+(a/theorem h16-fold-runs [f :- (=> World Nat World), hf :- (forall [w :- World, x :- Nat] (= (:runs (f w x)) (:runs w))), xs :- (List Nat)]
+  (forall [w :- World] (= (:runs (nat-fold f w xs)) (:runs w)))
+  (induction xs)
+  (case [nil] (intro w) (simp only [nat-fold]))
+  (case [cons y t ih] (intro w) (simp only [nat-fold]) (exact (Eq.trans (ih (f w y)) (hf w y)))))
+(a/theorem h16-aa-cancel-res [w :- World, r :- RunRow] (=> (= (acts-alive w) true) (= (acts-alive (cancel-res w r)) true))
+  (intro h)
+  (simp only [acts-alive] at h)
+  (simp only [acts-alive cancel-res])
+  (rw [(h16-fold-acts res-cancel (fn [w2 :- World, x2 :- Nat] (Eq.refl (:acts w2))) (:resources r) w)])
+  (rw [(h16-fold-runs res-cancel (fn [w2 :- World, x2 :- Nat] (Eq.refl (:runs w2))) (:resources r) w)])
+  (exact h))
