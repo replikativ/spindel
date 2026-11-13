@@ -2826,7 +2826,6 @@
 
 (declare join! cancel-resource! resource-fire! resource-ack!)
 
-
 (defn- set-ctl!
   "A resource's physical controller, owned by world `w` (copies elsewhere
    drop it, F1)."
