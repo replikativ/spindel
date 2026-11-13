@@ -298,7 +298,7 @@
   (induction h)
   (case [root r hr]
     (exact (reach-run-roots fuel succ roots r hc (Iff.mpr (reach-mem-iff r roots) hr))))
-  (case [step p q hp ihp hq]
+  (case [step p q hp hq ihp]
     (exact (reach-run-closed fuel succ roots p q hc ihp (Iff.mpr (reach-mem-iff q (succ p)) hq)))))
 
 (a/theorem reach-run-iff
@@ -588,14 +588,14 @@
   (intro hx)
   (induction hx)
   (case [root r hr] (exact (Reach.root r hr)))
-  (case [step p q hp ihp hq]
+  (case [step p q hp hq ihp]
     (have e := (h p ihp))
     (rw [e] at hq)
     (exact (Reach.step p q ihp hq)))
   (intro hx)
   (induction hx)
   (case [root r hr] (exact (Reach.root r hr)))
-  (case [step p q hp ihp hq]
+  (case [step p q hp hq ihp]
     (have e := (h p hp))
     (have hq2 (List.Mem q (succ2 p))) (rw [e]) (exact hq)
     (exact (Reach.step p q ihp hq2))))

@@ -574,7 +574,7 @@
     (cases q)
     (case [inl a] (exact (Or.inl a)))
     (case [inr b] (exact (Or.inr (Reach.root r (Iff.mp (reach-mem-iff r (obligations w)) b))))))
-  (case [step p q hp ihp hq]
+  (case [step p q hp hq ihp]
     (cases ihp)
     (case [inl a]
       (have ep (= p 2)) (exact (And.left a))
