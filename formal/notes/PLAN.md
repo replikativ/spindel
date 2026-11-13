@@ -978,3 +978,12 @@ No counterexample. Tripwire: i10_test random drivers (g10r and lit-i10-current o
 - **Deviation from the contracts**: the three edge-predicate helpers (job-apply, cascade, cancel-pred keys) are
   replaced by the `kc` bundle; the other 16 statements are literal.
 - **Remaining for h-mem2 through the step**: items 6 (T12), 8 (release-world, Rule R) and 9 (integration) above.
+
+### `hm15` (2026-11-13): raw lifts, T22 host await, T8 observe
+- **Proved** (spindel.v2.hm15): `h15-raw0g-lift` (h3 at raw0's world -> at raw0g's), `h15-raw-lift` (p3la w, h3 at
+  raw0g's world -> at raw's, via `h13-raw0g-support` + `h13-post-h3`): the assembly over all items is now one case per
+  item at `raw0`. `h15-host-await-raw-h3`, `h15-raw0-host-await-h3` (T22), `h15-t8-full-h3` (T8): the fresh edge
+  (`hm3-insert-edge-checked`, `insert-edge-fresh-h3`), the demand (`h3-demand-reactive` with g7 and aha of the world
+  after the insert), the fire (`h3-fire-edge`).
+- **Remaining**: T12 (complete-comp/-task, settle with the queue as exemption list, retire-after, the cascade,
+  fin-if-final), release-world (`revoke-roots`), `raw0-h3` by cases, then Rule R (`finish`).
