@@ -1031,3 +1031,16 @@ No counterexample. Tripwire: i10_test random drivers (g10r and lit-i10-current o
   the step guard `complete-refused`.
 - **Left for h-mem2 through the step**: release-world (`inv-revoke-roots`, `t-release-world-inv`), then the
   assembly `raw0-h3` over the 38 items, Rule R, `p3m`, `l5-safety-total`.
+- **hm17 done (2026-11-13)**: release-world (`h17-host-free`: a host edge's id is free; `h17-revoke-roots`,
+  `h17-t-release-world`) and the assembly `h17-raw0-h3` / `h17-raw-h3`: `p3la w -> h3 xm w -> h3 xm (raw w it)` over all
+  38 items (19 plain items lift with the H3 copier unaided).
+- **Rule R for h3 (hm18, not started)**. Copier probe (`lcopy-try! H3`): everything fails only through three roots:
+  1. `inv-finalize-one` (-> fin-loop, finalize-debtor, detach-source, detach): needs an h3 lemma for finalize-one.
+  2. `inv-demote-finish` / `inv-demote`: follow hmk-demote-x: exempt the stray set S during the fold
+     (`h3 (S ++ xm)`), cascade by `h3-run-cascade-g`, demote-epoch by a comp-upd lemma with epoch <=, drop of the dep
+     edges of x (creditor x in S: ids free, `hk-dok` from hmk), comp-del-unref / make-idle; discharge at the pass end
+     with `h16-dis`: no-holder `h16-nh` of x from the epoch step (held runs have epoch <= the old epoch, `h3-e1`) or,
+     when demote-cur is false, from i10's `ncq` lemma (i10.clj ~3087: no current run of c); freeness of x and the
+     per-edge condition as in hm16.
+  3. `inv-filter-world` (Rule R's filter): an `h3-filter-world` from `filter-safe` (precedent `hmk-filter-world`).
+  Then `h3-rr-loop` / `h3-rule-r` (inv-rank and `vr [] []` threaded as in hmk2), `step-h3`, `p3m`, `l5-safety-total`.
