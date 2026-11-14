@@ -52,11 +52,22 @@
   [& _]
   (throw (ex-info "savepoint outside a body" {})))
 
+(defn address
+  "The address of an effect occurrence: an explicit `id`, else `[frame key]`
+   from the effect's context (§8.2 addresses)."
+  [id {:keys [frame key]}]
+  (or id [frame key]))
+
+(defn publish-op
+  "The op a registered effect's handler returns to publish a savepoint at
+   `address` (`v2/register-effect!`)."
+  [site payload address]
+  [:savepoint site {::payload payload ::address address}])
+
 (v2/register-effect!
  `savepoint
- (fn [[site payload opts] {:keys [frame key]}]
-   [:savepoint site {::payload payload
-                     ::address (or (:id opts) [frame key])}]))
+ (fn [[site payload opts] ctx]
+   (publish-op site payload (address (:id opts) ctx))))
 
 (defn- unwrap
   "The payload a handler or a no-handler run sees."
