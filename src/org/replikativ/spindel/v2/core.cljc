@@ -3124,10 +3124,12 @@
         (close-scope! w (rv w (g w rw/W-ROOT)))
       ;; host admissions are revoked: released handles hold no row (T21)
         (when-let [reg (g w rw/W-REG)]
-          (doseq [x (hs/mvals reg)]
-            (when (and (#{rw/T-COMP rw/T-TASK rw/T-SOURCE} (gl x rw/TYPE)) (pos? (gl x rw/HANDLES)))
-              (s! x rw/HANDLES 0)
-              (when (zero? (gl x rw/REFS)) (aadd! (g w rw/W-RQ) x)))))
+          (doseq [x0 (vec (hs/mvals reg))]
+            (when (and (#{rw/T-COMP rw/T-TASK rw/T-SOURCE} (gl x0 rw/TYPE)) (pos? (gl x0 rw/HANDLES)))
+              ;; a fork's own copy: an inherited basis row is shared with its parent
+              (let [x (rv w x0)]
+                (s! x rw/HANDLES 0)
+                (when (zero? (gl x rw/REFS)) (aadd! (g w rw/W-RQ) x))))))
         (commit! w [:release-world])
         (s! w rw/W-RELEASED true)))))
 
