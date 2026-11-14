@@ -31,7 +31,7 @@
           (is (= 0 (:old result)))
           (is (nil? (:deltas result)) "Scalars don't have deltas"))))))
 
-(deftest ^:gap test-signal-interval-vector
+(deftest test-signal-interval-vector
   (testing "Interval for vector values with deltas"
     (let [rt v2/*world*]
       (let [todos (v2/signal [])
@@ -56,7 +56,7 @@
           (is (= [] old-val))
           (is (some? (:deltas result))))))))
 
-(deftest ^:gap test-signal-interval-deltaable-operations
+(deftest test-signal-interval-deltaable-operations
   (testing "Deltaable collections track operations via Interval"
     (let [rt v2/*world*]
       (let [items (v2/signal [])

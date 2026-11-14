@@ -92,7 +92,7 @@
       (finally (stop)))))
 
 ;; v2 source writes currently provide no deltas to accumulate.
-(deftest ^:gap test-accumulate-merges-intervals
+(deftest test-accumulate-merges-intervals
   (let [s (v2/signal []) a (comb/accumulate s iv/merge-intervals)
         outer (spin (let [i (await a)] {:new (:new i) :old (:old i) :deltas (:deltas i)}))
         stop (v2/observe! outer (fn [_ _]))]

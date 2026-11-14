@@ -13,6 +13,7 @@
   (:require [org.replikativ.spindel.v2.rows :as rw
              #?@(:clj [:refer [g s! gl alist acount anth aadd! apop! aput! aclear! acopy]])]
             [org.replikativ.spindel.incremental.interval :as iv]
+            [org.replikativ.spindel.incremental.deltaable :as dl]
             [org.replikativ.spindel.v2.host :as hs]
             [org.replikativ.spindel.v2.lifetime :as lt]
             [is.simm.partial-cps.runtime :as pr]
@@ -1078,6 +1079,32 @@
             (when (> nxt cur) (hs/mput! ords site nxt))))
         (s! r rw/R-ORD ords)))))
 
+;; ---------------------------------------------------------------------------
+;; Delta log (§4.4): a signal or cell keeps the deltas of its last writes,
+;; truncated at a constant bound. X-DLOG is nil (nothing known before the
+;; current version) or [from ds], `ds` holding one entry per version in
+;; (from, version]. A write with unknown deltas (a plain write) resets it.
+
+(def ^:const delta-bound 32)
+
+(defn- log-deltas! [x ver ds]
+  (if (nil? ds)
+    (s! x rw/X-DLOG nil)
+    (let [[from l] (or (g x rw/X-DLOG) [(dec (long ver)) []])
+          l (conj l ds)]
+      (s! x rw/X-DLOG (if (> (count l) delta-bound)
+                        [(inc (long from)) (into [] (subvec l 1))]
+                        [from l])))))
+
+(defn- deltas-since
+  "The composed deltas of `x` since version `since`, or nil when they are
+   not available (a plain write or truncation in between)."
+  [x since]
+  (when-let [[from l] (g x rw/X-DLOG)]
+    (let [since (long since) from (long from)]
+      (when (>= since from)
+        (reduce into [] (subvec l (- since from)))))))
+
 (defn- dispatch!
   "T11 (and T5 for a computation without a fired edge): starts the
    computation's next run, re-entering at its earliest fired dep edge when
@@ -1125,15 +1152,16 @@
                    (s! r rw/R-CURSOR (inc (long ei)))
                    (s! r rw/R-EIDX (inc at))
                    (s! e rw/E-ARMED true)
-                   (s! e rw/E-SEEN (g d rw/VERSION))
-                   (if (source? d)
-                     (let [old (g e rw/E-BASE) v (g d rw/X-VALUE)]
-                       (s! e rw/E-BASE v)
-                       #(k (iv/->Interval old v nil)))
-                     (let [[v err?] (debtor-result d)
-                           ek (g e rw/E-ERRK)]
-                       (when (final? d) (remove-dep! w e))   ; consumed: removed, not re-armed
-                       (if err? #(ek v) #(k v)))))
+                   (let [ds (when (source? d) (deltas-since d (gl e rw/E-SEEN)))]
+                     (s! e rw/E-SEEN (g d rw/VERSION))
+                     (if (source? d)
+                       (let [old (g e rw/E-BASE) v (g d rw/X-VALUE)]
+                         (s! e rw/E-BASE v)
+                         #(k (iv/->Interval old v ds)))
+                       (let [[v err?] (debtor-result d)
+                             ek (g e rw/E-ERRK)]
+                         (when (final? d) (remove-dep! w e))   ; consumed: removed, not re-armed
+                         (if err? #(ek v) #(k v))))))
                  ;; Restart from the body. E (if any) is re-armed (removed if its
                  ;; debtor is final); its baseline advances when the new run reads
                  ;; it (Z#22).
@@ -1275,16 +1303,17 @@
               (k (iv/->Interval nil (g x rw/X-VALUE) nil)))
           (let [[e reused?] (site-edge! w r c x at (reentrant-k r k) ek)
                 v (g x rw/X-VALUE)
-                old (if reused?
-                      (g e rw/E-BASE)
-                      (when-let [b (adoption-baseline! w c at x)] (g b rw/E-BASE)))]
+                b (when-not reused? (adoption-baseline! w c at x))
+                old (if reused? (g e rw/E-BASE) (when b (g b rw/E-BASE)))
+                ds (cond reused? (deltas-since x (gl e rw/E-SEEN))
+                         b (deltas-since x (gl b rw/E-SEEN)))]
             (s! e rw/E-BASE v)
             (s! e rw/E-SEEN (g x rw/VERSION))
             (s! e rw/E-ARMED true)
           ;; Z#48: a closed (final) source delivers once; its edge is consumed
             (when (final? x) (remove-dep! w e))
             (commit! w [:track (g r rw/ID) (g x rw/ID) [:opaque k] (if reused? 0 (g e rw/ID))])
-            (k (iv/->Interval old v nil)))))
+            (k (iv/->Interval old v ds)))))
       (unwind! ek))))
 
 (defn- new-activation! [w aid r mode k ek ^objects members ^objects slots remaining]
@@ -1538,7 +1567,7 @@
             (swap [this f a] (handle-swap! this #(f % a)))
             (swap [this f a b] (handle-swap! this #(f % a b)))
             (swap [this f a b xs] (handle-swap! this #(apply f % a b xs)))
-            (compareAndSet [this o n] (handle-swap! this #(if (identical? % o) n %) (fn [old _] (identical? old o))))
+            (compareAndSet [this o n] (handle-swap! this #(if (identical? % o) n %) (fn [old _] (identical? old o)) false))
             clojure.lang.IRef
             (addWatch [this k f] (handle-watch! this k f) this)
             (removeWatch [this k] (handle-unwatch! this k) this)
@@ -2401,28 +2430,38 @@
               :cljs (js/console.error "watch" k "failed:" t))))))
 
 (defn- write-row!
-  "T2 on the open source row `x` of `w`; `ref` is what its watches receive."
-  [w x ref v]
-  (let [old (g x rw/X-VALUE)]
-    (s! x rw/X-VALUE v)
-    (s! x rw/VERSION (inc (gl x rw/VERSION)))
-    (let [outs (acopy (g x rw/OUTS))]
-      (dotimes [i (acount outs)]
-        (let [e (rv w (anth outs i)) k (gl e rw/E-KIND)]
-          (cond (== k rw/EK-DEP) (fire-dep! w e)
-                (== k rw/EK-OBSERVE) (deliver-observe! w e)))))
-    (commit! w [:write (g x rw/ID) [:opaque v]])
-    (notify-watches! w (g x rw/ID) ref old v)))
+  "T2 on the open source row `x` of `w`; `ref` is what its watches receive.
+   `ds` are the write's deltas, nil when unknown (§4.4)."
+  ([w x ref v] (write-row! w x ref v nil))
+  ([w x ref v ds]
+   (let [old (g x rw/X-VALUE)
+         ver (inc (gl x rw/VERSION))]
+     (s! x rw/X-VALUE v)
+     (s! x rw/VERSION ver)
+     (log-deltas! x ver ds)
+     (let [outs (acopy (g x rw/OUTS))]
+       (dotimes [i (acount outs)]
+         (let [e (rv w (anth outs i)) k (gl e rw/E-KIND)]
+           (cond (== k rw/EK-DEP) (fire-dep! w e)
+                 (== k rw/EK-OBSERVE) (deliver-observe! w e)))))
+     (commit! w [:write (g x rw/ID) [:opaque v]])
+     (notify-watches! w (g x rw/ID) ref old v))))
 
-(defn write!
-  "T2: `version += 1`, fire dep edges and deliver observe edges (§4.5.1)."
-  [h v]
+(defn- write-d!
+  "T2 with the write's deltas (nil when unknown)."
+  [h v ds]
   (gated (world-of h)
          (let [x (row-of h) w (cw)]
            (if (closed? x)
              (refuse! w [:write (g x rw/ID) [:opaque v]])
-             (write-row! w x h v))))
+             (write-row! w x h v ds))))
   v)
+
+(defn write!
+  "T2: `version += 1`, fire dep edges and deliver observe edges (§4.5.1).
+   A plain write carries no deltas."
+  [h v]
+  (write-d! h v nil))
 
 (defn unborn-ex []
   (ex-info "instance not activated: only writes before activate! (S3)" {:spindel/unborn true}))
@@ -2599,22 +2638,29 @@
    (new-handle w (aget ^objects (.-cell ^Ref r) 0))))
 
 (defn- handle-swap!
-  "swap! on a signal or cell handle: read and write in one host item."
-  ([h f] (handle-swap! h f (fn [_ n] n)))
-  ([h f ret]
+  "swap! on a signal or cell handle: read and write in one host item. With
+   `deltas?`, `f` sees the old value shallowly wrapped as a deltaable
+   collection, and the operations it records become the write's deltas
+   (§4.4); the stored value is always the plain one."
+  ([h f] (handle-swap! h f (fn [_ n] n) true))
+  ([h f ret deltas?]
    (let [w (world-of h)]
      (host-call! w #(let [x (row-of h)]
                       (when-not (and (source? x) (<= (gl x rw/X-KIND) rw/SRC-CELL))
                         (throw (invalid-op :swap "swap!/reset! is for signals and cells")))
-                      (let [old (g x rw/X-VALUE) n (f old)]
-                        (write! h n)
+                      (let [old (g x rw/X-VALUE)
+                            n (f (if deltas? (dl/wrap-deltaable old) old))
+                            [n ds] (if (and deltas? (dl/deltaable? n))
+                                     [(dl/unwrap-deltaable n) (dl/get-deltas n)]
+                                     [n nil])]
+                        (write-d! h n ds)
                         (ret old n)))))))
 
 (defn swap-changed?
   "swap! on a signal or cell, returning whether its value changed (old
    swap-signal-changed?)."
   [h f & args]
-  (handle-swap! h #(apply f % args) (fn [old n] (not= old n))))
+  (handle-swap! h #(apply f % args) (fn [old n] (not= old n)) true))
 
 (defn- handle-row-id [h] (aget ^objects (aget ^objects (.-cell ^Handle h) 0) rw/ID))
 (defn- handle-watch-token [h w]

@@ -158,7 +158,8 @@
 (def ^:const X-OPEN 14)
 (def ^:const X-WAITERS 15)   ; mailbox/semaphore: FIFO of waiting wait edges
 (def ^:const X-MAX 16)       ; semaphore: its maximum permit count (Z#62)
-(def ^:const X-SIZE 17)
+(def ^:const X-DLOG 17)      ; signal/cell: [from deltas] covering versions (from, version], or nil (§4.4)
+(def ^:const X-SIZE 18)
 
 ;; Resource (§1, T15-T18)
 (def ^:const Z-KIND 12)      ; :offload :timer :external
