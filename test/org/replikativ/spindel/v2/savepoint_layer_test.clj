@@ -145,3 +145,21 @@
     (is (wait-until #(= 2 (count @es))))
     (is (= #{1 7} (set (map second @es))))
     ((sp/close! s) identity identity)))
+
+(deftest resuming-a-fork-while-its-world-is-busy
+  ;; the activation may wait behind other items of the fork's world; the
+  ;; end is watched once it is born
+  (let [w (v2/world) pending (atom nil) [es hs] (ends)
+        s (sp/open! w {:handlers (assoc hs :choose (fn [p] (reset! pending p)))})]
+    (sp/start! s #(task (+ 1 (sp/savepoint :choose nil))))
+    (is (wait-until #(some? @pending)))
+    (let [errors (atom 0)]
+      (dotimes [_ 200]
+        (let [k (sp/fork @pending)
+              fw (:savepoint/world k)
+              writer (future (dotimes [j 20] (v2/assoc-in-world! fw [:x j] j)))]
+          (try (sp/resume k 1) (catch Exception _ (swap! errors inc)))
+          @writer))
+      (is (zero? @errors))
+      (is (wait-until #(= 200 (count (filter (comp #{:result} first) @es))))))
+    ((sp/close! s) identity identity)))

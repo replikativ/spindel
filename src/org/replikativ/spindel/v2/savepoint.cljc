@@ -316,8 +316,10 @@
       (when (compare-and-set! (::instance sp) :unborn :born)
         (let [w (:savepoint/world sp)]
           (v2/activate! w v)
-          ;; observable once born (an unborn world takes only writes)
-          (watch-world-end! s w)))
+          ;; observable once born (an unborn world takes only writes): a
+          ;; host item after the activation, which may still be queued
+          ;; behind other items of `w` when its gate is busy
+          (v2/host! w #(watch-world-end! s w))))
       (v2/resume! pub v))
     nil))
 
