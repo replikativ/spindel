@@ -2463,6 +2463,26 @@
   [h v]
   (write-d! h v nil))
 
+(defn rerun!
+  "§4.1: a write to the rerun source of computation `h` (old `rerun!`,
+   `mark-dirty!`). Its next run starts from the body. A live computation is
+   invalidated at once (an epoch step, marking its creditors) and runs again
+   if demanded; an idle one becomes invalid and runs when next demanded.
+   Throws for a handle that is not a computation."
+  [h]
+  (host-call! (world-of h)
+              #(let [c (row-of h) w (cw)]
+                 (when-not (comp? c)
+                   (throw (invalid-op :rerun "rerun! is for computations")))
+                 (if (g c rw/C-IDLE)
+                   (s! c rw/C-VALIDITY :invalid)
+                   (do (s! c rw/C-EPOCH (inc (gl c rw/C-EPOCH)))
+                       (s! c rw/C-RESTART true)
+                       (mark-from! w c)
+                       (maybe-schedule! w c)))
+                 (commit! w [:rerun (g c rw/ID)])
+                 nil)))
+
 (defn unborn-ex []
   (ex-info "instance not activated: only writes before activate! (S3)" {:spindel/unborn true}))
 
