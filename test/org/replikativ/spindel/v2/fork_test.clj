@@ -199,3 +199,20 @@
              "its own world: refused, use the (fork) effect")))
      (v2/release-world! other)
      (v2/release-world! w))))
+
+(deftest a-host-fork-may-name-its-owner
+  ;; F2 with another owner: the fork outlives the world it copies and is
+  ;; released with its owner
+  (let [root (v2/world)
+        a (v2/fork! root)
+        x (binding [v2/*world* a] (v2/signal 1))
+        b (v2/fork! a {:owner root})
+        c (v2/fork! a)]
+    (v2/release-world! a)
+    (Thread/sleep 50)
+    (is (= 1 (v2/value (v2/in-world b x))) "b is owned by root: it outlives a")
+    (is (thrown? Exception (v2/value (v2/in-world c x))) "c is owned by a: released with it")
+    (v2/release-world! root)
+    (Thread/sleep 50)
+    (is (thrown? Exception (v2/value (v2/in-world b x))) "released with its owner")
+    (is (thrown? clojure.lang.ExceptionInfo (v2/fork! root {:owner (v2/world)})) "an unrelated owner")))

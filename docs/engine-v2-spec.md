@@ -1036,7 +1036,10 @@ The child `W′` gets:
 - **no** world-lifecycle rows: `forks`, `pubs`, `pending-activation` and
   `ingress` start empty;
 - in `W`: a fork marker `M = {child, owner: current scope}`, retained by its
-  owner scope.
+  owner scope. A host fork (between slices) is owned by `W`'s root scope, or
+  by the root scope of another world of the same family named as its owner
+  (2026-11-14), as for instances (S3): copies of a world then outlive it. An
+  owner already released releases the fork.
 
 **Mode (Q3, decided):**
 - **frozen** is the default: untouched reads see the fork-time basis.
