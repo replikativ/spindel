@@ -163,3 +163,20 @@
       (is (zero? @errors))
       (is (wait-until #(= 200 (count (filter (comp #{:result} first) @es))))))
     ((sp/close! s) identity identity)))
+
+(deftest disposing-fork-anchors-gives-their-worlds-back
+  ;; anchors made by forking a savepoint are unborn instances: disposing
+  ;; one discards it (S7), and the publication stays forkable
+  (let [w (v2/world) pending (atom nil) [es hs] (ends)
+        s (sp/open! w {:handlers (assoc hs :choose (fn [p] (reset! pending p)))})]
+    (sp/start! s #(task (inc (sp/savepoint :choose nil))))
+    (is (wait-until #(some? @pending)))
+    (let [anchors (vec (repeatedly 5 #(sp/fork @pending)))]
+      (is (= 5 (count @(:worlds s))))
+      (run! sp/dispose anchors)
+      (is (empty? @(:worlds s)) "the session gives the anchors' worlds back")
+      (is (every? (comp not sp/pending?) anchors))
+      (let [k (sp/fork @pending)]
+        (sp/resume k 41)
+        (is (wait-until #(some (fn [[t v]] (= [t v] [:result 42])) @es)) "the publication still forks")))
+    ((sp/close! s) identity identity)))
