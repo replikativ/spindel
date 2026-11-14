@@ -323,22 +323,29 @@
       (v2/resume! pub v))
     nil))
 
+(declare release-world!)
+
 (defn abandon
   "Unwinds the computation suspended at `sp` (S7); an unactivated fork is
-   discarded without running anything. Consumes `sp`."
+   discarded without running anything: the session gives its world back.
+   Consumes `sp`."
   [sp]
   (let [pub (live-pub sp :abandon)]
     (if (instance-sp? sp)
       (when (compare-and-set! (::instance sp) :unborn :abandoned)
-        (v2/release-world! (:savepoint/world sp)))
+        (release-world! (::session sp) (:savepoint/world sp)))
       (v2/abandon! pub))
     nil))
 
 (defn dispose
   "Drops the anchor `sp` (S9): its publication's basis is freed once no
-   other reference holds it; a pending one is abandoned first."
+   other reference holds it; a pending one is abandoned first. An
+   unactivated fork used as an anchor is discarded (S7); the publication it
+   instantiates stays, other anchors may share it."
   [sp]
-  (v2/dispose! (::pub sp)))
+  (if (instance-sp? sp)
+    (when (pending? sp) (abandon sp))
+    (v2/dispose! (::pub sp))))
 
 (defn spend-key
   "An identity for what is spent continuing from `sp`: per world and
