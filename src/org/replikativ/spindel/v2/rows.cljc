@@ -34,11 +34,19 @@
 ;; M5 owner epochs: every row has one extra last slot holding the epoch of the
 ;; world incarnation that owns it.
 (defn new-row
-  "A row of `size` fields plus its owner-epoch slot."
-  ^objects [epoch size]
-  (let [a (object-array (inc (long size)))]
-    (aset a (long size) epoch)
+  "A row of `size` fields plus two trailing slots: the ID of the world that
+   created it (copies keep it; handle lineage, §8.1) and its owner epoch
+   (always the last slot)."
+  ^objects [epoch creator size]
+  (let [a (object-array (+ 2 (long size)))]
+    (aset a (long size) creator)
+    (aset a (inc (long size)) epoch)
     a))
+
+(defn creator
+  "The ID of the world that created row `a` (nil for a world row)."
+  [^objects a]
+  (aget a (- (alength a) 2)))
 
 ;; Row types
 (def ^:const T-WORLD 0)
@@ -97,7 +105,8 @@
 (def ^:const W-SWEEP-GEN 41)  ; last completed family atom sweep
 (def ^:const W-SWEEP-PENDING 42) ; independent coalesced maintenance flag
 (def ^:const W-META-CLOSED 43) ; terminal metadata cleanup completed
-(def ^:const W-SIZE 44)
+(def ^:const W-LINEAGE 44)    ; ([ancestor-id cut] ...) nearest first: rows of an ancestor below cut are inherited
+(def ^:const W-SIZE 45)
 
 ;; Scope
 (def ^:const S-PARENT 2)

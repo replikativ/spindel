@@ -21,7 +21,7 @@
           (finally (v2/release-world! fresh-child))))
       (finally (v2/release-world! grandchild) (v2/release-world! child)))))
 
-(deftest ^:gap access-from-outside-the-lineage-is-signalled
+(deftest access-from-outside-the-lineage-is-signalled
   (let [root v2/*world* left (v2/fork! root) right (v2/fork! root)
         a (binding [v2/*world* left] (v2/atom 0))
         d (v2/deferred left) m (v2/mailbox left)]
