@@ -208,15 +208,25 @@
 (defn- instance-sp [s sp w]
   (assoc sp :savepoint/world w ::instance (atom :unborn)))
 
+(defn anchor?
+  "Whether `sp` can still be forked: its publication keeps its basis (it was
+   not disposed), whether or not it was resumed."
+  [sp]
+  (some? (:basis (::pub sp))))
+
 (defn fork
   "`sp` in a new world that starts as `sp`'s world was at the site: an
    instance of its publication, owned by the session's root. Options:
    `:handlers` merged over the inherited ones, `:seed` the child's seed.
-   `sp` stays pending. Returns the child savepoint."
+   `sp` need not be pending: a resumed savepoint is an anchor until it is
+   disposed (S9). Returns the child savepoint, pending."
   ([sp] (fork sp nil))
   ([sp {:keys [handlers] child-seed :seed}]
    (let [s (::session sp)
-         pub (live-pub sp :fork)
+         pub (if (anchor? sp)
+               (::pub sp)
+               (throw (ex-info "Cannot fork a disposed savepoint"
+                               {:type ::not-pending :operation :fork :savepoint/address (:savepoint/address sp)})))
          w (v2/instantiate pub (:root s))]
      (adopt-world! s sp w (next-index! s sp))
      (when child-seed (v2/assoc-in-world! w [:savepoint/seed] child-seed))
