@@ -22,8 +22,10 @@
   On v2 an incremental update is a replay from the earliest changed address
   (choices live in tasks, which do not re-run).
 
-  Operations return CPS operations `(fn [resolve reject])`; in a task body
-  await one with `v2/external`."
+  Operations return CPS operations `(fn [resolve reject])` that complete as
+  host code (`savepoint/off-world`), never inside a world, so a driver may
+  call into any world from its continuation. In a task body await one with
+  `v2/external`."
   (:require [org.replikativ.spindel.v2.core :as v2]
             [org.replikativ.spindel.v2.savepoint :as sp]))
 
@@ -150,12 +152,13 @@
   ([session f policy] (run session f policy nil))
   ([session f policy opts]
    (fn [resolve reject]
-     (try
-       (sp/install-handlers! (:root session)
-                             (:table (handlers-of (assoc opts :policy policy) session resolve reject)))
-       (sp/start! session f)
-       (catch #?(:clj Throwable :cljs :default) error
-         (reject error))))))
+     (let [resolve (sp/off-world resolve) reject (sp/off-world reject)]
+       (try
+         (sp/install-handlers! (:root session)
+                               (:table (handlers-of (assoc opts :policy policy) session resolve reject)))
+         (sp/start! session f)
+         (catch #?(:clj Throwable :cljs :default) error
+           (reject error)))))))
 
 (defn replay
   "Runs the computation of `trace` again from `address` under `policy`: an
@@ -166,7 +169,8 @@
   ([trace address policy] (replay trace address policy nil))
   ([trace address policy opts]
    (fn [resolve reject]
-     (let [anchor (get-in trace [:trace/entries address :savepoint])]
+     (let [resolve (sp/off-world resolve) reject (sp/off-world reject)
+           anchor (get-in trace [:trace/entries address :savepoint])]
        (if-not (and anchor (sp/anchor? anchor))
          (reject (ex-info "Trace holds no anchor at address" {:type ::no-anchor :address address}))
          (let [{:keys [table site-opts]}

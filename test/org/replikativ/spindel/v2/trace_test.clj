@@ -59,3 +59,14 @@
         [_ t] (run-op (trace/run s program (trace/constrained-policy {:c 30} trace/payload-policy)))]
     (is (= [1 2 30] (:trace/result t)))
     ((sp/close! s) identity identity)))
+
+(deftest completions-run-as-host-code
+  (let [w (v2/world) s (sp/open! w)
+        p (promise)]
+    ((trace/run s program trace/payload-policy)
+     (fn [t] (deliver p [(v2/cw) (v2/get-in-world (:trace/world t) [:savepoint/seed])]))
+     (fn [e] (deliver p [:err e])))
+    (let [[cw seed] (deref p 5000 [:timeout])]
+      (is (nil? cw) "not inside any world")
+      (is (some? seed) "so it may read a world's state"))
+    ((sp/close! s) identity identity)))

@@ -3553,9 +3553,12 @@
    run's copy is parked on its savepoint, which is the fork's pending
    activation. Any number of instances are independent. `owner` (default:
    the publication's world) is the world whose root scope owns the instance
-   once it is activated; it must be of the same family."
-  ([pub] (instantiate pub nil))
-  ([pub owner]
+   once it is activated; it must be of the same family. `init-state`
+   (state -> state) sets the instance's world state before anyone can reach
+   it."
+  ([pub] (instantiate pub nil nil))
+  ([pub owner] (instantiate pub owner nil))
+  ([pub owner init-state]
    (let [b (or (:basis pub)
                (throw (ex-info "instantiate: the publication is disposed" {:spindel/invalid :disposed})))
          owner (or owner (:world pub)
@@ -3570,6 +3573,9 @@
        ;; without running anything (it never ran)
        (s! c rw/W-UNBORN true)
        (s! c rw/W-PUB-WORLD owner)
+       ;; nobody else can reach the instance yet: its initial state is set
+       ;; directly, without a host item (so also from another world's slice)
+       (when init-state (s! c rw/W-STATE (init-state (g c rw/W-STATE))))
        c))))
 
 (defn consume
@@ -3578,9 +3584,12 @@
    its own world: its savepoint is consumed, so it can no longer be resumed
    or abandoned, and its finalizers never run there. Refused (throws, the
    publication stays pending) unless the savepoint is armed and the run
-   holds no other resource (S6). Returns the instances, unborn."
-  ([pub k] (consume pub k nil))
-  ([pub k owner]
+   holds no other resource (S6). `init-of` (index -> init-state, see
+   `instantiate`) sets each instance's initial state. Returns the
+   instances, unborn."
+  ([pub k] (consume pub k nil nil))
+  ([pub k owner] (consume pub k owner nil))
+  ([pub k owner init-of]
    (let [w (or (:world pub) (throw (ex-info "consume: the savepoint is not pending" {:spindel/invalid :consume})))
          owner (or owner w)]
      (host-call! w #(let [z (sp-res w (:act pub))
@@ -3599,7 +3608,7 @@
                             ;; its continuation lives on in the instances only
                             (s! r rw/R-FINS 0)
                             (commit! w [:consume (:act pub) k])))))
-     (let [is (mapv (fn [_] (instantiate pub owner)) (range k))]
+     (let [is (mapv (fn [i] (instantiate pub owner (when init-of (init-of i)))) (range k))]
        (let-go-world! pub)
        is))))
 

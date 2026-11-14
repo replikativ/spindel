@@ -91,3 +91,15 @@
     (sp/install-handlers! w {:default (fn [_])})
     (is (sp/handled? w :x))
     ((sp/close! s) identity identity)))
+
+(deftest a-handler-forks-and-resumes-its-forks
+  ;; from inside the publishing world's callback: no host call into the fork
+  (let [w (v2/world) [es hs] (ends)
+        s (sp/open! w {:handlers (assoc hs :choose (fn [p]
+                                                     (let [k (sp/fork p)]
+                                                       (sp/resume k 7)
+                                                       (sp/resume p 1))))})]
+    (sp/start! s #(task (sp/savepoint :choose nil)))
+    (is (wait-until #(= 2 (count @es))))
+    (is (= #{1 7} (set (map second @es))))
+    ((sp/close! s) identity identity)))
