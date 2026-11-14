@@ -59,6 +59,18 @@
       (is (= :abandoned (first (last @es)))))
     ((sp/close! s) identity identity)))
 
+(deftest a-chain-of-forks-never-repeats-a-seed
+  ;; each fork is forked again before it runs: a replay from the same site
+  ;; of the last fork's world, as an MH chain does
+  (let [w (v2/world) pending (atom nil)
+        s (sp/open! w {:seed 7 :handlers {:choose (fn [p] (reset! pending p))}})]
+    (sp/start! s #(task (sp/savepoint :choose nil)))
+    (is (wait-until #(some? @pending)))
+    (let [chain (take 6 (iterate sp/fork @pending))
+          seeds (map #(sp/seed (:savepoint/world %)) chain)]
+      (is (= 6 (count (set seeds))) (str (vec seeds))))
+    ((sp/close! s) identity identity)))
+
 (deftest copy-consumes-the-source
   (let [w (v2/world) pending (atom nil) [es hs] (ends)
         s (sp/open! w {:handlers (assoc hs :choose (fn [p] (reset! pending p)))})]
