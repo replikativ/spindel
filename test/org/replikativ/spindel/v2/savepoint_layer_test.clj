@@ -84,3 +84,10 @@
       (Thread/sleep 50)
       (is (zero? @ran) "nothing ran in the discarded fork"))
     (sp/close! s)))
+
+(deftest handled-counts-the-default-handler
+  (let [w (v2/world) s (sp/open! w)]
+    (is (not (sp/handled? w :x)))
+    (sp/install-handlers! w {:default (fn [_])})
+    (is (sp/handled? w :x))
+    (sp/close! s)))

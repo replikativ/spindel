@@ -171,9 +171,10 @@
   w)
 
 (defn handled?
-  "Whether `w` has a handler for `site`."
+  "Whether `w` has a handler for `site`, its own or `:default`."
   [w site]
-  (some? (get (v2/get-in-world w [:savepoint/handlers]) site)))
+  (let [hs (v2/get-in-world w [:savepoint/handlers])]
+    (some? (or (get hs site) (get hs :default)))))
 
 (defn open!
   "Opens a session rooted at `w`. Options: `:handlers` {site handler},
