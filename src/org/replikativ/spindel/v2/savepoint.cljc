@@ -304,12 +304,17 @@
   nil)
 
 (defn close!
-  "Ends the session: releases every world it made and stops accepting
-   resumes. Returns a deferred-like promise delivered when the releases have
-   been requested (the engine's world join is not available yet)."
+  "Ends the session: stops accepting resumes, abandons pending
+  publications of the worlds it made and releases them. Returns a CPS
+  operation `(fn [resolve reject])` that closes when invoked and resolves
+  once the releases are requested (engine v2 has no world join yet, so it
+  does not wait for their cleanup)."
   [s]
-  (reset! (:closing? s) true)
-  (doseq [w @(:worlds s)] (v2/release-world! w))
-  (reset! (:worlds s) #{})
-  (v2/assoc-in-world! (:root s) [:savepoint/session] nil)
-  nil)
+  (fn [resolve reject]
+    (try
+      (reset! (:closing? s) true)
+      (doseq [w @(:worlds s)] (v2/release-world! w))
+      (reset! (:worlds s) #{})
+      (v2/assoc-in-world! (:root s) [:savepoint/session] nil)
+      (resolve nil)
+      (catch #?(:clj Throwable :cljs :default) e (reject e)))))

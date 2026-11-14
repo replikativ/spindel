@@ -24,7 +24,7 @@
     (is (= [:a :b :c] (:trace/order t)))
     (is (= 2 (get-in t [:trace/entries :b :value])))
     (is (every? sp/anchor? (keep :savepoint (vals (:trace/entries t)))))
-    (sp/close! s)))
+    ((sp/close! s) identity identity)))
 
 (deftest replay-from-an-address-reuses-upstream-and-asks-downstream
   (let [w (v2/world) s (sp/open! w)
@@ -42,7 +42,7 @@
     (trace/release! t t2)
     (is (not (sp/anchor? (get-in t [:trace/entries :c :savepoint]))) "the loser's own anchors are disposed")
     (is (sp/anchor? (get-in t2 [:trace/entries :a :savepoint])) "a shared upstream anchor survives")
-    (sp/close! s)))
+    ((sp/close! s) identity identity)))
 
 (deftest until-parks-a-decided-site
   (let [w (v2/world) s (sp/open! w)
@@ -52,10 +52,10 @@
     (is (sp/pending? (:trace/pending t)))
     (trace/release! t)
     (is (not (sp/pending? (:trace/pending t))))
-    (sp/close! s)))
+    ((sp/close! s) identity identity)))
 
 (deftest constrained-policy-fixes-addresses
   (let [w (v2/world) s (sp/open! w)
         [_ t] (run-op (trace/run s program (trace/constrained-policy {:c 30} trace/payload-policy)))]
     (is (= [1 2 30] (:trace/result t)))
-    (sp/close! s)))
+    ((sp/close! s) identity identity)))
