@@ -3,7 +3,8 @@
   (:refer-clojure :exclude [await])
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.spindel.v2.core :as v2 :refer [task spin with-path]]
-            [org.replikativ.spindel.v2.savepoint :as sp]))
+            [org.replikativ.spindel.v2.savepoint :as sp]
+            [org.replikativ.spindel.select :as sel]))
 
 (v2/register-effect! `path-here (fn [_ ctx] [:value (:path ctx)]))
 (defn path-here [] (throw (ex-info "path-here outside a body" {})))
@@ -90,3 +91,10 @@
     (is (= [:step 1 :x] (sp/address :x {:frame frame :key key :path [:step 1]})))
     (is (= [:a :b 2 :y] (sp/address [:b 2 :y] {:frame frame :key key :path [:a]})))
     (is (= [:a [[7] 3]] (sp/address nil {:frame frame :key key :path [:a]})))))
+
+(deftest selectors-read-paths-from-v2-addresses
+  (let [d (sel/describe {:savepoint/address [:unit 2 :x] :savepoint/site :s})]
+    (is ((sel/path [:unit :* :x]) d))
+    (is ((sel/prefix [:unit]) d))
+    (is (not ((sel/path [:unit :*]) d))))
+  (is ((sel/path [:top]) (sel/describe :top {:site :s})) "a scalar address is a one-element path"))

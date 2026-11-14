@@ -3,18 +3,23 @@
 
   A selector is a predicate over a site descriptor
   `{:address a :path p :site s}` — the address the site ran under, its
-  readable path (see `addressing/site-address+path!`) and its site kind.
+  readable path and its site kind. On engine v2 the address is the path
+  (`v2/with-path` prefixes it): a vector address as is, any other `[a]`;
+  the old engine's savepoints and entries carry their own `:path`.
   `regenerate`, block moves, and interventions take selectors, so a caller
   names sites the way it named them in the program: `(id :mu)`,
   `(path [:step :* :x])`, `(prefix [:step])`.")
+
+(defn- path-of [address] (if (vector? address) address [address]))
 
 (defn describe
   "The descriptor of a trace entry (`address` + entry) or of a savepoint
   (`sp` alone)."
   ([sp]
-   {:address (:savepoint/address sp) :path (:savepoint/path sp) :site (:savepoint/site sp)})
+   (let [a (:savepoint/address sp)]
+     {:address a :path (or (:savepoint/path sp) (path-of a)) :site (:savepoint/site sp)}))
   ([address entry]
-   {:address address :path (:path entry) :site (:site entry)}))
+   {:address address :path (or (:path entry) (path-of address)) :site (:site entry)}))
 
 (defn selects?
   "Whether `selector` selects the site described by `descriptor`."
