@@ -354,10 +354,13 @@
   [(:savepoint/world sp) (:savepoint/address sp) (:savepoint/seq sp)])
 
 (defn release-world!
-  "Gives back a world the session made."
+  "Gives back a world the session made. Any other world, the session's
+   root among them, is its owner's: releasing the root would release every
+   instance it owns (F2), the session's other runs."
   [s w]
-  (swap! (:worlds s) disj w)
-  (v2/release-world! w)
+  (let [[before _] (swap-vals! (:worlds s) disj w)]
+    (when (contains? before w)
+      (v2/release-world! w)))
   nil)
 
 (defn close!

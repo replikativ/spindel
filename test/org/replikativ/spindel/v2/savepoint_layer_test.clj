@@ -180,3 +180,19 @@
         (sp/resume k 41)
         (is (wait-until #(some (fn [[t v]] (= [t v] [:result 42])) @es)) "the publication still forks")))
     ((sp/close! s) identity identity)))
+
+(deftest the-session-gives-back-only-the-worlds-it-made
+  ;; a branch that continued in the root ends first: releasing "its world"
+  ;; must not release the root, whose root scope owns the other branches
+  (let [w (v2/world) pending (atom nil) [es hs] (ends)
+        s (sp/open! w {:handlers (assoc hs :choose (fn [p] (reset! pending p)))})]
+    (sp/start! s #(task (inc (sp/savepoint :choose nil))))
+    (is (wait-until #(some? @pending)))
+    (let [k (sp/fork @pending)]
+      (sp/resume @pending 1)
+      (is (wait-until #(some (fn [[t v]] (= [t v] [:result 2])) @es)))
+      (sp/release-world! s w)
+      (sp/resume k 10)
+      (is (wait-until #(some (fn [[t v]] (= [t v] [:result 11])) @es)) "the fork still runs")
+      (is (nil? (v2/get-in-world w [:probe])) "the root is not released: it still answers"))
+    ((sp/close! s) identity identity)))
