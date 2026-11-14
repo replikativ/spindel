@@ -27,6 +27,10 @@
   (:require [org.replikativ.spindel.v2.core :as v2]
             [org.replikativ.spindel.engine.hash :as h]))
 
+(def any-site
+  "Handler-table key matching every site that has no entry of its own."
+  :default)
+
 (def result-site
   "Site of the terminal event of a computation that returned; its payload is
    the result."
