@@ -19,7 +19,8 @@
 
    A *session* owns the worlds it makes: their root is the session's root
    world, so they outlive the worlds they were forked from. Handlers run as
-   host callbacks after the publishing commit (H3), not inside the effect.
+   host code after the publishing commit (H3, `off-world`), not inside the
+   effect.
 
    Addresses: `(savepoint site payload)` in a task body publishes at
    `[frame key]` (§8.2 addresses), or at `(:id opts)` with
@@ -151,21 +152,25 @@
          (catch #?(:clj Throwable :cljs :default) _ nil))))
 
 (defn- watch-end!
-  "Delivers the terminal event of the session's task as `w` sees it, once."
+  "Delivers the terminal event of the session's task as `w` sees it, once,
+   as host code (`off-world`)."
   [s w]
   (let [t (v2/in-world w (:task s))
-        done (atom false)]
-    (v2/observe! t (fn [v err?]
-                     (when (compare-and-set! done false true)
-                       (dispatch-terminal! w
-                                           (cond (not err?) result-site
-                                                 (v2/cancelled? v) abandoned-site
-                                                 :else error-site)
-                                           v))))))
+        done (atom false)
+        f (off-world (fn [[v err?]]
+                       (when (compare-and-set! done false true)
+                         (dispatch-terminal! w
+                                             (cond (not err?) result-site
+                                                   (v2/cancelled? v) abandoned-site
+                                                   :else error-site)
+                                             v))))]
+    (v2/observe! t (fn [v err?] (f [v err?])))))
 
 (defn- publication-handler
   "The engine handler of world `w`: wraps the publication into a savepoint
-   and calls the user's handler for its site."
+   and calls the user's handler for its site as host code (`off-world`): a
+   handler may fork, copy and resume, and read or write any world, while
+   the run waits at its savepoint."
   [s]
   (fn [pub]
     (let [w (:world pub)
@@ -174,7 +179,7 @@
           h (or (get hs site) (get hs :default))
           seq (:savepoint/seq (v2/update-in-world! w [:savepoint/seq] (fnil inc 0)))]
       (if h
-        (h (sp-of s w pub seq))
+        ((off-world h) (sp-of s w pub seq))
         ;; Law 1: no handler, no savepoint: continue with the payload
         (v2/resume! pub (unwrap (:payload pub)))))))
 
