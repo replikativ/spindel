@@ -150,7 +150,8 @@
 (def ^:const C-INS 26)       ; dep edges, ordered by at
 (def ^:const C-QUEUED 27)
 (def ^:const C-RESTART 28)   ; T3 changed inputs: the next run restarts from the body
-(def ^:const C-SIZE 29)
+(def ^:const C-FRAME 29)     ; creation keys of the creating entities and this one (§8.2 addresses)
+(def ^:const C-SIZE 30)
 
 ;; Task
 (def ^:const K-BODY 12)
@@ -159,7 +160,8 @@
 (def ^:const K-RESULT 15)
 (def ^:const K-ERR 16)
 (def ^:const K-DONE 17)
-(def ^:const K-SIZE 18)
+(def ^:const K-FRAME 18)     ; as C-FRAME
+(def ^:const K-SIZE 19)
 
 ;; Source
 (def ^:const X-KIND 12)

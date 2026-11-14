@@ -1086,7 +1086,8 @@ The child `W′` gets:
   released when:
   - `M`'s owner scope closes; or
   - `discard(W′)` is called explicitly; or
-  - **idle release (Q12):** `W′` has no runs, no pins, no `observe` edges,
+  - **idle release (Q12):** `W′` has no runs (a run parked on a consumed
+    savepoint does not count, S8), no pins, no `observe` edges,
     no open explicit scopes, no `pending-activation` and no handles. Its
     administrative root scope does not count. Realized physically (Z#58):
     a marker of the `fork` effect holds `W′` strongly (its owner scope
@@ -1126,8 +1127,11 @@ A savepoint publishes the rest of a body to a handler (see `savepoints.md`).
   keeps only its basis.
 - **S3 – instantiate.** `instantiate(P)` creates a frozen fork `W′` of
   `basis` *without activating it*:
-  - its marker is created at activation (S4), owned by the root scope of the
-    publication's world (the handler runs as host code, Z#58);
+  - its marker is created at activation (S4), owned by the root scope of
+    its *owner*: the publication's world by default, or another world of the
+    same family named at `instantiate(P, owner)`, e.g. a session's root, so
+    that instances outlive the world that published them (S8); the handler
+    runs as host code (Z#58);
   - until activation `W′` is **unborn** (Z#58): host items commit, but its
     inherited work and dormant resources wait for S4;
   - `R`'s copy in `W′` is parked on its copied `savepoint` edge, which
@@ -1159,8 +1163,40 @@ A savepoint publishes the rest of a body to a handler (see `savepoints.md`).
   - The handler returning without resuming is **not** abandonment. `P`
     stays valid while it has handles.
 
+- **S8 – consume (copy).** `consume(P, k, owner)` continues `R` only in `k`
+  new instances, never in its own world `W` (2026-11-14):
+  - **Requires:** `E_sp` armed, and `R` holds no resource other than its
+    savepoint (the S6 portable restriction). Otherwise refused, and `P`
+    stays pending.
+  - In one commit of `W`: `k` instances of `P` are created (S3, owned by
+    `owner`), and `E_sp` becomes *consumed*: `R` stays parked on it, can no
+    longer be resumed (S2) or abandoned (S7), and its finalizers never run
+    in `W`. Its continuation lives on in the instances only.
+  - A run parked on a consumed savepoint does not keep `W` alive: F2's idle
+    release ignores it, so `W` is collected without running it once nothing
+    else can act in `W`.
+- **S9 – dispose.** `dispose(P)` ends a publication used as an anchor: if
+  `E_sp` is still armed it is abandoned first (S7); then `P` drops its basis
+  (F3's page refcount) and every reference to `W`. `instantiate` of a
+  disposed publication is refused. A publication holds `W` only while
+  `E_sp` is armed; once it is resumed, abandoned or consumed it keeps only
+  its basis.
+
+**Addresses of effect sites (2026-11-14).** A registered effect receives,
+besides its `site`, the occurrence's `key` (the site and a per-run ordinal of
+that site, as for creations) and its `frame`: the creation keys of the
+entities that created the run's entity, outermost first, and of the entity
+itself (a site and ordinal in the creating run); empty for an entity the host
+created. The frame follows creation, not ownership, so `detach` keeps it. A consumer's
+address for an effect occurrence is `[frame key]` or an explicit id. The
+ordinal is counted when the effect is entered, before a savepoint freezes the
+run, so instances continue the count of the run they copy. In task runs and
+their instances keys are stable; in a computation run re-entered by T11 only
+creation ordinals are restored (formalism §1.6), so effect-only keys after the
+re-entry point count from there.
+
 **API change:** savepoints gain `instantiate`/`activate`/`abandon` alongside
-the existing in-place resume.
+the existing in-place resume, and `consume`/`dispose` (S8, S9).
 
 ---
 
