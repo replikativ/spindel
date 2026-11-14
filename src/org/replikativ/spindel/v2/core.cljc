@@ -3193,7 +3193,9 @@
           (when (linked? w e)
             (let [cb (rv w (g e rw/E-CRED))]
               (unlink! w e)
-              (aadd! (g w rw/W-CALLBACKS) [cb [ex true]]))))
+              ;; Z#45: an inherited root's callback is the parent's host's
+              (when (= (g e rw/E-ORIGIN) (g w rw/ID))
+                (aadd! (g w rw/W-CALLBACKS) [cb [ex true]])))))
         (let [pins (g w rw/W-PINS)]
           (doseq [[x n] (hs/mvals pins)] (dotimes [_ n] (ref-dec! w (rv w x))))
           (hs/mclear! pins))
