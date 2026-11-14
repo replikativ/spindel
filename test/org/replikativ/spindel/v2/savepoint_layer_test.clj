@@ -85,6 +85,36 @@
       (is (zero? @ran) "nothing ran in the discarded fork"))
     ((sp/close! s) identity identity)))
 
+(deftest abandoning-then-releasing-an-unactivated-fork
+  ;; abandon gives the fork's world back; the caller's release of it, racing
+  ;; or after, does nothing
+  (dotimes [_ 50]
+    (let [w (v2/world) pending (atom nil)
+          s (sp/open! w {:handlers {:choose (fn [p] (reset! pending p))}})]
+      (sp/start! s #(task (sp/savepoint :choose nil)))
+      (is (wait-until #(some? @pending)))
+      (let [k (sp/fork @pending)]
+        (sp/abandon k)
+        (is (nil? (sp/release-world! s (:savepoint/world k)))))
+      ((sp/close! s) identity identity))))
+
+(deftest a-world-released-at-a-savepoint-delivers-no-end
+  (let [uncaught (atom [])
+        prev (Thread/getDefaultUncaughtExceptionHandler)]
+    (Thread/setDefaultUncaughtExceptionHandler
+     (reify Thread$UncaughtExceptionHandler
+       (uncaughtException [_ _ e] (swap! uncaught conj e))))
+    (try
+      (let [w (v2/world) pending (atom nil) [es hs] (ends)
+            s (sp/open! w {:handlers (assoc hs :choose (fn [p] (reset! pending p)))})]
+        (sp/start! s #(task (sp/savepoint :choose nil)))
+        (is (wait-until #(some? @pending)))
+        (v2/release-world! w)
+        (Thread/sleep 100)
+        (is (empty? @es) "the released world has no handlers to deliver to")
+        (is (empty? @uncaught) (str (first @uncaught))))
+      (finally (Thread/setDefaultUncaughtExceptionHandler prev)))))
+
 (deftest handled-counts-the-default-handler
   (let [w (v2/world) s (sp/open! w)]
     (is (not (sp/handled? w :x)))
