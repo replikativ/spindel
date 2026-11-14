@@ -987,3 +987,104 @@ No counterexample. Tripwire: i10_test random drivers (g10r and lit-i10-current o
   after the insert), the fire (`h3-fire-edge`).
 - **Remaining**: T12 (complete-comp/-task, settle with the queue as exemption list, retire-after, the cascade,
   fin-if-final), release-world (`revoke-roots`), `raw0-h3` by cases, then Rule R (`finish`).
+
+### `hm16` (2026-11-13, in progress): T12 complete + settle for h3
+- **Proved**: `h16-undo-c` (undo of a COMPUTATION's exemption x: no activation holds a run of x, x free as a member
+  id, every edge on x unarmed / host / h3-m): hm6's `h3-undo-d` with the no-holder premise in place of "x is no
+  computation". The no-holder premise comes from acts-alive + "no alive run of x" (hm14's `h14-acts-alive-no-holder`).
+- **Design for the rest** (hmk2 Part E is the template; an id in xm exempts three roles: `of` of a run, member id,
+  debtor of a member edge):
+  1. `complete-raw`: exempt `(:of r)`, then `h3-run-kill` for `run-upd r run-complete-row` (its premise: every task
+     with run r is exempt), complete-body, `hm3-retire-after`, `h3-run-cascade-g` (needs g10, hmk, ekb of that world:
+     the hmk/gd/g7 copies of complete-body exist), `h3-fin-if-final`.
+  2. task case: `task-upd` result row, `cancel-res`, the fold of `h3-fire-edge` over the edges on the task; then the
+     task's exemption is undone by `h3-undo-d` (every edge on it is fired, so unarmed).
+  3. comp case C: `comp-upd` result row with C exempt (done-epoch := epoch breaks h3-cs for C's holders and hk-wif
+     for member edges on C), `cancel-res`, then settle: settle-edge = settle-fire (`h3-fire-dep`) + `h3-unmark-edge`
+     (premise hk-safe of the creditor: exempt the creditors of the marked out-edges, as hmk2's `hk-se-fold`).
+     Discharge per id y of the list: still queued (ready), or not ready: then y has no holder (completed, ar: no
+     alive run) and is waiting (hk-wif, pending /= 0), so `h16-undo-c`. For C itself: no holder, and after
+     settle-one no armed member-current edge has debtor C (each was fired by `member-current`): `h16-undo-c` needs
+     its edge premise restricted to contrib members of obligated activations (generalize the premise as in
+     `h3-undo-g`), plus a fold invariant "a processed out-dep edge of C is not (armed and member-current)".
+  4. the loop: the queue is the exemption list (hk-settle-loop's shape, `settle-done-ok` empties it).
+- **hm16 status (2026-11-13, later)**: proved (34 forms, REPL): `h16-complete-task-x` (task half), `h16-free-fire-dep`,
+  `h16-free-nmc`, the frame `h16-fm-settle-*`, `h16-se-fold` (fold over out-dep edges: h3 under Lst and every processed
+  edge id FREE; a delivered dep edge is re-armed, so "free" replaces "unarmed"), `h16-nh` (no current holder) with
+  `-fm`/`-done`, `h16-free-mono/-drop`, `h16-undo2` (generalized undo), `h16-dis` (list discharge).
+- **Remaining for the comp half** (design fixed):
+  1. `h16-J xm B W` bundle, B = comps at the settle start: (a) strong_B c => strong_W c; (b) not-strong_B c => nh W c;
+     (c) comp y at W => h3-free xm W y; (d) every edge at W is dep, or its debtor no comp / in xm, or its id free under
+     xm; (e) comp-has equal to B. Stable under settle-one (fm, hk-ek back relation, hk-cs closure). Init: (c),(d) at
+     the pre-world from h3 xm, moved by fm; (b) by `h16-nh-done` (acts-alive from ga + `ga-run-upd-free`).
+  2. `h16-settle-step`: h3 (d :: Lq) W -> h3 (next ++ Lq) (settle-one W d ch), Lst = (d :: NS) ++ Lq with NS = the
+     creditors of marked out-edges not strong at W (never exempt a strong = running creditor: its holders' member
+     facts would be lost). Discharge by `h16-dis`: d via free edge ids (`h16-free-drop`), a not-ready creditor via
+     `hk-wif-nready`; queue elements need only "not strong at B".
+  3. loop (`hk-settle-loop` shape), `settle`, complete-body comp case (result row with C exempt via comp-upd lemma),
+     `complete-raw` wrapper (`h3-run-kill`, `hm3-retire-after`, `h3-run-cascade-g`, `h3-fin-if-final`), `t12`.
+- **hm16 done (2026-11-13)**: `h16-t12-h3` — T12 complete keeps h3 (premises: `res-tag-ok tag`, g10r, g10, ga, gd, g7,
+  hmk, ekb of the input world). Path: `h16-J` bundle + `h16-settle-step` / `-loop` / `h16-settle-x`,
+  `h16-complete-comp-x`, `h16-complete-pre` (cases: no owner row / task / stale computation / current computation),
+  `h16-g10-body` (g10 at the complete-body world, from i10's cmp-* cases), `h16-complete-raw-x`.
+  Note for the assembly: T12's h3 needs `res-tag-ok` (as `gl`'s T12 in lit.clj): the `raw` case must take it from
+  the step guard `complete-refused`.
+- **Left for h-mem2 through the step**: release-world (`inv-revoke-roots`, `t-release-world-inv`), then the
+  assembly `raw0-h3` over the 38 items, Rule R, `p3m`, `l5-safety-total`.
+- **hm17 done (2026-11-13)**: release-world (`h17-host-free`: a host edge's id is free; `h17-revoke-roots`,
+  `h17-t-release-world`) and the assembly `h17-raw0-h3` / `h17-raw-h3`: `p3la w -> h3 xm w -> h3 xm (raw w it)` over all
+  38 items (19 plain items lift with the H3 copier unaided).
+- **Rule R for h3 (hm18, not started)**. Copier probe (`lcopy-try! H3`): everything fails only through three roots:
+  1. `inv-finalize-one` (-> fin-loop, finalize-debtor, detach-source, detach): needs an h3 lemma for finalize-one.
+  2. `inv-demote-finish` / `inv-demote`: follow hmk-demote-x: exempt the stray set S during the fold
+     (`h3 (S ++ xm)`), cascade by `h3-run-cascade-g`, demote-epoch by a comp-upd lemma with epoch <=, drop of the dep
+     edges of x (creditor x in S: ids free, `hk-dok` from hmk), comp-del-unref / make-idle; discharge at the pass end
+     with `h16-dis`: no-holder `h16-nh` of x from the epoch step (held runs have epoch <= the old epoch, `h3-e1`) or,
+     when demote-cur is false, from i10's `ncq` lemma (i10.clj ~3087: no current run of c); freeness of x and the
+     per-edge condition as in hm16.
+  3. `inv-filter-world` (Rule R's filter): an `h3-filter-world` from `filter-safe` (precedent `hmk-filter-world`).
+  Then `h3-rr-loop` / `h3-rule-r` (inv-rank and `vr [] []` threaded as in hmk2), `step-h3`, `p3m`, `l5-safety-total`.
+- **hm18 design (2026-11-13; detach done: `h18-detach`)**. Rule R is where h-mem2 needs liveness, not only frames:
+  - demote x (x in the round's stray set S, exempt): cascade (`h3-run-cascade-g`), epoch step and make-idle by
+    `h16-comp-upd-x`, drop of x's dep edges: free because the creditor is exempt (a current member dep edge has
+    creditor = of k). Delete branch (`edge-avoids x`): creditor-x edges as before (non-dep: creditor would be an act
+    id); debtor-x dep edges have a stray creditor (vr's dnb14), free; **debtor-x non-dep edges (waits, observes) need
+    a new fact NW(S, W)**: no activation has a member non-dep edge whose debtor is in S. At the pass start (after the
+    stray-run cascade): the holder's run is alive (acts-alive), a stray run was cancelled (cancel-acts removed the
+    activation; needs "a cancel cascade leaves the listed runs dead", idle.clj's casc-kill is the per-computation
+    precedent), a live run makes act -> member edge -> debtor live (retain-succ: run-contrib, act-contrib,
+    edge-contrib; closure as in `vr-pass-start` / i1's `live-parent`), contradicting stray. NW is kept along the fold
+    by frames (acts only removed, edges keep id/kind/debtor).
+  - discharge of S at the pass end by `h16-dis`: `h16-nh` (epoch step + `h3-e1`, or i10's ncq when demote-cur is
+    false, or no row), freeness of x, per-edge condition.
+  - filter at the normalized world: a kept current activation's member edges and their debtors are kept (closure of
+    the live list; check what keeps an activation besides liveness: cleanup-rows / storage).
+  - **Refinement (same day)** after reading the code: the exemption by debtor hides `h3-m` for edges on a stray x, so
+    the freeness of the non-dep edges on x must be taken at the pass start (list [], `h3-m`: a current member edge on a
+    computation is a dep edge) and carried. No frame through the cascade exists as a lemma (`h3-run-cascade-g` is a
+    copier lift), but `h3-fm w (op w)` exists for nearly every primitive (hm6: fm-run-upd, -act-del, -comp-upd,
+    -edge-upd, -remove-edge, -drop-act, -drop-edges, -cancel-mid, -same, ...). Plan:
+    R1. copier bundle `fb L F S w` = inv-sample, every id of F is `h3-free L w`, every edge is dep or has its debtor
+        outside S or its id in F (F = ids of the non-dep edges on S at the pass start); prims from the fm lemmas;
+        lift inv-run-cascade / inv-demote. (Only tasks' activations hold such edges: await-edge's as-dep.)
+    R2. no holder at the pass end: per demoted d "no alive run of d" (idle.clj: after demote's cancel cascade
+        `not-alive-of`, line ~1834; the KDB bundle `kdb d kl kd` lifts through cascades) carried to the end, then
+        acts-alive gives `h16-nh`; check the no-row / idle-at-its-turn cases (g7's a7-one for idle).
+    R3. `h18-demote-x` with L = S: cascade, epoch step and make-idle by `h16-comp-upd-x` + `h16-dis` (x already in
+        L), dep-edge drop (creditor exempt; `hk-dok-own`), delete branch (`hk-dok-avoid`; debtor-x dep: creditor in R
+        by vr; debtor-x non-dep: fb; creditor-x non-dep: an act id is no computation id), `h3r-comp-del`.
+    R4. fold, discharge (`h16-dis`), norm-round, norm-loop, normalize. R5. filter. R6. rr-loop, rule-r, step, p3m.
+
+### hm18 done (2026-11-13): Rule R keeps h3; P11 closed
+
+- Pass: `h18-nh-demote` (after its demote no activation holds a current run of x), `h18-demote-fold` (accumulator
+  `h18-acc` collects the demoted strays in the bundle's zd), `h18-fb-init` (F = the strays plus the ids of the non-dep edges
+  on a stray; free at a world with `h3 []` by `h3-m`), `h18-pass-end` (`h16-dis` with L = nil), `h18-norm-round`,
+  `h18-norm-loop`, `h18-normalize`. The carried freeness is at the empty list (`h18-free-nil` weakens it where needed).
+- Filter: `h18-filter-k` for a generic K under two premises (K keeps every run; K keeps the member edges of an activation
+  whose run row exists) and `h18-filter` for `keep-fn` at a normalized world (`run-kept` from gr0; the member edges are live
+  through run -> activation -> member edge). `h18-awm-keep`: the first activation with a member survives the filter.
+- `h18-rule-r-round`, `h18-rr-loop`, `h18-rule-r` (threaded: inv-rank, vr [] [], hmk [], g10 [] [], ekb, acts-alive, g7, gr0).
+- **`step-h3`**, `p3m = p3la && h3 []`, `step-p3m`, `p3m-empty`, `step-h3-total`, and
+  **`l5-safety-total : p3m w -> quiescent w -> ... -> False`** with no honest hypothesis (h-mark and h-mem2 are invariants).
+- Open after P11: I15 as a literal statement over `p3m`, random lockstep in CI, the formal CI job, spec §8 rows.
