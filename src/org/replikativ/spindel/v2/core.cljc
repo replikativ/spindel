@@ -760,6 +760,7 @@
     (s! r rw/R-SLICE false)
     (s! r rw/R-EIDX 0)
     (s! r rw/R-CURSOR 0)
+    (s! r rw/R-PATH (g x (if (comp? x) rw/C-PATH rw/K-PATH)))   ; §8.2 P3: fixed at creation
     (if (comp? x) (s! x rw/C-RUN r) (s! x rw/K-RUN r))
     (register! w r)))
 
@@ -1774,9 +1775,29 @@
   [x]
   (or (g x (if (comp? x) rw/C-FRAME rw/K-FRAME)) []))
 
-(defn- set-frame! [x frame]
-  (s! x (if (comp? x) rw/C-FRAME rw/K-FRAME) frame)
+(defn- set-origin!
+  "Records how `x` was created: its `frame` and the creating run `r`'s path."
+  [x frame r]
+  (if (comp? x)
+    (do (s! x rw/C-FRAME frame) (s! x rw/C-PATH (g r rw/R-PATH)))
+    (do (s! x rw/K-FRAME frame) (s! x rw/K-PATH (g r rw/R-PATH))))
   x)
+
+(defn push-path!
+  "§8.2 P1, entering `with-path`: appends `p` to the running run's path.
+   Returns the path to restore at exit; nil outside a body."
+  [p]
+  (when-let [r (active-run)]
+    (let [prev (g r rw/R-PATH)]
+      (s! r rw/R-PATH (not-empty (into (or prev []) p)))
+      [prev])))
+
+(defn pop-path!
+  "§8.2 P2, leaving `with-path`: restores the path `push-path!` returned."
+  [saved]
+  (when saved
+    (when-let [r (active-run)]
+      (s! r rw/R-PATH (nth saved 0)))))
 
 (defn- adopt!
   "The creation of `c` with `key`, from its basis or its adoption basis."
@@ -1801,8 +1822,8 @@
             at (next-at! r)]
         (if-not (comp? c)
           ;; Created by a task run: owned by the run scope, retained by demand.
-          (let [child (set-frame! (new-comp! w (run-scope! w r) 0 at inputs body 0)
-                                  (conj (frame-of c) (creation-key! r site)))]
+          (let [child (set-origin! (new-comp! w (run-scope! w r) 0 at inputs body 0)
+                                   (conj (frame-of c) (creation-key! r site)) r)]
             (aadd! (g w rw/W-RQ) child)
             (let [h (handle! w child)]
               (commit! w [:create-comp (g r rw/ID) (g child rw/ID) [:opaque-seq inputs] [:opaque body]])
@@ -1812,9 +1833,11 @@
             (if child
               (do (s! child rw/AT at)   ; adoption reuses the live handle, or makes one (Z#29)
                   (when (comp? child)
-                    (when-not (same-inputs? inputs (g child rw/C-INPUTS))
-                      ;; W#5: like a write to the rerun source.
+                    (when-not (and (same-inputs? inputs (g child rw/C-INPUTS))
+                                   (= (g r rw/R-PATH) (g child rw/C-PATH)))
+                      ;; W#5: like a write to the rerun source; §8.2 P4 a new path
                       (s! child rw/C-INPUTS inputs)
+                      (s! child rw/C-PATH (g r rw/R-PATH))
                       (s! child rw/C-BODY body)
                       (if (g child rw/C-IDLE)
                         (do (s! child rw/C-IDLE false) (s! child rw/C-VALIDITY nil)
@@ -1827,7 +1850,7 @@
                     (commit! w [:create-comp (g r rw/ID) (g child rw/ID) [:opaque-seq inputs] [:opaque body]])
                     h))
               ;; A body creation gets the body's weak handle (Z#13): +1 in handle!
-              (let [child (set-frame! (new-comp! w c key at inputs body 0) (conj (frame-of c) key))]
+              (let [child (set-origin! (new-comp! w c key at inputs body 0) (conj (frame-of c) key) r)]
                 (aadd! (g c rw/C-BASIS) child)
                 (ref-inc! child)
                 (let [h (handle! w child)]
@@ -1867,7 +1890,8 @@
         (if (comp? x)
           (let [key (creation-key! r site)
                 old (adopt! w x key)]
-            (if (and old (task? old) (same-inputs? inputs (g old rw/K-INPUTS)))
+            (if (and old (task? old) (same-inputs? inputs (g old rw/K-INPUTS))
+                     (= (g r rw/R-PATH) (g old rw/K-PATH)))   ; §8.2 P4
               (do (s! old rw/AT at)
                   (let [h (handle! w old)]
                     (commit! w [:spawn (g r rw/ID) [:opaque body] (g old rw/ID) [:opaque-seq inputs]])
@@ -1878,7 +1902,7 @@
                       (hs/remove-at! basis i)
                       (when-let [or* (rv w (g old rw/K-RUN))] (cancel! w or* ::cancelled))
                       (ref-dec! w old)))
-                  (let [k (set-frame! (new-task! w x key at inputs body 0) (conj (frame-of x) key))]
+                  (let [k (set-origin! (new-task! w x key at inputs body 0) (conj (frame-of x) key) r)]
                     (aadd! (g x rw/C-BASIS) k)
                     (ref-inc! k)
                     (start-task! w k)
@@ -1886,7 +1910,7 @@
                       (commit! w [:spawn (g r rw/ID) [:opaque body] (g k rw/ID) [:opaque-seq inputs]])
                       h)))))
           (let [s (current-scope! w r)
-                k (set-frame! (new-task! w s 0 at inputs body 0) (conj (frame-of x) (creation-key! r site)))]
+                k (set-origin! (new-task! w s 0 at inputs body 0) (conj (frame-of x) (creation-key! r site)) r)]
             (hs/oset-add! (g s rw/S-TASKS) (id-of k) k)
             (ref-inc! k)
             (start-task! w k)
@@ -3691,7 +3715,7 @@
           ;; §8.2 addresses: counted on entry, before a savepoint freezes the run
           key (creation-key! r site)
           op (try (h args {:effect sym :site site :run (g r rw/ID) :effect-index (gl r rw/R-EIDX)
-                           :key key :frame (frame-of (rv (cw) (g r rw/R-OF)))})
+                           :key key :frame (frame-of (rv (cw) (g r rw/R-OF))) :path (g r rw/R-PATH)})
                   (catch #?(:clj Throwable :cljs :default) t [:error t]))]
       (case (when (vector? op) (first op))
         :value (k (nth op 1))
@@ -3769,7 +3793,7 @@
                   (not (:ns *env*)))
          (let [v (resolve h)]
            (when (and (var? v) (:macro (meta v)) (not (opaque-head? h))
-                      (not (#{'org.replikativ.spindel.v2.core/with-scope}
+                      (not (#{'org.replikativ.spindel.v2.core/with-scope 'org.replikativ.spindel.v2.core/with-path}
                             (symbol (str (.-ns ^clojure.lang.Var v)) (str (.-sym ^clojure.lang.Var v))))))
              v))))
      (defn- register-finally
@@ -3835,6 +3859,17 @@
          `(let [~s (open-scope!)]
             (~'try (do (enter-finally!) ~@body)
                    (~'finally (exit-finally!) (close-scope-fx! ~s))))))
+     (defmacro with-path
+       "§8.2 P1-P6: labels the effect sites reached in `body` with the vector
+        `p` appended to the run's path; a registered effect receives the path
+        in its context (`:path`), and tasks and computations created inside
+        inherit it. Restored when `body` exits, however it exits. Outside a
+        body it runs `body` unlabeled."
+       [p & body]
+       (let [saved (gensym "path")]
+         `(let [~saved (push-path! ~p)]
+            (~'try (do (enter-finally!) ~@body)
+                   (~'finally (exit-finally!) (pop-path! ~saved))))))
      (defmacro defeffect
        "R3: defines effect `name` in this namespace: `(defeffect choose [args
         ctx] op-form)`; see register-effect!. It registers at expansion too,

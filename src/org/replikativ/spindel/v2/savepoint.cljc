@@ -71,9 +71,13 @@
 
 (defn address
   "The address of an effect occurrence: an explicit `id`, else `[frame key]`
-   from the effect's context (§8.2 addresses)."
-  [id {:keys [frame key]}]
-  (or id [frame key]))
+   from the effect's context (§8.2 addresses). Under a path (`v2/with-path`)
+   the path comes first: a vector id continues it, any other id or
+   `[frame key]` is its last element."
+  [id {:keys [frame key path]}]
+  (cond (empty? path) (or id [frame key])
+        (vector? id) (into path id)
+        :else (conj path (or id [frame key]))))
 
 (defn publish-op
   "The op a registered effect's handler returns to publish a savepoint at

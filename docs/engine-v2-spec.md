@@ -1195,6 +1195,36 @@ their instances keys are stable; in a computation run re-entered by T11 only
 creation ordinals are restored (formalism §1.6), so effect-only keys after the
 re-entry point count from there.
 
+**Paths of effect sites (2026-11-14).** Readable, hierarchical names for
+effect occurrences (Gen's `:step => i => :x`), for consumers that let callers
+name sites from outside:
+- **P1 – label.** `with-path p body` (`p` a vector) appends `p` to the run's
+  *path* for the extent of `body`. A registered effect receives, besides
+  `key` and `frame`, the occurrence's `path`: the run's path when the effect
+  is entered. Paths nest.
+- **P2 – restore.** `with-path` is a `finally` region (§7): when `body`
+  exits, by return, throw or cancellation (B3), the path is restored to its
+  value at entry. Like any new engine-owned region it is not admitted inside
+  a finalizer (B8); restoring an entered path is.
+- **P3 – inheritance.** Every run records its path when it is created: its
+  entity's path, which is the creating run's path when the entity was
+  created, empty for an entity the host created. The run's path changes
+  only by P1/P2, never by later changes to its entity. Like the frame, the
+  path follows creation, not ownership, so `detach` keeps it.
+- **P4 – adoption.** A computation adopted (T3) under a path other than its
+  own is adopted as one whose inputs changed, and takes the new path; a
+  task spawned in a computation run under another path is replaced, as for
+  changed captures. An empty path is the same as none.
+- **P5 – suspension and copies.** The path belongs to the run, so it
+  survives suspension; a fork or instance copies the run with its path.
+  Re-entry (T11) never starts inside a path: the `finally` region makes the
+  `dep` edges inside it non-re-entrant (§2), so a new run starts with its
+  entity's path. Keep path regions narrow in computations: an invalidation
+  inside one restarts the body.
+- **P6 – metadata.** A path determines neither identity nor ownership: it
+  labels effect occurrences and creations, and only P4 compares paths.
+  Outside a body `with-path` runs `body` unlabeled.
+
 **API change:** savepoints gain `instantiate`/`activate`/`abandon` alongside
 the existing in-place resume, and `consume`/`dispose` (S8, S9).
 
@@ -1453,6 +1483,7 @@ Shaped by the ansatz feasibility read (`ansatz/.internal/design/spindel-v2-feasi
 | `spindel.blocking` | `offload` |
 | `in-callers-world` | cross-world ingress (H4) |
 | `fork-context` | §8.1 (frozen default; sources may follow) |
+| `engine.addressing/with-scope` (readable site names) | `with-path` (§8.2 P1–P6) |
 | savepoint in-place resume | S2 |
 | new: `instantiate`/`activate`/`abandon` | S3, S4, S7 |
 | `stop-context!`, `release-context!` | `seal` / `release` |
