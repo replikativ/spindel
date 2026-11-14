@@ -87,12 +87,12 @@
      ::pub pub
      ::session session}))
 
-(defn- inst? [sp] (some? (::instance sp)))
+(defn- instance-sp? [sp] (some? (::instance sp)))
 
 (defn pending?
   "True while `sp` may still be resumed, forked, copied or abandoned."
   [sp]
-  (if (inst? sp)
+  (if (instance-sp? sp)
     (= :unborn @(::instance sp))
     (= :pending @(:state (::pub sp)))))
 
@@ -250,7 +250,7 @@
   [sp k]
   (let [s (::session sp)
         pub (live-pub sp :copy)
-        _ (when (inst? sp)
+        _ (when (instance-sp? sp)
             (throw (ex-info "Cannot copy an unactivated fork: fork it instead" {:type ::not-pending :operation :copy})))
         ws (v2/consume pub k (:root s))]
     (mapv (fn [w] (adopt-world! s sp w (next-index! s sp)) (instance-sp s sp w)) ws)))
@@ -263,7 +263,7 @@
         pub (live-pub sp :resume)]
     (when @(:closing? s)
       (throw (ex-info "Cannot resume in a closing session" {:type ::session-closing})))
-    (if (inst? sp)
+    (if (instance-sp? sp)
       (when (compare-and-set! (::instance sp) :unborn :born)
         (let [w (:savepoint/world sp)]
           (v2/activate! w v)
@@ -277,7 +277,7 @@
    discarded without running anything. Consumes `sp`."
   [sp]
   (let [pub (live-pub sp :abandon)]
-    (if (inst? sp)
+    (if (instance-sp? sp)
       (when (compare-and-set! (::instance sp) :unborn :abandoned)
         (v2/release-world! (:savepoint/world sp)))
       (v2/abandon! pub))
