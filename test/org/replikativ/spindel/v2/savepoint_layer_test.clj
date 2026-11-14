@@ -18,7 +18,7 @@
     (sp/start! s #(task (inc (sp/savepoint :site 41))))
     (is (wait-until #(seq @es)))
     (is (= [:result 42 w] (first @es)))
-    (sp/close! s)))
+    ((sp/close! s) identity identity)))
 
 (deftest resume-in-place-with-an-address
   (let [w (v2/world) seen (atom nil) [es hs] (ends)
@@ -30,7 +30,7 @@
       (is (= [] frame))
       (is (integer? key)))
     (is (not (sp/pending? @seen)))
-    (sp/close! s)))
+    ((sp/close! s) identity identity)))
 
 (deftest explicit-ids
   (let [w (v2/world) seen (atom nil)
@@ -38,7 +38,7 @@
     (sp/start! s #(task (sp/savepoint :choose nil {:id [:x 3]})))
     (is (wait-until #(some? @seen)))
     (is (= [:x 3] (:savepoint/address @seen)))
-    (sp/close! s)))
+    ((sp/close! s) identity identity)))
 
 (deftest forks-are-independent-particles-with-their-own-seeds
   (let [w (v2/world) pending (atom nil) [es hs] (ends)
@@ -57,7 +57,7 @@
       (sp/abandon p)
       (is (wait-until #(= 4 (count @es))))
       (is (= :abandoned (first (last @es)))))
-    (sp/close! s)))
+    ((sp/close! s) identity identity)))
 
 (deftest copy-consumes-the-source
   (let [w (v2/world) pending (atom nil) [es hs] (ends)
@@ -71,7 +71,7 @@
       (sp/resume a 5) (sp/resume b 6)
       (is (wait-until #(= 2 (count @es))))
       (is (= #{10 12} (set (map second @es)))))
-    (sp/close! s)))
+    ((sp/close! s) identity identity)))
 
 (deftest an-unactivated-fork-is-abandoned-without-running
   (let [w (v2/world) pending (atom nil) ran (atom 0)
@@ -83,4 +83,23 @@
       (is (not (sp/pending? k)))
       (Thread/sleep 50)
       (is (zero? @ran) "nothing ran in the discarded fork"))
-    (sp/close! s)))
+    ((sp/close! s) identity identity)))
+
+(deftest handled-counts-the-default-handler
+  (let [w (v2/world) s (sp/open! w)]
+    (is (not (sp/handled? w :x)))
+    (sp/install-handlers! w {:default (fn [_])})
+    (is (sp/handled? w :x))
+    ((sp/close! s) identity identity)))
+
+(deftest a-handler-forks-and-resumes-its-forks
+  ;; from inside the publishing world's callback: no host call into the fork
+  (let [w (v2/world) [es hs] (ends)
+        s (sp/open! w {:handlers (assoc hs :choose (fn [p]
+                                                     (let [k (sp/fork p)]
+                                                       (sp/resume k 7)
+                                                       (sp/resume p 1))))})]
+    (sp/start! s #(task (sp/savepoint :choose nil)))
+    (is (wait-until #(= 2 (count @es))))
+    (is (= #{1 7} (set (map second @es))))
+    ((sp/close! s) identity identity)))

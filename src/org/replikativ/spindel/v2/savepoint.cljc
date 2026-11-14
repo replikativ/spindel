@@ -19,13 +19,30 @@
 
    A *session* owns the worlds it makes: their root is the session's root
    world, so they outlive the worlds they were forked from. Handlers run as
-   host callbacks after the publishing commit (H3), not inside the effect.
+   host code after the publishing commit (H3, `off-world`), not inside the
+   effect.
 
    Addresses: `(savepoint site payload)` in a task body publishes at
    `[frame key]` (§8.2 addresses), or at `(:id opts)` with
    `(savepoint site payload opts)`."
   (:require [org.replikativ.spindel.v2.core :as v2]
+            [org.replikativ.spindel.v2.host :as hs]
             [org.replikativ.spindel.engine.hash :as h]))
+
+(defn off-world
+  "`f` as a callback that runs as host code: called inside a world (a slice
+   or a callback under its gate), it runs `(f x)` later on the host executor,
+   where it may call into any world (B7); otherwise at once. CPS operations
+   of this layer and of `v2.trace` deliver through it."
+  [f]
+  (fn [x]
+    (if (v2/cw)
+      (hs/execute! (hs/executor) #(f x))
+      (f x))))
+
+(def any-site
+  "Handler-table key matching every site that has no entry of its own."
+  :default)
 
 (def result-site
   "Site of the terminal event of a computation that returned; its payload is
@@ -52,11 +69,22 @@
   [& _]
   (throw (ex-info "savepoint outside a body" {})))
 
+(defn address
+  "The address of an effect occurrence: an explicit `id`, else `[frame key]`
+   from the effect's context (§8.2 addresses)."
+  [id {:keys [frame key]}]
+  (or id [frame key]))
+
+(defn publish-op
+  "The op a registered effect's handler returns to publish a savepoint at
+   `address` (`v2/register-effect!`)."
+  [site payload address]
+  [:savepoint site {::payload payload ::address address}])
+
 (v2/register-effect!
  `savepoint
- (fn [[site payload opts] {:keys [frame key]}]
-   [:savepoint site {::payload payload
-                     ::address (or (:id opts) [frame key])}]))
+ (fn [[site payload opts] ctx]
+   (publish-op site payload (address (:id opts) ctx))))
 
 (defn- unwrap
   "The payload a handler or a no-handler run sees."
@@ -73,15 +101,16 @@
      :savepoint/payload (unwrap p)
      :savepoint/address (when (map? p) (::address p))
      :savepoint/seq seq
+     ::seed (v2/get-in-world w [:savepoint/seed])
      ::pub pub
      ::session session}))
 
-(defn- inst? [sp] (some? (::instance sp)))
+(defn- instance-sp? [sp] (some? (::instance sp)))
 
 (defn pending?
   "True while `sp` may still be resumed, forked, copied or abandoned."
   [sp]
-  (if (inst? sp)
+  (if (instance-sp? sp)
     (= :unborn @(::instance sp))
     (= :pending @(:state (::pub sp)))))
 
@@ -110,7 +139,7 @@
 ;; ---------------------------------------------------------------------------
 ;; Sessions
 
-(defrecord Session [root task worlds fork-indices closing?])
+(defrecord Session [root task worlds fork-indices closing? waiting])
 
 (defn session
   "The session owning world `w`, or nil."
@@ -123,21 +152,25 @@
          (catch #?(:clj Throwable :cljs :default) _ nil))))
 
 (defn- watch-end!
-  "Delivers the terminal event of the session's task as `w` sees it, once."
+  "Delivers the terminal event of the session's task as `w` sees it, once,
+   as host code (`off-world`)."
   [s w]
   (let [t (v2/in-world w (:task s))
-        done (atom false)]
-    (v2/observe! t (fn [v err?]
-                     (when (compare-and-set! done false true)
-                       (dispatch-terminal! w
-                                           (cond (not err?) result-site
-                                                 (v2/cancelled? v) abandoned-site
-                                                 :else error-site)
-                                           v))))))
+        done (atom false)
+        f (off-world (fn [[v err?]]
+                       (when (compare-and-set! done false true)
+                         (dispatch-terminal! w
+                                             (cond (not err?) result-site
+                                                   (v2/cancelled? v) abandoned-site
+                                                   :else error-site)
+                                             v))))]
+    (v2/observe! t (fn [v err?] (f [v err?])))))
 
 (defn- publication-handler
   "The engine handler of world `w`: wraps the publication into a savepoint
-   and calls the user's handler for its site."
+   and calls the user's handler for its site as host code (`off-world`): a
+   handler may fork, copy and resume, and read or write any world, while
+   the run waits at its savepoint."
   [s]
   (fn [pub]
     (let [w (:world pub)
@@ -146,23 +179,25 @@
           h (or (get hs site) (get hs :default))
           seq (:savepoint/seq (v2/update-in-world! w [:savepoint/seq] (fnil inc 0)))]
       (if h
-        (h (sp-of s w pub seq))
+        ((off-world h) (sp-of s w pub seq))
         ;; Law 1: no handler, no savepoint: continue with the payload
         (v2/resume! pub (unwrap (:payload pub)))))))
+
+(defn- merge-handlers [cur table]
+  (reduce-kv (fn [m site f] (if f (assoc m site f) (dissoc m site))) (or cur {}) table))
 
 (defn install-handlers!
   "Merges `table` ({site (fn [sp])}) into `w`'s handlers; a nil handler
    removes its entry. Forks inherit them."
   [w table]
-  (v2/update-in-world! w [:savepoint/handlers]
-                       (fn [cur] (reduce-kv (fn [m site f] (if f (assoc m site f) (dissoc m site)))
-                                            (or cur {}) table)))
+  (v2/update-in-world! w [:savepoint/handlers] merge-handlers table)
   w)
 
 (defn handled?
-  "Whether `w` has a handler for `site`."
+  "Whether `w` has a handler for `site`, its own or `:default`."
   [w site]
-  (some? (get (v2/get-in-world w [:savepoint/handlers]) site)))
+  (let [hs (v2/get-in-world w [:savepoint/handlers])]
+    (some? (or (get hs site) (get hs :default)))))
 
 (defn open!
   "Opens a session rooted at `w`. Options: `:handlers` {site handler},
@@ -171,7 +206,7 @@
   ([w {:keys [handlers seed]}]
    (when (session w)
      (throw (ex-info "World already belongs to a savepoint session" {:type ::session-exists})))
-   (let [s (->Session w (atom nil) (atom #{}) (atom {}) (atom false))]
+   (let [s (->Session w (atom nil) (atom #{}) (atom {}) (atom false) (atom []))]
      (v2/assoc-in-world! w [:savepoint/session] s)
      (v2/assoc-in-world! w [:savepoint/seed] (or seed (random-uuid)))
      (install-handlers! w (or handlers {}))
@@ -189,17 +224,30 @@
   (let [t (binding [v2/*world* (:root s)] (f))]
     (reset! (:task s) t)
     (watch-end! (assoc s :task t) (:root s))
+    ;; worlds that started continuing it while it was being created
+    (doseq [w (first (reset-vals! (:waiting s) nil))] (watch-end! (assoc s :task t) w))
     t))
 
-(defn- task-of [s] @(:task s))
+(defn- watch-world-end!
+  "Observes the end of the session's computation in `w`, now if its task is
+   known, else once `start!` knows it (a handler may resume a fork while the
+   task is still being created)."
+  [s w]
+  (let [t @(:task s)]
+    (if (v2/handle? t)
+      (watch-end! (assoc s :task t) w)
+      (let [[old _] (swap-vals! (:waiting s) #(when % (conj % w)))]
+        (when (nil? old) (watch-end! (assoc s :task @(:task s)) w))))))
 
-(defn- adopt-world!
-  "A world the session made: seeded, observed for its end."
-  [s parent-sp w index]
-  (swap! (:worlds s) conj w)
-  (v2/assoc-in-world! w [:savepoint/seed]
-                      (derive-seed (seed (:savepoint/world parent-sp)) (:savepoint/address parent-sp) index))
-  w)
+(defn- instance-state
+  "The initial state of an instance forked from `sp`: its seed (derived, or
+   `child-seed`) and `handlers` merged over the inherited ones."
+  [sp index child-seed handlers]
+  (let [parent-seed (::seed sp)]
+    (fn [state]
+      (cond-> (assoc-in state [:savepoint/seed]
+                        (or child-seed (derive-seed parent-seed (:savepoint/address sp) index)))
+        handlers (update :savepoint/handlers merge-handlers handlers)))))
 
 (defn- next-index! [s sp]
   (let [k [(:savepoint/world sp) (:savepoint/address sp) (:savepoint/seq sp)]]
@@ -208,19 +256,27 @@
 (defn- instance-sp [s sp w]
   (assoc sp :savepoint/world w ::instance (atom :unborn)))
 
+(defn anchor?
+  "Whether `sp` can still be forked: its publication keeps its basis (it was
+   not disposed), whether or not it was resumed."
+  [sp]
+  (some? (:basis (::pub sp))))
+
 (defn fork
   "`sp` in a new world that starts as `sp`'s world was at the site: an
    instance of its publication, owned by the session's root. Options:
    `:handlers` merged over the inherited ones, `:seed` the child's seed.
-   `sp` stays pending. Returns the child savepoint."
+   `sp` need not be pending: a resumed savepoint is an anchor until it is
+   disposed (S9). Returns the child savepoint, pending."
   ([sp] (fork sp nil))
   ([sp {:keys [handlers] child-seed :seed}]
    (let [s (::session sp)
-         pub (live-pub sp :fork)
-         w (v2/instantiate pub (:root s))]
-     (adopt-world! s sp w (next-index! s sp))
-     (when child-seed (v2/assoc-in-world! w [:savepoint/seed] child-seed))
-     (when handlers (install-handlers! w handlers))
+         pub (if (anchor? sp)
+               (::pub sp)
+               (throw (ex-info "Cannot fork a disposed savepoint"
+                               {:type ::not-pending :operation :fork :savepoint/address (:savepoint/address sp)})))
+         w (v2/instantiate pub (:root s) (instance-state sp (next-index! s sp) child-seed handlers))]
+     (swap! (:worlds s) conj w)
      (instance-sp s sp w))))
 
 (defn copy
@@ -229,10 +285,11 @@
   [sp k]
   (let [s (::session sp)
         pub (live-pub sp :copy)
-        _ (when (inst? sp)
+        _ (when (instance-sp? sp)
             (throw (ex-info "Cannot copy an unactivated fork: fork it instead" {:type ::not-pending :operation :copy})))
-        ws (v2/consume pub k (:root s))]
-    (mapv (fn [w] (adopt-world! s sp w (next-index! s sp)) (instance-sp s sp w)) ws)))
+        idx (vec (repeatedly k #(next-index! s sp)))
+        ws (v2/consume pub k (:root s) (fn [i] (instance-state sp (nth idx i) nil nil)))]
+    (mapv (fn [w] (swap! (:worlds s) conj w) (instance-sp s sp w)) ws)))
 
 (defn resume
   "Continues the computation suspended at `sp`, in `sp`'s world, with `v`.
@@ -242,12 +299,12 @@
         pub (live-pub sp :resume)]
     (when @(:closing? s)
       (throw (ex-info "Cannot resume in a closing session" {:type ::session-closing})))
-    (if (inst? sp)
+    (if (instance-sp? sp)
       (when (compare-and-set! (::instance sp) :unborn :born)
         (let [w (:savepoint/world sp)]
           (v2/activate! w v)
           ;; observable once born (an unborn world takes only writes)
-          (watch-end! (assoc s :task (task-of s)) w)))
+          (watch-world-end! s w)))
       (v2/resume! pub v))
     nil))
 
@@ -256,7 +313,7 @@
    discarded without running anything. Consumes `sp`."
   [sp]
   (let [pub (live-pub sp :abandon)]
-    (if (inst? sp)
+    (if (instance-sp? sp)
       (when (compare-and-set! (::instance sp) :unborn :abandoned)
         (v2/release-world! (:savepoint/world sp)))
       (v2/abandon! pub))
@@ -282,12 +339,18 @@
   nil)
 
 (defn close!
-  "Ends the session: releases every world it made and stops accepting
-   resumes. Returns a deferred-like promise delivered when the releases have
-   been requested (the engine's world join is not available yet)."
+  "Ends the session: stops accepting resumes, abandons pending
+  publications of the worlds it made and releases them. Returns a CPS
+  operation `(fn [resolve reject])` that closes when invoked and resolves
+  once the releases are requested (engine v2 has no world join yet, so it
+  does not wait for their cleanup)."
   [s]
-  (reset! (:closing? s) true)
-  (doseq [w @(:worlds s)] (v2/release-world! w))
-  (reset! (:worlds s) #{})
-  (v2/assoc-in-world! (:root s) [:savepoint/session] nil)
-  nil)
+  (fn [resolve reject]
+    (let [resolve (off-world resolve) reject (off-world reject)]
+      (try
+        (reset! (:closing? s) true)
+        (doseq [w @(:worlds s)] (v2/release-world! w))
+        (reset! (:worlds s) #{})
+        (v2/assoc-in-world! (:root s) [:savepoint/session] nil)
+        (resolve nil)
+        (catch #?(:clj Throwable :cljs :default) e (reject e))))))
