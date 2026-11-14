@@ -3306,21 +3306,32 @@
   "D3, host form: a frozen fork of `w` between slices. Returns the child
    world; act on it through `in-world` handles. With `{:mergeable? true}`
    the child keeps the basis of every source it inherited and touches, so
-   `merge!` can adopt its writes into `w`."
+   `merge!` can adopt its writes into `w`. With `{:owner o}` (a world of the
+   same family) the root scope of `o` owns the child instead of `w`'s (F2),
+   so it outlives `w`, as an instance outlives its publication's world (S3)."
   ([w] (fork! w nil))
   ([w opts]
    ;; a body forks its own world with the (fork) effect; a host fork of
    ;; another world is a host operation of that world, also from a body
    (when (and (active-run) (identical? w (cw)))
      (throw (ex-info "fork! inside a body: use the (fork) effect" {})))
-   (let [res (volatile! nil)]
+   (let [res (volatile! nil)
+         owner (:owner opts)]
+     (when (and owner (not (identical? (g owner rw/W-FAMILY) (g w rw/W-FAMILY))))
+       (throw (ex-info "fork!: the owner belongs to an unrelated world" {:spindel/invalid :lineage})))
      (gated w
             (when (g w rw/W-UNBORN) (throw (ex-info "fork! of an unactivated instance" {})))
             (let [c (fork-world* w)]
               (when (:mergeable? opts)
                 (s! c rw/W-MPARENT (g w rw/ID))
                 (s! c rw/W-MBASE {}))
-              (own-child! w (rv w (g w rw/W-ROOT)) c false)   ; F2: weakly, by the root scope
+              (if (or (nil? owner) (identical? owner w))
+                (own-child! w (rv w (g w rw/W-ROOT)) c false)   ; F2: weakly, by the root scope
+                ;; as activate!: the owner's gate is only tried, never waited
+                ;; for (E3); a released owner releases the child
+                (try (host! owner #(own-child! owner (rv owner (g owner rw/W-ROOT)) c false))
+                     (catch #?(:clj Exception :cljs :default) _
+                       (release-child! w c))))
               (commit! w [:fork-host (g c rw/ID)])
               (vreset! res c)))
      (handoff! @res)
