@@ -1768,6 +1768,16 @@
     (hs/mput! ords site (inc ord))
     (+ (* (long site) 1048576) ord)))   ; site < 2^30, ord < 2^20: exact in JS doubles
 
+(defn- frame-of
+  "§8.2 addresses: the creation keys of the entities that created `x`, and
+   of `x` itself; [] for an entity the host created."
+  [x]
+  (or (g x (if (comp? x) rw/C-FRAME rw/K-FRAME)) []))
+
+(defn- set-frame! [x frame]
+  (s! x (if (comp? x) rw/C-FRAME rw/K-FRAME) frame)
+  x)
+
 (defn- adopt!
   "The creation of `c` with `key`, from its basis or its adoption basis."
   [w c key]
@@ -1791,7 +1801,8 @@
             at (next-at! r)]
         (if-not (comp? c)
           ;; Created by a task run: owned by the run scope, retained by demand.
-          (let [child (new-comp! w (run-scope! w r) 0 at inputs body 0)]
+          (let [child (set-frame! (new-comp! w (run-scope! w r) 0 at inputs body 0)
+                                  (conj (frame-of c) (creation-key! r site)))]
             (aadd! (g w rw/W-RQ) child)
             (let [h (handle! w child)]
               (commit! w [:create-comp (g r rw/ID) (g child rw/ID) [:opaque-seq inputs] [:opaque body]])
@@ -1816,7 +1827,7 @@
                     (commit! w [:create-comp (g r rw/ID) (g child rw/ID) [:opaque-seq inputs] [:opaque body]])
                     h))
               ;; A body creation gets the body's weak handle (Z#13): +1 in handle!
-              (let [child (new-comp! w c key at inputs body 0)]
+              (let [child (set-frame! (new-comp! w c key at inputs body 0) (conj (frame-of c) key))]
                 (aadd! (g c rw/C-BASIS) child)
                 (ref-inc! child)
                 (let [h (handle! w child)]
@@ -1867,7 +1878,7 @@
                       (hs/remove-at! basis i)
                       (when-let [or* (rv w (g old rw/K-RUN))] (cancel! w or* ::cancelled))
                       (ref-dec! w old)))
-                  (let [k (new-task! w x key at inputs body 0)]
+                  (let [k (set-frame! (new-task! w x key at inputs body 0) (conj (frame-of x) key))]
                     (aadd! (g x rw/C-BASIS) k)
                     (ref-inc! k)
                     (start-task! w k)
@@ -1875,7 +1886,7 @@
                       (commit! w [:spawn (g r rw/ID) [:opaque body] (g k rw/ID) [:opaque-seq inputs]])
                       h)))))
           (let [s (current-scope! w r)
-                k (new-task! w s 0 at inputs body 0)]
+                k (set-frame! (new-task! w s 0 at inputs body 0) (conj (frame-of x) (creation-key! r site)))]
             (hs/oset-add! (g s rw/S-TASKS) (id-of k) k)
             (ref-inc! k)
             (start-task! w k)
@@ -3413,15 +3424,27 @@
 ;; ---------------------------------------------------------------------------
 ;; Savepoints (§8.2, S1-S7)
 
-(deftype Publication [world act site payload basis state]
+(defn- pub-world
+  "The publication's world: held strongly while its savepoint is armed,
+   weakly afterwards (S9)."
+  [^objects cell ww]
+  (or (aget cell 0) (hs/deref-weak ww)))
+
+(deftype Publication [^objects cell ww act site payload state]
+  ;; cell: [world (strong while pending) basis (nil once disposed)]
   #?@(:clj [clojure.lang.ILookup
             (valAt [this k] (.valAt this k nil))
-            (valAt [_ k nf] (case k :world world :act act :site site :payload payload
-                                  :basis basis :state state nf))]
+            (valAt [_ k nf] (case k :world (pub-world cell ww) :act act :site site :payload payload
+                                  :basis (aget cell 1) :state state nf))]
       :cljs [ILookup
              (-lookup [this k] (-lookup this k nil))
-             (-lookup [_ k nf] (case k :world world :act act :site site :payload payload
-                                     :basis basis :state state nf))]))
+             (-lookup [_ k nf] (case k :world (pub-world cell ww) :act act :site site :payload payload
+                                     :basis (aget cell 1) :state state nf))]))
+
+(defn- let-go-world!
+  "S9: a publication whose savepoint is no longer armed keeps only its basis."
+  [pub]
+  (aset ^objects (.-cell ^Publication pub) 0 nil))
 
 (declare abandon-act!)
 
@@ -3431,10 +3454,10 @@
    holds the world, the activation id and the state, never the publication."
   [w aid site payload basis]
   (let [state (clojure.core/atom :pending)
-        p (Publication. w aid site payload basis state)
         ;; weakly: the world may reach the publication (a handler storing it),
         ;; and a strong reference here would keep that cycle alive forever
-        ww (hs/weak w)]
+        ww (hs/weak w)
+        p (Publication. (object-array [w basis]) ww aid site payload state)]
     (hs/on-collect! p (fn []
                         (when (= :pending @state)
                           (when-let [w (hs/deref-weak ww)]
@@ -3500,6 +3523,7 @@
   [pub v]
   (let [w (:world pub)]
     (when (compare-and-set! (:state pub) :pending :resumed)
+      (let-go-world! pub)
       (gated w (sp-fire! w (:act pub) v)))
     nil))
 
@@ -3519,26 +3543,80 @@
 (defn abandon!
   "S7: cancels the run suspended at the publication with err ::abandoned."
   [pub]
-  (abandon-act! (:world pub) (:act pub) (:state pub)))
+  (when-let [w (:world pub)]
+    (abandon-act! w (:act pub) (:state pub)))
+  (when-not (= :pending @(:state pub)) (let-go-world! pub))
+  nil)
 
 (defn instantiate
   "S3: a frozen fork of the publication's basis, not yet activated: the
    run's copy is parked on its savepoint, which is the fork's pending
-   activation. Any number of instances are independent."
+   activation. Any number of instances are independent. `owner` (default:
+   the publication's world) is the world whose root scope owns the instance
+   once it is activated; it must be of the same family."
+  ([pub] (instantiate pub nil))
+  ([pub owner]
+   (let [b (or (:basis pub)
+               (throw (ex-info "instantiate: the publication is disposed" {:spindel/invalid :disposed})))
+         owner (or owner (:world pub)
+                   (throw (ex-info "instantiate: the publication's world is gone; name an owner"
+                                   {:spindel/invalid :owner})))]
+     (when-not (identical? (g owner rw/W-FAMILY) (g b rw/W-FAMILY))
+       (throw (ex-info "instantiate: the owner belongs to an unrelated world" {:spindel/invalid :lineage})))
+     (let [c (fork-world* b)]
+       (s! c rw/W-PENDING-ACT (:act pub))
+       ;; E4: unborn until activate!: host items commit, but its inherited work
+       ;; and dormant resources wait; dropped unactivated, it is collected
+       ;; without running anything (it never ran)
+       (s! c rw/W-UNBORN true)
+       (s! c rw/W-PUB-WORLD owner)
+       c))))
+
+(defn consume
+  "S8: continues the run suspended at the publication only in `k` new
+   instances (owned by `owner`, default the publication's world), never in
+   its own world: its savepoint is consumed, so it can no longer be resumed
+   or abandoned, and its finalizers never run there. Refused (throws, the
+   publication stays pending) unless the savepoint is armed and the run
+   holds no other resource (S6). Returns the instances, unborn."
+  ([pub k] (consume pub k nil))
+  ([pub k owner]
+   (let [w (or (:world pub) (throw (ex-info "consume: the savepoint is not pending" {:spindel/invalid :consume})))
+         owner (or owner w)]
+     (host-call! w #(let [z (sp-res w (:act pub))
+                          r (when z (rv w (g z rw/OWNER)))
+                          res (when r (g r rw/R-RES))]
+                      (cond
+                        (or (nil? z) (not= :pending @(:state pub)))
+                        (do (refuse! w [:consume (:act pub)])
+                            (throw (ex-info "consume: the savepoint is not pending" {:spindel/invalid :consume})))
+                        (and res (> (acount res) 1))
+                        (do (refuse! w [:consume (:act pub)])
+                            (throw (ex-info "consume: the run holds resources besides its savepoint (S6)"
+                                            {:spindel/invalid :consume})))
+                        :else
+                        (do (reset! (:state pub) :consumed)
+                            ;; its continuation lives on in the instances only
+                            (s! r rw/R-FINS 0)
+                            (commit! w [:consume (:act pub) k])))))
+     (let [is (mapv (fn [_] (instantiate pub owner)) (range k))]
+       (let-go-world! pub)
+       is))))
+
+(defn dispose!
+  "S9: ends a publication used as an anchor. A pending one is abandoned
+   first (S7); then it drops its basis and its world. Instantiating it
+   afterwards is refused."
   [pub]
-  (let [b (:basis pub)
-        c (fork-world* b)]
-    (s! c rw/W-PENDING-ACT (:act pub))
-    ;; E4: unborn until activate!: host items commit, but its inherited work
-    ;; and dormant resources wait; dropped unactivated, it is collected
-    ;; without running anything (it never ran)
-    (s! c rw/W-UNBORN true)
-    (s! c rw/W-PUB-WORLD (:world pub))
-    c))
+  (when (= :pending @(:state pub)) (abandon! pub))
+  (let [^objects cell (.-cell ^Publication pub)]
+    (aset cell 0 nil)
+    (aset cell 1 nil))
+  nil)
 
 (defn activate!
   "S4: resumes an instantiated fork's pending activation with `v`. The fork
-   is born here: the root scope of the publication's world owns it (F2)."
+   is born here: the root scope of its owner (`instantiate`) owns it (F2)."
   [w v]
   (gated w
          (when-let [pw (g w rw/W-PUB-WORLD)]
@@ -3598,7 +3676,10 @@
   (if-let [r (valid-run)]
     (let [h (or (get @effect-handlers sym)
                 (throw (ex-info "unregistered effect" {:spindel/invalid :effect :effect sym})))
-          op (try (h args {:effect sym :site site :run (g r rw/ID) :effect-index (gl r rw/R-EIDX)})
+          ;; §8.2 addresses: counted on entry, before a savepoint freezes the run
+          key (creation-key! r site)
+          op (try (h args {:effect sym :site site :run (g r rw/ID) :effect-index (gl r rw/R-EIDX)
+                           :key key :frame (frame-of (rv (cw) (g r rw/R-OF)))})
                   (catch #?(:clj Throwable :cljs :default) t [:error t]))]
       (case (when (vector? op) (first op))
         :value (k (nth op 1))

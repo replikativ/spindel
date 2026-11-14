@@ -1184,8 +1184,10 @@ A savepoint publishes the rest of a body to a handler (see `savepoints.md`).
 
 **Addresses of effect sites (2026-11-14).** A registered effect receives,
 besides its `site`, the occurrence's `key` (the site and a per-run ordinal of
-that site, as for creations) and its `frame`: the creation keys of the run's
-entity and of the entities owning it, up to the world's root. A consumer's
+that site, as for creations) and its `frame`: the creation keys of the
+entities that created the run's entity, outermost first, and of the entity
+itself (a site and ordinal in the creating run); empty for an entity the host
+created. The frame follows creation, not ownership, so `detach` keeps it. A consumer's
 address for an effect occurrence is `[frame key]` or an explicit id. The
 ordinal is counted when the effect is entered, before a savepoint freezes the
 run, so instances continue the count of the run they copy. In task runs and
