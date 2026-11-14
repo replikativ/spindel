@@ -3308,9 +3308,12 @@
    `merge!` can adopt its writes into `w`."
   ([w] (fork! w nil))
   ([w opts]
+   ;; a body forks its own world with the (fork) effect; a host fork of
+   ;; another world is a host operation of that world, also from a body
+   (when (and (active-run) (identical? w (cw)))
+     (throw (ex-info "fork! inside a body: use the (fork) effect" {})))
    (let [res (volatile! nil)]
      (gated w
-            (when (active-run) (throw (ex-info "fork! inside a body: use the (fork) effect" {})))
             (when (g w rw/W-UNBORN) (throw (ex-info "fork! of an unactivated instance" {})))
             (let [c (fork-world* w)]
               (when (:mergeable? opts)

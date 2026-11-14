@@ -162,3 +162,17 @@
          (reset! s :c)
          (is (= :c @s))))
      (v2/release-world! w))))
+
+(deftest a-body-may-fork-another-world
+  (checked
+   (let [w (vworld) other (vworld)]
+     (binding [v2/*world* other] (v2/signal 1))
+     (binding [v2/*world* w]
+       (let [t (task (let [c (v2/fork! other)]
+                       (v2/release-world! c)
+                       :forked))]
+         (is (= :forked (v2/value t 2000 ::timeout)))
+         (is (thrown? Exception (v2/value (task (v2/fork! w)) 2000 ::timeout))
+             "its own world: refused, use the (fork) effect")))
+     (v2/release-world! other)
+     (v2/release-world! w))))
