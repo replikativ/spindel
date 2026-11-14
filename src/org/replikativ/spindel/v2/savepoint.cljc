@@ -240,21 +240,26 @@
         (when (nil? old) (watch-end! (assoc s :task @(:task s)) w))))))
 
 (defn- instance-state
-  "The initial state of an instance forked from `sp`: its seed (derived, or
-   `child-seed`) and `handlers` merged over the inherited ones."
-  [sp index child-seed handlers]
-  (let [parent-seed (::seed sp)]
-    (fn [state]
-      (cond-> (assoc-in state [:savepoint/seed]
-                        (or child-seed (derive-seed parent-seed (:savepoint/address sp) index)))
-        handlers (update :savepoint/handlers merge-handlers handlers)))))
+  "The initial state of an instance: its `seed` and `handlers` merged over
+   the inherited ones."
+  [seed handlers]
+  (fn [state]
+    (cond-> (assoc-in state [:savepoint/seed] seed)
+      handlers (update :savepoint/handlers merge-handlers handlers))))
 
-(defn- next-index! [s sp]
-  (let [k [(:savepoint/world sp) (:savepoint/address sp) (:savepoint/seq sp)]]
-    (dec (get (swap! (:fork-indices s) update k (fnil inc 0)) k))))
+(defn- next-seed!
+  "The seed of the next instance of `sp`: derived from `sp`'s seed, its
+   address and how many instances of it the session made before."
+  [s sp]
+  (let [k [(:savepoint/world sp) (:savepoint/address sp) (:savepoint/seq sp)]
+        index (dec (get (swap! (:fork-indices s) update k (fnil inc 0)) k))]
+    (derive-seed (::seed sp) (:savepoint/address sp) index)))
 
-(defn- instance-sp [s sp w]
-  (assoc sp :savepoint/world w ::instance (atom :unborn)))
+(defn- instance-sp
+  "`sp` as its instance `w` sees it: forking it again derives from `w`'s
+   seed, so a chain of forks never repeats a seed."
+  [sp w seed]
+  (assoc sp :savepoint/world w ::seed seed ::instance (atom :unborn)))
 
 (defn anchor?
   "Whether `sp` can still be forked: its publication keeps its basis (it was
@@ -275,9 +280,10 @@
                (::pub sp)
                (throw (ex-info "Cannot fork a disposed savepoint"
                                {:type ::not-pending :operation :fork :savepoint/address (:savepoint/address sp)})))
-         w (v2/instantiate pub (:root s) (instance-state sp (next-index! s sp) child-seed handlers))]
+         seed (or child-seed (next-seed! s sp))
+         w (v2/instantiate pub (:root s) (instance-state seed handlers))]
      (swap! (:worlds s) conj w)
-     (instance-sp s sp w))))
+     (instance-sp sp w seed))))
 
 (defn copy
   "`k` copies of the pending `sp`, consuming it (S8): its computation
@@ -287,9 +293,9 @@
         pub (live-pub sp :copy)
         _ (when (instance-sp? sp)
             (throw (ex-info "Cannot copy an unactivated fork: fork it instead" {:type ::not-pending :operation :copy})))
-        idx (vec (repeatedly k #(next-index! s sp)))
-        ws (v2/consume pub k (:root s) (fn [i] (instance-state sp (nth idx i) nil nil)))]
-    (mapv (fn [w] (swap! (:worlds s) conj w) (instance-sp s sp w)) ws)))
+        seeds (vec (repeatedly k #(next-seed! s sp)))
+        ws (v2/consume pub k (:root s) (fn [i] (instance-state (nth seeds i) nil)))]
+    (mapv (fn [w seed] (swap! (:worlds s) conj w) (instance-sp sp w seed)) ws seeds)))
 
 (defn resume
   "Continues the computation suspended at `sp`, in `sp`'s world, with `v`.
