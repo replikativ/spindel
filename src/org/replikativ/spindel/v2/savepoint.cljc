@@ -147,7 +147,10 @@
   (v2/get-in-world w [:savepoint/session]))
 
 (defn- dispatch-terminal! [w site payload]
-  (when-let [h (get (v2/get-in-world w [:savepoint/handlers]) site)]
+  ;; a world released before its end is delivered has no handlers left
+  (when-let [h (try (get (v2/get-in-world w [:savepoint/handlers]) site)
+                    (catch #?(:clj Throwable :cljs :default) e
+                      (when-not (:spindel/released (ex-data e)) (throw e))))]
     (try (h {:savepoint/site site :savepoint/payload payload :savepoint/world w :savepoint/terminal? true})
          (catch #?(:clj Throwable :cljs :default) _ nil))))
 

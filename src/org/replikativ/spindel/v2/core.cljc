@@ -3140,9 +3140,10 @@
    reclaim the rest. Later host operations fail with ::released. Returns a
    fn reporting the rows left (cleanup entries until they retire, L2)."
   [w]
-  ;; idempotent: releasing a released world does nothing (old discard)
+  ;; idempotent: releasing a released world does nothing (old discard). Not
+  ;; an admission: a release racing another one finds it done under the gate
   (when-not (g w rw/W-RELEASED)
-    (gated w (release-world* w)))
+    (internal! w (fn [] (release-world* w))))
   ;; the root scope is the administrative allowance (I11a): not a row left
   (fn [] (when-let [reg (g w rw/W-REG)] (dec (hs/msize reg)))))
 

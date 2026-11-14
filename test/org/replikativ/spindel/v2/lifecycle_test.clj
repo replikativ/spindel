@@ -31,6 +31,18 @@
 (defn- outcome [h]
   (try [:ok (v2/value h 1000 ::timeout)] (catch Exception e [:err (ex-data e)])))
 
+(deftest racing-releases-of-one-world-do-not-throw
+  ;; T21 is idempotent: a release that finds another one in flight does
+  ;; nothing, it is not a refused admission
+  (dotimes [_ 500]
+    (let [w (v2/world)
+          go (java.util.concurrent.CountDownLatch. 1)
+          fs (doall (for [_ (range 4)]
+                      (future (.await go)
+                              (try (v2/release-world! w) :ok (catch Throwable e e)))))]
+      (.countDown go)
+      (is (every? #{:ok} (map deref fs))))))
+
 (deftest owner-close-releases-a-fork
   ;; F2: a fork made in a task is owned by its scope; the task's end releases
   ;; the child, cancelling its timer loop and running its finally
