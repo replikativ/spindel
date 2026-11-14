@@ -148,3 +148,17 @@
            (v2/observe! cc (fn [v _] (swap! seen conj v)))
            (is (= [20] @seen) "the child's write invalidates the idle result")
            (is (= 10 (v2/value c)) "the parent keeps its own")))))))
+
+(deftest releasing-a-fork-leaves-an-untouched-inherited-source-to-its-parent
+  ;; T21's handle revocation acts on the fork's own copy, never on the
+  ;; basis row it shares with its parent
+  (checked
+   (let [w (vworld)]
+     (binding [v2/*world* w]
+       (let [s (v2/signal :b)
+             c (v2/fork! w)]
+         (v2/release-world! c)
+         (is (= :b @s))
+         (reset! s :c)
+         (is (= :c @s))))
+     (v2/release-world! w))))

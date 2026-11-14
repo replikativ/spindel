@@ -80,7 +80,7 @@
   nil)
 
 (defn- new-scope [w id kind parent]
-  (let [s (rw/new-row (g w rw/W-EPOCH) rw/S-SIZE)]
+  (let [s (rw/new-row (g w rw/W-EPOCH) (g w rw/ID) rw/S-SIZE)]
     (s! s rw/TYPE rw/T-SCOPE)
     (s! s rw/ID id)
     (s! s rw/S-PARENT parent)
@@ -97,7 +97,7 @@
   ([] (world {}))
   ([{:keys [verify? hook inline? budget executor] :or {inline? true budget 4096}}]
    (let [ep #?(:clj (Object.) :cljs (js-obj))
-         w (rw/new-row ep rw/W-SIZE)
+         w (rw/new-row ep nil rw/W-SIZE)
          next #?(:clj (java.util.concurrent.atomic.AtomicLong. 1)
                  :cljs (doto (long-array 1) (aset 0 1)))]
      (s! w rw/TYPE rw/T-WORLD)
@@ -535,7 +535,7 @@
 (defn- link-id!
   "`link!` with an id allocated earlier (to keep the model's id order)."
   [w id kind cred debtor at]
-  (let [e (rw/new-row (g w rw/W-EPOCH) rw/E-SIZE)
+  (let [e (rw/new-row (g w rw/W-EPOCH) (g w rw/ID) rw/E-SIZE)
         outs (g debtor rw/OUTS)]
     (s! e rw/TYPE rw/T-EDGE)
     (s! e rw/ID id)
@@ -749,7 +749,7 @@
 ;; Runs and scopes
 
 (defn- new-run! [w x epoch]
-  (let [r (rw/new-row (g w rw/W-EPOCH) rw/R-SIZE)]
+  (let [r (rw/new-row (g w rw/W-EPOCH) (g w rw/ID) rw/R-SIZE)]
     (s! r rw/TYPE rw/T-RUN)
     (s! r rw/ID (alloc-id! w))
     (s! r rw/R-SCOPE (alloc-id! w))          ; run scope id; T4/T5/T11 order: run, scope
@@ -1317,7 +1317,7 @@
       (unwind! ek))))
 
 (defn- new-activation! [w aid r mode k ek ^objects members ^objects slots remaining]
-  (let [a (rw/new-row (g w rw/W-EPOCH) rw/A-SIZE)]
+  (let [a (rw/new-row (g w rw/W-EPOCH) (g w rw/ID) rw/A-SIZE)]
     (s! a rw/TYPE rw/T-ACT)
     (s! a rw/ID aid)
     (s! a rw/A-RUN r)
@@ -1702,14 +1702,34 @@
     (attach-watch-token! (.-w ^Handle h) cell row))
   (s! row rw/HREF (href (.-w ^Handle h) h)))
 
+(defn- inherited?
+  "Whether row `x` is in world `w`: created by `w`, or by an ancestor before
+   the fork that leads to `w` (§8.1). The walk stops at the first fork point
+   older than the row, so it is as long as the row is young."
+  [w x]
+  (let [c (rw/creator x) id (long (g x rw/ID))]
+    (or (= c (g w rw/ID))
+        (loop [l (g w rw/W-LINEAGE)]
+          (when-let [[a cut] (first l)]
+            (when (< id (long cut))
+              (or (= c a) (recur (rest l)))))))))
+
+(defn- lineage-ex [x]
+  (ex-info "the row belongs to a world outside this world's lineage"
+           {:spindel/invalid :lineage :row (g x rw/ID)}))
+
 (defn row-of
-  "The row behind a handle, as the processed world sees it."
+  "The row behind a handle, as the processed world sees it. A handle of
+   another world must name a row this world inherited."
   [h] (let [w (cw)
-            x (if (instance? Handle h) (aget ^objects (.-cell ^Handle h) 0) h)]
+            hd? (instance? Handle h)
+            x (if hd? (aget ^objects (.-cell ^Handle h) 0) h)]
+        (when (and w hd? (not (identical? w (.-w ^Handle h))) (not (inherited? w x)))
+          (throw (lineage-ex x)))
         (if w (rv w x) x)))
 
 (defn- debtor-row [w type size owner key at handles]
-  (let [x (rw/new-row (g w rw/W-EPOCH) size)]
+  (let [x (rw/new-row (g w rw/W-EPOCH) (g w rw/ID) size)]
     (s! x rw/TYPE type)
     (s! x rw/ID (alloc-id! w))
     (s! x rw/OUTS (alist))
@@ -3144,10 +3164,12 @@
         (close-scope! w (rv w (g w rw/W-ROOT)))
       ;; host admissions are revoked: released handles hold no row (T21)
         (when-let [reg (g w rw/W-REG)]
-          (doseq [x (hs/mvals reg)]
-            (when (and (#{rw/T-COMP rw/T-TASK rw/T-SOURCE} (gl x rw/TYPE)) (pos? (gl x rw/HANDLES)))
-              (s! x rw/HANDLES 0)
-              (when (zero? (gl x rw/REFS)) (aadd! (g w rw/W-RQ) x)))))
+          (doseq [x0 (vec (hs/mvals reg))]
+            (when (and (#{rw/T-COMP rw/T-TASK rw/T-SOURCE} (gl x0 rw/TYPE)) (pos? (gl x0 rw/HANDLES)))
+              ;; a fork's own copy: an inherited basis row is shared with its parent
+              (let [x (rv w x0)]
+                (s! x rw/HANDLES 0)
+                (when (zero? (gl x rw/REFS)) (aadd! (g w rw/W-RQ) x))))))
         (commit! w [:release-world])
         (s! w rw/W-RELEASED true)))))
 
@@ -3217,7 +3239,9 @@
   [w h]
   (when-not (identical? (g w rw/W-FAMILY) (g (.-w ^Handle h) rw/W-FAMILY))
     (throw (ex-info "in-world: the handle belongs to an unrelated world" {:spindel/invalid :lineage})))
-  (new-handle w (aget ^objects (.-cell ^Handle h) 0)))
+  (let [x (aget ^objects (.-cell ^Handle h) 0)]
+    (when-not (inherited? w x) (throw (lineage-ex x)))
+    (new-handle w x)))
 
 (defn- fork-world*
   "D3: the frozen copy-on-write fork of `w`, at the current commit. O(1) in
@@ -3232,6 +3256,8 @@
     (s! w rw/W-EPOCH #?(:clj (Object.) :cljs (js-obj)))
     (s! c rw/W-EPOCH #?(:clj (Object.) :cljs (js-obj)))
     (s! c rw/ID (alloc-id! w))
+    ;; lineage: w's rows below the child's id are its basis (§8.1)
+    (s! c rw/W-LINEAGE (cons [(g w rw/ID) (g c rw/ID)] (g w rw/W-LINEAGE)))
     (s! c rw/W-LOCK (hs/lock))
     (s! c rw/W-INGRESS (hs/mpsc))
     (s! c rw/W-SCHEDULED (hs/flag false))
