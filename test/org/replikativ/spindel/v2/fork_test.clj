@@ -43,6 +43,29 @@
          (is (= [10 30] @seen-p))
          (is (= 20 (v2/value cc)) "the child is unchanged by the parent's write"))))))
 
+(deftest releasing-a-fork-does-not-call-the-parent-s-callbacks
+  ;; Z#45 at T21: the revoked roots a fork inherited belong to the parent's
+  ;; host, which is not told the fork was released
+  (let [w (v2/world) pubs (atom []) seen (atom [])]
+    (v2/install-handlers! w {:s (fn [p] (swap! pubs conj p))})
+    (let [t (binding [v2/*world* w] (task (v2/sleep 30) (inc (v2/savepoint :s nil))))
+          c (binding [v2/*world* w] (spin 1))]
+      (v2/observe! t (fn [v err?] (swap! seen conj [:task v err?])))
+      (v2/observe! c (fn [v err?] (swap! seen conj [:comp v err?])))
+      (is (wait-until #(seq @pubs)))
+      (let [host-fork (v2/fork! w)
+            inst (doto (v2/instantiate (first @pubs)) (v2/activate! 41))]
+        (is (= 42 (v2/value (v2/in-world inst t) 1000 ::timeout)))
+        (v2/release-world! inst)
+        (v2/release-world! host-fork)
+        (Thread/sleep 50)
+        (is (= [[:comp 1 false]] @seen) "only the parent's own deliveries")
+        (v2/resume! (first @pubs) 1)
+        (is (= 2 (v2/value t 1000 ::timeout)))
+        (v2/release-world! w)
+        (Thread/sleep 50)
+        (is (= [[:comp 1 false] [:task 2 false]] (take 2 @seen)))))))
+
 (deftest repeated-forks
   (checked
    (let [w (vworld)]
