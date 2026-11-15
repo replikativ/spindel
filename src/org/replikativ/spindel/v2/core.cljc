@@ -3328,6 +3328,24 @@
                         (gl c rw/W-SWEEP-GEN) request-atom-sweep!)
     c))
 
+(defn- host-fork-call!
+  "host-call! of `f`, a host fork of `w`. A slice or callback of another
+   world may not wait for `w` (B7): there `w` forks at once when it can take
+   the item now (H2), else the fork is refused. An item `w`'s drainer took
+   meanwhile is short and never waits, so its result is awaited."
+  [w f]
+  (if (and (holding-gate?) (not (identical? w (cw))))
+    (let [claim (hs/flag false)
+          res (volatile! nil)]
+      (gated w (when (hs/flag-cas! claim false true)
+                 (vreset! res (try [(f) nil] (catch #?(:clj Throwable :cljs :default) t [nil t])))))
+      (if (hs/flag-cas! claim false true)
+        (throw (ex-info "fork!: the world is busy, and a body of another world may not wait for it (B7)"
+                        {:spindel/invalid :busy}))
+        (let [[v t] (loop [] (or @res (do #?(:clj (Thread/onSpinWait)) (recur))))]
+          (if t (throw t) v))))
+    (host-call! w f)))
+
 (defn fork!
   "D3, host form: a frozen fork of `w` between slices. Returns the child
    world; act on it through `in-world` handles. With `{:mergeable? true}`
@@ -3341,27 +3359,28 @@
    ;; another world is a host operation of that world, also from a body
    (when (and (active-run) (identical? w (cw)))
      (throw (ex-info "fork! inside a body: use the (fork) effect" {})))
-   (let [res (volatile! nil)
-         owner (:owner opts)]
+   (let [owner (:owner opts)]
      (when (and owner (not (identical? (g owner rw/W-FAMILY) (g w rw/W-FAMILY))))
        (throw (ex-info "fork!: the owner belongs to an unrelated world" {:spindel/invalid :lineage})))
-     (gated w
-            (when (g w rw/W-UNBORN) (throw (ex-info "fork! of an unactivated instance" {})))
-            (let [c (fork-world* w)]
-              (when (:mergeable? opts)
-                (s! c rw/W-MPARENT (g w rw/ID))
-                (s! c rw/W-MBASE {}))
-              (if (or (nil? owner) (identical? owner w))
-                (own-child! w (rv w (g w rw/W-ROOT)) c false)   ; F2: weakly, by the root scope
-                ;; as activate!: the owner's gate is only tried, never waited
-                ;; for (E3); a released owner releases the child
-                (try (host! owner #(own-child! owner (rv owner (g owner rw/W-ROOT)) c false))
-                     (catch #?(:clj Exception :cljs :default) _
-                       (release-child! w c))))
-              (commit! w [:fork-host (g c rw/ID)])
-              (vreset! res c)))
-     (handoff! @res)
-     @res)))
+     (let [c (host-fork-call!
+              w
+              (fn []
+                (when (g w rw/W-UNBORN) (throw (ex-info "fork! of an unactivated instance" {})))
+                (let [c (fork-world* w)]
+                  (when (:mergeable? opts)
+                    (s! c rw/W-MPARENT (g w rw/ID))
+                    (s! c rw/W-MBASE {}))
+                  (if (or (nil? owner) (identical? owner w))
+                    (own-child! w (rv w (g w rw/W-ROOT)) c false)   ; F2: weakly, by the root scope
+                    ;; as activate!: the owner's gate is only tried, never waited
+                    ;; for (E3); a released owner releases the child
+                    (try (host! owner #(own-child! owner (rv owner (g owner rw/W-ROOT)) c false))
+                         (catch #?(:clj Exception :cljs :default) _
+                           (release-child! w c))))
+                  (commit! w [:fork-host (g c rw/ID)])
+                  c)))]
+       (handoff! c)
+       c))))
 
 (defn- merge-entries
   "L12 under both gates: [[parent-row value] ...] for every inherited source
