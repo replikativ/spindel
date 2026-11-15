@@ -38,7 +38,9 @@
  {:test {:extra-paths ["test" "dev"]
          ;; An access to a runtime atom, deferred or mailbox from a world that
          ;; has no state for it fails the test instead of warning.
-         :jvm-opts ["-Dspindel.missing-state=throw"]
+         ;; v2: every row write checks that the processed world owns the row
+         ;; (fork isolation), compiled in only for tests.
+         :jvm-opts ["-Dspindel.missing-state=throw" "-Dspindel.v2.check-writes=true"]
          :extra-deps {org.clojure/test.check {:mvn/version "1.1.1"}
                       ;; datahike's kabel-writer client (datahike.kabel.*), used by the
                       ;; cross-system-sync + workspace-peer-integration tests, SHIPS in the

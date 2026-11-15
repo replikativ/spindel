@@ -270,3 +270,60 @@
         "an idle world forks at once")
     (v2/release-world! other)
     (v2/release-world! w)))
+
+;; Rows inherited from the fork's basis must be resolved before they are written:
+;; a basis row is shared with the other world.
+
+(deftest a-computation-parked-at-the-fork-resumes-in-both-worlds
+  (doseq [order [[:child :parent] [:parent :child]]]
+    (testing (str "delivered " order)
+      (checked
+       (let [w (vworld)]
+         (binding [v2/*world* w]
+           (let [d (v2/deferred)
+                 c (spin [:got (await d)])
+                 seen-p (atom [])
+                 _ (v2/observe! c (fn [v _] (swap! seen-p conj v)))
+                 child (v2/fork! w)
+                 seen-c (atom [])
+                 _ (v2/observe! (v2/in-world child c) (fn [v _] (swap! seen-c conj v)))]
+             (doseq [who order]
+               (if (= who :child) (v2/deliver! (v2/in-world child d) :child) (v2/deliver! d :parent)))
+             (is (wait-until #(and (seq @seen-p) (seq @seen-c))))
+             (is (= [[:got :parent]] @seen-p))
+             (is (= [[:got :child]] @seen-c))
+             (v2/release-world! child)))
+         (v2/release-world! w))))))
+
+(deftest a-mailbox-waiter-at-the-fork-is-served-in-both-worlds
+  (checked
+   (let [w (vworld)]
+     (binding [v2/*world* w]
+       (let [mb (v2/mailbox)
+             t (task (v2/take! mb))
+             child (v2/fork! w)]
+         ((v2/in-world child mb) :child)
+         (mb :parent)
+         (is (= :child (v2/value (v2/in-world child t) 1000 ::timeout)))
+         (is (= :parent (v2/value t 1000 ::timeout)))
+         (v2/release-world! child)))
+     (v2/release-world! w))))
+
+(deftest a-run-retiring-in-a-fork-closes-only-the-fork-s-sources
+  (checked
+   (let [w (vworld)]
+     (binding [v2/*world* w]
+       (let [box (atom nil)
+             d (v2/deferred)
+             t (task (let [s (v2/signal 0)] (reset! box s) (await d) :done))
+             _ (wait-until #(some? @box))
+             s @box
+             child (v2/fork! w)]
+         (v2/deliver! (v2/in-world child d) :go)
+         (is (= :done (v2/value (v2/in-world child t) 1000 ::timeout)))
+         (v2/write! s 1)
+         (is (= 1 (v2/value s)) "the parent's source stays open")
+         (v2/deliver! d :go)
+         (is (= :done (v2/value t 1000 ::timeout)))
+         (v2/release-world! child)))
+     (v2/release-world! w))))
