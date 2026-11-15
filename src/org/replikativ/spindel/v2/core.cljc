@@ -782,7 +782,9 @@
   "T9 on a dep edge whose debtor changed."
   [w e]
   (when (g e rw/E-ARMED)
-    (let [a (g e rw/E-ACT)]
+    ;; this world's copy: a pointer inherited from a fork's basis must not be
+    ;; filled in place (the other world shares that row)
+    (let [a (rv w (g e rw/E-ACT))]
       (if (and a (run-current? w (rv w (g a rw/A-RUN))))
         (fill! w e a)
         (invalidate! w e)))))
@@ -800,7 +802,7 @@
               k (gl e rw/E-KIND)]
           (cond
             (== k rw/EK-DEP)
-            (do (if-let [a (g e rw/E-ACT)]
+            (do (if-let [a (rv w (g e rw/E-ACT))]
                   (fill! w e a)
                   (when (not= ver (g e rw/E-SEEN)) (fire-dep! w e)))
                 (unmark! w e))
@@ -960,7 +962,8 @@
     (when-let [xs (g s rw/S-SOURCES)]
       (s! s rw/S-SOURCES nil)
       (dotimes [i (acount xs)]
-        (when-let [x (hs/deref-weak (rv w (anth xs i)))] (close-source! w x))))
+        ;; resolve after the weak deref: the reference may name a basis row
+        (when-let [x (rv w (hs/deref-weak (anth xs i)))] (close-source! w x))))
     (let [ts (hs/oset-vals (g s rw/S-TASKS))]
       (doseq [t ts]
         (when-let [r (rv w (g (rv w t) rw/K-RUN))] (cancel! w r ::cancelled))))
@@ -2519,7 +2522,7 @@
   [w x v]
   (let [q (deque x rw/X-WAITERS)]
     (loop []
-      (when-let [e (hs/dq-poll! q)]
+      (when-let [e (rv w (hs/dq-poll! q))]   ; this world's copy of an inherited waiter
         (let [a (rv w (g e rw/E-CRED))
               r (rv w (g a rw/A-RUN))]
           (if (and (linked? w e) (identical? a (rv w (g r rw/R-ACTV))) (run-current? w r)
