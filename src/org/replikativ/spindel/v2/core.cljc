@@ -140,24 +140,29 @@
      (lt/register-world! (g w rw/W-FAMILY) w (g w rw/ID) (g w rw/W-WATCHES) 0 request-atom-sweep!)
      w)))
 
+(declare handoff!)
+
 (defn- atom-maintenance!
-  "Metadata only: no ingress, dormant activation, engine drain or callbacks."
+  "Metadata only: no ingress, dormant activation, engine drain or callbacks.
+   Like every holder of the gate, it hands off after releasing it (H2)."
   [w]
   (let [lk (g w rw/W-LOCK)]
     (if (hs/try-lock! lk)
-      (try
-        ;; Reset before reading generation/scanning: a new request now queues
-        ;; a second pass, while a request before reset is covered by this one.
-        (hs/flag-set! (g w rw/W-SWEEP-PENDING) false)
-        (let [generation (lt/generation (g w rw/W-FAMILY))]
-          (when-not (g w rw/W-META-CLOSED)
-            (s! w rw/W-ATOMS
-                (persistent!
-                 (reduce-kv (fn [m id entry]
-                              (if (hs/deref-weak (first entry)) (assoc! m id entry) m))
-                            (transient {}) (g w rw/W-ATOMS)))))
-          (s! w rw/W-SWEEP-GEN generation))
-        (finally (hs/unlock! lk)))
+      (do
+        (try
+          ;; Reset before reading generation/scanning: a new request now queues
+          ;; a second pass, while a request before reset is covered by this one.
+          (hs/flag-set! (g w rw/W-SWEEP-PENDING) false)
+          (let [generation (lt/generation (g w rw/W-FAMILY))]
+            (when-not (g w rw/W-META-CLOSED)
+              (s! w rw/W-ATOMS
+                  (persistent!
+                   (reduce-kv (fn [m id entry]
+                                (if (hs/deref-weak (first entry)) (assoc! m id entry) m))
+                              (transient {}) (g w rw/W-ATOMS)))))
+            (s! w rw/W-SWEEP-GEN generation))
+          (finally (hs/unlock! lk)))
+        (handoff! w))
       ;; A busy gate cannot lose the pending request. The dedicated scheduler
       ;; is asynchronous even when the world's application executor is inline.
       (hs/metadata-later! #(atom-maintenance! w) 1))))
@@ -1599,25 +1604,28 @@
 (defn- source-token-drop!
   "The canonical source token's T19 bookkeeping, without an engine turn.
    A source with no refs/handles can only leave the verify registry: there
-   are no graph edges, slices or callbacks to retire."
+   are no graph edges, slices or callbacks to retire. It hands off after
+   releasing the gate (H2)."
   [w row]
   (let [lk (g w rw/W-LOCK)]
     (if (hs/try-lock! lk)
-      (try
-        (when-not (g w rw/W-META-CLOSED)
-          (lt/locked
-           (fn []
-             (let [x (rv w row)]
-               (when (and (pos? (gl x rw/HANDLES))
-                          (not (lt/live-token? (g w rw/W-WATCHES) (g x rw/ID))))
-                 (s! x rw/HANDLES (dec (gl x rw/HANDLES)))
-                 (when (and (zero? (gl x rw/HANDLES)) (zero? (gl x rw/REFS)))
-                   (unregister! w x))
+      (do
+        (try
+          (when-not (g w rw/W-META-CLOSED)
+            (lt/locked
+             (fn []
+               (let [x (rv w row)]
+                 (when (and (pos? (gl x rw/HANDLES))
+                            (not (lt/live-token? (g w rw/W-WATCHES) (g x rw/ID))))
+                   (s! x rw/HANDLES (dec (gl x rw/HANDLES)))
+                   (when (and (zero? (gl x rw/HANDLES)) (zero? (gl x rw/REFS)))
+                     (unregister! w x))
               ;; Keep the verify ledger, but never call its embedder hook
               ;; (or commit!/Rule R, which can execute unrelated graph work).
-                 (when-let [log (g w rw/W-LOG)]
-                   (aadd! log {:item [:handle-drop (g x rw/ID)] :accepted true})))))))
-        (finally (hs/unlock! lk)))
+                   (when-let [log (g w rw/W-LOG)]
+                     (aadd! log {:item [:handle-drop (g x rw/ID)] :accepted true})))))))
+          (finally (hs/unlock! lk)))
+        (handoff! w))
       (hs/metadata-later! #(source-token-drop! w row) 1))))
 
 (defn- attach-watch-token! [w cell row]
@@ -2152,15 +2160,17 @@
   (when cs (dotimes [i (acount cs)] (handoff! (anth cs i)))))
 
 (defn- process!
-  "H2: try the gate; the winner runs a bounded turn, then hands off."
+  "H2: try the gate; the winner runs a bounded turn, then hands off. The
+   loser returns at once: the holder hands off after releasing the gate, and
+   sees the loser's item (both are sequentially consistent accesses)."
   [w]
   (let [lk (g w rw/W-LOCK)]
     (when (hs/try-lock! lk)
       (let [prev (enter-world! w)]
         (try (run-turn! w)
              (finally (let [cs (take-after! w)]
-                        (hs/unlock! lk) (leave-world! prev) (run-after! cs))))))
-    (handoff! w)))
+                        (hs/unlock! lk) (leave-world! prev) (run-after! cs)))))
+      (handoff! w))))
 
 (defn- work-pending? [w]
   (or (not (hs/mpsc-empty? (ingress w)))
@@ -3407,7 +3417,8 @@
            (let [lk (g child rw/W-LOCK)]
              (when (and (not (active-run)) (not (identical? parent child))
                         (not (hs/held? lk)) (hs/try-lock! lk))
-               (let [es (try (merge-entries parent child) (finally (hs/unlock! lk)))]
+               (let [es (try (merge-entries parent child)
+                             (finally (hs/unlock! lk) (handoff! child)))]
                  (when es
                    (doseq [[basis v] es]
                      (let [x (rv parent basis)
