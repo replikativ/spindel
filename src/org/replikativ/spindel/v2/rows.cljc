@@ -23,6 +23,14 @@
            `(let [~s ~row] (aset ~s ~i ~v))
            `(let [~s ~row] ~chk (clojure.lang.RT/aset ~s (int ~i) (clojure.lang.RT/box ~v))))))
      (defmacro gl [row i] `(long (g ~row ~i)))
+     (defmacro gm
+       "A row's container (list, map, deque, array) fetched to be mutated: in
+        test builds (check-writes) the processed world must own the row."
+       [row i]
+       (if (and check-writes? (not (cljs? &env)))
+         (let [s (with-meta (gensym "row") {:tag 'objects})]
+           `(let [~s ~row] (check-owned! ~s ~i) (aget ~s ~i)))
+         `(g ~row ~i)))
      (defn- al [] (with-meta (gensym "l") {:tag 'java.util.ArrayList}))
      (defmacro alist [] (if (cljs? &env) `(cljs.core/array) `(java.util.ArrayList. 4)))
      (defmacro acount [l] (if (cljs? &env) `(.-length ~l) (let [x (al)] `(let [~x ~l] (.size ~x)))))

@@ -327,3 +327,17 @@
          (is (= :done (v2/value t 1000 ::timeout)))
          (v2/release-world! child)))
      (v2/release-world! w))))
+
+(deftest an-explicit-scope-open-at-the-fork-closes-in-each-world
+  (checked
+   (let [w (vworld)]
+     (binding [v2/*world* w]
+       (let [d (v2/deferred)
+             t (task (v2/with-scope (let [v (await d)] (await (task [:sub v])))))
+             child (v2/fork! w)]
+         (v2/deliver! (v2/in-world child d) :c)
+         (is (= [:sub :c] (v2/value (v2/in-world child t) 1000 ::timeout)))
+         (v2/deliver! d :p)
+         (is (= [:sub :p] (v2/value t 1000 ::timeout)) "the child's scope close did not close the parent's")
+         (v2/release-world! child)))
+     (v2/release-world! w))))
