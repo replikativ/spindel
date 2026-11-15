@@ -47,20 +47,67 @@
 
 ;; M5 owner epochs: every row has one extra last slot holding the epoch of the
 ;; world incarnation that owns it.
+;; MVCC forks (v2-fork-memory-design): an epoch names its world and an
+;; ordinal that advances at each fork the world makes. The world that owns a
+;; row (its epoch stamps it) changes it in place; before its first change after
+;; a fork it saves the row's state as a version on the row, for the forks that
+;; may still read it (`[k m image]`: the state seen by forks with ordinal k..m).
+(deftype Epoch [world ^long ordinal])
+(defn epoch [world ordinal] (Epoch. world ordinal))
+(defn epoch-world [^Epoch e] (.-world e))
+(defn epoch-ordinal ^long [^Epoch e] (.-ordinal e))
+
+;; A fork's claim on its owner's versions at ordinal `ordinal`: held strongly
+;; by the lineage of the fork and its descendants, weakly by the owner. It ends
+;; when unreachable, or earlier when its fork has finished (released, cleanup
+;; done) and nothing was ever derived from it (`shared`, sticky).
+(defprotocol PToken
+  (-state [t])
+  (-set-state! [t v]))
+
+;; state: 0 live, 1 shared (sticky), 2 dead
+(deftype Token [^long ordinal #?(:clj ^:volatile-mutable state :cljs ^:mutable state)]
+  PToken
+  (-state [_] state)
+  (-set-state! [_ v] (set! state v)))
+
+(defn token [o] (Token. o 0))
+(defn token-dead? [t] (== 2 (long (-state t))))
+(defn token-share! [t] (-set-state! t 1) nil)
+(defn token-finish!
+  "Ends the token unless it was shared (called by its own world, serially
+   with token-share!)."
+  [t]
+  (when (== 0 (long (-state t))) (-set-state! t 2)) nil)
+
+#?(:clj
+   (defmacro locking-row
+     "The per-row monitor of the version protocol (a no-op on CLJS)."
+     [r & body]
+     (if (cljs? &env) `(do ~@body) `(locking ~r ~@body))))
+
 (defn new-row
-  "A row of `size` fields plus two trailing slots: the ID of the world that
-   created it (copies keep it; handle lineage, §8.1) and its owner epoch
-   (always the last slot)."
+  "A row of `size` fields plus three trailing slots: the ID of the world that
+   created it (copies keep it; handle lineage, §8.1), its saved versions, and
+   its owner epoch (always the last slot)."
   ^objects [epoch creator size]
-  (let [a (object-array (+ 2 (long size)))]
+  (let [a (object-array (+ 3 (long size)))]
     (aset a (long size) creator)
-    (aset a (inc (long size)) epoch)
+    (aset a (+ 2 (long size)) epoch)
     a))
 
 (defn creator
   "The ID of the world that created row `a` (nil for a world row)."
   [^objects a]
-  (aget a (- (alength a) 2)))
+  (aget a (- (alength a) 3)))
+
+(defn stamp
+  "The owner epoch of row `a`."
+  [^objects a]
+  (aget a (dec (alength a))))
+
+(defn versions [^objects a] (aget a (- (alength a) 2)))
+(defn set-versions! [^objects a v] (aset a (- (alength a) 2) v))
 
 (def ^:no-doc processed-epoch
   "Set by core: the owner epoch of the world this thread processes, or nil."
@@ -135,8 +182,12 @@
 (def ^:const W-SWEEP-GEN 41)  ; last completed family atom sweep
 (def ^:const W-SWEEP-PENDING 42) ; independent coalesced maintenance flag
 (def ^:const W-META-CLOSED 43) ; terminal metadata cleanup completed
-(def ^:const W-LINEAGE 44)    ; ([ancestor-id cut] ...) nearest first: rows of an ancestor below cut are inherited
-(def ^:const W-SIZE 45)
+(def ^:const W-LINEAGE 44)    ; ([ancestor-id cut ordinal token map] ...) nearest first: rows of an ancestor
+                              ; below cut are inherited; that ancestor's rows are read at its `ordinal`
+                              ; (`token` keeps those versions); `map` is its copy map at the fork
+(def ^:const W-TOKENS 45)     ; MVCC: [ordinal weak-token] of this world's forks, ascending (weakly held)
+(def ^:const W-VROWS 46)      ; MVCC: weak refs to rows of this world holding versions (swept)
+(def ^:const W-SIZE 47)
 
 ;; Scope
 (def ^:const S-PARENT 2)

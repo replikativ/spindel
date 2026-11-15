@@ -64,10 +64,11 @@
           (when copy-parent? (is (= :kept (v2/value h))))
           (when copy-child? (is (= :kept (v2/value ch))))
           (when (and copy-parent? copy-child?) (is (= :kept (v2/value sh))))
-          ;; Observe raw registry entries: observation must not force COW.
-          (is (= (not copy-parent?) (identical? basis (raw-row p id))))
-          (is (= (not copy-child?) (identical? basis (raw-row c id))))
-          (is (= (not (and copy-parent? copy-child?)) (identical? basis (raw-row sibling id))))
+          ;; MVCC: the owner keeps its row in place; a fork copies what it
+          ;; touches into its own map, and observation alone copies nothing.
+          (is (identical? basis (raw-row p id)) "the owner's row is the identity")
+          (is (= copy-child? (contains? (aget ^objects c rw/W-FWD) id)))
+          (is (= (and copy-parent? copy-child?) (contains? (aget ^objects sibling rw/W-FWD) id)))
           (is (= 1 (:handles (snapshot (raw-row target id)))))
           (is (zero? (:refs (snapshot (raw-row target id)))))
           (let [before (mapv #(snapshot (raw-row % id)) protected)

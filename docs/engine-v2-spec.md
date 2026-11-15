@@ -1044,7 +1044,8 @@ Independent cross-world joins outside this ownership profile fail explicitly.
 slice is the only one executing, so the fork boundary is the effect's commit.
 
 The child `W′` gets:
-- copy-on-write views of `W`'s layer-1 tables (epoch rotation);
+- copy-on-write views of `W`'s layer-1 tables: `W′` sees every row as it was
+  at the fork (MVCC representation below);
 - `lineage = {parent: id(W), mode}`;
 - **Handle lineage:** a handle of another world reaches a row only if the world inherited it: the row was created by the world, or by an ancestor below the cut of the fork that leads to it (each row records its creator; each world its `[ancestor, cut]` chain). Otherwise the operation fails with `:spindel/invalid :lineage`.
 - **no** world-lifecycle rows: `forks`, `pubs`, `pending-activation` and
@@ -1054,6 +1055,23 @@ The child `W′` gets:
   by the root scope of another world of the same family named as its owner
   (2026-11-14), as for instances (S3): copies of a world then outlive it. An
   owner already released releases the fork.
+
+**Representation (MVCC, 2026-11-15, `v2-fork-memory-design`).** A row is an
+identity and its owner world's current state: the owner (the world whose
+epoch stamps it — its creator, or the fork that copied it) changes it in
+place. A world's epoch carries an ordinal that advances at each fork it
+makes; a fork at ordinal `o` receives a token for `o`, held strongly by its
+lineage (and its descendants'), weakly by the owner. Before its first change
+to a row after a fork, the owner saves the row's state as a version
+`[k m image]` on the row (the state forks with ordinal `k..m` see) — only if
+a token in that range is still reachable — and restamps it. A fork resolves
+an inherited reference through its lineage `[owner cut ordinal token
+copy-map]` (nearest first): an ancestor's copy as it was at the fork, or the
+owner's row at the fork's ordinal (the live row, cloned, if unchanged since,
+else its version), and copies what it writes into its own map. Owner and
+reader synchronize per row (a monitor held for one row clone). A root world
+keeps no forwarding state; a fork's own copy map is bounded by the rows it
+inherited; versions live as long as a fork or anchor that can read them.
 
 **Mode (Q3, decided):**
 - **frozen** is the default: untouched reads see the fork-time basis.
@@ -1097,8 +1115,9 @@ The child `W′` gets:
   inherited pending cleanup wait descriptors (Z#66).
 
 **Fork rules:**
-- **F1:** `W′` holds no reference to `W`'s live context: only ids, pinned
-  pages and the push link.
+- **F1:** `W′` holds no reference to `W`'s live context: only ids, its
+  lineage (tokens, copy maps) and the push link; it reads `W`'s rows through
+  clones and versions, never the live row.
 - **F2 (R#20, W#10):** marker `M` is removed when `W′` is released. `W′` is
   released when:
   - `M`'s owner scope closes; or
@@ -1116,18 +1135,19 @@ The child `W′` gets:
 
   Dropping the last handle of a fork that still has live work does not
   release it. Its work is owned through `M`.
-- **F3:** each world applies Rule R to its own tables. A shared page is freed
-  when no world and no publication references it; this is a physical
-  refcount, not a semantic reason.
+- **F3:** each world applies Rule R to its own tables. A row's saved versions
+  are dropped when no reachable token covers them (pruned when the row is
+  saved again, or by the sweep of rows holding versions); this is physical
+  reclamation, not a semantic reason.
 - **F4:** discarding an activated fork cancels its runs and joins their own
   cleanup (T21 in `W′`). Frozen/unborn instances discarded without activation run
   no finalizer, detach or physical-close callback. Release before first normal
   execution respects that activation/discard distinction and cannot detach the
   parent. Activated forks finish their local inherited finalizer chains and
   retire independently of the parent's pending physical operation (Z#66).
-- **F5:** the layer-1 invariants hold in every world. Physical page storage is
-  bounded by Σ over live worlds of their touched pages, plus the bases of
-  live publications, plus the shared basis.
+- **F5:** the layer-1 invariants hold in every world. Physical storage is
+  bounded by Σ over live worlds of their own rows and copies, plus the
+  versions that live forks and anchors (publications) can read.
 
 ### 8.2 Savepoints (R#7, R#17)
 

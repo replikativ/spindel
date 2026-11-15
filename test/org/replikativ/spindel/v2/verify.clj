@@ -9,14 +9,6 @@
 
 (defn- rows [w] (vals (f w rw/W-REG)))
 
-(defn- current-or-predecessor
-  "§3.2 (Z#1): C.run if current, or if C needs a run and C.run is not done."
-  [c]
-  (when-let [r (f c rw/C-RUN)]
-    (let [current? (== (long (f r rw/R-EPOCH)) (long (f c rw/C-EPOCH)))
-          done? (== rw/ACT-DONE (long (f r rw/R-ACT)))]
-      (when (or current? (not done?)) r))))
-
 (def ^:dynamic *reg* nil)
 
 (defn- canon
@@ -26,6 +18,16 @@
     (or (.get ^java.util.Map *reg* (aget ^objects x rw/ID)) x)
     x))
 
+(defn- current-or-predecessor
+  "§3.2 (Z#1): C.run if current, or if C needs a run and C.run is not done."
+  [c]
+  (when-let [r (canon (f c rw/C-RUN))]
+    (let [current? (== (long (f r rw/R-EPOCH)) (long (f c rw/C-EPOCH)))
+          done? (== rw/ACT-DONE (long (f r rw/R-ACT)))]
+      (when (or current? (not done?)) r))))
+
+;; MVCC: a reference may name another world's live row; its fields are read
+;; through the world's own row (`canon`), never from the reference itself.
 (defn- successors* [row]
   (condp == (t row)
     rw/T-COMP (when-not (f row rw/C-IDLE)
@@ -33,18 +35,18 @@
                         (f row rw/C-INS)
                         (f row rw/C-BASIS)
                         (f row rw/C-ADOPT)
-                        (map #(f % rw/E-DEBTOR) (f row rw/C-ADOPT-BASE))))
+                        (map #(f (canon %) rw/E-DEBTOR) (f row rw/C-ADOPT-BASE))))
     rw/T-RUN (when-not (== rw/ACT-DONE (long (f row rw/R-ACT)))
                (concat [(f row rw/R-OF)]
                        (some-> (f row rw/R-ACTV) list)
                        (some-> (f row rw/R-SROW) list)
                        (f row rw/R-RES)))
-    rw/T-ACT (let [x (f (f row rw/A-RUN) rw/R-OF)]
+    rw/T-ACT (let [x (canon (f (canon (f row rw/A-RUN)) rw/R-OF))]
                (concat (when (== rw/T-COMP (t x))
-                         (filter #(identical? row (f % rw/E-ACT)) (f x rw/C-INS)))
-                       (filter #(and % (== rw/EK-WAIT (long (f % rw/E-KIND)))) (f row rw/A-MEMBERS))))
+                         (filter #(identical? row (canon (f (canon %) rw/E-ACT))) (f x rw/C-INS)))
+                       (filter #(and % (== rw/EK-WAIT (long (f (canon %) rw/E-KIND)))) (f row rw/A-MEMBERS))))
     rw/T-SCOPE (concat (some-> (f row rw/S-PARENT) list)
-                       (keep #(f % rw/K-RUN) (.values ^java.util.Map (f row rw/S-TASKS))))
+                       (keep #(f (canon %) rw/K-RUN) (.values ^java.util.Map (f row rw/S-TASKS))))
     rw/T-TASK (some-> (f row rw/K-RUN) list)
     rw/T-EDGE [(f row rw/E-DEBTOR)]
     nil))
