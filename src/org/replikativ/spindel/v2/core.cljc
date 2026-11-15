@@ -11,7 +11,7 @@
    callbacks run after the drain."
   (:refer-clojure :exclude [await atom])
   (:require [org.replikativ.spindel.v2.rows :as rw
-             #?@(:clj [:refer [g s! gl alist acount anth aadd! apop! aput! aclear! acopy]])]
+             #?@(:clj [:refer [g gm s! gl alist acount anth aadd! apop! aput! aclear! acopy]])]
             [org.replikativ.spindel.incremental.interval :as iv]
             [org.replikativ.spindel.incremental.deltaable :as dl]
             [org.replikativ.spindel.v2.host :as hs]
@@ -19,7 +19,7 @@
             [is.simm.partial-cps.runtime :as pr]
             #?(:clj [is.simm.partial-cps.ioc :as ioc])
             #?(:clj [org.replikativ.spindel.engine.free-vars :as free-vars]))
-  #?(:cljs (:require-macros [org.replikativ.spindel.v2.rows :refer [g s! gl alist acount anth aadd! apop! aput! aclear! acopy]]
+  #?(:cljs (:require-macros [org.replikativ.spindel.v2.rows :refer [g gm s! gl alist acount anth aadd! apop! aput! aclear! acopy]]
                             [org.replikativ.spindel.v2.core :refer [gated commit! rv ingress-body]])))
 
 #?(:clj (set! *warn-on-reflection* true))
@@ -164,7 +164,7 @@
     (s! s rw/S-OPEN true)
     (s! s rw/S-TASKS (hs/oset))
     (s! s rw/S-CHILDREN (alist))
-    (when parent (aadd! (g parent rw/S-CHILDREN) s))
+    (when parent (aadd! (gm parent rw/S-CHILDREN) s))
     (register! w s)))
 
 (defn world
@@ -627,7 +627,7 @@
   "`link!` with an id allocated earlier (to keep the model's id order)."
   [w id kind cred debtor at]
   (let [e (rw/new-row (g w rw/W-EPOCH) (g w rw/ID) rw/E-SIZE)
-        outs (g debtor rw/OUTS)]
+        outs (gm debtor rw/OUTS)]
     (s! e rw/TYPE rw/T-EDGE)
     (s! e rw/ID id)
     (s! e rw/E-KIND kind)
@@ -662,7 +662,7 @@
   "Removes an edge. A marked edge discharges its mark (X#1)."
   [w e]
   (let [debtor (rv w (g e rw/E-DEBTOR))
-        outs (g debtor rw/OUTS)
+        outs (gm debtor rw/OUTS)
         i (gl e rw/E-IDX)
         last-e (rv w (apop! outs))]
     (when-not (identical? last-e e)
@@ -681,7 +681,7 @@
   [w e]
   (when (linked? w e)
     (let [c (rv w (g e rw/E-CRED))
-          ins (g c rw/C-INS)
+          ins (gm c rw/C-INS)
           i (idx-of ins e)]
       (when-not (neg? i)
         (hs/remove-at! ins i)
@@ -739,8 +739,8 @@
    not on the host stack is queued for resumption."
   [w a e res]
   (when-not (act-done? a)
-    (let [^objects ms (g a rw/A-MEMBERS)
-          ^objects sl (g a rw/A-SLOTS)
+    (let [^objects ms (gm a rw/A-MEMBERS)
+          ^objects sl (gm a rw/A-SLOTS)
           n (alength ms)]
       (dotimes [i n]
         (when (identical? e (rv w (aget ms i)))
@@ -889,7 +889,7 @@
              (zero? (acount (g s rw/S-CHILDREN))))
     (unregister! w s)
     (when-let [p (rv w (g s rw/S-PARENT))]
-      (let [cs (g p rw/S-CHILDREN)
+      (let [cs (gm p rw/S-CHILDREN)
             i (idx-of cs s)]
         (when-not (neg? i) (hs/remove-at! cs i))
         (remove-scope-if-empty! w p)))))
@@ -1116,7 +1116,7 @@
   [w k]
   (let [owner (rv w (g k rw/OWNER))]
     (when (and owner (not (fn? owner)) (== rw/T-SCOPE (gl owner rw/TYPE)))
-      (when (hs/oset-del! (g owner rw/S-TASKS) (id-of k))
+      (when (hs/oset-del! (gm owner rw/S-TASKS) (id-of k))
         (ref-dec! w k))
       (remove-scope-if-empty! w owner))))
 
@@ -1225,7 +1225,7 @@
   (s! c rw/C-QUEUED false)
   (when (needs-run? w c)
     (when-let [old (rv w (g c rw/C-RUN))] (cancel! w old ::cancelled))
-    (let [ins (g c rw/C-INS)
+    (let [ins (gm c rw/C-INS)
           restart? (g c rw/C-RESTART)
           ei (when-not restart? (earliest-fired w c))
           e (when ei (rv w (anth ins ei)))
@@ -1235,7 +1235,7 @@
       ;; baselines (§4.4, Z#21).
       (let [keep (if ei (inc (long ei)) (if restart? 0 (acount ins)))]
         (when (> (acount ins) keep)
-          (let [bs (or (g c rw/C-ADOPT-BASE) (alist))]
+          (let [bs (or (gm c rw/C-ADOPT-BASE) (alist))]
             (loop []
               (when (> (acount ins) keep)
                 (let [x (rv w (apop! ins))]
@@ -1247,7 +1247,7 @@
       ;; Suffix creations become the adoption basis.
       (let [basis (g c rw/C-BASIS)]
         (when (and basis (pos? (acount basis)))
-          (let [ab (or (g c rw/C-ADOPT) (alist))
+          (let [ab (or (gm c rw/C-ADOPT) (alist))
                 kept (alist)]
             (dotimes [i (acount basis)]
               (let [x (rv w (anth basis i))]
@@ -1314,7 +1314,7 @@
 (defn- adoption-baseline!
   "Consumes a suffix baseline for (at, d) (§4.4)."
   [w c at d]
-  (when-let [bs (g c rw/C-ADOPT-BASE)]
+  (when-let [bs (gm c rw/C-ADOPT-BASE)]
     (loop [i 0]
       (when (< i (acount bs))
         (let [x (rv w (anth bs i))]
@@ -1360,7 +1360,7 @@
    has it, otherwise created. Returns [edge reused?]. A new edge that would
    close a computation cycle is refused (I12): returns [nil false]."
   [w r c d at k ek]
-  (let [ins (g c rw/C-INS)
+  (let [ins (gm c rw/C-INS)
         cur (gl r rw/R-CURSOR)]
     (s! r rw/R-CURSOR (inc cur))
     (if (and (< cur (acount ins))
@@ -1879,7 +1879,7 @@
           (if (== (long key) (gl x rw/KEY)) i (recur (inc i))))))))
 
 (defn- creation-key! [r site]
-  (let [ords (or (g r rw/R-ORD) (let [m (hs/vmap)] (s! r rw/R-ORD m) m))
+  (let [ords (or (gm r rw/R-ORD) (let [m (hs/vmap)] (s! r rw/R-ORD m) m))
         ord (long (or (hs/mget ords site) 0))]
     (hs/mput! ords site (inc ord))
     (+ (* (long site) 1048576) ord)))   ; site < 2^30, ord < 2^20: exact in JS doubles
@@ -1917,9 +1917,9 @@
 (defn- adopt!
   "The creation of `c` with `key`, from its basis or its adoption basis."
   [w c key]
-  (let [basis (or (g c rw/C-BASIS) (let [l (alist)] (s! c rw/C-BASIS l) l))
+  (let [basis (or (gm c rw/C-BASIS) (let [l (alist)] (s! c rw/C-BASIS l) l))
         bi (find-created w basis key)
-        ab (g c rw/C-ADOPT)
+        ab (gm c rw/C-ADOPT)
         ai (when-not bi (find-created w ab key))]
     (cond bi (rv w (anth basis bi))
           ai (let [x (rv w (anth ab ai))]
@@ -1968,7 +1968,7 @@
                     h))
               ;; A body creation gets the body's weak handle (Z#13): +1 in handle!
               (let [child (set-origin! (new-comp! w c key at inputs body 0) (conj (frame-of c) key) r)]
-                (aadd! (g c rw/C-BASIS) child)
+                (aadd! (gm c rw/C-BASIS) child)
                 (ref-inc! child)
                 (let [h (handle! w child)]
                   (commit! w [:create-comp (g r rw/ID) (g child rw/ID) [:opaque-seq inputs] [:opaque body]])
@@ -2019,13 +2019,13 @@
                     (commit! w [:spawn (g r rw/ID) [:opaque body] (g old rw/ID) [:opaque-seq inputs]])
                     h))
               (do (when old                       ; changed captures: replace it
-                    (let [basis (g x rw/C-BASIS)
+                    (let [basis (gm x rw/C-BASIS)
                           i (idx-of basis old)]
                       (hs/remove-at! basis i)
                       (when-let [or* (rv w (g old rw/K-RUN))] (cancel! w or* ::cancelled))
                       (ref-dec! w old)))
                   (let [k (set-origin! (new-task! w x key at inputs body 0) (conj (frame-of x) key) r)]
-                    (aadd! (g x rw/C-BASIS) k)
+                    (aadd! (gm x rw/C-BASIS) k)
                     (ref-inc! k)
                     (start-task! w k (thread-frame))
                     (let [h (handle! w k)]
@@ -2033,7 +2033,7 @@
                       h)))))
           (let [s (current-scope! w r)
                 k (set-origin! (new-task! w s 0 at inputs body 0) (conj (frame-of x) (creation-key! r site)) r)]
-            (hs/oset-add! (g s rw/S-TASKS) (id-of k) k)
+            (hs/oset-add! (gm s rw/S-TASKS) (id-of k) k)
             (ref-inc! k)
             (start-task! w k (thread-frame))
             (let [h (handle! w k)]
@@ -2046,7 +2046,7 @@
              (let [s (rv w (g w rw/W-ROOT))
                    k (new-task! w s 0 0 inputs body 1)]
                (bind-handle! h k)
-               (hs/oset-add! (g s rw/S-TASKS) (id-of k) k)
+               (hs/oset-add! (gm s rw/S-TASKS) (id-of k) k)
                (ref-inc! k)
                (start-task! w k fr)
                (commit! w [:spawn-top (g s rw/ID) [:opaque body] (g k rw/ID) [:opaque-seq inputs]])))
@@ -2070,7 +2070,7 @@
     (s! c rw/C-IDLE false)
     (s! c rw/C-VALIDITY nil)
     (if (and ok? (some? (g c rw/C-DONE-EPOCH)))
-      (let [ins (g c rw/C-INS)]
+      (let [ins (gm c rw/C-INS)]
         (doseq [[d ver at base] (when (sequential? vs) vs)]
           ;; Z#51: a final debtor whose version still matches keeps the value
           ;; valid but takes no edge (consumed, as T6/T10/Z#48)
@@ -2112,7 +2112,7 @@
     (cancel! w r ::cancelled)
     ;; a cancelled run that survives in cleanup must not count as current (I10)
     (when (current? c r) (s! c rw/C-EPOCH (inc (gl c rw/C-EPOCH)))))
-  (let [ins (g c rw/C-INS)
+  (let [ins (gm c rw/C-INS)
         validity (loop [acc []]
                    (if (pos? (acount ins))
                      (let [e (rv w (apop! ins))
@@ -2396,7 +2396,7 @@
    still exists (T16), but never keeps it alive (§5.2, G1). Dead entries are
    pruned when the list doubles."
   [w sc x]
-  (let [l (or (g sc rw/S-SOURCES) (let [l (alist)] (s! sc rw/S-SOURCES l) (s! sc rw/S-PRUNE 8) l))]
+  (let [l (or (gm sc rw/S-SOURCES) (let [l (alist)] (s! sc rw/S-SOURCES l) (s! sc rw/S-PRUNE 8) l))]
     (aadd! l (hs/weak x))
     (when (> (acount l) (gl sc rw/S-PRUNE))
       (let [live (alist)]
@@ -2433,7 +2433,7 @@
           (let [s (new-source! w kind v x key at)]
             (s! s rw/HANDLES 0)
             (when init (init s))
-            (aadd! (g x rw/C-BASIS) s)
+            (aadd! (gm x rw/C-BASIS) s)
             (ref-inc! s)
             (let [h (handle! w s)]
               (commit! w [:create-source (g r rw/ID) ([:signal :cell :deferred :mailbox :semaphore] kind)
@@ -2473,7 +2473,7 @@
 
 (defn- mailbox? [x] (== rw/SRC-MAILBOX (gl x rw/X-KIND)))
 
-(defn- deque [x i] (g x i))
+(defn- deque [x i] (gm x i))   ; every use mutates or polls
 
 (defn- available? [x]
   (if (mailbox? x)
@@ -3135,7 +3135,7 @@
     (s! z rw/Z-KIND kind)
     (s! z rw/Z-PHASE rw/Z-ARMED)
     (hs/oset-add! (armed-set w) (id-of z) z)
-    (aadd! (or (g r rw/R-RES) (let [l (alist)] (s! r rw/R-RES l) l)) z)
+    (aadd! (or (gm r rw/R-RES) (let [l (alist)] (s! r rw/R-RES l) l)) z)
     (register! w z)))
 
 (defn- resource-fire!
@@ -3158,7 +3158,7 @@
   (if (pos? (acount (g z rw/OUTS)))
     (refuse! w [:resource-ack (g z rw/ID)])
     (let [r (rv w (g z rw/OWNER))
-          zs (g r rw/R-RES)
+          zs (gm r rw/R-RES)
           i (idx-of zs z)]
       (when-not (neg? i)
         (hs/remove-at! zs i)
@@ -3372,16 +3372,17 @@
   (let [r (or (active-run) (throw (ex-info "with-scope outside a body" {})))
         w (cw)
         s (new-scope w (alloc-id! w) :explicit (current-scope! w r))]
-    (aadd! (or (g r rw/R-SCOPES) (let [l (alist)] (s! r rw/R-SCOPES l) l)) s)
+    (aadd! (or (gm r rw/R-SCOPES) (let [l (alist)] (s! r rw/R-SCOPES l) l)) s)
     (commit! w [:open-scope (g r rw/ID) (g s rw/ID)])
     s))
 
 (defn close-scope-fx!
   "T16 close at the end of `with-scope`: cancels the work it still owns."
   [s]
-  (let [w (cw)]
+  (let [w (cw)
+        s (rv w s)]                          ; captured before a fork: this world's copy
     (when-let [r (active-run)]
-      (when-let [ss (g r rw/R-SCOPES)]
+      (when-let [ss (gm r rw/R-SCOPES)]
         (let [i (last-idx-of ss s)]
           (when-not (neg? i) (hs/remove-at! ss i)))))
     (close-scope! w s)
@@ -3395,18 +3396,19 @@
   (let [w (world-of h)]
     (gated w
            (let [k (row-of h)
+                 s (rv w s)                  ; e.g. (root-scope w): a raw row pointer
                  old (rv w (g k rw/OWNER))]
              (if (or (g k rw/K-DONE) (not (g s rw/S-OPEN))
                      (not (and old (not (fn? old)) (== rw/T-SCOPE (gl old rw/TYPE)))))
                (refuse! w [:detach (g k rw/ID) (g s rw/ID)])
                (do
-                 (hs/oset-del! (g old rw/S-TASKS) (id-of k))
-                 (hs/oset-add! (g s rw/S-TASKS) (id-of k) k)
+                 (hs/oset-del! (gm old rw/S-TASKS) (id-of k))
+                 (hs/oset-add! (gm s rw/S-TASKS) (id-of k) k)
             ;; the run scope's parent follows the owner (Z#26)
                  (when-let [rs (when-let [kr (rv w (g k rw/K-RUN))] (rv w (g kr rw/R-SROW)))]
-                   (remove-row! (g old rw/S-CHILDREN) rs)
+                   (remove-row! (gm old rw/S-CHILDREN) rs)
                    (s! rs rw/S-PARENT s)
-                   (aadd! (g s rw/S-CHILDREN) rs))
+                   (aadd! (gm s rw/S-CHILDREN) rs))
                  (s! k rw/OWNER s)
                  (remove-scope-if-empty! w old)
                  (commit! w [:detach (g k rw/ID) (g s rw/ID)])))))
