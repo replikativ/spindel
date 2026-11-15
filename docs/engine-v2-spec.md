@@ -1010,6 +1010,15 @@ interpreter of the same trees:
 - **B9 (X#9, Z#66):** every slice terminates and adapter registration is finite
   and nonblocking. A non-terminating pure loop or blocking call violates the body
   contract. Async finalizer termination additionally needs L2's assumptions.
+- **B10 (JVM):** dynamic bindings belong to the run, not to the thread of a
+  slice. A run starts from its creator's binding frame (a computation's frame is
+  the one of its latest creation; bindings are not inputs and cause no rerun).
+  Each slice runs on the run's frame and saves it back at slice exit, so a
+  `binding` spanning effects pushes and pops on the run's frame, the resuming
+  thread's bindings do not reach the body and the body's do not leak out. A
+  fork, `(fork)` or savepoint copies the run with the frame live at that point.
+  `set!` of a binding made in another slice fails (Clojure's thread check).
+  CLJS has no thread frames: conveyance there is open.
 
 **Declared joins (Z#66).** Cleanup operations describe acyclic already-owned
 lifetimes. Engine bodies may join downward owned targets; a host coordinator
