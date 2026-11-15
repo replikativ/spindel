@@ -322,3 +322,14 @@
          (is (zero? @fin) "the copied finalizer did not run"))
        (v2/abandon! (first @pubs))
        (is (wait-until #(= 1 @fin)) "the source's own finalizer runs once")))))
+
+(deftest withdrawing-from-a-released-world-does-nothing
+  ;; T21 drops every edge: an unobserve or a withdrawn host wait after the
+  ;; release has nothing left to do, and is not refused
+  (let [w (v2/world)
+        t (binding [v2/*world* w] (task (await (v2/deferred))))
+        unobserve (v2/observe! t (fn [_ _]))
+        unawait (v2/value-async t (fn [_ _]))]
+    (v2/release-world! w)
+    (is (nil? (unobserve)))
+    (is (nil? (unawait)))))

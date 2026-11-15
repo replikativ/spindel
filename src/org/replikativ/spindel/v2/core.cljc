@@ -2189,6 +2189,14 @@
 
 (defn released-ex [] (ex-info "world released" {:spindel/released true}))
 
+(defn- withdraw!
+  "`(f)`, a withdrawal (unobserve, unawait): in a released world there is
+   nothing left to withdraw (T21), so its refusal is not an error."
+  [f]
+  (try (f)
+       (catch #?(:clj clojure.lang.ExceptionInfo :cljs :default) e
+         (when-not (:spindel/released (ex-data e)) (throw e)))))
+
 #?(:clj
    (defmacro ingress-body
      "The body of host!/internal!: `admit?` is a literal, so the release
@@ -2566,11 +2574,13 @@
              (commit! w [:observe (g d rw/ID) [:opaque cb] (g e rw/ID)])
              (demand! w d)))
     (fn []
-      (gated w
-             (when-let [e @ev]
-               (when (linked? w e)
-                 (unlink! w e)
-                 (commit! w [:unobserve (g e rw/ID)]))))
+      (withdraw!
+       (fn []
+         (gated w
+                (when-let [e @ev]
+                  (when (linked? w e)
+                    (unlink! w e)
+                    (commit! w [:unobserve (g e rw/ID)]))))))
       nil)))
 
 (defn pin!
@@ -2934,11 +2944,13 @@
                        (do (commit! w [:host-await (g d rw/ID) (g e rw/ID)])
                            (demand! w d)))))))))
     (fn []
-      (gated w
-             (when-let [e @ev]
-               (when (linked? w e)
-                 (unlink! w e)
-                 (commit! w [:host-unawait (g e rw/ID)]))))
+      (withdraw!
+       (fn []
+         (gated w
+                (when-let [e @ev]
+                  (when (linked? w e)
+                    (unlink! w e)
+                    (commit! w [:host-unawait (g e rw/ID)]))))))
       nil)))
 
 (defn value
