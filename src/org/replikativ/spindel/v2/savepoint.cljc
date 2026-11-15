@@ -150,6 +150,26 @@
   [w]
   (v2/get-in-world w [:savepoint/session]))
 
+(defn- released? [w]
+  (try (v2/get-in-world w [::probe]) false
+       (catch #?(:clj Throwable :cljs :default) e
+         (if (:spindel/released (ex-data e)) true (throw e)))))
+
+(defn- unless-released
+  "`(f)`, an operation on world `w` alone; a refusal because `w` was released
+   meanwhile is dropped: a released world has no savepoint or end left to
+   deliver (T21). Once activated, a world's handlers may give it back at
+   any time. With `w` also checked (a handler, host code, may call into
+   any world), only a refusal while `w` is released is dropped."
+  ([f]
+   (try (f)
+        (catch #?(:clj Throwable :cljs :default) e
+          (when-not (:spindel/released (ex-data e)) (throw e)))))
+  ([w f]
+   (try (f)
+        (catch #?(:clj Throwable :cljs :default) e
+          (when-not (and (:spindel/released (ex-data e)) (released? w)) (throw e))))))
+
 (defn- dispatch-terminal! [w site payload]
   ;; a world released before its end is delivered has no handlers left
   (when-let [h (try (get (v2/get-in-world w [:savepoint/handlers]) site)
@@ -171,7 +191,7 @@
                                                    (v2/cancelled? v) abandoned-site
                                                    :else error-site)
                                              v))))]
-    (v2/observe! t (fn [v err?] (f [v err?])))))
+    (unless-released #(v2/observe! t (fn [v err?] (f [v err?]))))))
 
 (defn- publication-handler
   "The engine handler of world `w`: wraps the publication into a savepoint
@@ -186,7 +206,7 @@
           h (or (get hs site) (get hs :default))
           seq (:savepoint/seq (v2/update-in-world! w [:savepoint/seq] (fnil inc 0)))]
       (if h
-        ((off-world h) (sp-of s w pub seq))
+        ((off-world (fn [sp] (unless-released w #(h sp)))) (sp-of s w pub seq))
         ;; Law 1: no handler, no savepoint: continue with the payload
         (v2/resume! pub (unwrap (:payload pub)))))))
 
@@ -319,7 +339,7 @@
           ;; observable once born (an unborn world takes only writes): a
           ;; host item after the activation, which may still be queued
           ;; behind other items of `w` when its gate is busy
-          (v2/host! w #(watch-world-end! s w))))
+          (unless-released #(v2/host! w (fn [] (watch-world-end! s w))))))
       (v2/resume! pub v))
     nil))
 

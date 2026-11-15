@@ -196,3 +196,30 @@
       (is (wait-until #(some (fn [[t v]] (= [t v] [:result 11])) @es)) "the fork still runs")
       (is (nil? (v2/get-in-world w [:probe])) "the root is not released: it still answers"))
     ((sp/close! s) identity identity)))
+
+(deftest a-fork-given-back-by-its-handler-right-after-activation
+  ;; once activated, a fork runs on to its next savepoint, whose handler may
+  ;; give its world back before resume has watched its end: nothing is left
+  ;; to watch, and neither resume nor a host thread fails
+  (let [uncaught (atom [])
+        prev (Thread/getDefaultUncaughtExceptionHandler)]
+    (Thread/setDefaultUncaughtExceptionHandler
+     (reify Thread$UncaughtExceptionHandler
+       (uncaughtException [_ _ e] (swap! uncaught conj e))))
+    (try
+      (let [w (v2/world) pending (atom nil) given-back (atom 0) s (promise)
+            session (sp/open! w {:handlers {:a (fn [p] (reset! pending p))
+                                            :b (fn [p] (sp/release-world! @s (:savepoint/world p))
+                                                 (swap! given-back inc))}})]
+        (deliver s session)
+        (sp/start! session #(task (sp/savepoint :a nil) (sp/savepoint :b nil)))
+        (is (wait-until #(some? @pending)))
+        (let [errors (atom [])]
+          (dotimes [_ 200]
+            (try (sp/resume (sp/fork @pending) 1) (catch Exception e (swap! errors conj e))))
+          (is (empty? @errors) (str (first @errors)))
+          (is (wait-until #(= 200 @given-back))))
+        (Thread/sleep 50)
+        (is (empty? @uncaught) (str (first @uncaught)))
+        ((sp/close! session) identity identity))
+      (finally (Thread/setDefaultUncaughtExceptionHandler prev)))))
