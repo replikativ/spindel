@@ -1018,7 +1018,12 @@ interpreter of the same trees:
   thread's bindings do not reach the body and the body's do not leak out. A
   fork, `(fork)` or savepoint copies the run with the frame live at that point.
   `set!` of a binding made in another slice fails (Clojure's thread check).
-  CLJS has no thread frames: conveyance there is open.
+  CLJS has no thread frames: the run keeps a map of the vars it binds. A
+  `binding` inside a body adds to it (the body macro rewrites it); each slice
+  sets those vars and restores the globals at exit, reading the values back
+  (a `set!` inside the body's binding persists). A host-level `binding`
+  reaches a creation only for vars declared with `convey`; others are not
+  conveyed (as in core.async).
 
 **Declared joins (Z#66).** Cleanup operations describe acyclic already-owned
 lifetimes. Engine bodies may join downward owned targets; a host coordinator
