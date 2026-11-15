@@ -3749,6 +3749,10 @@
 
 (defonce ^:private effect-handlers (clojure.core/atom {}))
 
+;; the captured values of a body that captures none: the expansion of `spin`
+;; and `task` refers to it, so it exists on both platforms
+(def empty-inputs (object-array 0))
+
 #?(:clj (defonce ^:private extra-breakpoints (clojure.core/atom {})))
 
 (defn register-effect!
@@ -3889,7 +3893,6 @@
              params {:r r :e e :env env :breakpoints (merge breakpoints @extra-breakpoints)
                      :opaque-scopes #{`spin `task}}]
          `(fn [~r ~e] ~(ioc/invert params (binding [*env* env] (register-finally (cons 'do body)))))))
-     (def empty-inputs (object-array 0))
      (defn- inputs-form
        "The captured values as an array, built without an intermediate vector."
        [frees]
