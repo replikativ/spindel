@@ -66,6 +66,25 @@
         (Thread/sleep 50)
         (is (= [[:comp 1 false] [:task 2 false]] (take 2 @seen)))))))
 
+(deftest parking-in-a-fork-copies-no-inherited-observe-edge
+  ;; an instance parking again reads its task's out-edges to find blocked
+  ;; creditors; the observe edges it inherited (Z#45) are only read, so they
+  ;; stay shared with the parent instead of being copied into every fork
+  (let [w (v2/world) pubs (atom [])]
+    (v2/install-handlers! w {:s (fn [p] (swap! pubs conj p))})
+    ;; observed before its first savepoint, so the publication and every
+    ;; instance inherit the five observe edges
+    (let [t (binding [v2/*world* w] (task (v2/sleep 50) (let [a (v2/savepoint :s 0)] (v2/savepoint :s a))))]
+      (dotimes [_ 5] (v2/observe! t (fn [_ _])))
+      (is (wait-until #(seq @pubs)))
+      (let [inst (doto (v2/instantiate (first @pubs)) (v2/activate! 1))]
+        (is (wait-until #(= 2 (count @pubs))) "the instance parks at its next savepoint")
+        (is (zero? (count (filter #(and (== rw/T-EDGE (long (aget ^objects % rw/TYPE)))
+                                        (== rw/EK-OBSERVE (long (aget ^objects % rw/E-KIND))))
+                                  (vals (aget ^objects inst rw/W-FWD))))))
+        (v2/release-world! inst)
+        (v2/release-world! w)))))
+
 (deftest repeated-forks
   (checked
    (let [w (vworld)]

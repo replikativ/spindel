@@ -258,6 +258,16 @@
       c
       (own-copy! w (or c r)))))
 
+(defn- peek-row
+  "Read-only view of row `r` in `w`, without copying it: `r` when `w` owns
+   it, else the newest copy `w` can see (its own or an inherited one) or the
+   basis. Never written through; a write needs `rv`."
+  [w r]
+  (let [^objects r r]
+    (if (identical? (aget r (unchecked-dec-int (alength r))) (aget ^objects w rw/W-EPOCH))
+      r
+      (or (get (aget ^objects w rw/W-FWD) (aget r rw/ID)) r))))
+
 (defn- copy-containers!
   "The mutable containers of a copied row are copied too, so neither world
    mutates the other's (design v3 §4). Elements stay basis pointers; readers
@@ -1398,7 +1408,8 @@
     (let [w (cw)
           outs (g x rw/OUTS)]
       (dotimes [i (acount outs)]
-        (let [e (rv w (anth outs i))
+        ;; read only: an observe edge a fork inherited is not copied to learn its kind
+        (let [e (peek-row w (anth outs i))
               k (gl e rw/E-KIND)]
           (cond
             (== k rw/EK-DEP)
