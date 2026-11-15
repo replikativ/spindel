@@ -20,7 +20,7 @@
 (def gen-input (gen/one-of [(gen/tuple (gen/return :sig) (gen/choose 0 (dec n-sig)))
                             (gen/tuple (gen/return :def) (gen/choose 0 (dec n-def)))]))
 
-(def gen-comp (gen/vector gen-input 1 3))
+(def gen-comp (gen/tuple (gen/elements [:flat :nested]) (gen/vector gen-input 1 3)))
 
 (def gen-step (gen/one-of [(gen/tuple (gen/return :await) (gen/choose 0 (dec n-def)))
                            (gen/tuple (gen/return :take))
@@ -42,7 +42,10 @@
                 :ops-p (gen/vector gen-op 0 5)
                 :ops-a (gen/vector gen-op 0 5)
                 :ops-b (gen/vector gen-op 0 5)
-                :order (gen/vector (gen/elements [:p :a :b]) 15)))
+                :ops-aa (gen/vector gen-op 0 5)
+                :nest-at (gen/choose 0 5)
+                :order (gen/vector (gen/elements [:p :a :b]) 15)
+                :order2 (gen/vector (gen/elements [:p :a :b :aa]) 20)))
 
 ;; --- running --------------------------------------------------------------
 
@@ -50,14 +53,23 @@
   ;; expands inside the comp body below; kept as data for the closure
   (case kind :sig (nth sigs i) :def (nth defs i)))
 
-(defn- make-comp [h inputs]
+(defn- make-comp [h [shape inputs]]
   (let [srcs (mapv #(vector (first %) (read-input h %)) inputs)]
-    (spin (loop [xs srcs acc []]
-            (if (empty? xs)
-              acc
-              (let [[kind x] (first xs)]
-                (recur (rest xs)
-                       (conj acc (if (= kind :sig) (iv/get-new (track x)) (await x))))))))))
+    (case shape
+      :flat (spin (loop [xs srcs acc []]
+                    (if (empty? xs)
+                      acc
+                      (let [[kind x] (first xs)]
+                        (recur (rest xs)
+                               (conj acc (if (= kind :sig) (iv/get-new (track x)) (await x))))))))
+      ;; an inner computation created by the outer body: adopted across reruns
+      :nested (spin (let [inner (spin (loop [xs srcs acc []]
+                                        (if (empty? xs)
+                                          acc
+                                          (let [[kind x] (first xs)]
+                                            (recur (rest xs)
+                                                   (conj acc (if (= kind :sig) (iv/get-new (track x)) (await x))))))))]
+                      [:outer (await inner)])))))
 
 (defn- make-task [{:keys [sigs defs mb]} steps]
   (task (loop [ss steps acc []]
@@ -111,30 +123,50 @@
            (state h))
          (finally (v2/release-world! w)))))
 
-(defn- forked [{:keys [prefix ops-p ops-a ops-b order] :as prog}]
-  (let [w (v2/world)]
+(defn- split-a [{:keys [ops-a nest-at]}]
+  (split-at (min nest-at (count ops-a)) ops-a))
+
+(defn- run-queues! [hs queues order]
+  ;; the generated interleaving, then whatever is left in each queue
+  (doseq [k (concat order (apply concat (repeat 5 (keys hs))))]
+    (when-let [op (first (get @queues k))]
+      (swap! queues update k rest)
+      (apply-op! (hs k) op))))
+
+(defn- forked [{:keys [prefix ops-p ops-b ops-aa order order2] :as prog}]
+  (let [w (v2/world)
+        [a1 a2] (split-a prog)]
     (try
       (let [hp (build w prog)
             _ (run! #(apply-op! hp %) prefix)
             a (v2/fork! w) b (v2/fork! w)
             hs {:p hp :a (in a hp) :b (in b hp)}
-            queues (atom {:p ops-p :a ops-a :b ops-b})]
-        ;; the generated interleaving, then whatever is left in each queue
-        (doseq [k (concat order [:p :a :b :p :a :b :p :a :b :p :a :b :p :a :b])]
-          (when-let [op (first (get @queues k))]
-            (swap! queues update k rest)
-            (apply-op! (hs k) op)))
-        (let [res {:p (state (:p hs)) :a (state (:a hs)) :b (state (:b hs))}]
-          (v2/release-world! a) (v2/release-world! b)
-          res))
+            queues (atom {:p ops-p :a a1 :b ops-b})
+            ;; phase 1: until the child a has run a1 (the rest of p and b may wait)
+            _ (doseq [k order]
+                (when-let [op (first (get @queues k))]
+                  (swap! queues update k rest)
+                  (apply-op! (hs k) op)))
+            _ (run! #(apply-op! (:a hs) %) (get @queues :a))
+            _ (swap! queues assoc :a a2)
+            ;; a nested fork of the child, then everyone continues
+            aa (v2/fork! a)
+            hs (assoc hs :aa (in aa hp))
+            _ (swap! queues assoc :aa ops-aa)
+            _ (run-queues! hs queues order2)
+            res {:p (state (:p hs)) :a (state (:a hs)) :b (state (:b hs)) :aa (state (:aa hs))}]
+        (v2/release-world! aa) (v2/release-world! a) (v2/release-world! b)
+        res)
       (finally (v2/release-world! w)))))
 
 (def fork-isolation
   (prop/for-all [prog gen-case]
-                (let [got (forked prog)]
+                (let [got (forked prog)
+                      [a1 _] (split-a prog)]
                   (and (= (:p got) (fresh prog (:ops-p prog)))
                        (= (:a got) (fresh prog (:ops-a prog)))
-                       (= (:b got) (fresh prog (:ops-b prog)))))))
+                       (= (:b got) (fresh prog (:ops-b prog)))
+                       (= (:aa got) (fresh prog (concat a1 (:ops-aa prog))))))))
 
 (deftest forks-behave-like-unforked-runs
   (let [n (Long/getLong "spindel.v2.fork-diff-tests" 150)
