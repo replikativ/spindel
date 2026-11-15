@@ -50,16 +50,16 @@
 (defn flag [v] #?(:clj (java.util.concurrent.atomic.AtomicBoolean. (boolean v)) :cljs #js {:v (boolean v)}))
 (defn flag-cas! [f old new]
   #?(:clj (.compareAndSet ^java.util.concurrent.atomic.AtomicBoolean f (boolean old) (boolean new))
-     :cljs (if (= (.-v f) old) (do (set! (.-v f) new) true) false)))
-(defn flag? [f] #?(:clj (.get ^java.util.concurrent.atomic.AtomicBoolean f) :cljs (.-v f)))
-(defn flag-set! [f v] #?(:clj (.set ^java.util.concurrent.atomic.AtomicBoolean f (boolean v)) :cljs (set! (.-v f) v)) nil)
+     :cljs (if (= (.-v ^js f) old) (do (set! (.-v ^js f) new) true) false)))
+(defn flag? [f] #?(:clj (.get ^java.util.concurrent.atomic.AtomicBoolean f) :cljs (.-v ^js f)))
+(defn flag-set! [f v] #?(:clj (.set ^java.util.concurrent.atomic.AtomicBoolean f (boolean v)) :cljs (set! (.-v ^js f) v)) nil)
 
 (defn lock [] #?(:clj (java.util.concurrent.locks.ReentrantLock.) :cljs #js {:held false}))
-(defn held? [lk] #?(:clj (.isHeldByCurrentThread ^java.util.concurrent.locks.ReentrantLock lk) :cljs (.-held lk)))
+(defn held? [lk] #?(:clj (.isHeldByCurrentThread ^java.util.concurrent.locks.ReentrantLock lk) :cljs (.-held ^js lk)))
 (defn try-lock! [lk]
   #?(:clj (.tryLock ^java.util.concurrent.locks.ReentrantLock lk)
-     :cljs (if (.-held lk) false (do (set! (.-held lk) true) true))))
-(defn unlock! [lk] #?(:clj (.unlock ^java.util.concurrent.locks.ReentrantLock lk) :cljs (set! (.-held lk) false)) nil)
+     :cljs (if (.-held ^js lk) false (do (set! (.-held ^js lk) true) true))))
+(defn unlock! [lk] #?(:clj (.unlock ^java.util.concurrent.locks.ReentrantLock lk) :cljs (set! (.-held ^js lk) false)) nil)
 
 #?(:clj (def default-executor
           (delay (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor))))
@@ -158,7 +158,7 @@
   #?(:clj (when (.compareAndSet ^java.util.concurrent.atomic.AtomicInteger state 0 1)
             (vreset! thread (Thread/currentThread))
             true)
-     :cljs (when (zero? (.-v state)) (set! (.-v state) 1) true)))
+     :cljs (when (zero? (.-v ^js state)) (set! (.-v ^js state) 1) true)))
 
 (defn ctl-finish! [{:keys [thread]}]
   #?(:clj (do (vreset! thread nil) (Thread/interrupted)) :cljs nil)
@@ -171,7 +171,7 @@
   #?(:clj (if (.compareAndSet ^java.util.concurrent.atomic.AtomicInteger state 0 2)
             true
             (do (some-> ^Thread @thread .interrupt) false))
-     :cljs (if (zero? (.-v state)) (do (set! (.-v state) 2) true) false)))
+     :cljs (if (zero? (.-v ^js state)) (do (set! (.-v ^js state) 2) true) false)))
 
 ;; ---------------------------------------------------------------------------
 ;; Insertion-ordered sets of rows keyed by row ID (scope task lists): O(1) add
