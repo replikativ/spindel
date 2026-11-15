@@ -216,3 +216,38 @@
     (Thread/sleep 50)
     (is (thrown? Exception (v2/value (v2/in-world b x))) "released with its owner")
     (is (thrown? clojure.lang.ExceptionInfo (v2/fork! root {:owner (v2/world)})) "an unrelated owner")))
+
+(defn- holding-the-gate
+  "Starts a slice of `w` that holds its gate for `ms`; returns once it runs."
+  [w ms]
+  (let [entered (promise)]
+    (future (binding [v2/*world* w] (task (deliver entered true) (Thread/sleep ms))))
+    (deref entered 1000 false)))
+
+(deftest host-forks-of-a-busy-world-wait-for-their-fork
+  ;; R5: a host fork is a host call; it used to return nil (and fail) when
+  ;; another thread held the world's gate
+  (let [w (v2/world)]
+    (holding-the-gate w 200)
+    (let [forks (mapv deref (doall (repeatedly 8 #(future (v2/fork! w)))))]
+      (is (every? some? forks))
+      (is (= 8 (count (set forks))))
+      (run! v2/release-world! forks))
+    (v2/release-world! w)))
+
+(deftest a-body-forking-a-busy-world-is-refused
+  ;; B7: a body of another world may not wait for the world it forks
+  (let [w (v2/world) other (v2/world)]
+    (holding-the-gate w 300)
+    (let [r (v2/value (binding [v2/*world* other]
+                        (task (try (v2/fork! w) :forked
+                                   (catch clojure.lang.ExceptionInfo e (:spindel/invalid (ex-data e))))))
+                      2000 ::timeout)]
+      (is (= :busy r)))
+    (Thread/sleep 350)
+    (is (= :forked (v2/value (binding [v2/*world* other]
+                               (task (v2/release-world! (v2/fork! w)) :forked))
+                             2000 ::timeout))
+        "an idle world forks at once")
+    (v2/release-world! other)
+    (v2/release-world! w)))
