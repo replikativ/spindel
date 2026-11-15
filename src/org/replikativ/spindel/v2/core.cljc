@@ -55,6 +55,9 @@
 
 (defn- leave-world! [prev] (aset (ctx) 0 prev))
 
+;; test builds (rows/check-writes?): s! checks rows against this epoch
+(vreset! rw/processed-epoch (fn [] (when-let [w (cw)] (aget ^objects w rw/W-EPOCH))))
+
 ;; Dynamic bindings belong to the run, not to the thread that runs a slice.
 ;; A run starts from its creator's frame (C-BIND, or the task's at spawn);
 ;; slice! installs R-BIND and saves the thread's frame back into it, so a

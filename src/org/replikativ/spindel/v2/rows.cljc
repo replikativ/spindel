@@ -11,11 +11,17 @@
      (defmacro g [row i]
        (let [s (with-meta (gensym "row") {:tag 'objects})]
          `(let [~s ~row] (aget ~s ~i))))
+     ;; -Dspindel.v2.check-writes=true (tests): every row write first checks
+     ;; that the processed world owns the row (fork isolation, §8.1). Read at
+     ;; macro expansion, so production code has no check.
+     (def ^:private check-writes? (Boolean/getBoolean "spindel.v2.check-writes"))
      (defmacro s! [row i v]
-       (let [s (with-meta (gensym "row") {:tag 'objects})]
+       (let [s (with-meta (gensym "row") {:tag 'objects})
+             chk (when (and check-writes? (not (cljs? &env)))
+                   `(check-owned! ~s ~i))]
          (if (cljs? &env)
            `(let [~s ~row] (aset ~s ~i ~v))
-           `(let [~s ~row] (clojure.lang.RT/aset ~s (int ~i) (clojure.lang.RT/box ~v))))))
+           `(let [~s ~row] ~chk (clojure.lang.RT/aset ~s (int ~i) (clojure.lang.RT/box ~v))))))
      (defmacro gl [row i] `(long (g ~row ~i)))
      (defn- al [] (with-meta (gensym "l") {:tag 'java.util.ArrayList}))
      (defmacro alist [] (if (cljs? &env) `(cljs.core/array) `(java.util.ArrayList. 4)))
@@ -47,6 +53,22 @@
   "The ID of the world that created row `a` (nil for a world row)."
   [^objects a]
   (aget a (- (alength a) 2)))
+
+(def ^:no-doc processed-epoch
+  "Set by core: the owner epoch of the world this thread processes, or nil."
+  (volatile! (fn [] nil)))
+
+(defn check-owned!
+  "Test builds (check-writes): a write to field `i` of row `r` must be by the
+   world that owns it. World rows, rows written outside any world and rows
+   without an owner slot are not checked."
+  [^objects r i]
+  (when (and (> (alength r) 2) (not= 0 (aget r 0)))   ; T-WORLD rows have no owner
+    (when-let [e (@processed-epoch)]
+      (let [own (aget r (dec (alength r)))]
+        (when (and (some? own) (not (identical? e own)))
+          (throw (ex-info "write to a row the processed world does not own"
+                          {:spindel/unowned-write true :type (aget r 0) :id (aget r 1) :field i})))))))
 
 ;; Row types
 (def ^:const T-WORLD 0)
