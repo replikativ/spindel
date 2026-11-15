@@ -189,6 +189,46 @@
          (is (= [:ok :parent-done] (outcome t)))
          (is (wait-until #(= :ran @fin)) "the child was released at the task's end"))))))
 
+(defn- held-gate-run
+  "A world on `executor` whose slice holds the gate for 300 ms; meanwhile
+   this thread delivers a deferred of it. [ms the delivery took, drainer
+   submissions while the gate was held, the outcome of the waiting task]."
+  [executor submissions]
+  (let [w (v2/world {:executor executor})
+        d (binding [v2/*world* w] (v2/deferred))
+        entered (promise)
+        waiter (binding [v2/*world* w] (task (await d)))]
+    (future (binding [v2/*world* w] (task (deliver entered true) (Thread/sleep 300))))
+    (deref entered 1000 false)
+    (reset! submissions 0)
+    (let [t0 (System/nanoTime)
+          _ (v2/deliver! d :done)
+          ms (/ (- (System/nanoTime) t0) 1e6)]
+      (Thread/sleep 100)
+      [ms @submissions (outcome waiter)])))
+
+(deftest a-thread-losing-the-gate-returns-at-once
+  ;; H2: the loser returns; the holder hands off after releasing the gate.
+  ;; The loser used to reschedule the drainer, which spun on a busy gate
+  (testing "on a pool"
+    (let [n (atom 0)
+          base (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)
+          ex (reify java.util.concurrent.Executor
+               (execute [_ r] (swap! n inc) (.execute base r)))
+          [_ spins result] (held-gate-run ex n)]
+      (is (< spins 3) "no drainer runs while the gate is held")
+      (is (= [:ok :done] result))))
+  (testing "on an inline executor"
+    ;; a spin recursed on the delivering thread until the stack overflowed,
+    ;; leaving the drainer flagged as scheduled: the delivery was stranded
+    (let [n (atom 0)
+          ex (reify java.util.concurrent.Executor
+               (execute [_ r] (swap! n inc) (.run ^Runnable r)))
+          [ms spins result] (held-gate-run ex n)]
+      (is (< ms 100) "the delivery does not wait for the gate")
+      (is (< spins 3))
+      (is (= [:ok :done] result)))))
+
 ;; --- regressions from the astra phase review (m5-lifecycle-impl-astra-review.md)
 
 (deftest discarding-a-fork-keeps-the-source-timer
