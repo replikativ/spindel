@@ -2761,12 +2761,18 @@
   (if (and (active-run) (cw)) (cw) (or *world* (cw))))
 
 (defn resolve-ref
-  "The handle of `r`'s row in `w` (default: the current world)."
+  "The handle of `r`'s row in `w` (default: the current world). The row must
+   be in `w`'s lineage (created by `w` or inherited from an ancestor before
+   its fork), as for `in-world`: a row created in a child, or in a sibling
+   after the fork, does not resolve elsewhere."
   ([r] (resolve-ref (current-world) r))
   ([w r]
    (when-not (identical? (g w rw/W-FAMILY) (.-family ^Ref r))
      (throw (ex-info "resolve-ref: the reference belongs to an unrelated world" {:spindel/invalid :lineage})))
-   (new-handle w (aget ^objects (.-cell ^Ref r) 0))))
+   (let [x (aget ^objects (.-cell ^Ref r) 0)]
+     ;; a ref to a row whose creation is still queued binds later (world-ref)
+     (when (and x (not (inherited? w x))) (throw (lineage-ex x)))
+     (new-handle w x))))
 
 (defn- handle-swap!
   "swap! on a signal or cell handle: read and write in one host item. With
