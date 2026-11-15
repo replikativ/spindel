@@ -315,6 +315,23 @@
        (is (= :child (v2/value cx)))
        (is (= :root (v2/value x)))))))
 
+(deftest world-neutral-refs-resolve-only-within-the-lineage
+  (checked
+   (let [w (vworld)
+         _ (v2/signal w :root)
+         a (v2/fork! w)
+         b (v2/fork! w)
+         in-a (v2/world-ref (v2/signal a :a))
+         lineage-err #(try (v2/resolve-ref % in-a) nil (catch Exception e (:spindel/invalid (ex-data e))))]
+     (is (= :lineage (lineage-err w)) "a child's row does not resolve in its parent")
+     (is (= :lineage (lineage-err b)) "nor in a sibling")
+     (is (= :a (v2/value (v2/resolve-ref a in-a))) "it resolves where it was created")
+     (let [aa (v2/fork! a)]
+       (is (= :a (v2/value (v2/resolve-ref aa in-a))) "and in that world's forks"))
+     (let [late (v2/world-ref (v2/signal w :late))]
+       (is (= :lineage (try (v2/resolve-ref a late) nil (catch Exception e (:spindel/invalid (ex-data e)))))
+           "a parent row created after the fork does not resolve in the child")))))
+
 (deftest atoms-reject-colliding-ids-in-unrelated-families
   (checked
    (let [w (vworld) other (vworld)
