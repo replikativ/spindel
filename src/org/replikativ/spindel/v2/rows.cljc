@@ -152,7 +152,8 @@
 (def ^:const C-RESTART 28)   ; T3 changed inputs: the next run restarts from the body
 (def ^:const C-FRAME 29)     ; creation keys of the creating entities and this one (§8.2 addresses)
 (def ^:const C-PATH 30)      ; the creating run's path at creation, nil if empty (§8.2 P3)
-(def ^:const C-SIZE 31)
+(def ^:const C-BIND 31)      ; JVM: the creator's dynamic binding frame, each run's initial frame
+(def ^:const C-SIZE 32)
 
 ;; Task
 (def ^:const K-BODY 12)
@@ -205,7 +206,8 @@
 (def ^:const R-SROW 15)      ; the run scope row, once materialized
 (def ^:const R-SCOPES 16)    ; open explicit scopes of the run, innermost last
 (def ^:const R-PATH 17)      ; the run's path, nil if empty (§8.2 P1-P3)
-(def ^:const R-SIZE 18)
+(def ^:const R-BIND 18)      ; JVM: the run's dynamic binding frame between slices
+(def ^:const R-SIZE 19)
 
 (def ^:const ACT-ACTIVE 0)
 (def ^:const ACT-PARKED 1)

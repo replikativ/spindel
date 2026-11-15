@@ -54,6 +54,16 @@
 
 (defn- leave-world! [prev] (aset (ctx) 0 prev))
 
+;; Dynamic bindings belong to the run, not to the thread that runs a slice.
+;; A run starts from its creator's frame (C-BIND, or the task's at spawn);
+;; slice! installs R-BIND and saves the thread's frame back into it, so a
+;; `binding` that spans an effect pushes and pops on the run's own frame
+;; whichever thread runs each slice, and nothing leaks in or out. A fork
+;; copies the run, hence its frame. (CLJS: no thread frames; nil.)
+
+(defn- thread-frame []
+  #?(:clj (clojure.lang.Var/getThreadBindingFrame) :cljs nil))
+
 ;; ---------------------------------------------------------------------------
 ;; World, ids, gate
 
@@ -776,6 +786,7 @@
     (s! r rw/R-EIDX 0)
     (s! r rw/R-CURSOR 0)
     (s! r rw/R-PATH (g x (if (comp? x) rw/C-PATH rw/K-PATH)))   ; §8.2 P3: fixed at creation
+    (when (comp? x) (s! r rw/R-BIND (g x rw/C-BIND)))           ; a task's: start-task!
     (if (comp? x) (s! x rw/C-RUN r) (s! x rw/K-RUN r))
     (register! w r)))
 
@@ -975,10 +986,13 @@
    active run afterwards (I10)."
   [r f]
   (let [prev (active-run)
-        c (ctx)]
+        c (ctx)
+        #?@(:clj [pf (thread-frame)
+                  rf (or (g r rw/R-BIND) pf)])]
     (s! r rw/R-SLICE true)
     (set-active! r)
     (aset c 2 #?(:clj (num (inc (long (aget c 2)))) :cljs (inc (aget c 2))))
+    #?(:clj (when-not (identical? pf rf) (clojure.lang.Var/resetThreadBindingFrame rf)))
     (try
       (try (force! (f))
            (catch #?(:clj Throwable :cljs :default) t
@@ -986,6 +1000,9 @@
       (finally
         ;; re-resolve: a fork effect in this slice made `r` a shared basis row
         (aset c 2 #?(:clj (num (dec (long (aget c 2)))) :cljs (dec (aget c 2))))
+        #?(:clj (let [f (thread-frame)]
+                  (s! (rv (cw) r) rw/R-BIND f)
+                  (when-not (identical? f pf) (clojure.lang.Var/resetThreadBindingFrame pf))))
         (let [w (cw) r (rv w r)]
           ;; a done run whose slice still holds the flag (a cleanup slice, or a
           ;; cancelled run unwinding) returns here: an explicit item
@@ -1798,7 +1815,7 @@
   "Records how `x` was created: its `frame` and the creating run `r`'s path."
   [x frame r]
   (if (comp? x)
-    (do (s! x rw/C-FRAME frame) (s! x rw/C-PATH (g r rw/R-PATH)))
+    (do (s! x rw/C-FRAME frame) (s! x rw/C-PATH (g r rw/R-PATH)) (s! x rw/C-BIND (thread-frame)))
     (do (s! x rw/K-FRAME frame) (s! x rw/K-PATH (g r rw/R-PATH))))
   x)
 
@@ -1851,6 +1868,8 @@
                 child (adopt! w c key)]
             (if child
               (do (s! child rw/AT at)   ; adoption reuses the live handle, or makes one (Z#29)
+                  ;; bindings are not inputs: the latest creation's frame, no rerun
+                  (when (comp? child) (s! child rw/C-BIND (thread-frame)))
                   (when (comp? child)
                     (when-not (and (same-inputs? inputs (g child rw/C-INPUTS))
                                    (= (g r rw/R-PATH) (g child rw/C-PATH)))
@@ -1876,9 +1895,11 @@
                   (commit! w [:create-comp (g r rw/ID) (g child rw/ID) [:opaque-seq inputs] [:opaque body]])
                   h)))))))
     (let [w (or *world* (throw (ex-info "no world: bind v2/*world*" {})))
-          h (top-handle w)]
+          h (top-handle w)
+          fr (thread-frame)]             ; the caller's, before the item may move threads
       (gated w
              (let [c (new-comp! w (rv w (g w rw/W-ROOT)) 0 0 inputs body 1)]
+               (s! c rw/C-BIND fr)
                (bind-handle! h c)
                (aadd! (g w rw/W-RQ) c)   ; outside live: Rule R makes it idle (§3.4)
                (commit! w [:create-comp-top (g (rv w (g w rw/W-ROOT)) rw/ID) (g c rw/ID) [:opaque-seq inputs] [:opaque body]])))
@@ -1891,8 +1912,11 @@
     (s! k rw/K-DONE false)
     (register! w k)))
 
-(defn- start-task! [w k]
+(defn- start-task!
+  "A task's run, starting from `frame` (its creator's bindings)."
+  [w k frame]
   (let [r (new-run! w k 0)]
+    (s! r rw/R-BIND frame)
     (aadd! (g w rw/W-START) r)
     r))
 
@@ -1924,7 +1948,7 @@
                   (let [k (set-origin! (new-task! w x key at inputs body 0) (conj (frame-of x) key) r)]
                     (aadd! (g x rw/C-BASIS) k)
                     (ref-inc! k)
-                    (start-task! w k)
+                    (start-task! w k (thread-frame))
                     (let [h (handle! w k)]
                       (commit! w [:spawn (g r rw/ID) [:opaque body] (g k rw/ID) [:opaque-seq inputs]])
                       h)))))
@@ -1932,19 +1956,20 @@
                 k (set-origin! (new-task! w s 0 at inputs body 0) (conj (frame-of x) (creation-key! r site)) r)]
             (hs/oset-add! (g s rw/S-TASKS) (id-of k) k)
             (ref-inc! k)
-            (start-task! w k)
+            (start-task! w k (thread-frame))
             (let [h (handle! w k)]
               (commit! w [:spawn (g r rw/ID) [:opaque body] (g k rw/ID) [:opaque-seq inputs]])
               h)))))
     (let [w (or *world* (throw (ex-info "no world: bind v2/*world*" {})))
-          h (top-handle w)]
+          h (top-handle w)
+          fr (thread-frame)]             ; the caller's, before the item may move threads
       (gated w
              (let [s (rv w (g w rw/W-ROOT))
                    k (new-task! w s 0 0 inputs body 1)]
                (bind-handle! h k)
                (hs/oset-add! (g s rw/S-TASKS) (id-of k) k)
                (ref-inc! k)
-               (start-task! w k)
+               (start-task! w k fr)
                (commit! w [:spawn-top (g s rw/ID) [:opaque body] (g k rw/ID) [:opaque-seq inputs]])))
       h)))
 
@@ -3497,6 +3522,7 @@
         (s! a rw/A-INLINE false)
         (s! r rw/R-SLICE false)
         (s! r rw/R-EIDX (inc eidx))       ; the child's run took the effect; the parent's did not
+        (s! r rw/R-BIND (thread-frame))   ; the child resumes with the frame live at the effect
         (aadd! (g w rw/W-RESUME) a)
         (unregister! w a)                 ; a delivery carrier, not a parked activation
         (let [child (fork-world* w)]
@@ -3585,7 +3611,9 @@
         :else
         (arm-and-park! r :savepoint k ek
                        (fn [w z]
-                         ;; the basis is a fork of this commit that is never run, only forked
+                         ;; the basis is a fork of this commit that is never run, only forked;
+                         ;; its run continues with the frame live at the effect
+                         (s! (rv w r) rw/R-BIND (thread-frame))
                          (let [basis (fork-world* w)
                                pub (publication w (id-of z) site payload basis)]
                            ;; the parent's own copy of the run keeps no slice (it is parked)
