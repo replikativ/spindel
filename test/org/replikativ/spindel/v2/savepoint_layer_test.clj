@@ -2,7 +2,8 @@
   "The v2 savepoint session layer (org.replikativ.spindel.v2.savepoint)."
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.spindel.v2.core :as v2 :refer [task]]
-            [org.replikativ.spindel.v2.savepoint :as sp]))
+            [org.replikativ.spindel.v2.savepoint :as sp]
+            [org.replikativ.spindel.v2.trace :as trace]))
 
 (defn- wait-until [f]
   (loop [n 0] (cond (f) true (> n 400) false :else (do (Thread/sleep 5) (recur (inc n))))))
@@ -110,22 +111,77 @@
         (is (nil? (sp/release-world! s (:savepoint/world k)))))
       ((sp/close! s) identity identity))))
 
-(deftest a-world-released-at-a-savepoint-delivers-no-end
-  (let [uncaught (atom [])
-        prev (Thread/getDefaultUncaughtExceptionHandler)]
-    (Thread/setDefaultUncaughtExceptionHandler
-     (reify Thread$UncaughtExceptionHandler
-       (uncaughtException [_ _ e] (swap! uncaught conj e))))
-    (try
-      (let [w (v2/world) pending (atom nil) [es hs] (ends)
-            s (sp/open! w {:handlers (assoc hs :choose (fn [p] (reset! pending p)))})]
-        (sp/start! s #(task (sp/savepoint :choose nil)))
-        (is (wait-until #(some? @pending)))
-        (v2/release-world! w)
-        (Thread/sleep 100)
-        (is (empty? @es) "the released world has no handlers to deliver to")
-        (is (empty? @uncaught) (str (first @uncaught))))
-      (finally (Thread/setDefaultUncaughtExceptionHandler prev)))))
+(defmacro ^:private no-uncaught [& body]
+  `(let [uncaught# (atom [])
+         prev# (Thread/getDefaultUncaughtExceptionHandler)]
+     (Thread/setDefaultUncaughtExceptionHandler
+      (reify Thread$UncaughtExceptionHandler
+        (uncaughtException [_# _# e#] (swap! uncaught# conj e#))))
+     (try ~@body
+          (Thread/sleep 50)
+          (is (empty? @uncaught#) (str (first @uncaught#)))
+          (finally (Thread/setDefaultUncaughtExceptionHandler prev#)))))
+
+(deftest a-world-released-at-a-savepoint-ends-abandoned
+  ;; T21: host waits receive ::released. The root's owner released it, the
+  ;; session did not give it back: its end is delivered, abandoned
+  (no-uncaught
+   (let [w (v2/world) pending (atom nil) [es hs] (ends)
+         s (sp/open! w {:handlers (assoc hs :choose (fn [p] (reset! pending p)))})]
+     (sp/start! s #(task (sp/savepoint :choose nil)))
+     (is (wait-until #(some? @pending)))
+     (v2/release-world! w)
+     (is (wait-until #(seq @es)))
+     (is (= [[:abandoned w]] @es))
+     (let [closed (promise)]
+       ((sp/close! s) #(deliver closed [:ok %]) #(deliver closed [:err %]))
+       (is (= [:ok nil] (deref closed 1000 ::timeout)) "closing over a released root")))))
+
+(deftest a-run-in-a-released-root-rejects
+  ;; a trace run waiting at a savepoint settles when its root is released
+  (let [w (v2/world) s (sp/open! w)
+        parked (promise) result (promise)]
+    ((trace/run s #(task (sp/savepoint :choose nil) :done)
+                (fn [sp' _] (deliver parked sp')
+                  (fn [_ _]))) ; never decides
+     #(deliver result [:ok %]) #(deliver result [:err %]))
+    (is (some? (deref parked 1000 nil)))
+    (v2/release-world! w)
+    (let [[k e] (deref result 1000 ::timeout)]
+      (is (= :err k))
+      (is (:spindel/released (ex-data e))))))
+
+(deftest a-fork-released-by-its-owner-ends-abandoned
+  ;; an activated instance is owned by the session's root: releasing the
+  ;; root releases it, and its end is delivered too
+  (no-uncaught
+   (let [w (v2/world) pending (atom nil) [es hs] (ends)
+         s (sp/open! w {:handlers (assoc hs :choose (fn [p] (reset! pending p)))})]
+     (sp/start! s #(task (sp/savepoint :choose nil) (sp/savepoint :choose nil)))
+     (is (wait-until #(some? @pending)))
+     (let [first-pending @pending
+           k (sp/fork first-pending)
+           kw (:savepoint/world k)]
+       (sp/resume k 1)
+       (is (wait-until #(not (identical? first-pending @pending))) "the fork reached its next savepoint")
+       (v2/release-world! w)
+       (is (wait-until #(= 2 (count @es))))
+       (is (= #{[:abandoned w] [:abandoned kw]} (set @es)))))))
+
+(deftest a-world-the-session-gave-back-delivers-no-end
+  (no-uncaught
+   (let [w (v2/world) pending (atom nil) [es hs] (ends)
+         s (sp/open! w {:handlers (assoc hs :choose (fn [p] (reset! pending p)))})]
+     (sp/start! s #(task (sp/savepoint :choose nil) (sp/savepoint :choose nil)))
+     (is (wait-until #(some? @pending)))
+     (let [first-pending @pending
+           k (sp/fork first-pending)]
+       (sp/resume k 1)
+       (is (wait-until #(not (identical? first-pending @pending))))
+       (sp/release-world! s (:savepoint/world k))
+       (Thread/sleep 100)
+       (is (empty? @es)))
+     ((sp/close! s) identity identity))))
 
 (deftest handled-counts-the-default-handler
   (let [w (v2/world) s (sp/open! w)]

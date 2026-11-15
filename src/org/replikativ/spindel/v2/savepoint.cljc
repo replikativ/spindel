@@ -157,9 +157,9 @@
 
 (defn- unless-released
   "`(f)`, an operation on world `w` alone; a refusal because `w` was released
-   meanwhile is dropped: a released world has no savepoint or end left to
-   deliver (T21). Once activated, a world's handlers may give it back at
-   any time. With `w` also checked (a handler, host code, may call into
+   meanwhile is dropped: a released world has no savepoint left to deliver
+   (T21; its end is delivered by `watch-end!`). Once activated, a world's
+   handlers may give it back at any time. With `w` also checked (a handler, host code, may call into
    any world), only a refusal while `w` is released is dropped."
   ([f]
    (try (f)
@@ -170,28 +170,50 @@
         (catch #?(:clj Throwable :cljs :default) e
           (when-not (and (:spindel/released (ex-data e)) (released? w)) (throw e))))))
 
-(defn- dispatch-terminal! [w site payload]
-  ;; a world released before its end is delivered has no handlers left
-  (when-let [h (try (get (v2/get-in-world w [:savepoint/handlers]) site)
-                    (catch #?(:clj Throwable :cljs :default) e
-                      (when-not (:spindel/released (ex-data e)) (throw e))))]
-    (try (h {:savepoint/site site :savepoint/payload payload :savepoint/world w :savepoint/terminal? true})
-         (catch #?(:clj Throwable :cljs :default) _ nil))))
+(defn- handlers-now
+  "`w`'s handler table, or `fallback` once `w` is released (its state is
+   gone with it)."
+  [w fallback]
+  (try (v2/get-in-world w [:savepoint/handlers])
+       (catch #?(:clj Throwable :cljs :default) e
+         (if (:spindel/released (ex-data e)) fallback (throw e)))))
+
+(defn- given-back?
+  "Whether the session gave `w` back itself (`release-world!`, `abandon`,
+   `close!`): its end is nobody's business any more."
+  [s w]
+  (or @(:closing? s)
+      (and (not (identical? w (:root s))) (not (contains? @(:worlds s) w)))))
+
+(defn- dispatch-terminal!
+  "Delivers the end of `w`'s computation to its handler for `site`. A world
+   released before its end was delivered (T21: host waits receive
+   ::released) ends with the handlers it had when its end was watched,
+   unless the session gave it back itself."
+  [s w hs0 site payload]
+  (when-not (and (released? w) (given-back? s w))
+    (when-let [h (get (handlers-now w hs0) site)]
+      (try (h {:savepoint/site site :savepoint/payload payload :savepoint/world w :savepoint/terminal? true})
+           (catch #?(:clj Throwable :cljs :default) _ nil)))))
 
 (defn- watch-end!
   "Delivers the terminal event of the session's task as `w` sees it, once,
-   as host code (`off-world`)."
-  [s w]
+   as host code (`off-world`). `hs0` is `w`'s handler table while it was
+   alive. A world released before it ends, or before its end is watched,
+   ends abandoned with ::released."
+  [s w hs0]
   (let [t (v2/in-world w (:task s))
         done (atom false)
         f (off-world (fn [[v err?]]
                        (when (compare-and-set! done false true)
-                         (dispatch-terminal! w
+                         (dispatch-terminal! s w hs0
                                              (cond (not err?) result-site
-                                                   (v2/cancelled? v) abandoned-site
+                                                   (or (v2/cancelled? v) (:spindel/released (ex-data v))) abandoned-site
                                                    :else error-site)
                                              v))))]
-    (unless-released #(v2/observe! t (fn [v err?] (f [v err?]))))))
+    (try (v2/observe! t (fn [v err?] (f [v err?])))
+         (catch #?(:clj Throwable :cljs :default) e
+           (if (:spindel/released (ex-data e)) (f [e true]) (throw e))))))
 
 (defn- publication-handler
   "The engine handler of world `w`: wraps the publication into a savepoint
@@ -248,23 +270,25 @@
   [s f]
   (when-not (compare-and-set! (:task s) nil ::starting)
     (throw (ex-info "A savepoint session runs one computation" {:type ::already-started})))
-  (let [t (binding [v2/*world* (:root s)] (f))]
+  (let [root (:root s)
+        hs (handlers-now root nil)
+        t (binding [v2/*world* root] (f))]
     (reset! (:task s) t)
-    (watch-end! (assoc s :task t) (:root s))
+    (watch-end! (assoc s :task t) root hs)
     ;; worlds that started continuing it while it was being created
-    (doseq [w (first (reset-vals! (:waiting s) nil))] (watch-end! (assoc s :task t) w))
+    (doseq [[w hs] (first (reset-vals! (:waiting s) nil))] (watch-end! (assoc s :task t) w hs))
     t))
 
 (defn- watch-world-end!
   "Observes the end of the session's computation in `w`, now if its task is
    known, else once `start!` knows it (a handler may resume a fork while the
    task is still being created)."
-  [s w]
+  [s w hs]
   (let [t @(:task s)]
     (if (v2/handle? t)
-      (watch-end! (assoc s :task t) w)
-      (let [[old _] (swap-vals! (:waiting s) #(when % (conj % w)))]
-        (when (nil? old) (watch-end! (assoc s :task @(:task s)) w))))))
+      (watch-end! (assoc s :task t) w hs)
+      (let [[old _] (swap-vals! (:waiting s) #(when % (conj % [w hs])))]
+        (when (nil? old) (watch-end! (assoc s :task @(:task s)) w hs))))))
 
 (defn- instance-state
   "The initial state of an instance: its `seed` and `handlers` merged over
@@ -334,12 +358,16 @@
       (throw (ex-info "Cannot resume in a closing session" {:type ::session-closing})))
     (if (instance-sp? sp)
       (when (compare-and-set! (::instance sp) :unborn :born)
-        (let [w (:savepoint/world sp)]
+        (let [w (:savepoint/world sp)
+              hs (handlers-now w nil)]
           (v2/activate! w v)
           ;; observable once born (an unborn world takes only writes): a
           ;; host item after the activation, which may still be queued
-          ;; behind other items of `w` when its gate is busy
-          (unless-released #(v2/host! w (fn [] (watch-world-end! s w))))))
+          ;; behind other items of `w` when its gate is busy. A world
+          ;; released meanwhile still ends (abandoned, ::released).
+          (try (v2/host! w (fn [] (watch-world-end! s w hs)))
+               (catch #?(:clj Throwable :cljs :default) e
+                 (if (:spindel/released (ex-data e)) (watch-world-end! s w hs) (throw e))))))
       (v2/resume! pub v))
     nil))
 
@@ -396,6 +424,7 @@
         (reset! (:closing? s) true)
         (doseq [w @(:worlds s)] (v2/release-world! w))
         (reset! (:worlds s) #{})
-        (v2/assoc-in-world! (:root s) [:savepoint/session] nil)
+        ;; a root released by its owner has no session entry left to clear
+        (unless-released #(v2/assoc-in-world! (:root s) [:savepoint/session] nil))
         (resolve nil)
         (catch #?(:clj Throwable :cljs :default) e (reject e))))))
