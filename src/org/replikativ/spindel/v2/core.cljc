@@ -33,7 +33,8 @@
 ;; hold no pointer to a world, the world is the one being processed).
 
 #?(:clj (def ^ThreadLocal ctx-tl (ThreadLocal.))
-   :cljs (def ctx-cell (doto (object-array 3) (aset 2 0))))
+   ;; slot 3 (CLJS): the running slice's outer values of the vars it binds
+   :cljs (def ctx-cell (doto (object-array 4) (aset 2 0))))
 
 (defn- ctx ^objects []
   #?(:clj (let [c (.get ctx-tl)]
@@ -59,10 +60,72 @@
 ;; slice! installs R-BIND and saves the thread's frame back into it, so a
 ;; `binding` that spans an effect pushes and pops on the run's own frame
 ;; whichever thread runs each slice, and nothing leaks in or out. A fork
-;; copies the run, hence its frame. (CLJS: no thread frames; nil.)
+;; copies the run, hence its frame.
+;;
+;; CLJS has no thread frames: a frame is a map key -> [getter setter value]
+;; of the vars the run binds (nil when none). A body `binding` adds entries
+;; (push-bindings!), slice! sets the run's vars and restores the globals
+;; after, reading the values back. Host-level bindings reach a creation only
+;; for vars declared with `convey`.
 
-(defn- thread-frame []
-  #?(:clj (clojure.lang.Var/getThreadBindingFrame) :cljs nil))
+#?(:cljs (def ^:private conveyed (volatile! {})))   ; key -> [getter setter]
+
+(defn register-conveyed!
+  "CLJS: host-level bindings of the var behind `getter`/`setter` reach the
+   tasks and computations created under them (use the `convey` macro)."
+  [k getter setter]
+  #?(:cljs (vswap! conveyed assoc k [getter setter]))
+  nil)
+
+#?(:cljs
+   (defn- read-back
+     "Frame `m` with each var's current value (the run's vars are installed)."
+     [m]
+     (when m
+       (persistent! (reduce-kv (fn [acc k [gt st]] (assoc! acc k [gt st (gt)])) (transient {}) m)))))
+
+(defn- thread-frame
+  "The binding frame a creation (or a fork of the running run) starts from."
+  []
+  #?(:clj (clojure.lang.Var/getThreadBindingFrame)
+     :cljs (if-let [r (active-run)]
+             (read-back (g r rw/R-BIND))
+             (let [m @conveyed]
+               (when (seq m) (reduce-kv (fn [acc k [gt st]] (assoc acc k [gt st (gt)])) {} m))))))
+
+#?(:cljs
+   (defn- install-bindings!
+     "Sets frame `m`'s vars, recording their outer values in the slice table `t`."
+     [m t]
+     (reduce-kv (fn [_ k [gt st v]]
+                  (when-not (contains? @t k) (vswap! t assoc k [st (gt)]))
+                  (st v))
+                nil m)))
+
+(defn push-bindings!
+  "CLJS body `binding` (B10): binds `entries` [[k getter setter value] ...]
+   in the running run. Returns what `pop-bindings!` restores."
+  [entries]
+  #?(:clj (throw (ex-info "push-bindings! is CLJS only" {}))
+     :cljs (let [r (active-run)
+                 olds (mapv (fn [[_ gt]] (gt)) entries)
+                 prev (when r (g r rw/R-BIND))]
+             (when r
+               (let [c (ctx)
+                     t (or (aget c 3) (let [t (volatile! {})] (aset c 3 t) t))]
+                 (doseq [[k gt st] entries]
+                   (when-not (contains? @t k) (vswap! t assoc k [st (gt)]))))
+               (s! r rw/R-BIND
+                   (reduce (fn [m [k gt st v]] (assoc m k [gt st v])) (or prev {}) entries)))
+             (doseq [[_ _ st v] entries] (st v))
+             [(some? r) prev olds entries])))
+
+(defn pop-bindings!
+  "CLJS: leaves a body `binding` (push-bindings!)."
+  [[in-run? prev olds entries]]
+  #?(:cljs (do (dorun (map (fn [[_ _ st] o] (st o)) entries olds))
+               (when in-run? (when-let [r (active-run)] (s! r rw/R-BIND prev)))))
+  nil)
 
 ;; ---------------------------------------------------------------------------
 ;; World, ids, gate
@@ -988,11 +1051,15 @@
   (let [prev (active-run)
         c (ctx)
         #?@(:clj [pf (thread-frame)
-                  rf (or (g r rw/R-BIND) pf)])]
+                  rf (or (g r rw/R-BIND) pf)]
+            :cljs [po (aget c 3)])]
     (s! r rw/R-SLICE true)
     (set-active! r)
     (aset c 2 #?(:clj (num (inc (long (aget c 2)))) :cljs (inc (aget c 2))))
-    #?(:clj (when-not (identical? pf rf) (clojure.lang.Var/resetThreadBindingFrame rf)))
+    #?(:clj (when-not (identical? pf rf) (clojure.lang.Var/resetThreadBindingFrame rf))
+       :cljs (let [m (g r rw/R-BIND)]
+               (aset c 3 nil)
+               (when m (let [t (volatile! {})] (aset c 3 t) (install-bindings! m t)))))
     (try
       (try (force! (f))
            (catch #?(:clj Throwable :cljs :default) t
@@ -1002,7 +1069,13 @@
         (aset c 2 #?(:clj (num (dec (long (aget c 2)))) :cljs (dec (aget c 2))))
         #?(:clj (let [f (thread-frame)]
                   (s! (rv (cw) r) rw/R-BIND f)
-                  (when-not (identical? f pf) (clojure.lang.Var/resetThreadBindingFrame pf))))
+                  (when-not (identical? f pf) (clojure.lang.Var/resetThreadBindingFrame pf)))
+           :cljs (let [t (aget c 3)]
+                   (when t
+                     (let [r (rv (cw) r)]
+                       (when-let [m (g r rw/R-BIND)] (s! r rw/R-BIND (read-back m))))
+                     (reduce-kv (fn [_ _ [st outer]] (st outer)) nil @t))
+                   (aset c 3 po)))
         (let [w (cw) r (rv w r)]
           ;; a done run whose slice still holds the flag (a cleanup slice, or a
           ;; cancelled run unwinding) returns here: an explicit item
@@ -3895,6 +3968,27 @@
                       (not (#{'org.replikativ.spindel.v2.core/with-scope 'org.replikativ.spindel.v2.core/with-path}
                             (symbol (str (.-ns ^clojure.lang.Var v)) (str (.-sym ^clojure.lang.Var v))))))
              v))))
+     (defn- var-key
+       "A stable key for dynamic var `v` (its qualified name) in `env`."
+       [env v]
+       (keyword (str (or (ioc/var-name env v) v))))
+     (defn- cljs-binding?
+       "A CLJS `binding` (not a local of that name): B10 keeps it in the run."
+       [h]
+       (and (:ns *env*) (#{'binding 'cljs.core/binding} h)
+            (not (contains? (:locals *env*) h))))
+     (defn- cljs-binding
+       "CLJS `binding` in a body: the vars are bound in the running run, so
+        the binding survives effects and slice! sets and restores them."
+       [[_ bvec & body :as form]]
+       (let [saved (gensym "bindings")]
+         (with-meta
+           `(let [~saved (push-bindings!
+                          [~@(doall (for [[v e] (partition 2 bvec)]
+                                      `[~(var-key *env* v) (fn [] ~v) (fn [x#] (set! ~v x#)) ~(register-finally e)]))])]
+              (~'try (do (enter-finally!) ~@(mapv register-finally body))
+                     (~'finally (exit-finally!) (pop-bindings! ~saved))))
+           (meta form))))
      (defn- register-finally
        "Body contract (§7): each `try` with a `finally` registers its region
         with the run, so cancellation can unwind through it (T14). A user
@@ -3908,10 +4002,11 @@
                mv (user-macro h)
                expanded (when mv (apply @mv form *env* (rest form)))]
            (cond
+             (cljs-binding? h) (cljs-binding form)
              (opaque-head? h) form
              (and expanded (has-finally? expanded)) (register-finally expanded)
              (= 'try h)
-             (let [clauses (map register-finally (rest form))
+             (let [clauses (mapv register-finally (rest form))   ; eager: *env* is bound only here
                    [body cfs] (split-with (complement catch-or-finally?) clauses)]
                (if (some #(= 'finally (first %)) cfs)
                  (with-meta
@@ -3957,6 +4052,13 @@
          `(let [~s (open-scope!)]
             (~'try (do (enter-finally!) ~@body)
                    (~'finally (exit-finally!) (close-scope-fx! ~s))))))
+     (defmacro convey
+       "B10: host-level `binding`s of dynamic var `v` reach the tasks and
+        computations created under them. JVM: every binding does; no-op. CLJS:
+        only declared vars (bindings inside bodies need no declaration)."
+       [v]
+       (when (:ns &env)
+         `(register-conveyed! ~(var-key &env v) (fn [] ~v) (fn [x#] (set! ~v x#)))))
      (defmacro with-path
        "§8.2 P1-P6: labels the effect sites reached in `body` with the vector
         `p` appended to the run's path; a registered effect receives the path
