@@ -3619,7 +3619,7 @@
 
 (defn forked-ex [] (ex-info "forked" {:spindel/forked true}))
 
-(declare join! cancel-resource! resource-fire! resource-ack!)
+(declare join! cancel-resource! resource-fire! resource-ack! op-cancel!)
 
 (defn- set-ctl!
   "A resource's physical controller, owned by world `w` (copies elsewhere
@@ -3731,6 +3731,7 @@
                       (cond (nil? ctl) true
                             (hs/timer? ctl) (hs/unschedule! ctl)
                             (:external ctl) (external-cancel! ctl)
+                            (:op ctl) (op-cancel! (:op ctl))
                             :else (hs/ctl-cancel! ctl)))]
       ;; the acknowledgement is its own item, after the cancelling one
       (when joined? (aadd! (g w rw/W-CLEANUP) [z])))))
@@ -3835,6 +3836,126 @@
     (unwind! ek))))
 
 ;; ---------------------------------------------------------------------------
+;; await-op (C1 W5/R3): a partial-cps op `(fn [resolve reject])` as a resource
+;; with a controller. Start and cancel are arbitrated atomically; the result
+;; (first resolve/reject) fires the resource; the resource acknowledges only
+;; when start has returned, every committed cancel hook has returned, and the
+;; op settled (or was cancelled before it started). `:detach` waives the
+;; physical join. Start and hooks run on the world's executor after the gate.
+
+(def ^:dynamic *op-ctl* nil)
+
+;; controller: [0 state :new|:started|:never  1 cancelled?  2 result
+;;              3 start-returned?  4 hooks  5 hooks-pending  6 acked?
+;;              7 detach?  8 world  9 resource  10 executor]
+(defn- op-ack-ready? [^objects c]
+  (and (not (aget c 6))
+       (zero? (long (aget c 5)))
+       ;; cancelled before it started, or started, returned and settled (a
+       ;; cancellation after start still waits for the physical result)
+       (or (identical? :never (aget c 0))
+           (and (aget c 3) (some? (aget c 2))))))
+
+(defn- op-finish!
+  "Acknowledges the resource once every part of the op is done."
+  [^objects c]
+  (let [wz (rw/locking-row c
+                           (when (op-ack-ready? c)
+                             (aset c 6 true)
+                             (let [wz [(aget c 8) (aget c 9)]] (aset c 8 nil) (aset c 9 nil) wz)))]
+    (when-let [[w z] wz]
+      (when w (internal! w #(resource-ack! w (rv w z)))))))
+
+(defn- op-run-hook! [^objects c f]
+  (try (f) (catch #?(:clj Throwable :cljs :default) t
+             #?(:clj (binding [*out* *err*] (println "await-op cancel hook failed:" t))
+                :cljs (js/console.error "await-op cancel hook failed:" t))))
+  (rw/locking-row c (aset c 5 (dec (long (aget c 5)))))
+  (op-finish! c))
+
+(defn- op-settle!
+  "resolve/reject: the first result fires the resource (dropped after
+   cancellation or detachment)."
+  [^objects c v err?]
+  (let [fire (rw/locking-row c
+                             (when (nil? (aget c 2))
+                               (aset c 2 [v (boolean err?)])
+                               (when-not (aget c 1) [(aget c 8) (aget c 9)])))]
+    (when-let [[w z] fire]
+      (when w (internal! w #(let [z (rv w z)] (when (== rw/Z-ARMED (gl z rw/Z-PHASE)) (resource-fire! w z [v (boolean err?)]))))))
+    (op-finish! c)))
+
+(defn on-cancel!
+  "Inside an `await-op` op's start: registers `f` to run once when the op is
+   cancelled (at once if it already is). Hooks run on the executor, outside
+   every world, and the op's join waits for them."
+  [f]
+  (let [^objects c (or *op-ctl* (throw (ex-info "on-cancel! outside an await-op start" {:spindel/invalid :on-cancel})))
+        now? (rw/locking-row c
+                             (if (aget c 1)
+                               (do (aset c 5 (inc (long (aget c 5)))) true)
+                               (do (aset c 4 (conj (aget c 4) f)) false)))]
+    (when now? (op-run-hook! c f))
+    nil))
+
+(defn- op-cancel!
+  "T14 on an :op resource, under the gate. True when it joins at once
+   (cancelled before start, or detached)."
+  [^objects c]
+  (let [[hooks joined?]
+        (rw/locking-row c
+                        (if (aget c 1)
+                          [nil false]
+                          (do (aset c 1 true)
+                              (let [before? (identical? :new (aget c 0))
+                                    hooks (aget c 4)]
+                                (when before? (aset c 0 :never))
+                                (aset c 4 [])
+                                (aset c 5 (+ (long (aget c 5)) (count hooks)))
+                                (if (or before? (aget c 7))
+                                  (do (aset c 6 true) (aset c 8 nil) (aset c 9 nil) [hooks true])
+                                  [hooks false])))))]
+    (when (seq hooks)
+      (let [ex (aget c 10)]
+        (aadd! (g (cw) rw/W-AFTER)
+               #(doseq [f hooks] (hs/execute-or! ex (fn [_] (op-run-hook! c f)) (fn [] (op-run-hook! c f)))))))
+    joined?))
+
+(defn await-op-effect!
+  "`(await-op op)` / `(await-op op {:detach true})`."
+  [op opts k ek]
+  (if-let [refusal (finalizer-refusal)] (ek refusal)
+          (if-let [r (valid-run)]
+            (let [#?@(:clj [frame (thread-frame)])]
+              (arm-and-park!
+               r :op k ek
+               (fn [w z]
+                 (let [ex (g w rw/W-EXEC)
+                       c (object-array [:new false nil false [] 0 false (boolean (:detach opts)) w z ex])
+                       start (fn []
+                               (when (rw/locking-row c (when (identical? :new (aget c 0)) (aset c 0 :started) true))
+                                 (try
+                                   ;; B10: the run's bindings, plus the originating world
+                                   #?(:clj (let [prev (clojure.lang.Var/getThreadBindingFrame)]
+                                             (clojure.lang.Var/resetThreadBindingFrame frame)
+                                             (try (push-thread-bindings {#'*op-ctl* c #'*world* w})
+                                                  (try (op (fn [v] (op-settle! c v false)) (fn [e] (op-settle! c e true)))
+                                                       (finally (pop-thread-bindings)))
+                                                  (finally (clojure.lang.Var/resetThreadBindingFrame prev))))
+                                      :cljs (binding [*op-ctl* c *world* w]
+                                              (op (fn [v] (op-settle! c v false)) (fn [e] (op-settle! c e true)))))
+                                   (catch #?(:clj Throwable :cljs :default) t (op-settle! c t true))
+                                   (finally (rw/locking-row c (aset c 3 true)))))
+                               (op-finish! c))]
+                   (set-ctl! w z {:op c})
+                   (aadd! (g w rw/W-AFTER)
+                          #(hs/execute-or! ex
+                                           ;; a rejecting executor fails the op
+                                           (fn [t] (rw/locking-row c (aset c 0 :never)) (op-settle! c t true))
+                                           start))))))
+            (unwind! ek))))
+
+;; ---------------------------------------------------------------------------
 ;; World completion (C1, c1-cancellation-joins-design.md W1-W2, R1-R2): a world
 ;; is complete when it is released, none of its runs is unretired and every
 ;; child world it owns is complete or was collected. Cancellation settles at
@@ -3914,6 +4035,17 @@
                                      l)))
                              (aadd! (g w rw/W-COMPLETE-SUBS) [live cb])))))
     (fn [] (hs/flag-set! live false) nil)))
+
+(defn idle?
+  "W6: a snapshot of world `w`: nothing runnable, no cleanup queued, no
+   outstanding resource in any phase, nothing dormant and no queued ingress.
+   Parked runs may remain (waiting on deferreds, positions, ...): idle is not
+   complete. To wait for work to stop, release and use `on-complete`."
+  [w]
+  (host-call! w #(and (not (work-pending? w))
+                      (zero? (hs/oset-count (g w rw/W-OUTSTANDING)))
+                      (nil? (g w rw/W-DORMANT))
+                      (nil? (g w rw/W-DISCHARGE)))))
 
 (defn complete?
   "Whether world `w` is complete (W1): a snapshot."
@@ -4585,6 +4717,7 @@
 (defn offload [& _] (throw (ex-info "offload outside a body" {})))
 
 (defn external [_] (throw (ex-info "external outside a body" {})))
+(defn await-op [& _] (throw (ex-info "await-op outside a body" {})))
 
 (defn sleep [_] (throw (ex-info "sleep outside a body" {})))
 
@@ -4657,6 +4790,8 @@
        (fn [_] `(fork-effect! ~r ~e)))
      (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-offload [_ctx r e]
        (fn [[f opts]] `(offload-effect! ~f ~opts ~r ~e)))
+     (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-await-op [_ctx r e]
+       (fn [[op opts]] `(await-op-effect! ~op ~opts ~r ~e)))
      (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-external [_ctx r e]
        (fn [[f]] `(external-effect! ~f ~r ~e)))
      (declare site-of)
@@ -4677,6 +4812,7 @@
         'org.replikativ.spindel.v2.core/take! `bp-consume
         'org.replikativ.spindel.v2.core/offload `bp-offload
         'org.replikativ.spindel.v2.core/external `bp-external
+        'org.replikativ.spindel.v2.core/await-op `bp-await-op
         'org.replikativ.spindel.v2.core/fork `bp-fork
         'org.replikativ.spindel.v2.core/savepoint `bp-savepoint
         'org.replikativ.spindel.v2.core/sleep `bp-sleep

@@ -219,3 +219,18 @@
          (let [t3 (task (try 1 (finally nil)) (v2/sleep 1) :after)]
            (is (= :after (v2/value t3 2000 ::timeout))))))
      (v2/release-world! w))))
+
+(deftest idle-is-a-snapshot-not-completion
+  (let [w (v2/world) stop (promise) started (promise)]
+    (binding [v2/*world* w]
+      (let [parked (task (await (v2/deferred)))]
+        (is (wait-until #(v2/idle? w)) "a task parked on a deferred leaves the world idle")
+        (let [t (task (v2/offload (stubborn stop started)))]
+          (deref started 2000 nil)
+          (is (not (v2/idle? w)) "an outstanding offload is not idle")
+          (v2/cancel-task! t)
+          (is (not (v2/idle? w)) "nor a cancelling one that ignores interruption")
+          (deliver stop true)
+          (is (wait-until #(v2/idle? w))))))
+    (v2/release-world! w)
+    (is (true? (v2/await-complete w 2000 ::timeout)))))
