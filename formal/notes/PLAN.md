@@ -1241,6 +1241,35 @@ guard and the take arm's cleanup refusal), hm18 (blocked by hm17).
   believed true but not proved; `hq` stays an explicit premise, not a theorem.
 - B8 as an invariant fact: no bundle needed it.
 
+### After PR #268 / #269 (A4, A5, Q5)
+- A4 (7964d55): `:released-proj` dropped; samples 26b/26c/27 compare `:released` directly.
+- A5 (24d5e4a): item 44 `finally-leave st`. `finally-exit` turns the head region (F 0) into a running clause
+  (F 1, `fins-exit`), `finally-leave` pops it (`fin-exit-bad`/`fin-leave-bad` guards). B8 for normal runs: in a
+  clause (`in-fin`) raw0 refuses an await whose debtors are not settled now (`settled-now`, engine `settled-now?`;
+  one/all every debtor, any one: `fin-suspends` in `await-bad w st ds m`), a take with nothing to take on an open
+  source (`take-bad`), every arm (`fin-shut`). `await-cont` reads regions only (engine `reentrant-k`). progress:
+  a region weighs 2 and a clause 1 in mu-f; `finally-exit-dec` holds again, `finally-leave-dec` is new. Changed
+  statements: only the overrides `t17-g9`/`t17-mb` take `fin-shut w st = false` (was `in-cleanup w st = false`;
+  `fin-shut-cleanup` gives the old fact). Oracle: run finalizers project regions; logs with exits and no leave
+  (samples 4, 5: no generator exists; they predate #268) end each clause within its exit's commit; sample 7
+  regenerated (`oracle/gen/samples-legacy.clj`, only the leave is new); 22, 25, 25b replay with 0 divergences.
+- Q5 (c25c0de, 29021c7): a released world takes no new root, also from a held slice: raw0 refuses observe and pin
+  (`root-shut`) and host waits (`host-await-bad`) once released. engine_test `c1-no-roots-after-release` replays
+  the counterexample (refused; quiet after the slice exit; c cannot start).
+- Sample 28 (#269): the sidecar matches at every checkpoint (complete after the slice exit, c2 never starts), but
+  the replay has 5 divergent commits, triaged in `c1-sample-28-triaged` (questions 6, 7).
+- `hq` is still a premise. Plan (not done): `wq` = R (released stays released) and Q (quiet stays quiet).
+  R: a bundle `b -> released w` over the step (every primitive edit is a frame except `set-released`).
+  Q needs an invariant beyond the guard: K w = pending-act = 0, pubs = [] (no layer-1 transition creates one),
+  and released -> pins = [] and no host-creditor edge (only T8/T22/pin add them, now refused when released; T21
+  removes them). With K, I3 (every id kept, `step-i3-total`; refused steps keep the world), I1 (`lit-i1-scope`:
+  scope parents are scopes) and ids-unique, a quiet world's live set is scopes and forks only (no run, so no
+  running task; roots: root/open explicit scopes), so it holds no computation, task, source, edge, activation or
+  resource, and every item is refused there (token items: no run; host items: `host-shut`; start/dispatch/
+  link-demand/fire/ack: no row). K's bundle needs patches at the edge insertions (await's wait edge: creditor =
+  the fresh activation id > 0; take likewise) and an override for `revoke-roots`. Layer 2 then carries K and I3
+  for every live born cell (an unborn instance released by E4 needs only R).
+
 ### Questions (engine session)
 Answered: 1 (A4: the projection is fixed in PR #268; drop `:released-proj` then), 2 (A1), 4 (A2); 3 is A5 (after #268).
 New (Stage B finding):
@@ -1250,6 +1279,13 @@ New (Stage B finding):
    then start. Does the engine admit these in a cleanup slice after release, and if so what does completion do (latch
    complete, then a run)? Candidate fixes: in a released world a cleanup slice admits only Z#40's items; or completion
    also requires that no computation is demanded/startable.
+   Answered (#269): option 1.
+6. Sample 28, commits 10-14: after T21 the engine keeps computation 5 not idle with run 7 (cancelled, unwinding,
+   cleanup pending); the model's Rule R idles it (validity :invalid, run cleared: a non-idle computation outside
+   live, its run held only by the cleanup entry). Which is intended?
+7. Sample 28, commit 13: `[:write 3 12]` from the cleanup slice is logged accepted although signal 3 was collected at
+   T21 (both projections lack it); the model refuses a write to a missing source. Is an accepted no-op write the
+   log contract here?
 
 1. `:released` in the verify projection is `false` after the release commit (verify.clj `projection`); keep the
    deviation or fix the projection?
