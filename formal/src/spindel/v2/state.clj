@@ -82,7 +82,9 @@
   ;; C0 async sequences (§4.3 rows link, stream; engine SRC-LINK 5 / SRC-STREAM 6)
   sk-link 6  sk-stream 7
   ;; ResRow.kind
-  rk-timer 0  rk-external 1  rk-offload 2  rk-native 3)
+  rk-timer 0  rk-external 1  rk-offload 2  rk-native 3
+  ;; C1 `await-op` (§4.3): a resource of kind op (engine `:op`)
+  rk-op 4)
 
 ;; ---------------------------------------------------------------------------
 ;; Rows (§2)

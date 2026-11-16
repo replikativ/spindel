@@ -1120,7 +1120,7 @@
 ;; ---- T17 arm (Z#55): the resource part; the item (resource, activation, wait edge, park) is
 ;; spindel.v2.engine's `t17-arm`
 
-(a/defn res-kind-ok [kind :- Nat] Bool (Nat.ble kind rk-native))
+(a/defn res-kind-ok [kind :- Nat] Bool (Nat.ble kind rk-op))
 (a/defn arm-raw [w :- World, r :- RunRow, kind :- Nat] World
   (run-upd (bump (resource-ins w (ResRow.mk (:next-id w) (:id r) kind (:effect-index r) rp-armed)))
            (:id r) (run-arm (:next-id w))))

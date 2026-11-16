@@ -374,10 +374,16 @@
 ;; every remaining scope's parent without the convergence argument, literal I1, spindel.v2.i1)
 (a/defn parent-outside [sub :- (List Nat), s :- ScopeRow] Bool
   (Bool.or (reach-mem (:id s) sub) (Bool.not (reach-mem (:parent s) sub))))
+;; a done task whose run has retired is a tombstone: it no longer holds its owner scope (engine
+;; `release-ownership!`, Z#56: ownership retention ends with the task's run; C1 sample 22, a
+;; subtree cancelled at request time retires its tasks' runs before the scopes close)
+(a/defn task-held-in [sub :- (List Nat), t :- TaskRow] Bool
+  (Bool.and (task-owned-in sub t)
+            (Bool.or (Nat.beq (:tag (:result t)) res-none) (Bool.not (Nat.beq (:run t) 0)))))
 (a/defn subtree-empty [w :- World, sub :- (List Nat)] Bool
   (Bool.and (tbl-all (parent-outside sub) (:scopes w))
   (Bool.and (tbl-all (scope-closed-in sub) (:scopes w))
-  (Bool.and (Bool.not (tbl-any (task-owned-in sub) (:tasks w)))
+  (Bool.and (Bool.not (tbl-any (task-held-in sub) (:tasks w)))
   (Bool.and (Bool.not (tbl-any (fork-owned-in sub) (:forks w)))
   (Bool.and (Bool.not (tbl-any (run-scoped-in sub) (:runs w)))
             (Bool.not (tbl-any (root-in sub) (:scopes w)))))))))
