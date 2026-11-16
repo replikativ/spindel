@@ -43,9 +43,12 @@
 (a/defn rk-savepoint [] Nat rk-offload)
 
 ;; a world of the system: `parent`/`owner` are its fork marker (0 = the root world), `dormant` the
-;; inherited resources not yet settled; an instance is `unborn` until its `pending` savepoint is fired
+;; inherited resources not yet settled; an instance is `unborn` until its `pending` savepoint is fired.
+;; C1 (T21 completion, Z#67): `kids` are the child cells this world accepted (its completion
+;; obligations, never inherited), `complete` its completion (released, no run left, every accepted
+;; child complete or collected; an unborn instance released before activation at once)
 (a/structure Cell [] (world World) (live Bool) (parent Nat) (owner Nat) (dormant (List Nat))
-  (unborn Bool) (pending Nat))
+  (unborn Bool) (pending Nat) (kids (List Nat)) (complete Bool))
 
 ;; a publication: the cell and run that published, the savepoint's resource, the frozen basis
 (a/structure Pub [] (cell Nat) (res Nat) (run Nat) (basis World) (live Bool))
@@ -85,7 +88,7 @@
 
 (a/defn cell-step [c :- Cell, it :- Item] Cell
   (Cell.mk (:world (world-step (:world c) it)) (:live c) (:parent c) (:owner c) (:dormant c)
-           (:unborn c) (:pending c)))
+           (:unborn c) (:pending c) (:kids c) (:complete c)))
 
 (a/defn sys-step [cells :- (=> Nat Cell), k :- Nat, it :- Item] (=> Nat Cell)
   (fupd cells k (cell-step (cells k) it)))
@@ -113,8 +116,13 @@
   (match rs [nil (List.nil Nat)]
          [(cons r t) (if (Nat.beq (:phase r) rp-armed) (List.cons Nat (:id r) (armed-ids t)) (armed-ids t))]))
 
+;; C1 R1: every outstanding resource is inherited (armed ones are dormant; cancelling or fired but
+;; unacknowledged ones are discharged at the first turn, `wake-one`)
+(a/defn res-ids [rs :- (List ResRow)] (List Nat)
+  (match rs [nil (List.nil Nat)] [(cons r t) (List.cons Nat (:id r) (res-ids t))]))
+
 (a/defn fork-cell [c :- Cell, k :- Nat, owner :- Nat] Cell
-  (Cell.mk (:world c) true k owner (nat-app (armed-ids (:res (:world c))) (:dormant c)) false 0))
+  (Cell.mk (:world c) true k owner (nat-app (res-ids (:res (:world c))) (:dormant c)) false 0 (List.nil Nat) false))
 
 (a/defn sys-fork [cells :- (=> Nat Cell), k :- Nat, m :- Nat, owner :- Nat] (=> Nat Cell)
   (fupd cells m (fork-cell (cells k) k owner)))
@@ -150,10 +158,14 @@
   (simp only [fire-ack])
   (exact (step-p3l _ (Item.resource-ack z) (step-p3l w (Item.resource-fire z tag v) h))))
 
+;; C1 R1: an inherited timer stays armed (it is rescheduled); any other inherited resource is settled
+;; at the first turn: armed, it fails with ::forked and is acknowledged; cancelling or fired but
+;; unacknowledged, it has no counterpart here and is acknowledged (its fire is refused: not armed)
+(a/defn timer-kept [r :- ResRow] Bool (Bool.and (Nat.beq (:kind r) rk-timer) (Nat.beq (:phase r) rp-armed)))
 (a/defn wake-one [w :- World, z :- Nat] World
   (match (resource-find w z)
     [none w]
-    [(some r) (if (Nat.beq (:kind r) rk-timer) w (fire-ack w z res-err err-forked))]))
+    [(some r) (if (timer-kept r) w (fire-ack w z res-err err-forked))]))
 
 (a/defn wake-all [w :- World, zs :- (List Nat)] World
   (match zs [nil w] [(cons z t) (wake-all (wake-one w z) t)]))
@@ -164,7 +176,7 @@
   (cases hf (resource-find w z))
   (case [none] (simp only [wake-one hf]) (exact h))
   (case [some r]
-    (cases hk (Nat.beq (:kind r) rk-timer))
+    (cases hk (timer-kept r))
     (case [true] (simp only [wake-one hf hk]) (exact h))
     (case [false]
       (simp only [wake-one hf hk])
@@ -178,7 +190,7 @@
 
 (a/defn wake-cell [c :- Cell] Cell
   (Cell.mk (wake-all (:world c) (:dormant c)) (:live c) (:parent c) (:owner c) (List.nil Nat)
-           (:unborn c) (:pending c)))
+           (:unborn c) (:pending c) (:kids c) (:complete c)))
 
 ;; an unborn instance is not woken: its inherited work waits for `activate` (S3)
 (a/defn sys-wake [cells :- (=> Nat Cell), k :- Nat] (=> Nat Cell)
@@ -199,10 +211,76 @@
     (exact (sinv-put cells k (wake-cell (cells k)) hs hc))))
 
 ;; ---------------------------------------------------------------------------
+;; C1 world completion (T21, Z#67; engine `accept-child!`, `maybe-complete!`, E4). Internal: the
+;; engine logs no item for it (its host-observation sidecars show it, oracle `check-observations`).
+
+;; R2: owner k accepts child m (own-child! at the fork effect, host fork!, activate!): one obligation
+;; until m completes or is collected; a complete owner takes none
+(a/defn accept-cell [c :- Cell, m :- Nat] Cell
+  (Cell.mk (:world c) (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c)
+           (List.cons Nat m (:kids c)) (:complete c)))
+(a/defn sys-accept [cells :- (=> Nat Cell), k :- Nat, m :- Nat] (=> Nat Cell)
+  (if (:complete (cells k)) cells (fupd cells k (accept-cell (cells k) m))))
+
+;; W1: complete once released with no unretired run and every accepted child complete or collected
+;; (a dropped cell); an unborn instance released before its activation at once (nothing in it runs)
+(a/defn kid-done [cells :- (=> Nat Cell), m :- Nat] Bool (Bool.or (Bool.not (:live (cells m))) (:complete (cells m))))
+(a/defn complete-ready [cells :- (=> Nat Cell), k :- Nat] Bool
+  (Bool.and (:released (:world (cells k)))
+            (Bool.or (:unborn (cells k))
+                     (Bool.and (Nat.beq (world-runs (:world (cells k))) 0) (tbl-all (kid-done cells) (:kids (cells k)))))))
+(a/defn complete-cell [c :- Cell] Cell
+  (Cell.mk (:world c) (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c) (:kids c) true))
+(a/defn sys-complete [cells :- (=> Nat Cell), k :- Nat] (=> Nat Cell)
+  (if (complete-ready cells k) (fupd cells k (complete-cell (cells k))) cells))
+
+;; E4: an unborn instance released before its activation only sets the flag (engine.clj
+;; `release-unborn`); `sys-complete` then completes it. Its invariant (`p3l` through `set-released`)
+;; is a Stage B obligation (notes/PLAN.md C1).
+(a/defn release-unborn-cell [c :- Cell] Cell
+  (Cell.mk (release-unborn (:world c)) (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c)
+           (:kids c) (:complete c)))
+(a/defn sys-release-unborn [cells :- (=> Nat Cell), k :- Nat] (=> Nat Cell)
+  (if (Bool.and (:unborn (cells k)) (Bool.not (:released (:world (cells k)))))
+      (fupd cells k (release-unborn-cell (cells k))) cells))
+
+(a/theorem sinv-accept [cells :- (=> Nat Cell), k :- Nat, m :- Nat]
+  (=> (sinv cells) (sinv (sys-accept cells k m)))
+  (intro hs)
+  (cases hc (:complete (cells k)))
+  (case [true] (simp only [sys-accept hc]) (exact hs))
+  (case [false]
+    (have h1 (=> (= (:live (accept-cell (cells k) m)) true) (= (p3l (:world (accept-cell (cells k) m))) true)))
+    (intro hl) (simp only [accept-cell] at hl) (simp only [accept-cell]) (exact (sinv-live cells k hs hl))
+    (simp only [sys-accept hc])
+    (exact (sinv-put cells k (accept-cell (cells k) m) hs h1))))
+
+(a/theorem sinv-complete [cells :- (=> Nat Cell), k :- Nat]
+  (=> (sinv cells) (sinv (sys-complete cells k)))
+  (intro hs)
+  (cases hc (complete-ready cells k))
+  (case [false] (simp only [sys-complete hc]) (exact hs))
+  (case [true]
+    (have h1 (=> (= (:live (complete-cell (cells k))) true) (= (p3l (:world (complete-cell (cells k)))) true)))
+    (intro hl) (simp only [complete-cell] at hl) (simp only [complete-cell]) (exact (sinv-live cells k hs hl))
+    (simp only [sys-complete hc])
+    (exact (sinv-put cells k (complete-cell (cells k)) hs h1))))
+
+;; a complete cell stays complete through its own steps and every system operation that keeps its
+;; flag (the latch); completion soundness (complete -> released, no run, no open accepted child) and
+;; its stability under the layer-1 steps of a released, quiet world are Stage B obligations
+(a/theorem complete-latch [cells :- (=> Nat Cell), k :- Nat]
+  (=> (= (:complete (cells k)) true) (= (:complete (sys-complete cells k k)) true))
+  (intro h)
+  (cases hc (complete-ready cells k))
+  (case [false] (simp only [sys-complete hc]) (exact h))
+  (case [true] (simp only [sys-complete hc fupd-same complete-cell])))
+
+;; ---------------------------------------------------------------------------
 ;; L10/L11: a world leaves the system
 
 (a/defn drop-cell [c :- Cell] Cell
-  (Cell.mk (:world c) false (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c)))
+  (Cell.mk (:world c) false (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c) (:kids c) (:complete c)))
 
 (a/defn sys-drop [cells :- (=> Nat Cell), k :- Nat] (=> Nat Cell)
   (fupd cells k (drop-cell (cells k))))
@@ -235,7 +313,7 @@
 
 (a/defn fork-effect-cell [c :- Cell, k :- Nat, owner :- Nat, st :- Nat, kont :- Nat, v :- Nat] Cell
   (Cell.mk (fork-effect-world (:world c) st kont v) true k owner
-           (nat-app (armed-ids (:res (:world c))) (:dormant c)) false 0))
+           (nat-app (res-ids (:res (:world c))) (:dormant c)) false 0 (List.nil Nat) false))
 
 (a/defn sys-fork-effect [cells :- (=> Nat Cell), k :- Nat, m :- Nat, owner :- Nat, st :- Nat, kont :- Nat, v :- Nat]
   (=> Nat Cell)
@@ -293,7 +371,8 @@
 ;; L6 (S2): resume in place: the savepoint fires with `ok v` in the publishing world and is acknowledged
 
 (a/defn resume-cell [c :- Cell, z :- Nat, v :- Nat] Cell
-  (Cell.mk (fire-ack (:world c) z res-ok v) (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c)))
+  (Cell.mk (fire-ack (:world c) z res-ok v) (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c)
+           (:kids c) (:complete c)))
 
 (a/defn sys-resume [cells :- (=> Nat Cell), pubs :- (=> Nat Pub), p :- Nat, v :- Nat] (=> Nat Cell)
   (fupd cells (:cell (pubs p)) (resume-cell (cells (:cell (pubs p))) (:res (pubs p)) v)))
@@ -315,7 +394,7 @@
 ;; activation is the savepoint's resource.
 
 (a/defn inst-cell [b :- Pub, owner :- Nat] Cell
-  (Cell.mk (:basis b) true (:cell b) owner (armed-ids (:res (:basis b))) true (:res b)))
+  (Cell.mk (:basis b) true (:cell b) owner (res-ids (:res (:basis b))) true (:res b) (List.nil Nat) false))
 
 (a/defn sys-instantiate [cells :- (=> Nat Cell), pubs :- (=> Nat Pub), p :- Nat, m :- Nat, owner :- Nat] (=> Nat Cell)
   (fupd cells m (inst-cell (pubs p) owner)))
@@ -349,11 +428,12 @@
 ;; ---------------------------------------------------------------------------
 ;; L8 (S4): activate. The pending savepoint fires with `ok v`; the other inherited resources are settled.
 
-(a/defn act-ok [c :- Cell] Bool (Bool.and (:unborn c) (Bool.not (Nat.beq (:pending c) 0))))
+(a/defn act-ok [c :- Cell] Bool
+  (Bool.and (:unborn c) (Bool.and (Bool.not (Nat.beq (:pending c) 0)) (Bool.not (:released (:world c))))))
 
 (a/defn act-cell [c :- Cell, v :- Nat] Cell
   (Cell.mk (wake-all (fire-ack (:world c) (:pending c) res-ok v) (:dormant c)) (:live c) (:parent c) (:owner c)
-           (List.nil Nat) false 0))
+           (List.nil Nat) false 0 (:kids c) (:complete c)))
 
 (a/defn sys-activate [cells :- (=> Nat Cell), m :- Nat, v :- Nat] (=> Nat Cell)
   (if (act-ok (cells m)) (fupd cells m (act-cell (cells m) v)) cells))
@@ -489,7 +569,7 @@
   (case [true] (simp only [merge-world hm diff diff-ids-self apply-diff])))
 
 (a/defn merge-cell [c :- Cell, w :- World] Cell
-  (Cell.mk w (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c)))
+  (Cell.mk w (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c) (:kids c) (:complete c)))
 
 (a/defn sys-merge [cells :- (=> Nat Cell), k :- Nat, m :- Nat, b :- World] (=> Nat Cell)
   (fupd cells k (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b))))
