@@ -155,6 +155,15 @@
     (hs/mdel! reg (g row rw/ID)))
   nil)
 
+(defn- gone?
+  "Whether Rule R already removed `row` (known only with the verification
+   registry). After T21 revoked the handles, a finalizer may still hold one
+   to a row nothing retains: its write, delivery, post, release or close
+   (Z#40) reaches nobody and is not an item of the log."
+  [w row]
+  (when-let [reg (g w rw/W-REG)]
+    (nil? (hs/mget reg (g row rw/ID)))))
+
 (defn- new-scope [w id kind parent]
   (let [s (rw/new-row (g w rw/W-EPOCH) (g w rw/ID) rw/S-SIZE)]
     (s! s rw/TYPE rw/T-SCOPE)
@@ -2875,7 +2884,7 @@
              (do (s! x rw/VERSION (inc (gl x rw/VERSION)))
                  (when-not (serve-waiter! w x v)
                    (hs/dq-push! (deque x rw/X-VALUE) v))
-                 (commit! w [:post (g x rw/ID) [:opaque v]])))))
+                 (when-not (gone? w x) (commit! w [:post (g x rw/ID) [:opaque v]]))))))
   nil)
 
 (defn semaphore
@@ -2901,7 +2910,7 @@
                                (do (s! x rw/VERSION (inc (gl x rw/VERSION)))
                                    (when-not (serve-waiter! w x :acquired)
                                      (s! x rw/X-VALUE (inc (gl x rw/X-VALUE))))
-                                   (commit! w [:release (g x rw/ID)])
+                                   (when-not (gone? w x) (commit! w [:release (g x rw/ID)]))
                                    false))))]
     (when over?
       (throw (ex-info "release beyond the semaphore's maximum" {:spindel/invalid :over-release}))))
@@ -2929,7 +2938,7 @@
              (do (s! x rw/X-VALUE v)
                  (s! x rw/VERSION 1)
                  (settle! w x)
-                 (commit! w [:deliver (g x rw/ID) [:opaque v]])))))
+                 (when-not (gone? w x) (commit! w [:deliver (g x rw/ID) [:opaque v]]))))))
   v)
 
 ;; ---------------------------------------------------------------------------
@@ -3130,7 +3139,7 @@
             (when (g x rw/X-OPEN)
               (end-stream! w x err)
               (close-source! w x)
-              (commit! w [:close (g x rw/ID) (if err 2 0) [:opaque err]]))))
+              (when-not (gone? w x) (commit! w [:close (g x rw/ID) (if err 2 0) [:opaque err]])))))
    nil))
 
 (defn position
@@ -3178,7 +3187,7 @@
          (let [e (rv w (anth outs i)) k (gl e rw/E-KIND)]
            (cond (== k rw/EK-DEP) (fire-dep! w e)
                  (== k rw/EK-OBSERVE) (deliver-observe! w e)))))
-     (commit! w [:write (g x rw/ID) [:opaque v]])
+     (when-not (gone? w x) (commit! w [:write (g x rw/ID) [:opaque v]]))
      (notify-watches! w (g x rw/ID) ref old v))))
 
 (defn- write-d!
