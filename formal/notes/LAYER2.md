@@ -137,3 +137,62 @@ markers). Both must be lifted first: savepoint edges as a fourth edge kind throu
   by both worlds. Keep, or drop host edges at fork? Affects L2/L3.
 - Merge conflict rule (§4 L12) is the minimal one: version at fork must equal the parent's version.
   Yggdrasil's per-system merge sits above it (system values are source values).
+
+## 9. Physical layer, MVCC representation (`spindel.v2.mvcc`, 2026-11-15)
+
+Engine engine-v2 3eb18b7 (#260) + e2bd63e replaced the forward-map representation `cow` models by MVCC rows
+(spec §8.1 "Representation (MVCC, 2026-11-15)", `v2-fork-memory-design` §2, §7; spec answers A1–A8 from the
+spindel session, recorded below). `spindel.v2.mvcc` models the new one; `sys` (a fork is a value copy) is
+unchanged and remains the semantics; `cow` stays as the model of the old representation.
+
+**State** (`MSt`): heap `h : address -> MRow` (`[id ow so val vers]`, versions `[k m img]`), next address `n`
+(address 0 = "no copy"), `home : id -> address` (the creator's row), per world `MW` `[ord fwd lin cells]` (ordinal,
+copy map, lineage `[own f tok mp]` nearest first, the owner's token cells `[o tok]`), token states `ts` (0 live,
+1 shared, 2 ended), the active worlds, the savepoint bases, and as ghost state the value-copy tables `dom`/`tab`.
+Values opaque Nats; references abstract to ids (as in `cow`); the lineage cut is the domain.
+
+**Operations** (one per engine function): `mv-write` (`rv` barrier `mv-pres` = `preserve!`, then the change),
+`mv-copy` (`own-copy!`), `mv-create`, `mv-fork` (`fork-world*`: ordinal advances, token registered, the
+parent's own token shared), `mv-inst` (`instance-world*`: the basis's lineage, its token shared), `mv-prune`
+(`prune-cell!`, the sweep, the prune inside `preserve!`), `mv-finish` (`maybe-finish-token!`: the own token ends
+unless shared), `mv-drop` (a world collected / a publication disposed), `mv-collect` (an unreachable token ends).
+`MReach mv-init` is the closure under them with the engine's preconditions (fresh ids/tokens, a basis never
+runs or forks, copy only of a row neither owned nor copied).
+
+**Theorems** (all kernel-checked, Init only, 146):
+
+| obligation | statement |
+|---|---|
+| 1 fork view | `mv-refinement`: in every reachable state every active world (root, fork at any depth, savepoint instance) reads every id of its domain exactly as its value-copy table; `mv-fork-res-c`, `mv-inst-res-c`: a new child / instance reads the parent's / basis's tables |
+| 2 barrier | `mv-vat-pres`: after `preserve!` at ordinal o and a change, a fork at f < o with a live token reads the same state; `mv-write-ref`/`mv-write-inv`: a write keeps the refinement for every world |
+| 3 reclamation | `mv-no-missing-version` (`version-of`'s throw is unreachable); `mv-tokens-live` (every active lineage entry has a live, registered token); `mv-prune-covered` (safety form, A7: after pruning every version left is covered by a live token); `mv-finish-inv` (finish ends only an unshared token: shared ones are named by other active worlds, `mv-wtok-lin`), `mv-collect-inv` |
+| 4 concurrency | `mi-protocol` over `MIReach` (one row, its owner, a fork reader, any interleaving): the owner restamps under the monitor (`o-pres`), changes the row unmonitored afterwards (`o-tear`, any number of partial changes, also via the fast path `o-fast` while the reader is inside its critical section), prunes under the monitor; the reader's clone is NOT atomic (`r-stamp`, then `r-copy`); a reader that has copied holds the row's state at its fork. The protocol invariant `mi-inv-f`: mutual exclusion, an unrestamped row is unchanged, a restamped row keeps the version for f, the stamp the reader saw holds, the owner changes only restamped rows |
+| 5 oracle | not representation-level: the commit log carries no MVCC events (versions, tokens), so the samples replay through `sys` (§7). `mvcc_test` runs the compiled model on the agreed sample shapes (fork during a parked run, nested fork with a released intermediate, instances after owner writes, finished unshared fork) checking the refinement after every step and after pruning every row, and two mutants (finish ending a shared token; a write without the barrier) that the checks reject |
+
+**Supporting invariant** `mv-good` = `mv-inv` (`k-row`: stamps not ahead of the owner's ordinal, versions older
+than the stamp; `k-fwd`: copies are rows of their id owned by the world; `k-lin`: entries fork-older than the owner's
+ordinal, token not ended and registered, copy maps sound; `k-home`; `k-share`: tokens below a lineage's head
+are shared, two active worlds with one head token (instances) share it; `k-bas`: a basis owns no row and has no
+copy; `ref`) + `k-ownfwd` (a world copies only rows it does not own: a fork reads the parent's copy map before
+its rows) + `0 < n`. `mv-reach-good`: every reachable state is good; `mv-init-good`.
+
+**Spec answers used (spindel session, 2026-11-15):**
+- A1 token end = unreachable OR (finish AND unshared); shared is sticky (conservative, no refcounts).
+- A2 a released world refuses every host item except from its own running slice; after finish nothing in it
+  resolves an inherited row (so `mv-finish` deactivates the world).
+- A3 holders: lineages of live / released-uncollected worlds (until finish, then only if shared), a publication's
+  basis until dispose, instances via the shared basis lineage. Owners hold cells only.
+- A4 `prune-cell!` runs as `internal!` under the owner's gate: serialized with the owner (in `MIReach`,
+  `o-prune` is an owner step under the monitor).
+- A5 no reader clones an owned current-epoch row; path-compression write-backs and container mutation only on
+  restamped rows; `notify-blocked!` reads the immutable `E-KIND` of a raw edge; pre-fork writes reach the reader
+  through the fork hand-off (sequential consistency assumed per monitor).
+- A6 merge base = `[identity version-number]` (merge stays in `sys`, L12).
+- A7 the storage bound in safety form (`mv-prune-covered`); liveness of GC/Cleaner is an assumption.
+- A8 out of scope: following mode, the optimistic stamp/validate variant.
+
+**Modelling choices to keep in mind.** A version range is saved as a whole (one live token in `[k, m]` keeps
+it), as the engine does. `mv-share` maps a non-ended token to shared (`mv-shr`); the engine's states are only 0/1/2,
+so this matches `token-share!`. Allocation freshness (ids, worlds, tokens) is a precondition of each operation,
+not derived from counters. The lineage cut and handle lineage (`inherited?`) are the domain of the value-copy
+model and are not represented physically.
