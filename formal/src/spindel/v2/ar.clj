@@ -846,7 +846,7 @@
      (simp only [ar-rest comp-upd set-comps])
      (exact (ar-k-clear _ cid (comp-make-idle vs) (comp-make-idle-id vs) _ _ hna r0))
      (exact (ar-intro _ (inv-comp-upd w cid (comp-make-idle vs) (comp-make-idle-id vs) (comp-make-idle-pending vs) (ar-sample w h)) r1))))
-(override! AR 'inv-demote '[inv-run-cascade inv-demote-epoch inv-drop-edges inv-demote-finish]
+(override! AR 'inv-demote '[inv-run-cascade inv-demote-epoch inv-drop-edges inv-end-basis inv-demote-finish]
   '(a/theorem ar-demote [w :- World, cid :- Nat]
      (=> (= (acts-alive w) true) (= (ar w) true) (= (ar (demote w cid)) true))
      (intros ha h)
@@ -862,7 +862,7 @@
      (have g3 := (ar-drop-edges _ (not-dep-of cid) g2))
      (have na3 (= (tbl-all (not-alive-of cid) (:runs (drop-edges (demote-epoch (run-cascade w (cancel-jobs (demote-cancels w c))) cid (demote-cur w c)) (not-dep-of cid)))) true))
      (simp only [drop-edges set-comps set-edges runs-demote-epoch]) (exact na)
-     (exact (ar-demote-finish _ cid _ na3 g3))
+     (exact (ar-demote-finish _ cid _ (end-basis-dead _ cid cid (ar-sample _ g3) na3) (ar-end-basis _ cid g3)))
      (simp only [demote hf hi]) (exact h)))
 (lcopy! AR 'inv-demote)
 (a/theorem ar-demote-fold [a :- Nat, k :- Nat, xs :- (List Nat)]
