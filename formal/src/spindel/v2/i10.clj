@@ -3208,21 +3208,25 @@
            (fn [k :- CK10, a1 :- (= true true), hx :- (= (Nat.beq (ck10-id k) cid) false)] (nc0-off gkz cid r k hx))
            _ (all-true-of CK10 (fn [k :- CK10] true) (fn [k :- CK10] (Eq.refl true)) _))))
 
+(lcopy! G10 'inv-end-basis)
+(lcopy! NQ 'inv-end-basis)
+
 (a/theorem demote-tail [gxz :- (List Nat), gkz :- (List Nat), w :- World, cid :- Nat]
   (=> (= (g10 (List.cons Nat cid gxz) gkz w) true) (= (ncq gkz cid w) true) (= (g10 gxz gkz (demote-edges w cid)) true))
   (intros h hn)
   (simp only [demote-edges])
-  (have h3 := (g10-drop-edges (List.cons Nat cid gxz) gkz w (not-dep-of cid) h))
-  (have n3 (= (ncq gkz cid (drop-edges w (not-dep-of cid))) true))
-  (simp only [ncq] at hn) (simp only [ncq]) (exact (nq-drop-edges _ _ _ _ w (not-dep-of cid) hn))
-  (cases hf (comp-find (drop-edges w (not-dep-of cid)) cid))
+  (have h2 := (g10-drop-edges (List.cons Nat cid gxz) gkz w (not-dep-of cid) h))
+  (have h3 := (g10-end-basis (List.cons Nat cid gxz) gkz _ cid h2))
+  (have n3 (= (ncq gkz cid (end-basis (drop-edges w (not-dep-of cid)) cid)) true))
+  (simp only [ncq] at hn) (simp only [ncq]) (exact (nq-end-basis _ _ _ _ _ cid (nq-drop-edges _ _ _ _ w (not-dep-of cid) hn)))
+  (cases hf (comp-find (end-basis (drop-edges w (not-dep-of cid)) cid) cid))
   (case [none] (simp only [demote-finish hf]) (exact (g10-drop gxz gkz cid _ h3 n3)))
   (case [some c3]
-    (cases hk (demote-keep (drop-edges w (not-dep-of cid)) c3))
+    (cases hk (demote-keep (end-basis (drop-edges w (not-dep-of cid)) cid) c3))
     (case [true] (simp only [demote-finish hf hk]) (exact (g10-make-idle gxz gkz _ cid _ (g10-drop gxz gkz cid _ h3 n3) n3)))
     (case [false]
       (simp only [demote-finish hf hk])
-      (have h4 := (g10-comp-del-unref (List.cons Nat cid gxz) gkz _ cid (drop-edges-avoids (drop-edges w (not-dep-of cid)) cid)
+      (have h4 := (g10-comp-del-unref (List.cons Nat cid gxz) gkz _ cid (drop-edges-avoids (end-basis (drop-edges w (not-dep-of cid)) cid) cid)
                     (g10-drop-edges (List.cons Nat cid gxz) gkz _ (edge-avoids cid) h3)))
       (exact (g10-drop gxz gkz cid _ h4 (ncq-del gkz _ cid (g10-sample _ gkz _ h4)))))))
 
