@@ -10,7 +10,7 @@
    :parent
    {:complete? false, :released? false, :runs 3, :kids 1, :token nil}}}
  {:step :cancelled,
-  :log-length {:child 4, :parent 24},
+  :log-length {:child 4, :parent 26},
   :obs
   {:child
    {:complete? true,
@@ -21,7 +21,7 @@
    :parent
    {:complete? false, :released? false, :runs 0, :kids 0, :token nil}}}
  {:step :released,
-  :log-length {:child 4, :parent 25},
+  :log-length {:child 4, :parent 27},
   :obs
   {:child
    {:complete? true,

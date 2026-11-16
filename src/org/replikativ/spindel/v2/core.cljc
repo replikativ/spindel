@@ -1638,7 +1638,8 @@
   "The finally clause entered by `exit-finally!` ended (also by a throw)."
   []
   (when-let [r (active-run)]
-    (s! r rw/R-INFIN (max 0 (dec (long (or (g r rw/R-INFIN) 0)))))))
+    (s! r rw/R-INFIN (max 0 (dec (long (or (g r rw/R-INFIN) 0)))))
+    (commit! (cw) [:finally-leave (g r rw/ID)])))
 
 (defn- finalizer-refusal
   "C1 W4 (B8 reduced to suspension): finalizers are synchronous. A

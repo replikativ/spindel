@@ -257,7 +257,7 @@
      :pubs {} :forks {}
      :pins (into (sorted-map) (map (fn [[i [_ n]]] [i n])) (f w rw/W-PINS))
      :pending-act nil
-     :released false
+     :released (boolean (f w rw/W-RELEASED))
      :next-id (.get ^java.util.concurrent.atomic.AtomicLong (f w rw/W-NEXT))}))
 
 (defn projecting-hook
