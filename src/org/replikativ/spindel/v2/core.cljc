@@ -3220,6 +3220,15 @@
 (defn unborn-ex []
   (control-ex "instance not activated: only writes before activate! (S3)" {:spindel/unborn true}))
 
+(defn- shut-roots!
+  "T21/Z#40: a released world takes no new root. Host items are refused at
+   ingress, but a cleanup slice may still run host operations of its own
+   world (Z#40: write, deliver, post, release, close); an observe or a pin
+   from there would add a root after T21 revoked them, and a computation it
+   demands could run after the world completed."
+  [w]
+  (when (g w rw/W-RELEASED) (throw (released-ex))))
+
 (defn observe!
   "T8: `cb` receives (value err?) on each change. Returns an unobserve fn."
   [h cb]
@@ -3227,6 +3236,7 @@
         ev (volatile! nil)]
     (when (g w rw/W-UNBORN) (throw (unborn-ex)))
     (gated w
+           (shut-roots! w)
            (let [d (row-of h)]
              (if (stream? d)
                ;; a stream is read through its positions (as value-async, C0)
@@ -3251,6 +3261,7 @@
   "T20: a row is a root while its pin count is positive (Z#16)."
   [h]
   (gated (world-of h)
+         (shut-roots! (cw))
          (let [x (row-of h) w (cw)
                pins (g w rw/W-PINS)
                n (long (or (second (hs/mget pins (id-of x))) 0))]
@@ -3594,6 +3605,9 @@
              (cond
                (g w rw/W-UNBORN)
                (aadd! (g w rw/W-CALLBACKS) [cb [(unborn-ex) true]])
+               ;; T21: no new host wait after release, also from a cleanup slice
+               (g w rw/W-RELEASED)
+               (aadd! (g w rw/W-CALLBACKS) [cb [(released-ex) true]])
                (consuming? d)
                (aadd! (g w rw/W-CALLBACKS) [cb [(invalid-op :value "a host read of a mailbox or semaphore (Z#54)") true]])
                (stream? d)

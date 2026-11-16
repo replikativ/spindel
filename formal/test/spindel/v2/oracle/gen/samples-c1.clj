@@ -10,7 +10,8 @@
 ;; From the repository root: clojure -M:bench -i formal/test/spindel/v2/oracle/gen/samples-c1.clj
 (ns samples-c1
   (:refer-clojure :exclude [await])
-  (:require [org.replikativ.spindel.v2.core :as v2 :refer [task await]]
+  (:require [org.replikativ.spindel.v2.core :as v2 :refer [task await spin track]]
+            [org.replikativ.spindel.incremental.interval :as iv]
             [org.replikativ.spindel.v2.rows :as rw]
             [org.replikativ.spindel.v2.host :as hs]
             [org.replikativ.spindel.v2.verify :as verify]
@@ -243,6 +244,29 @@
       (v2/await-complete w 2000 :timeout)
       (checkpoint! sc ws :complete)
       (finish! 27 ws sc acc))))
+
+;; 28 (ansatz C1 stage B, question 5): T21 cancels an observed computation's run, whose
+;; cleanup slice tries to observe and pin another computation c2 and writes a signal c2
+;; tracks. The observe and pin are refused (no new root after release; Z#40 allows the
+;; write), c2 never runs, and the world completes after the slice.
+(let [acc (atom []) sc (atom []) w (vworld acc) seen (atom []) ws {:w w}]
+  (binding [v2/*world* w]
+    (let [s (v2/signal 0)
+          c2 (spin (* 10 (iv/get-new (track s))))
+          attempt (fn [label f] (try (f) [label :accepted] (catch Exception e [label (ex-message e)])))
+          c (spin (try (await (v2/deferred))
+                       (finally
+                         (swap! seen conj (attempt :observe #(v2/observe! c2 (fn [_ _]))))
+                         (swap! seen conj (attempt :pin #(v2/pin! c2)))
+                         (swap! seen conj (attempt :write #(v2/write! s 5))))))
+          _ (v2/observe! c (fn [_ _]))]
+      (v2/value (v2/signal 0) 200 nil)
+      (checkpoint! sc ws :parked)
+      (v2/release-world! w)
+      (v2/await-complete w 2000 :timeout)
+      (checkpoint! sc ws :released)
+      (prn :sample-28-seen @seen)
+      (finish! 28 ws sc acc))))
 
 (shutdown-agents)
 (System/exit 0)
