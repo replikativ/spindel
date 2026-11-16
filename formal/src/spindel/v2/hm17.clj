@@ -127,7 +127,7 @@
 ;; ===========================================================================
 (doseq [t '[t1-full-inv t1-top-inv t19-inv t20-pin-inv t20-unpin-inv t3-inv t3-top-inv t4-inv t4-top-inv t5-inv sched-inv
             t-handle-new-inv t-post-inv t-release-inv t-finalize-inv t-open-scope-inv t-detach-inv t-finally-enter-inv
-            t-finally-exit-inv
+            t-finally-exit-inv t-finally-leave-inv
             t1-body-inv t1-top-full-inv t-create-link-inv t-create-link-top-inv t-link-demand-inv c0-gate-inv]]
   (lcopy! H3 t))
 
@@ -216,7 +216,7 @@
   (case [unobserve e] (simp only [raw0]) (exact (t8-unobserve-hm3 xm w _ hg7 h)))
   (case [fire e tag val] (simp only [raw0]) (exact (t9-h3 xm w _ _ _ h)))
   (case [resource-ack z] (simp only [raw0]) (exact (t15-full-h3 xm (List.nil Nat) (List.nil Nat) (List.nil Nat) w _ hk hg10 hke h)))
-  (case [arm st kind k fresh] (simp only [raw0]) (cases hc (in-cleanup w st))
+  (case [arm st kind k fresh] (simp only [raw0]) (cases hc (fin-shut w st))
     (case [false] (simp only [hc]) (exact (t17-h3 xm w _ _ _ _ hgr hgd h)))
     (case [true] (simp only [hc refuse]) (exact h)))
   (case [resource-fire z tag val] (simp only [raw0]) (exact (t18-h3 xm w _ _ _ h)))
@@ -244,7 +244,7 @@
   (case [handle-new x] (simp only [raw0]) (exact (t-handle-new-h3 xm w _ h)))
   (case [deliver x v] (simp only [raw0]) (exact (t-deliver-h3 xm (List.nil Nat) w _ _ hk h)))
   (case [post x v] (simp only [raw0]) (exact (t-post-h3 xm w _ _ h)))
-  (case [take st x k fresh] (simp only [raw0]) (cases hc (in-cleanup w st))
+  (case [take st x k fresh] (simp only [raw0]) (cases hc (take-bad w st x))
     (case [false] (simp only [hc]) (exact (t-take-h3 xm w _ _ _ _ hgr hgd h)))
     (case [true] (simp only [hc refuse]) (exact h)))
   (case [release x] (simp only [raw0]) (exact (t-release-h3 xm w _ h)))
@@ -264,7 +264,8 @@
   (case [link-demand l k] (simp only [raw0]) (exact (t-link-demand-h3 xm w _ _ h)))
   (case [link-realize l tag v n] (simp only [raw0]) (exact (c0-gate-h3 xm w _ _ h (h17-t-link-realize xm (List.nil Nat) w l tag v n hk h))))
   (case [append x v t] (simp only [raw0]) (exact (c0-gate-h3 xm w _ _ h (h17-t-append xm (List.nil Nat) w x v t hk h))))
-  (case [close x tag v] (simp only [raw0]) (exact (h17-t-close xm (List.nil Nat) w _ _ _ hk h))))
+  (case [close x tag v] (simp only [raw0]) (exact (h17-t-close xm (List.nil Nat) w _ _ _ hk h)))
+  (case [finally-leave st] (simp only [raw0]) (exact (t-finally-leave-h3 xm w _ h))))
 
 (a/theorem h17-raw-h3 [xm :- (List Nat), w :- World, it :- Item]
   (=> (= (p3la w) true) (= (h3 xm w) true) (= (h3 xm (:world (raw w it))) true))

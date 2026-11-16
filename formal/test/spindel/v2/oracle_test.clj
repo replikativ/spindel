@@ -207,16 +207,18 @@
 ;; Sample 7 (regenerated for Z#51 on the engine that retires before the slice-exit commit):
 ;; Z#48 (commit 9 `[:track 10 6 9 12]` tracks signal 6, closed since task 3's run retired: the engine
 ;; and the model consume edge 12 in the same commit, no edge row, the id allocated) and Z#49 (commit
-;; 19 is the engine's `[:slice-exit 15]`; the driver uses the logged item, no implicit exit). The
+;; 20 is the engine's `[:slice-exit 15]`, after commit 19's `[:finally-leave 15]` (C1 A5, regenerated
+;; by oracle/gen/samples-legacy.clj); the driver uses the logged item, no implicit exit). The
 ;; former granularity divergence at commit 19 (the engine committed the item before T13 retired
 ;; run 15) is gone: the engine now retires within the item.
 (deftest sample-7-table-format
-  (let [res (aligned 7 22)
+  (let [res (aligned 7 23)
         log7 (log 7)
         w9 (reduce (fn [w c] (:world (en/world-step w (:item (o/adapt :table {:post (:proj c)} (:item c))))))
                    s/empty-world (take 10 log7))]
     (is (nil? (:implicit-exits res)) "Z#49: the logged slice-exit, no implicit one")
-    (is (= [:slice-exit 15] (:item (nth log7 19))))
+    (is (= [:finally-leave 15] (:item (nth log7 19))) "C1 A5: the clause's end (regenerated, spindel #268)")
+    (is (= [:slice-exit 15] (:item (nth log7 20))))
     (is (not (s/edge-has w9 12)) "Z#48: edge 12 consumed in the track commit")
     (is (= {} (get-in (nth log7 9) [:proj :edges 12] {})) "the engine agrees")
     (is (true? (inv/lit-i5-dep-final w9)))))

@@ -1081,6 +1081,80 @@
      :at 0,
      :debtor 8}},
    :cleanup {15 {:rows []}}}}
+ {:item [:finally-leave 15],
+  :accepted true,
+  :proj
+  {:scopes
+   {16 {:parent 2, :kind :run, :open true},
+    2 {:parent nil, :kind :root, :open true}},
+   :pubs {},
+   :pins {},
+   :next-id 19,
+   :sources
+   {6
+    {:owner nil,
+     :kind :signal,
+     :state 5,
+     :version 0,
+     :open false,
+     :handles 1},
+    13
+    {:owner 2,
+     :kind :deferred,
+     :state 0,
+     :version 0,
+     :open true,
+     :handles 1}},
+   :pending-act nil,
+   :tasks
+   {3 {:owner 2, :run nil, :inputs [4], :result [:ok 6], :handles 1},
+    14
+    {:owner 2, :run 15, :inputs [13], :result [:err 1], :handles 1}},
+   :comps
+   {8
+    {:epoch 1,
+     :done-epoch 1,
+     :idle false,
+     :run nil,
+     :pending 0,
+     :rank 0,
+     :basis [],
+     :adoption nil,
+     :inputs [7],
+     :result [:ok 11],
+     :handles 1,
+     :version 1,
+     :body 8,
+     :owner 2,
+     :validity nil}},
+   :released false,
+   :forks {},
+   :res {},
+   :runs
+   {15
+    {:effect-index 1,
+     :epoch 0,
+     :stamp 15,
+     :mode :unwinding,
+     :scope 16,
+     :act :done,
+     :finalizers [],
+     :slice true,
+     :resources [],
+     :of 14}},
+   :acts {},
+   :edges
+   {9
+    {:baseline nil,
+     :marked false,
+     :cont :restart,
+     :phase :armed,
+     :creditor 0,
+     :seen 1,
+     :kind :observe,
+     :at 0,
+     :debtor 8}},
+   :cleanup {15 {:rows []}}}}
  {:item [:slice-exit 15],
   :accepted true,
   :proj

@@ -33,7 +33,7 @@
     ids-ok-bump inv-bump t-deliver-inv t-deliver-refuse inv-serve-or t-post-inv t-post-refuse
     t-release-inv t-release-refuse inv-take-park inv-take-now t-take-inv t-take-refuse t-take-l4
     t-finally-enter-inv t-finally-enter-refuse t-finally-enter-l4 t-finally-exit-inv t-finally-exit-refuse
-    t-finally-exit-l4 t-slice-exit-inv t-slice-exit-refuse inv-deliver-fire inv-dep-consumed t-finalize-inv t-finalize-refuse t-cancel-inv t-cancel-refuse
+    t-finally-exit-l4 t-finally-leave-inv t-finally-leave-refuse t-finally-leave-l4 t-slice-exit-inv t-slice-exit-refuse inv-deliver-fire inv-dep-consumed t-finalize-inv t-finalize-refuse t-cancel-inv t-cancel-refuse
     t-open-scope-inv t-open-scope-refuse t-open-scope-l4 t-close-scope-inv t-close-scope-refuse
     t-detach-inv t-detach-refuse inv-zero-handles inv-revoke-roots t-release-world-inv
     t-release-world-refuse inv-raise-loop inv-raise-for inv-react-add blocked-sound blocked-complete
@@ -91,6 +91,7 @@
 (defn link-realize [l tag v n] [41 l tag v n])
 (defn append* [x v t] [42 x v t])
 (defn close* [x tag v] [43 x tag v])
+(defn finally-leave [st] [44 st])
 
 (def root s/root-scope-id)
 (defn find-row [w field id] (first (filter #(= id (:id %)) (get w field))))
@@ -453,12 +454,17 @@
           _ (step! w (arm (stamp w rk) s/rk-offload 0 (:next-id w)) :refused)
           _ (step! w (slice-exit rk) :refused)                           ; a region is still open
           w (step! w (finally-exit (stamp w rk)))                          ; commits at the block's start
+          _ (step! w (slice-exit rk) :refused)                           ; C1: its clause runs
+          _ (step! w (finally-exit (stamp w rk)) :refused)                 ; the head is the running clause
           w (step! w (write sg 4))                                       ; a finalizer may write
+          w (step! w (finally-leave (stamp w rk)))                         ; C1: the clause ends
           _ (is (= [[0] true] [(mapv :at (:finalizers (find-row w :runs rk))) (:slice (find-row w :runs rk))])
                 "Z#35: the whole chain runs in the one cleanup slice")
+          _ (step! w (finally-leave (stamp w rk)) :refused)                ; no running clause
           w (step! w (finally-exit (stamp w rk)))
+          w (step! w (finally-leave (stamp w rk)))
           _ (is (= [[] true] [(mapv :at (:finalizers (find-row w :runs rk))) (:slice (find-row w :runs rk))])
-                "the outermost block still runs in the slice")
+                "the outermost block ran in the slice")
           _ (step! w (finally-exit (stamp w rk)) :refused)                 ; no region: invalid token (L4)
           _ (step! w (finalize rk) :refused)
           w (step! w (slice-exit rk))]
@@ -506,6 +512,7 @@
       (is (= [rk] (mapv :run (:cleanup w)))))
     (let [w (step! w (finalize rk))
           w (step! w (finally-exit (stamp w rk)))
+          w (step! w (finally-leave (stamp w rk)))
           w (step! w (slice-exit rk))]
       (is (= [root] (s/all-ids w)) "Z#56: everything but the root scope is reclaimed; the root scope stays")
       (is (empty? (:cleanup w))))))
@@ -559,6 +566,7 @@
         w (step! w (pin d))                                           ; the cleanup slice's own effect (Z#44)
         w (step! w (unpin d))
         w (step! w (finally-exit (stamp w rk)))
+        w (step! w (finally-leave (stamp w rk)))
         w (step! w (slice-exit rk))
         _ (is (some? (find-row w :runs rk)) "the outstanding resource holds the run")
         w (step! w (resource-ack z))]
@@ -747,7 +755,7 @@
         kinds (concat [0 1 2 2 3 3 4 4 5 6 7 8 9 10 11 12 13 13 14 14 15 15 16 16 17 17 17 18 18 18 18 19 19 19
                        20 20 20 20 21 21 21 21 22 23 24]
                       [25 25 26 26 27 27 27 28 28 29 29 29 29 29 29 30 30 30 32 32 33 33 34 35 35 35 35 36 36
-                       37 37 37]
+                       37 37 37 44 44 44]
                       (when (zero? (.nextInt rng 8)) [31]))]
     (case (nth kinds (.nextInt rng (count kinds)))
       0 (create-source (st) (.nextInt rng 5) v fresh)
@@ -792,7 +800,8 @@
       34 (detach (pick (map :id (:tasks w))) (pick scopes))
       35 (finally-enter (st))
       36 (finally-exit (st))
-      37 (slice-exit (if (seq exiting) (pick exiting) (pick (map :id (:runs w))))))))
+      37 (slice-exit (if (seq exiting) (pick exiting) (pick (map :id (:runs w)))))
+      44 (finally-leave (st)))))
 
 ;; a source x (3), an observed computation C (4) with a run (6) holding the slice, a task (9)
 (defn prefix-world []
@@ -997,6 +1006,39 @@
       (is (true? (en/in-cleanup w2 st)) "the cancelled run's cleanup slice")
       (is (false? (:accepted (en/world-step w2 (await* st [k] s/am-one 1 (:next-id w2) [])))) "await on a settled signal: refused")
       (is (false? (:accepted (en/world-step w2 (take* st (inc k) 1 (:next-id w2))))) "take: refused"))))
+
+;; C1 A5 (B8 for normal runs): between `finally-exit` and `finally-leave` a normal run's suspending
+;; effects are refused (an await on an unsettled debtor, a take with nothing to take, every arm);
+;; settled awaits, writes and creations are accepted; completion waits for the clause's end
+(deftest c1-normal-finally-clause
+  (let [w s/empty-world
+        sg (:next-id w)
+        w (step! w (create-source-top root s/sk-signal 5 sg))
+        d (:next-id w)
+        w (step! w (create-source-top root s/sk-deferred 0 d))
+        mb (:next-id w)
+        w (step! w (create-source-top root s/sk-mailbox 0 mb))
+        [k rk w] (task-with-slice w)
+        st (stamp w rk)
+        _ (step! w (finally-leave st) :refused)                          ; no clause
+        w (step! w (finally-enter st))
+        _ (is (false? (en/in-fin w st)) "a region is no clause")
+        w (step! w (finally-exit st))
+        _ (is (true? (en/in-fin w st)) "the clause runs")
+        _ (step! w (await* st [d] s/am-one 1 (:next-id w) []) :refused)   ; would suspend
+        _ (step! w (await* st [sg d] s/am-all 1 (:next-id w) []) :refused)
+        _ (step! w (take* st mb 1 (:next-id w)) :refused)
+        _ (step! w (arm st s/rk-timer 1 (:next-id w)) :refused)
+        _ (step! w (complete st s/res-ok 1) :refused)                    ; the clause is open
+        _ (step! w (finally-exit st) :refused)                           ; no region at the head
+        _ (step! w (await* st [sg] s/am-one 1 (:next-id w) []))          ; settled: read at once
+        _ (step! w (await* st [sg d] s/am-any 1 (:next-id w) []))
+        w (step! w (write sg 6))
+        w (step! w (finally-leave st))
+        _ (is (false? (en/in-fin w st)))
+        _ (is (empty? (:finalizers (find-row w :runs rk))))
+        w (step! w (await* st [d] s/am-one 1 (:next-id w) []))]
+    (is (= s/act-parked (:act (find-row w :runs rk))) "outside the clause the await parks")))
 
 ;; E4 (C1): an unborn instance released before its activation only sets the flag: nothing in it
 ;; runs (sample 24); a done task run that holds no slice is still cancellable, with no row change

@@ -125,7 +125,7 @@
                    (accept (await-raw w r ds mode k mine)) (refuse w))])))
 (def expected-raw0-await-branch
   '[(await st ds m k fresh mine)
-    (if (await-bad w st ds) (refuse w) (t6-await w st ds m k fresh mine))])
+    (if (await-bad w st ds m) (refuse w) (t6-await w st ds m k fresh mine))])
 
 (deftest actual-safe-closed-exact-endpoints-and-dependencies
   (is (= 4 (count theorems)))

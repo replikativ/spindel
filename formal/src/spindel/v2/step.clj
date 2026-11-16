@@ -84,6 +84,9 @@
                                                             the next pull link n (tag 1 only)
     42  append x v t                           C0 stream append            the new tail link t
     43  close x tag v                          C0 stream close (tag 0 end, 2 error) -
+    44  finally-leave st                       C1 the finally clause entered by the last
+                                                            `finally-exit` ends (normally or by a
+                                                            throw; engine `leave-finalizer!`) -
   A stream is created by T1 (`create-source(-top)` with kind `sk-stream`, spindel.v2.engine), which
   also allocates its first tail link (id = the stream's + 1).
   Indices 0-24 are unchanged; later items get the next indices.
@@ -224,7 +227,8 @@
   (link-demand [l Nat] [k Nat])                                    ; C0 demand starts the realizer task k
   (link-realize [l Nat] [tag Nat] [v Nat] [n Nat])                 ; C0 the realizer's completion realizes l
   (append [x Nat] [v Nat] [t Nat])                                 ; C0 stream append (new tail t)
-  (close [x Nat] [tag Nat] [v Nat]))                               ; C0 stream close (end 0 / error 2)
+  (close [x Nat] [tag Nat] [v Nat])                                ; C0 stream close (end 0 / error 2)
+  (finally-leave [st Nat]))                                        ; C1 a finally clause ends (B8)
 
 ;; ---- validity tokens (§2, V#5): one check per token kind
 
@@ -1360,7 +1364,8 @@
     [(link-demand l k) (refuse w)]
     [(link-realize l tag v n) (refuse w)]
     [(append x v t) (refuse w)]
-    [(close x tag v) (refuse w)]))
+    [(close x tag v) (refuse w)]
+    [(finally-leave st) (refuse w)]))
 
 ;; the item's validity token (§2), true for host operations that carry none
 (a/defn item-token-ok [w :- World, it :- Item] Bool
@@ -1408,7 +1413,8 @@
     [(link-demand l k) true]
     [(link-realize l tag v n) true]
     [(append x v t) true]
-    [(close x tag v) true]))
+    [(close x tag v) true]
+    [(finally-leave st) (run-tok-ok w st)]))
 
 (a/theorem dispatch-inv [w :- World, it :- Item]
   (=> (= (inv-sample w) true) (= (inv-sample (:world (dispatch w it))) true))

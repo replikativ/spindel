@@ -981,6 +981,19 @@
 
 (a/theorem run-fin-pop-sub [r :- RunRow, y :- Nat] (=> (= (reach-mem y (run-stored (run-fin-pop r))) true) (= (reach-mem y (run-stored r)) true))
   (exact (stored-sub r (run-fin-pop r) (rfl) (rfl) (self-sub (:resources r)) (fins-tail-sub (:finalizers r)) y)))
+(a/theorem fins-exit-sub [ei :- Nat, fs :- (List Finalizer), y :- Nat]
+  (=> (= (reach-mem y (fin-refs (fins-exit (Finalizer.mk 1 ei (List.nil Nat)) fs))) true) (= (reach-mem y (fin-refs fs)) true))
+  (intro h)
+  (cases fs)
+  (case [nil] (simp only [fins-exit fin-refs] at h) (exact h))
+  (case [cons hd t] (simp only [fins-exit fin-refs reach-mem-append reach-mem Bool.false_or] at h)
+    (simp only [fin-refs reach-mem-append h Bool.or_true])))
+(a/theorem run-fin-exit-sub [r :- RunRow, y :- Nat] (=> (= (reach-mem y (run-stored (run-fin-exit r))) true) (= (reach-mem y (run-stored r)) true))
+  (have hf (forall [y2 :- Nat] (=> (= (reach-mem y2 (fin-refs (:finalizers (run-fin-exit r)))) true)
+                                   (= (reach-mem y2 (fin-refs (:finalizers r))) true))))
+  (intros y2 h2) (simp only [run-fin-exit fin-mark] at h2)
+  (exact (fins-exit-sub (:effect-index r) (:finalizers r) y2 h2))
+  (exact (stored-sub r (run-fin-exit r) (rfl) (rfl) (self-sub (:resources r)) hf y)))
 (a/theorem run-fin-pop-end-sub [r :- RunRow, y :- Nat] (=> (= (reach-mem y (run-stored (run-fin-pop-end r))) true) (= (reach-mem y (run-stored r)) true))
   (exact (stored-sub r (run-fin-pop-end r) (rfl) (rfl) (self-sub (:resources r)) (fins-tail-sub (:finalizers r)) y)))
 (a/theorem run-unres-sub [z :- Nat, r :- RunRow, y :- Nat] (=> (= (reach-mem y (run-stored (run-unres z r))) true) (= (reach-mem y (run-stored r)) true))
@@ -996,7 +1009,7 @@
 
 (defn- fhead* [f] (if (seq? f) (first f) f))
 (defn- lemma-app* [f lem] (if (seq? f) (apply list lem (rest f)) lem))
-(def ^:private esb-run-fns '{run-fin-pop run-fin-pop-sub run-fin-pop-end run-fin-pop-end-sub run-unres run-unres-sub})
+(def ^:private esb-run-fns '{run-fin-pop run-fin-pop-sub run-fin-exit run-fin-exit-sub run-fin-pop-end run-fin-pop-end-sub run-unres run-unres-sub})
 (defn esb-patch [form]
   (->> form
        (subst-forms (fn [y] (and (seq? y) (= 'inv-run-upd (first y)) (contains? esb-run-fns (fhead* (nth y 3 nil)))))

@@ -97,7 +97,7 @@
      :runs (tbl (:runs w)
                 (fn [x] {:of (:of x) :stamp (:stamp x) :epoch (:epoch x) :scope (:scope x)
                          :act (kw-of run-acts (:act x)) :mode (kw-of run-modes (:mode x)) :slice (:slice x)
-                         :effect-index (:effect-index x) :finalizers (vec (repeat (count (:finalizers x)) 0))
+                         :effect-index (:effect-index x) :finalizers (vec (repeat (count (filter en/fin-region (:finalizers x))) 0))
                          :resources (vec (:resources x))}))
      :sources (tbl (:sources w)
                    (fn [x] (let [k (kw-of source-kinds (:kind x))]
@@ -591,7 +591,7 @@
                  (let [n (count (:finalizers x))
                        m (count (get-in post [:runs (:id x) :finalizers]))
                        k (- n m)]
-                   (when (pos? k) (repeat k (item :finally-exit (:stamp x))))))
+                   (when (pos? k) (mapcat (fn [_] [(item :finally-exit (:stamp x)) (item :finally-leave (:stamp x))]) (range k)))))
                (filter #(and (:slice %) (= s/mode-unwinding (:mode %))) (:runs w)))))
 
 (defn implicit-exits
@@ -685,6 +685,9 @@
         ;; logs with `[:finally-enter st]`/`[:finally-exit st]` items (sample 4 on) need no
         ;; implicit finally regions or cleanup exits
         explicit-finally? (some #(#{:finally-enter :finally-exit} (first (:item %))) log)
+        ;; logs with finally exits but no `[:finally-leave r]` (before C1 A5, samples 4, 5, 7): the
+        ;; clause ends within the exit's commit (their clauses take no effect)
+        implicit-leave? (and explicit-finally? (not-any? #(= :finally-leave (first (:item %))) log))
         ;; logs with `[:slice-exit r]` items (Z#49, sample 7 on) need no implicit exits
         explicit-exits? (some #(= :slice-exit (first (:item %))) log)]
   (loop [i from
@@ -746,6 +749,12 @@
                 n0 (:next-id w0)
                 w0 (if (and family? main) (align w0 main proj) w0)
                 s1 (when main (step-checked w0 main))
+                lv (when (and s1 (:accepted s1) implicit-leave? (= :finally-exit (first item)))
+                     (:item (adapt fmt {:w (:world s1) :post proj :prev prev} (assoc (vec item) 0 :finally-leave))))
+                s1 (if lv (let [s2 (step-checked (:world s1) lv)]
+                            (assoc s2 :accepted (and (:accepted s1) (:accepted s2))
+                                      :failed-flags (vec (concat (:failed-flags s1) (:failed-flags s2)))))
+                       s1)
                 w1 (if s1 (:world s1) w0)
                 m-acc (if main (:accepted s1) true)
                 ;; a refused item carries no projection (oracle contract): only the accepted
@@ -757,7 +766,7 @@
                 acc (cond-> (keep (update (update acc (if main :checked :markers) inc)
                                           :skipped-ids + (- (:next-id w0) n0)) w1)
                       pre (update :implicit-schedules inc)
-                      (seq cl) (update :implicit-cleanup (fnil + 0) (count cl))
+                      (seq cl) (update :implicit-cleanup (fnil + 0) (quot (count cl) 2))
                       (seq ex) (update :implicit-exits (fnil + 0) (count ex))
                       wf (update :implicit-finally inc)
                       div? (update :divergences conj

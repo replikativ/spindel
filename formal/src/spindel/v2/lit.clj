@@ -2634,14 +2634,14 @@
 
 (override! G9 't17-inv '[inv-arm-park]
   '(a/theorem t17-g9 [w :- World, st :- Nat, kind :- Nat, k :- Nat, fresh :- Nat]
-     (=> (= (in-cleanup w st) false) (= (g9 w) true) (= (g9 (:world (t17-arm w st kind k fresh))) true))
+     (=> (= (fin-shut w st) false) (= (g9 w) true) (= (g9 (:world (t17-arm w st kind k fresh))) true))
      (intros hc h)
      (cases ht (tok-run w st)) (case' [some r]) (case' [none])
      (simp only [t17-arm ht refuse]) (exact h)
      (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (Bool.and (run-normal r) (arm-kind-ok kind))))
      (simp only [t17-arm ht hg refuse]) (exact h)
      (simp only [t17-arm ht hg accept])
-     (exact (g9-arm-park w r kind k (And.left (tok-facts w st r ht)) (cleanup-not-unw w st r hc ht) h))))
+     (exact (g9-arm-park w r kind k (And.left (tok-facts w st r ht)) (cleanup-not-unw w st r (fin-shut-cleanup w st hc) ht) h))))
 
 (lcopy! G9 'step-inv)
 
