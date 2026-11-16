@@ -176,3 +176,19 @@
          (v2/release-world! w)
          (is (true? (v2/await-complete w 2000 ::timeout)))
          (is (wait-until #(= 1 @calls))))))))
+
+(deftest cancellation-reaches-explicit-subscopes-at-once
+  ;; R4: the parent's host work waits for a task inside its explicit scope to
+  ;; stop; before, that task was cancelled only at the parent's retirement,
+  ;; which waits for the host work (a cycle)
+  (checked
+   (let [w (vworld) child-done (promise) waiting (promise)]
+     (binding [v2/*world* w]
+       (let [t (task (v2/with-scope
+                       (task (try (await (v2/deferred)) (finally (deliver child-done :stopped))))
+                       (v2/offload (fn [] (deliver waiting true) (deref child-done 3000 :late)))))]
+         (deref waiting 2000 nil)
+         (v2/cancel-task! t)
+         (is (= :stopped (deref child-done 1000 ::slow)) "the scoped child is cancelled with the request")
+         (v2/release-world! w)
+         (is (true? (v2/await-complete w 2000 ::timeout))))))))

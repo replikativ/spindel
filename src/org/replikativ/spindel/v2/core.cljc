@@ -1229,7 +1229,22 @@
     (release-members! w a)
     a))
 
-(declare link-cancelled!)
+(declare link-cancelled! cancel!)
+
+(defn- cancel-subtree!
+  "C1 R4: a cancellation request reaches the whole subtree of scope `s` at
+   once: the runs of its tasks and of the tasks of its explicit child scopes
+   are cancelled, and the worlds these scopes own are released (their
+   completion obligations stay until the children complete). Sources still
+   close, and scopes are still removed, at retirement (Z#18)."
+  [w s reason]
+  (doseq [t (hs/oset-vals (g s rw/S-TASKS))]
+    (when-let [cr (rv w (g (rv w t) rw/K-RUN))] (cancel! w cr reason)))
+  (release-owned! w (id-of s))
+  (let [cs (acopy (g s rw/S-CHILDREN))]
+    (dotimes [i (acount cs)]
+      (let [c (rv w (anth cs i))]
+        (when (= :explicit (g c rw/S-KIND)) (cancel-subtree! w c reason))))))
 
 (defn- cancel!
   "T14 `cancel(R)`. Also `cancel(R, replace)` (Y#2): only T11 and demotion
@@ -1248,11 +1263,8 @@
     ;; Resources are told to cancel; they join through their acknowledgement.
     (when-let [zs (g r rw/R-RES)]
       (doseq [z (vec zs)] (cancel-resource! w (rv w z))))   ; M5: this world's copy, never the basis
-    ;; children: runs owned by the run scope
-    (when-let [s (rv w (g r rw/R-SROW))]
-      (let [ts (hs/oset-vals (g s rw/S-TASKS))]
-        (doseq [t ts]
-          (when-let [cr (rv w (g (rv w t) rw/K-RUN))] (cancel! w cr reason)))))
+    ;; children: the whole run-scope subtree, now (C1 R4)
+    (when-let [s (rv w (g r rw/R-SROW))] (cancel-subtree! w s reason))
     (let [x (rv w (g r rw/R-OF))]
       (when (task? x)
         ;; debtor side (R#14): the task fails with ::cancelled
@@ -1370,11 +1382,9 @@
           (retire-check! w r)
           (commit! w [:complete (g r rw/ID) (if err? 2 1) [:opaque v]]))
         (do
-          ;; Q10: children not awaited and not detached are cancelled
-          (when-let [s (rv w (g r rw/R-SROW))]
-            (let [ts (hs/oset-vals (g s rw/S-TASKS))]
-              (doseq [t ts]
-                (when-let [cr (rv w (g (rv w t) rw/K-RUN))] (cancel! w cr ::cancelled)))))
+          ;; Q10: children not awaited and not detached are cancelled, in the
+          ;; whole run-scope subtree (C1 R4)
+          (when-let [s (rv w (g r rw/R-SROW))] (cancel-subtree! w s ::cancelled))
           (finish-task! w x v err?)
           (s! r rw/R-SLICE false)
           (retire-check! w r)
