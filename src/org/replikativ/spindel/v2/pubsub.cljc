@@ -13,8 +13,8 @@
 
 (defn- tagged [tag src]
   (aseq [p src]
-    (when p
-      (if-let [[v nx] (await p)] [[tag v] nx] [[tag end] nil]))))
+        (when p
+          (if-let [[v nx] (await p)] [[tag v] nx] [[tag end] nil]))))
 
 (defn pub
   "A router over the source position `src`: it reads each element once,

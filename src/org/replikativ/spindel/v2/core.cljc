@@ -2851,12 +2851,12 @@
    A stream's first tail is part of the stream's creation item (no item)."
   ([w spec top] (new-link! w spec top true))
   ([w spec top item?]
-  (let [x (new-source! w rw/SRC-LINK nil (rv w (g w rw/W-ROOT)) 0 0)
-        spec (if (nil? (nth spec 3)) (assoc spec 3 (g x rw/ID)) spec)]
-    (s! x rw/X-REALIZE spec)
-    (let [h (if top (do (bind-handle! top x) top) (do (s! x rw/HANDLES 0) (handle! w x)))]
-      (when item? (commit! w [:create-link (g x rw/ID) [:opaque spec]]))
-      h))))
+   (let [x (new-source! w rw/SRC-LINK nil (rv w (g w rw/W-ROOT)) 0 0)
+         spec (if (nil? (nth spec 3)) (assoc spec 3 (g x rw/ID)) spec)]
+     (s! x rw/X-REALIZE spec)
+     (let [h (if top (do (bind-handle! top x) top) (do (s! x rw/HANDLES 0) (handle! w x)))]
+       (when item? (commit! w [:create-link (g x rw/ID) [:opaque spec]]))
+       h))))
 
 (defn- start-realizer!
   "Demand on an unrealized pull link (C0 V1): a task owned by the root scope
@@ -2908,7 +2908,7 @@
         (realize! w x [(nth res 0) (new-link! w [f (nth res 1) frame sid (inc (long i))] nil)]))
       :else
       (realize! w x (Failure. (ex-info "an aseq step returns [value next-state] or nil"
-                                        {:spindel/invalid :aseq :result res}))))))
+                                       {:spindel/invalid :aseq :result res}))))))
 
 (defn new-aseq
   "A pull sequence from state `init`: `(f s)` returns a body whose value is
@@ -3026,7 +3026,6 @@
   "The portable name [stream-id index] of position `h` (C3)."
   [h]
   (host-call! (world-of h) #(let [[_ _ _ sid i] (g (row-of h) rw/X-REALIZE)] [sid i])))
-
 
 (defn- notify-watches!
   "Snapshot under the world gate; callbacks run without metadata locks."
