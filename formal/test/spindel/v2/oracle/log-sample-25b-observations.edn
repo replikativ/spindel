@@ -1,0 +1,14 @@
+[{:step :failed,
+  :log-length {:w 7},
+  :obs
+  {:w
+   {:complete? false,
+    :released? false,
+    :runs 0,
+    :kids nil,
+    :token nil}}}
+ {:step :released,
+  :log-length {:w 8},
+  :obs
+  {:w
+   {:complete? true, :released? true, :runs 0, :kids nil, :token nil}}}]

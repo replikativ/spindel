@@ -1,0 +1,56 @@
+[{:step :instantiated,
+  :log-length {:instance 0, :parent 3},
+  :obs
+  {:instance
+   {:complete? false,
+    :released? false,
+    :runs 1,
+    :kids nil,
+    :token :none},
+   :parent
+   {:complete? false,
+    :released? false,
+    :runs 1,
+    :kids nil,
+    :token nil}}}
+ {:step :released-unborn,
+  :log-length {:instance 1, :parent 3},
+  :obs
+  {:instance
+   {:complete? true,
+    :released? true,
+    :runs 1,
+    :kids nil,
+    :token :done},
+   :parent
+   {:complete? false,
+    :released? false,
+    :runs 1,
+    :kids nil,
+    :token nil}}}
+ {:step :activate-after-release,
+  :log-length {:instance 1, :parent 3},
+  :obs
+  {:instance
+   {:complete? true,
+    :released? true,
+    :runs 1,
+    :kids nil,
+    :token :done},
+   :parent
+   {:complete? false,
+    :released? false,
+    :runs 1,
+    :kids nil,
+    :token nil}}}
+ {:step :released,
+  :log-length {:instance 1, :parent 6},
+  :obs
+  {:instance
+   {:complete? true,
+    :released? true,
+    :runs 1,
+    :kids nil,
+    :token :done},
+   :parent
+   {:complete? true, :released? true, :runs 0, :kids nil, :token nil}}}]

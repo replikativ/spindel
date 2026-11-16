@@ -1,0 +1,23 @@
+[{:step :running,
+  :log-length {:w 3},
+  :obs
+  {:w
+   {:complete? false,
+    :released? false,
+    :runs 1,
+    :kids nil,
+    :token nil}}}
+ {:step :released-runs-left,
+  :log-length {:w 4},
+  :obs
+  {:w
+   {:complete? false,
+    :released? true,
+    :runs 1,
+    :kids nil,
+    :token nil}}}
+ {:step :complete,
+  :log-length {:w 6},
+  :obs
+  {:w
+   {:complete? true, :released? true, :runs 0, :kids nil, :token nil}}}]

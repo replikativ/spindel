@@ -1,0 +1,64 @@
+[{:step :forked-owner-busy,
+  :log-length {:child 0, :owner 0, :src 3},
+  :obs
+  {:child
+   {:complete? false,
+    :released? false,
+    :runs 0,
+    :kids nil,
+    :token :none},
+   :owner
+   {:complete? false,
+    :released? false,
+    :runs 0,
+    :kids nil,
+    :token :installed},
+   :src
+   {:complete? false, :released? false, :runs 0, :kids 1, :token nil}}}
+ {:step :child-complete,
+  :log-length {:child 1, :owner 0, :src 3},
+  :obs
+  {:child
+   {:complete? true,
+    :released? true,
+    :runs 0,
+    :kids nil,
+    :token :done},
+   :owner
+   {:complete? false,
+    :released? false,
+    :runs 0,
+    :kids nil,
+    :token :installed},
+   :src
+   {:complete? false, :released? false, :runs 0, :kids 1, :token nil}}}
+ {:step :owner-free,
+  :log-length {:child 1, :owner 0, :src 3},
+  :obs
+  {:child
+   {:complete? true,
+    :released? true,
+    :runs 0,
+    :kids nil,
+    :token :done},
+   :owner
+   {:complete? false,
+    :released? false,
+    :runs 0,
+    :kids 0,
+    :token :installed},
+   :src
+   {:complete? false, :released? false, :runs 0, :kids 1, :token nil}}}
+ {:step :all-released,
+  :log-length {:child 1, :owner 1, :src 4},
+  :obs
+  {:child
+   {:complete? true,
+    :released? true,
+    :runs 0,
+    :kids nil,
+    :token :done},
+   :owner
+   {:complete? true, :released? true, :runs 0, :kids 0, :token :done},
+   :src
+   {:complete? true, :released? true, :runs 0, :kids 0, :token nil}}}]
