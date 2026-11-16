@@ -1249,8 +1249,12 @@ guard and the take arm's cleanup refusal), hm18 (blocked by hm17).
   one/all every debtor, any one: `fin-suspends` in `await-bad w st ds m`), a take with nothing to take on an open
   source (`take-bad`), every arm (`fin-shut`). `await-cont` reads regions only (engine `reentrant-k`). progress:
   a region weighs 2 and a clause 1 in mu-f; `finally-exit-dec` holds again, `finally-leave-dec` is new. Changed
-  statements: only the overrides `t17-g9`/`t17-mb` take `fin-shut w st = false` (was `in-cleanup w st = false`;
-  `fin-shut-cleanup` gives the old fact). Oracle: run finalizers project regions; logs with exits and no leave
+  statements: the overrides `t17-g9`/`t17-mb` take `fin-shut w st = false` (was `in-cleanup w st = false`;
+  `fin-shut-cleanup` gives the old fact); progress.clj's `mfv-pop-held`/`pop-held` (a pop of any head drops mu-f by
+  one: false once a region weighs 2) are replaced by `mfv-exit-held`/`exit-held` (exit of a head region) and
+  `mfv-leave-held`/`leave-held` (pop of a head clause); `fx-row` now concludes for `run-fin-exit` (was
+  `run-fin-pop`), with `q-fx` guarded by `fin-exit-bad` (was `fins-empty`); `finally-exit-dec`'s statement is
+  unchanged. Oracle: run finalizers project regions; logs with exits and no leave
   (samples 4, 5: no generator exists; they predate #268) end each clause within its exit's commit; sample 7
   regenerated (`oracle/gen/samples-legacy.clj`, only the leave is new); 22, 25, 25b replay with 0 divergences.
 - Q5 (c25c0de, 29021c7): a released world takes no new root, also from a held slice: raw0 refuses observe and pin
