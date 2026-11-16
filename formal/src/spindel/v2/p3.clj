@@ -2638,6 +2638,7 @@
   (all_goals (simp only [cver comp-result-row hs]))
   (exact (Nat.le_succ _)) (exact (Nat.le_refl _)))
 (a/theorem source-write-hv [v :- Nat, s :- SourceRow] (<= (sver s) (sver (source-write v s))) (simp only [sver source-write]) (exact (Nat.le_succ _)))
+(a/theorem stream-set-tail-hv [t :- Nat, s :- SourceRow] (<= (sver s) (sver (stream-set-tail t s))) (simp only [sver stream-set-tail]) (exact (Nat.le_succ _)))
 (a/theorem source-bump-hv [s :- SourceRow] (<= (sver s) (sver (source-bump s))) (simp only [sver source-bump]) (exact (Nat.le_succ _)))
 (a/theorem source-consume-hv [s :- SourceRow] (<= (sver s) (sver (source-consume s)))
   (cases ha (src-available s))
@@ -2668,7 +2669,7 @@
 (prim! SVB 'inv-drop-edges '(svb-rest-drop-edges w p R))
 
 (def ^:private svb-fns '{comp-result-row [svb-comp-upd comp-result-row-hv] source-write [svb-source-upd source-write-hv]
-                         source-bump [svb-source-upd source-bump-hv] source-consume [svb-source-upd source-consume-hv]})
+                         source-bump [svb-source-upd source-bump-hv] stream-set-tail [svb-source-upd stream-set-tail-hv] source-consume [svb-source-upd source-consume-hv]})
 (defn svb-patch [form]
   (->> (#'spindel.v2.idle/fix-f form)
        (subst-forms (fn [y] (and (seq? y) (#{'inv-comp-upd 'inv-source-upd} (first y)) (contains? svb-fns (fhead* (nth y 3 nil)))))
@@ -2679,6 +2680,15 @@
        (subst-forms #(= % '(insert-edge-fresh-inv-sample w (observe-edge w d cb) he h))
                     (fn [_] '(svb-insert-edge-fresh w (observe-edge w d cb) (obs-sok w d cb (:next-id w)) he h)))))
 (doseq [[n _] @@#'spindel.v2.lit/source-theorems] (patch! SVB n svb-patch))
+
+(override! SVB 'inv-append-raw '[inv-realize-link inv-source-upd inv-source-ins-fresh]
+  '(a/theorem svb-append-raw [w :- World, x :- Nat, v :- Nat, old :- Nat]
+     (=> (= (svb w) true) (= (svb (append-raw w x v old)) true))
+     (intro h)
+     (simp only [append-raw])
+     (exact (svb-realize-link _ old v false _
+              (svb-source-upd _ x (stream-set-tail (:next-id w)) (stream-set-tail-id _) (stream-set-tail-hv (:next-id w))
+                (svb-source-ins w (new-link (:next-id w) root-scope-id x) (rfl) h))))))
 
 (override! SVB 'inv-insert-edge-checked '[]
   '(a/theorem svb-insert-edge-checked [w :- World, e :- EdgeRow, hs :- (= (seen-ok w (edge-set-marked false (edge-set-id (:next-id w) e))) true)]
