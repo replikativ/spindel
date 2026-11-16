@@ -1616,11 +1616,29 @@
     (commit! (cw) [:finally-enter (g r rw/ID)])))
 
 (defn exit-finally!
-  "A `finally` region closes; its block runs now."
+  "A `finally` region closes; its block runs now (C1 W4: the run is in a
+   finally clause until `leave-finalizer!`)."
   []
   (when-let [r (active-run)]
     (s! r rw/R-FINS (max 0 (dec (fins r))))
+    (s! r rw/R-INFIN (inc (long (or (g r rw/R-INFIN) 0))))
     (commit! (cw) [:finally-exit (g r rw/ID)])))
+
+(defn leave-finalizer!
+  "The finally clause entered by `exit-finally!` ended (also by a throw)."
+  []
+  (when-let [r (active-run)]
+    (s! r rw/R-INFIN (max 0 (dec (long (or (g r rw/R-INFIN) 0)))))))
+
+(defn- finalizer-refusal
+  "C1 W4 (B8 reduced to suspension): finalizers are synchronous. A
+   suspending effect inside a finally clause, on normal and cancellation
+   entry alike, fails with this error; nil when allowed."
+  []
+  (when-let [r (active-run)]
+    (when (pos? (long (or (g r rw/R-INFIN) 0)))
+      (ex-info "a finally clause may not suspend (finalizers are synchronous)"
+               {:spindel/invalid :finalizer}))))
 
 (defn- invalid-op [op msg] (ex-info msg {:spindel/invalid op}))
 
@@ -1855,26 +1873,39 @@
   (and (source? x)
        (let [kind (gl x rw/X-KIND)] (or (== kind rw/SRC-MAILBOX) (== kind rw/SRC-SEMAPHORE)))))
 
+(defn- settled-now?
+  "Whether an await on `d` completes without suspending (C1 W4): a value
+   read at once, or a settled debtor."
+  [d]
+  (or (and (source? d) (not (deferred? d)) (not (consuming? d)) (not (stream? d)))
+      (and (not (and (comp? d) (g d rw/C-IDLE))) (settled? d))))
+
 (defn- stream-ex [] (invalid-op :await "a stream is read through its positions: (position s)"))
 
 (defn await-effect!
   "T6 with mode `one`; on a mailbox it is `take` (Z#54)."
   [d k ek]
+  (if-let [refusal (when-not (settled-now? (row-of d)) (finalizer-refusal))] (ek refusal)
   (cond
     (stream? d) (ek (stream-ex))
     (consuming? d)
     (if (== rw/SRC-MAILBOX (gl d rw/X-KIND))
       (consume-effect! d k ek)
       (ek (invalid-op :await "await on a semaphore: use acquire!")))
-    :else (await-group! [d] :one k ek)))
+    :else (await-group! [d] :one k ek))))
 
 (defn- group-effect! [ds mode k ek]
   (let [ds (vec ds)]
+   (if-let [refusal (when-not (if (= mode :any)
+                                (some #(settled-now? (row-of %)) ds)
+                                (every? #(settled-now? (row-of %)) ds))
+                      (finalizer-refusal))]
+    (ek refusal)
     (cond
       (some #(consuming? (row-of %)) ds)
       (ek (invalid-op mode "a group await cannot take from a mailbox or semaphore"))
       (some #(stream? (row-of %)) ds) (ek (stream-ex))
-      :else (await-group! ds mode k ek))))
+      :else (await-group! ds mode k ek)))))
 
 (defn await-all-effect! [ds k ek] (group-effect! ds :all k ek))
 (defn await-any-effect! [ds k ek] (group-effect! ds :any k ek))
@@ -2753,6 +2784,7 @@
   "`take!` (mailbox) or `acquire!` (semaphore): a consuming operation, always
    a wait edge, never a dependency (§4.3). Waiters are served FIFO."
   [x k ek]
+  (if-let [refusal (when-not (let [x (row-of x)] (or (available? x) (closed? x))) (finalizer-refusal))] (ek refusal)
   (if-let [r (valid-run)]
     (let [w (cw)
           at (next-at! r)
@@ -2781,7 +2813,7 @@
           (commit! w [:take (g r rw/ID) (g x rw/ID) [:opaque k] aid])
           (notify-blocked! (rv w (g r rw/R-OF)) 0)
           nil)))
-    (unwind! ek)))
+    (unwind! ek))))
 
 (defn- serve-waiter!
   "The first waiter whose activation can still receive gets `v`. Waiters of
@@ -3732,6 +3764,7 @@
    outside every world (§4.3). `f` must not call into the world
    synchronously; it may enqueue ingress."
   [f opts k ek]
+  (if-let [refusal (finalizer-refusal)] (ek refusal)
   (if-let [r (valid-run)]
     (arm-and-park!
      r :offload k ek
@@ -3752,18 +3785,19 @@
                                                  (fn [v] (hs/ctl-finish! ctl) (join! w z [v false]))
                                                  (fn [e] (hs/ctl-finish! ctl) (join! w z [e true])))
                                           (do (hs/ctl-finish! ctl) (join! w z res)))))))))))
-    (unwind! ek)))
+    (unwind! ek))))
 
 (defn sleep-effect!
   "`(sleep ms)`: a timer resource."
   [ms k ek]
+  (if-let [refusal (finalizer-refusal)] (ek refusal)
   (if-let [r (valid-run)]
     (arm-and-park!
      r :timer k ek
      (fn [w z]
        (s! z rw/Z-DEADLINE (+ (hs/now-ms) (long ms)))
        (set-ctl! w z (hs/schedule! ms (fn [] (join! w z [nil false]))))))
-    (unwind! ek)))
+    (unwind! ek))))
 
 (defn external-effect!
   "R2 `(external f)`: parks on an external operation. After the commit, under
@@ -3776,6 +3810,7 @@
    physical completion, whose value is dropped. If `f` throws, the effect
    fails with that error."
   [f k ek]
+  (if-let [refusal (finalizer-refusal)] (ek refusal)
   (if-let [r (valid-run)]
     (arm-and-park!
      r :external k ek
@@ -3797,7 +3832,7 @@
              (complete! t true)
              (when (fn? (first res))
                (set-ctl! w z (assoc ctl :cancel (first res)))))))))
-    (unwind! ek)))
+    (unwind! ek))))
 
 ;; ---------------------------------------------------------------------------
 ;; World completion (C1, c1-cancellation-joins-design.md W1-W2, R1-R2): a world
@@ -4276,6 +4311,7 @@
    The parent continues with [:parent child-world]; in the child the run
    exists parked at the effect and resumes with [:child nil] (Q4)."
   [k ek]
+  (if-let [refusal (finalizer-refusal)] (ek refusal)
   (if-let [r (valid-run)]
     (cond
       (comp? (rv (cw) (g r rw/R-OF)))
@@ -4313,7 +4349,7 @@
             ;; scheduled after the parent's gate is released (E3)
             (aadd! (g w rw/W-AFTER) child)
             (k [:parent child])))))
-    (unwind! ek)))
+    (unwind! ek))))
 
 (defn fork [] (throw (ex-info "fork outside a body" {})))
 
@@ -4376,6 +4412,7 @@
    one the effect is the identity on `payload`. The resource has no
    controller: cancelled, it joins at once."
   [site payload k ek]
+  (if-let [refusal (finalizer-refusal)] (ek refusal)
   (if-let [r (valid-run)]
     (let [w (cw)
           handlers (g w rw/W-SP-HANDLERS)
@@ -4395,7 +4432,7 @@
                            ;; the parent's own copy of the run keeps no slice (it is parked)
                            (set-active! (rv w r))
                            (aadd! (g w rw/W-CALLBACKS) [(fn [_ _] (h pub)) [nil false]]))))))
-    (unwind! ek)))
+    (unwind! ek))))
 
 (defn savepoint [_ _] (throw (ex-info "savepoint outside a body" {})))
 
@@ -4690,7 +4727,7 @@
                           [~@(doall (for [[v e] (partition 2 bvec)]
                                       `[~(var-key *env* v) (fn [] ~v) (fn [x#] (set! ~v x#)) ~(register-finally e)]))])]
               (~'try (do (enter-finally!) ~@(mapv register-finally body))
-                     (~'finally (exit-finally!) (pop-bindings! ~saved))))
+                     (~'finally (exit-finally!) (~'try (pop-bindings! ~saved) (~'finally (leave-finalizer!))))))
            (meta form))))
      (defn- register-finally
        "Body contract (§7): each `try` with a `finally` registers its region
@@ -4715,7 +4752,8 @@
                  (with-meta
                    `(~'try (do (enter-finally!) ~@body)
                            ~@(map (fn [c] (if (= 'finally (first c))
-                                            (list* 'finally `(exit-finally!) (rest c))
+                                            (list 'finally `(exit-finally!)
+                                                  (list 'try (cons 'do (rest c)) (list 'finally `(leave-finalizer!))))
                                             c))
                                   cfs))
                    (meta form))
@@ -4754,7 +4792,7 @@
        (let [s (gensym "scope")]
          `(let [~s (open-scope!)]
             (~'try (do (enter-finally!) ~@body)
-                   (~'finally (exit-finally!) (close-scope-fx! ~s))))))
+                   (~'finally (exit-finally!) (~'try (close-scope-fx! ~s) (~'finally (leave-finalizer!))))))))
      (defmacro convey
        "B10: host-level `binding`s of dynamic var `v` reach the tasks and
         computations created under them. JVM: every binding does; no-op. CLJS:
@@ -4772,7 +4810,7 @@
        (let [saved (gensym "path")]
          `(let [~saved (push-path! ~p)]
             (~'try (do (enter-finally!) ~@body)
-                   (~'finally (exit-finally!) (pop-path! ~saved))))))
+                   (~'finally (exit-finally!) (~'try (pop-path! ~saved) (~'finally (leave-finalizer!))))))))
      (defmacro defeffect
        "R3: defines effect `name` in this namespace: `(defeffect choose [args
         ctx] op-form)`; see register-effect!. It registers at expansion too,

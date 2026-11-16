@@ -295,7 +295,8 @@
 (def ^:const R-SCOPES 16)    ; open explicit scopes of the run, innermost last
 (def ^:const R-PATH 17)      ; the run's path, nil if empty (§8.2 P1-P3)
 (def ^:const R-BIND 18)      ; JVM: the run's dynamic binding frame between slices
-(def ^:const R-SIZE 19)
+(def ^:const R-INFIN 19)     ; C1 W4: depth of finally clauses executing (suspension refused)
+(def ^:const R-SIZE 20)
 
 (def ^:const ACT-ACTIVE 0)
 (def ^:const ACT-PARKED 1)

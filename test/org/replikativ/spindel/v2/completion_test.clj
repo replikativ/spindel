@@ -192,3 +192,30 @@
          (is (= :stopped (deref child-done 1000 ::slow)) "the scoped child is cancelled with the request")
          (v2/release-world! w)
          (is (true? (v2/await-complete w 2000 ::timeout))))))))
+
+(deftest finalizers-are-synchronous
+  ;; W4: a suspending effect in a finally clause fails, on normal and on
+  ;; cancellation entry; a settled await does not suspend and is allowed
+  (checked
+   (let [w (vworld) seen (atom [])]
+     (binding [v2/*world* w]
+       (let [d (v2/deferred)
+             done (v2/deferred)
+             _ (v2/deliver! done :ready)
+             t1 (task (try :body
+                           (finally (swap! seen conj [:settled (await done)])
+                                    (try (await d)
+                                         (catch Exception e (swap! seen conj [:normal (:spindel/invalid (ex-data e))]))))))
+             _ (is (= :body (v2/value t1 2000 ::timeout)))
+             started (promise)
+             t2 (task (try (deliver started true) (await d)
+                           (finally (try (v2/sleep 10)
+                                         (catch Exception e (swap! seen conj [:cancel (:spindel/invalid (ex-data e))]))))))]
+         (deref started 2000 nil)
+         (v2/cancel-task! t2)
+         (is (wait-until #(= 3 (count @seen))))
+         (is (= #{[:settled :ready] [:normal :finalizer] [:cancel :finalizer]} (set @seen)))
+         ;; the depth is restored: the body after a finally may suspend again
+         (let [t3 (task (try 1 (finally nil)) (v2/sleep 1) :after)]
+           (is (= :after (v2/value t3 2000 ::timeout))))))
+     (v2/release-world! w))))
