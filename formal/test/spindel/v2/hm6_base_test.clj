@@ -16,7 +16,8 @@
 (deftest integration-theorems-kernel-checked
   (doseq [name theorems] (certification/checked-declaration name))
   (is (= {:parameters '[w :- World, it :- Item]
-          :statement '(=> (= (p3la w) true) (= (p3la (:world (world-step w it))) true))}
+          ;; Stage B (C0): c0-root is a temporary hypothesis (notes/PLAN.md)
+          :statement '(=> (= (c0-root w it) true) (= (p3la w) true) (= (p3la (:world (world-step w it))) true))}
          (certification/source-statement "spindel/v2/hm6_base.clj" 'step-p3la)))
   (is (true? (base/p3la s/empty-world))))
 

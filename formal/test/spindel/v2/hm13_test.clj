@@ -86,7 +86,13 @@
    [(detach k s) true]
    [(finally-enter st) false]
    [(finally-exit st) false]
-   [(slice-exit r) false])),
+   [(slice-exit r) false]
+   [(create-link st l) false]
+   [(create-link-top sc l) true]
+   [(link-demand l k) false]
+   [(link-realize l tag v n) false]
+   [(append x v t) true]
+   [(close x tag v) true])),
  loser-task
  (a/defn
   loser-task
