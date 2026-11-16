@@ -3,7 +3,7 @@
             [ansatz.core :as a]
             [spindel.v2.quiet]))
 
-(def theorems '[step-grel step-released])
+(def theorems '[step-grel step-released step-gk step-k k-empty])
 
 (deftest theorems-kernel-checked
   (doseq [t theorems]
