@@ -2238,15 +2238,20 @@
 (a/defn host-cancel-ok [w :- World, r :- RunRow] Bool
   (Bool.and (run-alive r) (Bool.and (Bool.not (:slice r)) (task-has w (:of r)))))
 ;; C1: a done (unretired) task run that holds no slice is still cancellable (engine `cancel-task!`
-;; commits `[:cancel r]` while K.run names it): it may hold a fired, unacknowledged await-op, whose
-;; controller the engine cancels (its acknowledgement follows as T15). No row changes here.
+;; commits `[:cancel r]` while K.run names it): T14 is idempotent on the run itself, and the
+;; cancellation reaches its run scope's subtree at once (R4): the alive runs owned there are
+;; cancelled (none, unless work was moved into a scope it still holds). Its fired, unacknowledged
+;; await-op has its controller cancelled by the engine (the acknowledgement follows as T15).
 (a/defn host-cancel-done [w :- World, r :- RunRow] Bool
   (Bool.and (Bool.not (run-alive r)) (Bool.and (Bool.not (:slice r)) (task-has w (:of r)))))
-(a/defn cancel-noop [w :- World, r :- RunRow] Outcome (Outcome.mk w (host-cancel-done w r)))
+(a/defn cancel-done [w :- World, r :- RunRow] Outcome
+  (if (host-cancel-done w r)
+      (accept (run-cascade w (cancel-jobs (owned-runs w (scope-subtree w (:scope r))))))
+      (refuse w)))
 (a/defn t-cancel [w :- World, rid :- Nat] Outcome
   (match (run-find w rid)
     [none (refuse w)]
-    [(some r) (if (host-cancel-ok w r) (t14-cancel w rid false) (cancel-noop w r))]))
+    [(some r) (if (host-cancel-ok w r) (t14-cancel w rid false) (cancel-done w r))]))
 
 (a/theorem t-cancel-inv [w :- World, rid :- Nat]
   (=> (= (inv-sample w) true) (= (inv-sample (:world (t-cancel w rid))) true))
@@ -2254,7 +2259,9 @@
   (cases hf (run-find w rid)) (case' [some r]) (case' [none])
   (simp only [t-cancel hf refuse]) (exact h)
   (cases hg (host-cancel-ok w r))
-  (simp only [t-cancel hf hg cancel-noop]) (exact h)
+  (cases hd (host-cancel-done w r))
+  (simp only [t-cancel hf hg cancel-done hd refuse]) (exact h)
+  (simp only [t-cancel hf hg cancel-done hd accept]) (exact (inv-run-cascade w _ h))
   (simp only [t-cancel hf hg]) (exact (t14-inv w rid false h)))
 
 (a/theorem t-cancel-refuse [w :- World, rid :- Nat]
@@ -2263,7 +2270,9 @@
   (cases hf (run-find w rid)) (case' [some r]) (case' [none])
   (simp only [t-cancel hf refuse])
   (cases hg (host-cancel-ok w r))
-  (simp only [t-cancel hf hg cancel-noop])
+  (cases hd (host-cancel-done w r))
+  (simp only [t-cancel hf hg cancel-done hd refuse])
+  (simp [t-cancel hf hg cancel-done hd accept] at ha)
   (simp only [t-cancel hf hg] at ha) (simp only [t-cancel hf hg]) (exact (t14-refuse w rid false ha)))
 
 ;; ---- open-scope st s / close-scope s (T16, with-scope): open allocates the explicit scope

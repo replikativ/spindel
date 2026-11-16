@@ -1515,7 +1515,9 @@
   (cases hf (run-find w rid)) (case' [some r]) (case' [none])
   (simp only [t-cancel hf refuse]) (exact h)
   (cases hg (host-cancel-ok w r))
-  (simp only [t-cancel hf hg cancel-noop]) (exact h)
+  (cases hd (host-cancel-done w r))
+  (simp only [t-cancel hf hg cancel-done hd refuse]) (exact h)
+  (simp only [t-cancel hf hg cancel-done hd accept]) (exact (sl-run-cascade x w _ h))
   (simp only [t-cancel hf hg]) (exact (sl-t14 x w rid false h)))
 
 (a/theorem sl-t-open-scope [x :- Nat, w :- World, st :- Nat, s :- Nat]
@@ -3392,7 +3394,9 @@
   (cases hf (run-find w rid)) (case' [some r]) (case' [none])
   (simp only [t-cancel hf refuse]) (exact h)
   (cases hg (host-cancel-ok w r))
-  (simp only [t-cancel hf hg cancel-noop]) (exact h)
+  (cases hd (host-cancel-done w r))
+  (simp only [t-cancel hf hg cancel-done hd refuse]) (exact h)
+  (simp only [t-cancel hf hg cancel-done hd accept]) (exact (s9-run-cascade w _ h))
   (simp only [t-cancel hf hg]) (exact (s9-t14 w rid false h)))
 
 (a/theorem s9-t-open-scope [w :- World, st :- Nat, s :- Nat]
