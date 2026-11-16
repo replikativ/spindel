@@ -181,7 +181,15 @@
                               ; below cut are inherited; that ancestor's rows are read at its `ordinal`
                               ; (`token` keeps those versions); `map` is its copy map at the fork
 (def ^:const W-TOKENS 45)     ; MVCC: the cells of this world's forks' tokens, by ascending ordinal
-(def ^:const W-SIZE 46)
+;; C1 world completion (c1-cancellation-joins-design.md W1-W2, R1-R2)
+(def ^:const W-RUNS 46)       ; unretired runs (every task and computation run, cleanup included)
+(def ^:const W-KIDS 47)       ; child-world obligations: host/kids [count released-flag], never inherited
+(def ^:const W-KID-TOKEN 48)  ; this world's token in its owner's ledger: [owner-weak done-flag], or nil
+(def ^:const W-COMPLETE 49)   ; released, no run left, every owned child complete or collected
+(def ^:const W-COMPLETE-SUBS 50) ; host terminal subscriptions [live-flag cb], never inherited
+(def ^:const W-OUTSTANDING 51)   ; every resource until its acknowledgement (all phases), by ID
+(def ^:const W-DISCHARGE 52)  ; a fork's inherited non-armed outstanding resources, acknowledged at its first turn
+(def ^:const W-SIZE 53)
 
 ;; Scope
 (def ^:const S-PARENT 2)
