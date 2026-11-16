@@ -33,6 +33,7 @@
             [spindel.v2.step :refer :all]
             [spindel.v2.engine :refer :all]
             [spindel.v2.hmk2 :refer [p3l]]
+            [spindel.v2.i8 :refer [c0-root]]
             [spindel.v2.progress :refer [quiescent]]
             [spindel.v2.cow :refer [fupd]]))
 
@@ -95,14 +96,15 @@
   (intro hne)
   (simp only [sys-step fupd (nbeq-ne j k hne)]))
 
+;; Stage B: c0-root is a temporary hypothesis (notes/PLAN.md)
 (a/theorem sinv-step [cells :- (=> Nat Cell), k :- Nat, it :- Item]
-  (=> (sinv cells) (sinv (sys-step cells k it)))
-  (intro hs)
+  (=> (= (c0-root (:world (cells k)) it) true) (sinv cells) (sinv (sys-step cells k it)))
+  (intros hc0 hs)
   (have hc (=> (= (:live (cell-step (cells k) it)) true) (= (p3l (:world (cell-step (cells k) it))) true)))
   (intro hl)
   (simp only [cell-step] at hl)
   (simp only [cell-step])
-  (exact (step-p3l (:world (cells k)) it (sinv-live cells k hs hl)))
+  (exact (step-p3l (:world (cells k)) it hc0 (sinv-live cells k hs hl)))
   (simp only [sys-step])
   (exact (sinv-put cells k (cell-step (cells k) it) hs hc)))
 
@@ -148,7 +150,7 @@
   (=> (= (p3l w) true) (= (p3l (fire-ack w z tag v)) true))
   (intro h)
   (simp only [fire-ack])
-  (exact (step-p3l _ (Item.resource-ack z) (step-p3l w (Item.resource-fire z tag v) h))))
+  (exact (step-p3l _ (Item.resource-ack z) (Eq.refl true) (step-p3l w (Item.resource-fire z tag v) (Eq.refl true) h))))
 
 (a/defn wake-one [w :- World, z :- Nat] World
   (match (resource-find w z)
@@ -231,7 +233,7 @@
   (=> (= (p3l w) true) (= (p3l (fork-effect-world w st kont v)) true))
   (intro h)
   (simp only [fork-effect-world])
-  (exact (p3l-fire-ack _ (:next-id w) res-ok v (step-p3l w (Item.arm st rk-offload kont (:next-id w)) h))))
+  (exact (p3l-fire-ack _ (:next-id w) res-ok v (step-p3l w (Item.arm st rk-offload kont (:next-id w)) (Eq.refl true) h))))
 
 (a/defn fork-effect-cell [c :- Cell, k :- Nat, owner :- Nat, st :- Nat, kont :- Nat, v :- Nat] Cell
   (Cell.mk (fork-effect-world (:world c) st kont v) true k owner
@@ -287,7 +289,7 @@
     (have e (= q p)) (exact (Nat.eq_of_beq_eq_true hqp))
     (rw [e])
     (simp only [pubs-publish fupd-same])
-    (exact (step-p3l (:world (cells k)) (publish-item st kont fresh) (sinv-live cells k hs hlk)))))
+    (exact (step-p3l (:world (cells k)) (publish-item st kont fresh) (Eq.refl true) (sinv-live cells k hs hlk)))))
 
 ;; ---------------------------------------------------------------------------
 ;; L6 (S2): resume in place: the savepoint fires with `ok v` in the publishing world and is acknowledged
@@ -428,7 +430,11 @@
          [(cons x t) (if (Nat.beq (version-of c x) (version-of b x)) (diff-ids c b t)
                          (List.cons Nat x (diff-ids c b t)))]))
 
-(a/defn diff [c :- World, b :- World] (List Nat) (diff-ids c b (tbl-ids source-id (:sources b))))
+;; C0 (spec §4.3 Links and forks): links are not part of a mergeable fork's basis (each world
+;; realizes its own elements); a stream the fork appended to is (its version changed: the write is
+;; refused, so the merge is: stream merge is C2)
+(a/defn not-link [s :- SourceRow] Bool (Bool.not (Nat.beq (:kind s) sk-link)))
+(a/defn diff [c :- World, b :- World] (List Nat) (diff-ids c b (tbl-ids source-id (tbl-filter not-link (:sources b)))))
 
 (a/defn no-conflict [p :- World, b :- World, ds :- (List Nat)] Bool
   (match ds [nil true]
@@ -457,7 +463,7 @@
     (case [false] (simp only [apply-diff ha]) (exact h))
     (case [true]
       (simp only [apply-diff ha])
-      (exact (ih _ (step-p3l p (Item.write x (state-of c x)) h))))))
+      (exact (ih _ (step-p3l p (Item.write x (state-of c x)) (Eq.refl true) h))))))
 
 (a/theorem p3l-merge-world [p :- World, c :- World, b :- World]
   (=> (= (p3l p) true) (= (p3l (merge-world p c b)) true))
