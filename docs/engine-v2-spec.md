@@ -732,7 +732,7 @@ They are never dependencies. All operations are atomic commits (D0).
 | mailbox | `post(X, v)` appends to the queue; `take(X)` is a wait edge; FIFO, each message is delivered to exactly one waiter atomically; cancelling a waiter removes it from the queue order; on a closed, empty mailbox `take` fails at once with `err ::closed` (Z#57) |
 | semaphore | `acquire(X)` is a wait edge, and a permit is consumed atomically on fire; `release(X)` fires the first armed waiter or increments the permit count, up to the maximum (Z#62); cancelling a waiter removes it; on a closed semaphore without permits `acquire` fails at once with `err ::closed` (Z#57) |
 | link | A once-cell of an async sequence (C0), owned by the root scope. Final once realized: with `[v next]` (`next` the next link's handle), `end` (nil) or a memoized error. Awaited like a deferred, never tracked. Created by `create-link` (a pull head: `[:create-link R L]` in a run, `[:create-link-top root L]` on the host; in a computation run a creation in its basis, adopted on re-entry with equal captures and initial state, the item then naming the adopted link). A pull link carries a realizer `[f s]`: demand on it while unrealized and without a realizer (T6, T22) creates and starts its realizer task in the root scope in one item `[:link-demand L K]`; at most one unfinished realizer per link. The realizer's completion (its T12 item) is followed by one item `[:link-realize L tag v N]`: `tag 1` creates the next pull link `N` with `[f s']` and realizes `L` with `[v N]`, `tag 0` realizes the end, `tag 2` memoizes the error `v` (`N = 0` for both); an error `::forked` (§8.1) realizes nothing and, if `L` is demanded, is followed by a new `link-demand`. A cancelled realizer (T21) realizes nothing (no item). A link that nothing reaches any more (no handle, no edge) is not realized. A push link has no realizer and is realized by its stream. |
-| stream | A producer whose state is its tail link, owned per §5.2; its creation item also creates the first tail (ID = the stream's + 1). `append(X, v)` is one item `[:append X v T]`: it creates the new tail `T` and realizes the old one with `[v T]`; on a closed stream it is refused. `close(X)` / `close(X, err)` is one item `[:close X tag v]` (tag 0 end, 2 error) that realizes the tail and closes `X`. T16 (the owner's scope closes, Z#18) and, for a stream in a computation's basis, the computation's demotion (§3.3) realize the tail as `end` and close `X` inside that item. Not awaitable: readers hold positions (links). |
+| stream | A producer whose state is its tail link, owned per §5.2; its creation item also creates the first tail (ID = the stream's + 1). `append(X, v)` is one item `[:append X v T]`: it creates the new tail `T` and realizes the old one with `[v T]`; on a closed stream, or once the root scope is closed (a released world's cleanup finalizers), it is refused; no root-owned link is created after release. `close(X)` / `close(X, err)` is one item `[:close X tag v]` (tag 0 end, 2 error) that realizes the tail and closes `X`. T16 (the owner's scope closes, Z#18) and, for a stream in a computation's basis, the computation's demotion (§3.3) realize the tail as `end` and close `X` inside that item. Not awaitable: readers hold positions (links). |
 
 **Operation by kind (Z#54).** `track` applies to signals and cells only.
 `await` on a mailbox is `take`. `await` on a semaphore, `await-all` or
@@ -1446,6 +1446,10 @@ cases.
     computation may adopt it (§5.2) or in verify mode, where the projection
     reads them. A long-running task therefore does not retain what it
     captured, e.g. the head of a sequence it walks (C0).
+15. **Control signals without traces:** `::cancelled`, `::closed`,
+    `::released`, `::forked` and the unborn error are signals, made once per
+    affected row; on the JVM they carry no stack trace (a trace per retained
+    row cost foerster's benchmark ~1 GB of a 1 GB heap).
 
 ---
 
