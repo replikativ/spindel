@@ -1901,27 +1901,27 @@
   "T6 with mode `one`; on a mailbox it is `take` (Z#54)."
   [d k ek]
   (if-let [refusal (or (unwinding-finalizer-refusal) (when-not (settled-now? (row-of d)) (finalizer-refusal)))] (ek refusal)
-  (cond
-    (stream? d) (ek (stream-ex))
-    (consuming? d)
-    (if (== rw/SRC-MAILBOX (gl d rw/X-KIND))
-      (consume-effect! d k ek)
-      (ek (invalid-op :await "await on a semaphore: use acquire!")))
-    :else (await-group! [d] :one k ek))))
+          (cond
+            (stream? d) (ek (stream-ex))
+            (consuming? d)
+            (if (== rw/SRC-MAILBOX (gl d rw/X-KIND))
+              (consume-effect! d k ek)
+              (ek (invalid-op :await "await on a semaphore: use acquire!")))
+            :else (await-group! [d] :one k ek))))
 
 (defn- group-effect! [ds mode k ek]
   (let [ds (vec ds)]
-   (if-let [refusal (or (unwinding-finalizer-refusal)
-                        (when-not (if (= mode :any)
-                                (some #(settled-now? (row-of %)) ds)
-                                (every? #(settled-now? (row-of %)) ds))
-                          (finalizer-refusal)))]
-    (ek refusal)
-    (cond
-      (some #(consuming? (row-of %)) ds)
-      (ek (invalid-op mode "a group await cannot take from a mailbox or semaphore"))
-      (some #(stream? (row-of %)) ds) (ek (stream-ex))
-      :else (await-group! ds mode k ek)))))
+    (if-let [refusal (or (unwinding-finalizer-refusal)
+                         (when-not (if (= mode :any)
+                                     (some #(settled-now? (row-of %)) ds)
+                                     (every? #(settled-now? (row-of %)) ds))
+                           (finalizer-refusal)))]
+      (ek refusal)
+      (cond
+        (some #(consuming? (row-of %)) ds)
+        (ek (invalid-op mode "a group await cannot take from a mailbox or semaphore"))
+        (some #(stream? (row-of %)) ds) (ek (stream-ex))
+        :else (await-group! ds mode k ek)))))
 
 (defn await-all-effect! [ds k ek] (group-effect! ds :all k ek))
 (defn await-any-effect! [ds k ek] (group-effect! ds :any k ek))
@@ -2807,35 +2807,35 @@
    a wait edge, never a dependency (§4.3). Waiters are served FIFO."
   [x k ek]
   (if-let [refusal (or (unwinding-finalizer-refusal) (when-not (let [x (row-of x)] (or (available? x) (closed? x))) (finalizer-refusal)))] (ek refusal)
-  (if-let [r (valid-run)]
-    (let [w (cw)
-          at (next-at! r)
-          aid (alloc-id! w)]
-      (cond
-        (available? x)
-        (let [v (consume! x)]
-          (alloc-id! w)                             ; the consumed wait edge
-          (s! x rw/VERSION (inc (gl x rw/VERSION)))
-          (commit! w [:take (g r rw/ID) (g x rw/ID) [:opaque k] aid])
-          (k v))
+          (if-let [r (valid-run)]
+            (let [w (cw)
+                  at (next-at! r)
+                  aid (alloc-id! w)]
+              (cond
+                (available? x)
+                (let [v (consume! x)]
+                  (alloc-id! w)                             ; the consumed wait edge
+                  (s! x rw/VERSION (inc (gl x rw/VERSION)))
+                  (commit! w [:take (g r rw/ID) (g x rw/ID) [:opaque k] aid])
+                  (k v))
         ;; Z#57: closed and empty, nothing can arrive: fail at once, like a
         ;; waiter woken by the close (Z#53)
-        (closed? x)
-        (do (alloc-id! w)                           ; the consumed wait edge
-            (commit! w [:take (g r rw/ID) (g x rw/ID) [:opaque k] aid])
-            (ek (closed-ex)))
-        :else
-        (let [members (object-array 1)
-              a (new-activation! w aid r :one k ek members (object-array 1) 1)
-              e (link! w rw/EK-WAIT a x at)]
-          (aset members 0 e)
-          (hs/dq-push! (deque x rw/X-WAITERS) e)
-          (park! r a)
-          (s! a rw/A-INLINE false)
-          (commit! w [:take (g r rw/ID) (g x rw/ID) [:opaque k] aid])
-          (notify-blocked! (rv w (g r rw/R-OF)) 0)
-          nil)))
-    (unwind! ek))))
+                (closed? x)
+                (do (alloc-id! w)                           ; the consumed wait edge
+                    (commit! w [:take (g r rw/ID) (g x rw/ID) [:opaque k] aid])
+                    (ek (closed-ex)))
+                :else
+                (let [members (object-array 1)
+                      a (new-activation! w aid r :one k ek members (object-array 1) 1)
+                      e (link! w rw/EK-WAIT a x at)]
+                  (aset members 0 e)
+                  (hs/dq-push! (deque x rw/X-WAITERS) e)
+                  (park! r a)
+                  (s! a rw/A-INLINE false)
+                  (commit! w [:take (g r rw/ID) (g x rw/ID) [:opaque k] aid])
+                  (notify-blocked! (rv w (g r rw/R-OF)) 0)
+                  nil)))
+            (unwind! ek))))
 
 (defn- serve-waiter!
   "The first waiter whose activation can still receive gets `v`. Waiters of
@@ -3793,39 +3793,39 @@
    synchronously; it may enqueue ingress."
   [f opts k ek]
   (if-let [refusal (finalizer-refusal)] (ek refusal)
-  (if-let [r (valid-run)]
-    (arm-and-park!
-     r :offload k ek
-     (fn [w z]
-       (let [ctl (hs/offload-ctl)]
-         (set-ctl! w z ctl)
+          (if-let [r (valid-run)]
+            (arm-and-park!
+             r :offload k ek
+             (fn [w z]
+               (let [ctl (hs/offload-ctl)]
+                 (set-ctl! w z ctl)
          ;; :pool runs f on another executor than the world's (M6 R8, blocking)
-         (hs/execute-or! (or (:pool opts) (g w rw/W-EXEC))
+                 (hs/execute-or! (or (:pool opts) (g w rw/W-EXEC))
                       ;; a rejecting executor fails the effect (old blocking)
-                         (fn [t] (hs/ctl-cancel! ctl) (join! w z [t true]))
-                         (fn []
-                           (when (hs/ctl-start! ctl)
-                             (let [res (try [(f) false] (catch #?(:clj Throwable :cljs :default) t [t true]))]
-                               #?(:clj (do (hs/ctl-finish! ctl) (join! w z res))
+                                 (fn [t] (hs/ctl-cancel! ctl) (join! w z [t true]))
+                                 (fn []
+                                   (when (hs/ctl-start! ctl)
+                                     (let [res (try [(f) false] (catch #?(:clj Throwable :cljs :default) t [t true]))]
+                                       #?(:clj (do (hs/ctl-finish! ctl) (join! w z res))
                                ;; a returned promise is awaited (old blocking on JS)
-                                  :cljs (if (and (not (second res)) (instance? js/Promise (first res)))
-                                          (.then (first res)
-                                                 (fn [v] (hs/ctl-finish! ctl) (join! w z [v false]))
-                                                 (fn [e] (hs/ctl-finish! ctl) (join! w z [e true])))
-                                          (do (hs/ctl-finish! ctl) (join! w z res)))))))))))
-    (unwind! ek))))
+                                          :cljs (if (and (not (second res)) (instance? js/Promise (first res)))
+                                                  (.then (first res)
+                                                         (fn [v] (hs/ctl-finish! ctl) (join! w z [v false]))
+                                                         (fn [e] (hs/ctl-finish! ctl) (join! w z [e true])))
+                                                  (do (hs/ctl-finish! ctl) (join! w z res)))))))))))
+            (unwind! ek))))
 
 (defn sleep-effect!
   "`(sleep ms)`: a timer resource."
   [ms k ek]
   (if-let [refusal (finalizer-refusal)] (ek refusal)
-  (if-let [r (valid-run)]
-    (arm-and-park!
-     r :timer k ek
-     (fn [w z]
-       (s! z rw/Z-DEADLINE (+ (hs/now-ms) (long ms)))
-       (set-ctl! w z (hs/schedule! ms (fn [] (join! w z [nil false]))))))
-    (unwind! ek))))
+          (if-let [r (valid-run)]
+            (arm-and-park!
+             r :timer k ek
+             (fn [w z]
+               (s! z rw/Z-DEADLINE (+ (hs/now-ms) (long ms)))
+               (set-ctl! w z (hs/schedule! ms (fn [] (join! w z [nil false]))))))
+            (unwind! ek))))
 
 (defn external-effect!
   "R2 `(external f)`: parks on an external operation. After the commit, under
@@ -3839,28 +3839,28 @@
    fails with that error."
   [f k ek]
   (if-let [refusal (finalizer-refusal)] (ek refusal)
-  (if-let [r (valid-run)]
-    (arm-and-park!
-     r :external k ek
-     (fn [w z]
-       (let [cell (doto (object-array 2) (aset 0 w) (aset 1 z))
-             flag (hs/flag false)
-             complete! (fn complete!
-                         ([v] (complete! v false))
-                         ([v err?]
-                          (when (hs/flag-cas! flag false true)
-                            (let [w (aget cell 0) z (aget cell 1)]
-                              (aset cell 0 nil) (aset cell 1 nil)
-                              (when w (join! w z [v (boolean err?)]))))
-                          nil))
-             ctl {:external true :flag flag :cell cell}]
-         (set-ctl! w z ctl)
-         (let [res (try [(f complete!) nil] (catch #?(:clj Throwable :cljs :default) t [nil t]))]
-           (if-let [t (second res)]
-             (complete! t true)
-             (when (fn? (first res))
-               (set-ctl! w z (assoc ctl :cancel (first res)))))))))
-    (unwind! ek))))
+          (if-let [r (valid-run)]
+            (arm-and-park!
+             r :external k ek
+             (fn [w z]
+               (let [cell (doto (object-array 2) (aset 0 w) (aset 1 z))
+                     flag (hs/flag false)
+                     complete! (fn complete!
+                                 ([v] (complete! v false))
+                                 ([v err?]
+                                  (when (hs/flag-cas! flag false true)
+                                    (let [w (aget cell 0) z (aget cell 1)]
+                                      (aset cell 0 nil) (aset cell 1 nil)
+                                      (when w (join! w z [v (boolean err?)]))))
+                                  nil))
+                     ctl {:external true :flag flag :cell cell}]
+                 (set-ctl! w z ctl)
+                 (let [res (try [(f complete!) nil] (catch #?(:clj Throwable :cljs :default) t [nil t]))]
+                   (if-let [t (second res)]
+                     (complete! t true)
+                     (when (fn? (first res))
+                       (set-ctl! w z (assoc ctl :cancel (first res)))))))))
+            (unwind! ek))))
 
 ;; ---------------------------------------------------------------------------
 ;; await-op (C1 W5/R3): a partial-cps op `(fn [resolve reject])` as a resource
@@ -4484,44 +4484,44 @@
    exists parked at the effect and resumes with [:child nil] (Q4)."
   [k ek]
   (if-let [refusal (finalizer-refusal)] (ek refusal)
-  (if-let [r (valid-run)]
-    (cond
-      (comp? (rv (cw) (g r rw/R-OF)))
-      (ek (ex-info "fork in a computation body is not supported" {}))
-      (> (long (or (aget (ctx) 2) 0)) 1)
-      (ek (ex-info "fork in a nested slice is not supported yet" {}))
-      :else
-      (let [w (cw)
-            owner (current-scope! w r)            ; F2: materialized before the boundary
+          (if-let [r (valid-run)]
+            (cond
+              (comp? (rv (cw) (g r rw/R-OF)))
+              (ek (ex-info "fork in a computation body is not supported" {}))
+              (> (long (or (aget (ctx) 2) 0)) 1)
+              (ek (ex-info "fork in a nested slice is not supported yet" {}))
+              :else
+              (let [w (cw)
+                    owner (current-scope! w r)            ; F2: materialized before the boundary
             ;; in the child the effect is a resource its run arms, fired and acknowledged at
             ;; once: the ids in T17's order (resource, activation, wait edge)
-            _ (alloc-id! w)
-            aid (alloc-id! w)
-            _ (alloc-id! w)
-            a (new-activation! w aid r :one k ek (object-array 1) (object-array 1) 0)
-            eidx (gl r rw/R-EIDX)]
+                    _ (alloc-id! w)
+                    aid (alloc-id! w)
+                    _ (alloc-id! w)
+                    a (new-activation! w aid r :one k ek (object-array 1) (object-array 1) 0)
+                    eidx (gl r rw/R-EIDX)]
         ;; the child's view: the run resumed at the effect with its delivery
-        (s! a rw/A-RESULT [[:child nil] false])
-        (s! a rw/A-RESUMED true)
-        (s! a rw/A-INLINE false)
-        (s! r rw/R-SLICE false)
-        (s! r rw/R-EIDX (inc eidx))       ; the child's run took the effect; the parent's did not
-        (s! r rw/R-BIND (thread-frame))   ; the child resumes with the frame live at the effect
-        (aadd! (g w rw/W-RESUME) a)
-        (unregister! w a)                 ; a delivery carrier, not a parked activation
-        (let [child (fork-world* w)]
-          (own-child! w owner child true)
+                (s! a rw/A-RESULT [[:child nil] false])
+                (s! a rw/A-RESUMED true)
+                (s! a rw/A-INLINE false)
+                (s! r rw/R-SLICE false)
+                (s! r rw/R-EIDX (inc eidx))       ; the child's run took the effect; the parent's did not
+                (s! r rw/R-BIND (thread-frame))   ; the child resumes with the frame live at the effect
+                (aadd! (g w rw/W-RESUME) a)
+                (unregister! w a)                 ; a delivery carrier, not a parked activation
+                (let [child (fork-world* w)]
+                  (own-child! w owner child true)
           ;; the parent takes the delivery back and continues on its own copy
-          (remove-row! (g w rw/W-RESUME) a)
-          (let [r (rv w r)]
-            (s! r rw/R-SLICE true)
-            (s! r rw/R-EIDX eidx)
-            (set-active! r)
-            (commit! w [:fork (g r rw/ID) (g child rw/ID)])
+                  (remove-row! (g w rw/W-RESUME) a)
+                  (let [r (rv w r)]
+                    (s! r rw/R-SLICE true)
+                    (s! r rw/R-EIDX eidx)
+                    (set-active! r)
+                    (commit! w [:fork (g r rw/ID) (g child rw/ID)])
             ;; scheduled after the parent's gate is released (E3)
-            (aadd! (g w rw/W-AFTER) child)
-            (k [:parent child])))))
-    (unwind! ek))))
+                    (aadd! (g w rw/W-AFTER) child)
+                    (k [:parent child])))))
+            (unwind! ek))))
 
 (defn fork [] (throw (ex-info "fork outside a body" {})))
 
@@ -4585,26 +4585,26 @@
    controller: cancelled, it joins at once."
   [site payload k ek]
   (if-let [refusal (finalizer-refusal)] (ek refusal)
-  (if-let [r (valid-run)]
-    (let [w (cw)
-          handlers (g w rw/W-SP-HANDLERS)
-          h (or (get handlers site) (get handlers :default))]
-      (cond
-        (nil? h) (k payload)
-        (comp? (rv w (g r rw/R-OF))) (ek (ex-info "savepoint in a computation body is not supported" {}))
-        (> (long (or (aget (ctx) 2) 0)) 1) (ek (ex-info "savepoint in a nested slice is not supported yet" {}))
-        :else
-        (arm-and-park! r :savepoint k ek
-                       (fn [w z]
+          (if-let [r (valid-run)]
+            (let [w (cw)
+                  handlers (g w rw/W-SP-HANDLERS)
+                  h (or (get handlers site) (get handlers :default))]
+              (cond
+                (nil? h) (k payload)
+                (comp? (rv w (g r rw/R-OF))) (ek (ex-info "savepoint in a computation body is not supported" {}))
+                (> (long (or (aget (ctx) 2) 0)) 1) (ek (ex-info "savepoint in a nested slice is not supported yet" {}))
+                :else
+                (arm-and-park! r :savepoint k ek
+                               (fn [w z]
                          ;; the basis is a fork of this commit that is never run, only forked;
                          ;; its run continues with the frame live at the effect
-                         (s! (rv w r) rw/R-BIND (thread-frame))
-                         (let [basis (fork-world* w)
-                               pub (publication w (id-of z) site payload basis)]
+                                 (s! (rv w r) rw/R-BIND (thread-frame))
+                                 (let [basis (fork-world* w)
+                                       pub (publication w (id-of z) site payload basis)]
                            ;; the parent's own copy of the run keeps no slice (it is parked)
-                           (set-active! (rv w r))
-                           (aadd! (g w rw/W-CALLBACKS) [(fn [_ _] (h pub)) [nil false]]))))))
-    (unwind! ek))))
+                                   (set-active! (rv w r))
+                                   (aadd! (g w rw/W-CALLBACKS) [(fn [_ _] (h pub)) [nil false]]))))))
+            (unwind! ek))))
 
 (defn savepoint [_ _] (throw (ex-info "savepoint outside a body" {})))
 
@@ -4796,22 +4796,22 @@
   [sym args site k ek]
   (if-let [refusal (finalizer-refusal)]
     (ek refusal)
-  (if-let [r (valid-run)]
-    (let [h (or (get @effect-handlers sym)
-                (throw (ex-info "unregistered effect" {:spindel/invalid :effect :effect sym})))
+    (if-let [r (valid-run)]
+      (let [h (or (get @effect-handlers sym)
+                  (throw (ex-info "unregistered effect" {:spindel/invalid :effect :effect sym})))
           ;; §8.2 addresses: counted on entry, before a savepoint freezes the run
-          key (creation-key! r site)
-          op (try (h args {:effect sym :site site :run (g r rw/ID) :effect-index (gl r rw/R-EIDX)
-                           :key key :frame (frame-of (rv (cw) (g r rw/R-OF))) :path (g r rw/R-PATH)})
-                  (catch #?(:clj Throwable :cljs :default) t [:error t]))]
-      (case (when (vector? op) (first op))
-        :value (k (nth op 1))
-        :error (ek (nth op 1))
-        :external (external-effect! (nth op 1) k ek)
-        :savepoint (savepoint-effect! (nth op 1) (nth op 2) k ek)
-        :await (await-effect! (row-of (nth op 1)) k ek)
-        (ek (ex-info "an effect handler returned no op" {:spindel/invalid :effect :effect sym :op op}))))
-    (unwind! ek))))
+            key (creation-key! r site)
+            op (try (h args {:effect sym :site site :run (g r rw/ID) :effect-index (gl r rw/R-EIDX)
+                             :key key :frame (frame-of (rv (cw) (g r rw/R-OF))) :path (g r rw/R-PATH)})
+                    (catch #?(:clj Throwable :cljs :default) t [:error t]))]
+        (case (when (vector? op) (first op))
+          :value (k (nth op 1))
+          :error (ek (nth op 1))
+          :external (external-effect! (nth op 1) k ek)
+          :savepoint (savepoint-effect! (nth op 1) (nth op 2) k ek)
+          :await (await-effect! (row-of (nth op 1)) k ek)
+          (ek (ex-info "an effect handler returned no op" {:spindel/invalid :effect :effect sym :op op}))))
+      (unwind! ek))))
 
 ;; ---------------------------------------------------------------------------
 ;; Body macros (partial-cps)
