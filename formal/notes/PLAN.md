@@ -1126,7 +1126,7 @@ No counterexample. Tripwire: i10_test random drivers (g10r and lit-i10-current o
 ### Stage B (2026-11-16): every bundle outside the core loads under C0
 
 - **All namespaces load** (lit .. hm18, skip, sys, z59, cow, mvcc), kernel-checked, no `sorry`, no statement weakened
-  except by the one temporary hypothesis below.
+  (the temporary hypothesis `c0-root` of the first pass is discharged by the root gate, below).
 - Repair pattern: one lemma per bundle and C0 primitive, reused by the copiers: the frames `kw`/`kw8`/`res`/`hk-has`
   for `deliver-res`, `end-link`, `end-stream`, `close-source0`, `clear-rtasks`; overrides where a bundle reads the
   realized row (`g5-deliver-res`, `g5-append-raw` with the guard's stream row, `svb` with `stream-set-tail-hv`, `gso`
@@ -1141,7 +1141,23 @@ No counterexample. Tripwire: i10_test random drivers (g10r and lit-i10-current o
   a stream the fork appended to stays in, so that merge is refused (stream merge: C2). sys_test
   `c0-merge-links-out-streams-in`.
 
-#### Temporary hypothesis `c0-root w it` (i8.clj, Part F2)
+#### Root gate (branch `formal/c0-guard`, 2026-11-16): `c0-root` is no hypothesis any more
+
+The first Stage B pass carried a temporary hypothesis `c0-root w it` (an item that creates a link owned by the root
+scope runs while the root scope is open) on step-g8, step-p3i, step-lit-i8-total, step-p3j, step-gd-facts-total,
+step-p3k, step-i14-total, step-p3l, step-h-mark-total, step-p3la, step-p3m, step-h3-total, step-h-mem2-total and
+sinv-step; g8 (literal I8) needs it. The engine session (feat/v2-world-completion) made it a rule: every root-owned link
+creation is refused once the root scope is closed (append logs `[:append s v 0]` accepted false, a cancelled
+finalizer's corner after release, Z#56; link-realize logs nothing; the others are refused for a cancelled run or a
+released host). Model: raw0 wraps `create-source(-top)` with kind `sk-stream`, `create-link`, `create-link-top`,
+`link-realize` with tag 1 and `append` in `c0-gate w b o = if (root-ok-if b w) o (refuse w)` (engine.clj, before
+Part G; `root-ok-if b w = !b || scope-open-at w root-scope-id`), with `c0-gate-inv`/`-refuse`/`-l4`, `i10-gate`,
+`s9-gate`; engine_test `c0-root-gate`; samples 1-21 replay with no divergence. The proofs take the gate locally: g8's
+transition overrides take `root-ok-if`, `c0-gate-g8` gives it to them in raw0's copy (a refused item keeps the world),
+h3's raw0 assembly (hm17) wraps the gated arms in `c0-gate-h3`. Every theorem listed above has its original
+statement again.
+
+#### Former temporary hypothesis `c0-root w it` (first pass, superseded)
 
 `c0-root w it = (not (c0-root-item it)) || scope-open-at w root-scope-id`: an item that creates a link owned by the
 root scope (a stream's creation (T1 kind `sk-stream`: its first tail), `create-link` in a run, `link-realize` with tag 1
