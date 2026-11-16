@@ -795,8 +795,10 @@
 ;;   runs       the run rows (every unretired task and computation run, cleanup included)
 ;;   complete?  released and (an unborn instance, or no run left and every owned child world
 ;;              complete); a child world counts from its creation commit in its owner's log
-;;   kids       the engine's count of accepted, unfinished children: at most the number of the
-;;              owner's children that are not complete in the model (acceptance is the engine's)
+;;   kids       the accepted children that are not complete (and not collected): exact (nil = 0). A
+;;              child counts for its owner from its acceptance: at its creation, or, for a host fork
+;;              into a busy owner, from the checkpoint `:accepted-from` (the owner's queued internal
+;;              item: sample 23a); an instance from its activation
 ;; Tokens are the engine's exactly-once bookkeeping of the same relation and are not compared.
 
 (defn read-observations [path]
@@ -826,8 +828,15 @@
   `fam` (replay-family of `spec`): a vector of {:step :world :field :engine :model}."
   [spec fam obs]
   (vec
-   (for [{:keys [step log-length] eo :obs} obs
-         :let [at (fn [k] (let [{:keys [res init]} (fam k) n (get log-length k 0)]
+   (for [[idx {:keys [step log-length] eo :obs}] (map-indexed vector obs)
+         :let [step-idx (fn [s] (first (keep-indexed (fn [i o] (when (= s (:step o)) i)) obs)))
+               accepted? (fn [c] (let [a (:accepted-from (spec c))]
+                                   (and (or (nil? a) (>= idx (step-idx a)))
+                                        ;; an instance is accepted at its activation (activate!)
+                                        (or (not= :instance (:kind (spec c)))
+                                            (some #(= :resource-fire (first (:item %)))
+                                                  (take (get log-length c 0) (:log (spec c))))))))
+               at (fn [k] (let [{:keys [res init]} (fam k) n (get log-length k 0)]
                             (if (zero? n) init (nth (:worlds res) (dec n)))))
                exists? (fn [k] (let [{:keys [at] parent :from} (spec k)]
                                  (or (nil? parent) (> (get log-length parent 0) at))))
@@ -835,7 +844,7 @@
                                     (not-any? #(= :resource-fire (first (:item %)))
                                               (take (get log-length k 0) (:log (spec k))))))
                owner (fn [c] (let [x (spec c)] (get x :owner (:from x))))
-               children (fn [k] (filter #(and (= k (owner %)) (exists? %)) (keys spec)))
+               children (fn [k] (filter #(and (= k (owner %)) (exists? %) (accepted? %)) (keys spec)))
                complete? (fn complete? [k]
                            (let [w (at k)]
                              (boolean (and (:released w)
@@ -849,6 +858,6 @@
          d (concat
             (for [f [:runs :released? :complete?] :when (not= (get e f) (get m f))]
               {:step step :world k :field f :engine (get e f) :model (get m f)})
-            (when (> (or (:kids e) 0) (:open-kids m))
+            (when (not= (or (:kids e) 0) (:open-kids m))
               [{:step step :world k :field :kids :engine (:kids e) :model (:open-kids m)}]))]
      d)))

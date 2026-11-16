@@ -492,7 +492,9 @@
    "23a" (let [s (log "23a-src") fh (keep-indexed (fn [i c] (when (= :fork-host (first (:item c))) i)) s)]
            {:src {:log s :kind :root}
             :owner {:log (log "23a-owner") :from :src :kind :fork-host :at (first fh)}
-            :child {:log (log "23a-child") :from :src :owner :owner :kind :fork-host :at (second fh)}})
+            ;; a host fork into a busy owner: the acceptance is an owner-internal item, queued until
+            ;; the owner's gate frees (checkpoint :owner-free)
+            :child {:log (log "23a-child") :from :src :owner :owner :kind :fork-host :at (second fh) :accepted-from :owner-free}})
    "23b" (let [p (log "23b-parent")]
            {:parent {:log p :kind :root}
             :instance {:log (log "23b-instance") :from :parent :kind :instance :at (c1-idx p #(= [:arm 4 :savepoint] (take 3 %)))}})
