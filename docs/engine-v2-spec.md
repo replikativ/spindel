@@ -1073,6 +1073,20 @@ reader synchronize per row (a monitor held for one row clone). A root world
 keeps no forwarding state; a fork's own copy map is bounded by the rows it
 inherited; versions live as long as a fork or anchor that can read them.
 
+**Token end (MVCC).** A token ends when it is no longer reachable (holders:
+the lineage of every world object, live or released and uncollected; a
+publication's basis until `dispose`; instances through the shared basis
+lineage), **or** at its fork's finish if it is unshared: the fork is released,
+its metadata is closed, and it has no pending work (ingress, callbacks,
+ready/resume/start/cleanup queues), no queued cleanup and no armed resource.
+Deriving a world from a fork (a fork of it, an instance of its basis) marks the
+fork's token shared; shared is sticky (conservative), so a shared token ends
+only when unreachable. A finished world resolves no inherited row again:
+released worlds refuse host items (T21), and finish requires no slice or armed
+resource. When a token ends, its owner prunes the versions it listed (as a
+completion item under the owner's gate); a version stays while any live token
+covers its range.
+
 **Mode (Q3, decided):**
 - **frozen** is the default: untouched reads see the fork-time basis.
 - **following** applies to **sources only**:
@@ -1307,7 +1321,10 @@ the existing in-place resume, and `consume`/`dispose` (S8, S9).
 - `diff(W′)`: source rows written in `W′` relative to its basis.
 - merge entry point: refuses unless `W′` is quiescent and sealed. Merge
   semantics, stamping, durability and recovery are the settlement layer's
-  responsibility.
+  responsibility. The engine's `merge!` (L12, signals only) keeps, for each
+  inherited source the fork touched, `[identity version-number]` at the fork:
+  the change and conflict checks compare version numbers, and the write goes
+  through the identity resolved in the parent (MVCC).
 
 ---
 
