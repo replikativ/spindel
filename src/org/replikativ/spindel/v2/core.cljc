@@ -1328,7 +1328,11 @@
     (settle! w k)
     (when-not (rv w (g k rw/K-RUN))
       (release-ownership! w k))
-    (when-let [l (g k rw/K-LINK)] (link-done! w (rv w l) v err?))))
+    (when-let [l (g k rw/K-LINK)]
+      ;; the realizer's own run was cancelled (T14 sets unwinding first), as
+      ;; opposed to a body that ends with a propagated cancellation error
+      (let [r (rv w (g k rw/K-RUN))]
+        (link-done! w (rv w l) v err? (boolean (and r (== 1 (gl r rw/R-MODE)))))))))
 
 (defn- complete!
   "T12."
@@ -2193,7 +2197,10 @@
 (defn- new-task! [w owner key at inputs body handles]
   (let [k (debtor-row w rw/T-TASK rw/K-SIZE owner key at handles)]
     (s! k rw/K-BODY body)
-    (s! k rw/K-INPUTS inputs)
+    ;; the captures are compared only to adopt a computation's task (§5.2);
+    ;; elsewhere they are not kept (a running task would retain them, e.g. a
+    ;; sequence head), except in verify mode for the projection
+    (s! k rw/K-INPUTS (when (or (comp? owner) (logging? w)) inputs))
     (s! k rw/K-DONE false)
     (register! w k)))
 
@@ -2400,7 +2407,11 @@
     (let [k (rv w (g r rw/R-OF))]
       (s! r rw/R-SLICE true)
       (commit! w [:schedule (g r rw/ID)])
-      (slice! r #((g k rw/K-BODY) ok-k err-k)))))
+      ;; a task's body runs once: the row lets go of it (and its captures,
+      ;; e.g. a sequence head the body walks past)
+      (let [body (g k rw/K-BODY)]
+        (s! k rw/K-BODY nil)
+        (slice! r #(body ok-k err-k))))))
 
 (defn- pop-first! [w l]
   (let [x (rv w (anth l 0))]
@@ -2866,8 +2877,12 @@
 
 (defn- realize!
   "Delivers link `x` once with `value` ([v next-handle], nil or a Failure)
-   and fires its readers."
+   and fires its readers. Its realizer state goes (the next link carries
+   the next state), except for a computation's head, kept for adoption (V4)."
   [w x value]
+  (let [spec (g x rw/X-REALIZE)]
+    (when (and (nth spec 0) (< (count spec) 6))
+      (s! x rw/X-REALIZE [nil nil nil (nth spec 3) (nth spec 4)])))
   (s! x rw/X-VALUE value)
   (s! x rw/VERSION 1)
   (settle! w x)
@@ -2875,16 +2890,17 @@
 
 (defn- link-done!
   "The realizer of `x` ended with `res`: [v s'] → the next link; nil → the
-   end; an error → memoized, except ::forked (V2), which leaves the link
-   unrealized and restarts it when it is demanded, and cancellation (world
-   release), which leaves it alone."
-  [w x res err?]
+   end; an error → memoized (also a cancellation its body propagated),
+   except ::forked (V2), which leaves the link unrealized and restarts it
+   when it is demanded. A cancelled realizer (world release) realizes
+   nothing."
+  [w x res err? cancelled?]
   (s! x rw/X-RTASK nil)
   (when (and (zero? (gl x rw/VERSION)) (g x rw/X-OPEN))
     (cond
+      cancelled? nil
       (and err? (:spindel/forked (ex-data res)))
       (when (hot? x) (start-realizer! w x))
-      (and err? (cancelled? res)) nil
       err? (realize! w x (Failure. res))
       (nil? res) (realize! w x nil)
       (and (vector? res) (== 2 (count res)))

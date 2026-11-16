@@ -9,10 +9,12 @@
   (:require [org.replikativ.spindel.v2.core :as v2 :refer [aseq await await-any task]])
   #?(:cljs (:require-macros [org.replikativ.spindel.v2.core :refer [aseq task]])))
 
+(def ^:private end #?(:clj (Object.) :cljs #js {}))   ; never equal to an element
+
 (defn- tagged [tag src]
   (aseq [p src]
     (when p
-      (if-let [[v nx] (await p)] [[tag v] nx] [[tag ::end] nil]))))
+      (if-let [[v nx] (await p)] [[tag v] nx] [[tag end] nil]))))
 
 (defn pub
   "A router over the source position `src`: it reads each element once,
@@ -23,20 +25,23 @@
   ([src topic-fn] (pub src topic-fn {}))
   ([src topic-fn {:keys [multi]}]
    (let [ctl (v2/stream)
+         ;; the router starts where `pub` returns: a sub issued before its
+         ;; first slice is not missed
+         ctl-pos (v2/position ctl)
          router (task
-                 (loop [sp (tagged :src src) cp (tagged :ctl (v2/position ctl)) topics {}]
+                 (loop [sp (tagged :src src) cp (tagged :ctl ctl-pos) topics {}]
                    (if (and (nil? sp) (nil? cp))
                      nil
                      (let [[[tag x] nx] (await-any (filterv some? [sp cp]))]
                        (case tag
-                         :ctl (if (= ::end x)
+                         :ctl (if (identical? end x)
                                 (recur sp nil topics)
                                 (let [[topic reply] x
                                       s (or (get topics topic)
                                             (let [s (v2/stream)] (when (nil? sp) (v2/close! s)) s))]
                                   (v2/deliver! reply (v2/position s))
                                   (recur sp nx (assoc topics topic s))))
-                         :src (if (= ::end x)
+                         :src (if (identical? end x)
                                 (do (doseq [s (vals topics)] (v2/close! s))
                                     (recur nil cp topics))
                                 (do (doseq [t (if multi (topic-fn x) [(topic-fn x)])]

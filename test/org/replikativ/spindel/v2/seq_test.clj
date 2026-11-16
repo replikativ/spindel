@@ -70,6 +70,19 @@
                                (v2/value (aseq [_ 0] :not-a-step) 2000 ::timeout)))))
      (v2/release-world! w))))
 
+(deftest a-propagated-cancellation-is-memoized
+  (checked
+   (let [w (vworld) calls (atom 0)]
+     (binding [v2/*world* w]
+       (let [victim (task (v2/sleep 5000))
+             _ (v2/cancel-task! victim)
+             xs (aseq [n 0] (swap! calls inc) (await victim) [n (inc n)])]
+         (is (thrown? Exception (v2/value xs 2000 ::timeout)) "the realizer's body failed: readers get it")
+         (is (v2/ready? xs))
+         (is (thrown? Exception (v2/value xs 2000 ::timeout)))
+         (is (= 1 @calls))))
+     (v2/release-world! w))))
+
 (deftest a-cancelled-reader-does-not-cancel-the-realization
   (checked
    (let [w (vworld) calls (atom 0) done (atom 0) gate (promise)]

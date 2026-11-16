@@ -9,6 +9,10 @@
             [org.replikativ.spindel.v2.core :as v2 :refer [aseq await await-any spin]])
   #?(:cljs (:require-macros [org.replikativ.spindel.v2.core :refer [aseq spin]])))
 
+;; markers no element can equal
+(def ^:private end #?(:clj (Object.) :cljs #js {}))
+(def ^:private none #?(:clj (Object.) :cljs #js {}))
+
 (defn from-coll
   "The elements of `coll` as a sequence."
   [coll]
@@ -82,10 +86,10 @@
 (defn dedupe
   "The elements that differ from their predecessor."
   [src]
-  (aseq [[prev p] [::none src]]
+  (aseq [[prev p] [none src]]
     (loop [p p]
       (when-let [[v nx] (await p)]
-        (if (= v prev) (recur nx) [v [v nx]])))))
+        (if (and (not (identical? none prev)) (= v prev)) (recur nx) [v [v nx]])))))
 
 (defn scan
   "The successive reductions `(f acc v)`, starting after `init`."
@@ -105,13 +109,13 @@
           (recur (next ps)))))))
 
 (defn- tagged
-  "`[[i v] next]` per element of `src`, then `[[i ::end] nil]` once."
+  "`[[i v] next]` per element of `src`, then `[[i end] nil]` once."
   [i src]
   (aseq [p src]
     (when p
       (if-let [[v nx] (await p)]
         [[i v] nx]
-        [[i ::end] nil]))))
+        [[i end] nil]))))
 
 (defn merge
   "The elements of all sources in the order they become ready (by
@@ -122,36 +126,39 @@
       (let [live (vec (keep-indexed (fn [i p] (when p i)) ps))]
         (when (seq live)
           (let [[[i v] nx] (await-any (mapv ps live))]
-            (if (= ::end v)
+            (if (identical? end v)
               (recur (assoc ps i nil))
               [v (assoc ps i nx)])))))))
 
 (defn latest
   "Each read yields the newest element available: it waits for one, then
    skips over the elements that are already realized (a sliding window of
-   one, for readers that only need the current state)."
+   one, for readers that only need the current state). A failed position is
+   left for the next read."
   [src]
   (aseq [p src]
     (when p
       (when-let [[v nx] (await p)]
         (loop [v v nx nx]
           (if (v2/ready? nx)
-            (if-let [[v2* nx2] (await nx)] (recur v2* nx2) [v nx])
+            (let [r (try (await nx) (catch #?(:clj Throwable :cljs :default) _ none))]
+              (if (and r (not (identical? none r))) (recur (nth r 0) (nth r 1)) [v nx]))
             [v nx]))))))
 
 (defn take-latest
   "Each read yields a vector of the newest available elements, at most `n`:
    it waits for one, then takes what is already realized (a sliding window
-   of `n`)."
+   of `n`). A failed position is left for the next read."
   [n src]
   (aseq [p src]
     (when p
       (when-let [[v nx] (await p)]
         (loop [acc [v] nx nx]
           (if (v2/ready? nx)
-            (if-let [[v* nx*] (await nx)]
-              (recur (let [acc (conj acc v*)] (if (> (count acc) n) (subvec acc 1) acc)) nx*)
-              [acc nx])
+            (let [r (try (await nx) (catch #?(:clj Throwable :cljs :default) _ none))]
+              (if (and r (not (identical? none r)))
+                (recur (let [acc (conj acc (nth r 0))] (if (> (count acc) n) (subvec acc 1) acc)) (nth r 1))
+                [acc nx]))
             [acc nx]))))))
 
 (defn reduce

@@ -83,3 +83,67 @@
      (v2/append! bus [:a 1]) (v2/append! bus [:b 2]) (v2/append! bus [:a 3])
      (v2/close! bus)
      (is (= [1 3] (v2/value subscriber 3000 ::timeout))))))
+
+;; ---------------------------------------------------------------------------
+;; Review findings (c0-review-sol.md)
+
+(defn- weak-row [h] (java.lang.ref.WeakReference. (aget ^objects (.-cell ^org.replikativ.spindel.v2.core.Handle h) 0)))
+
+(defn- collected? [^java.lang.ref.WeakReference r]
+  (loop [n 0] (cond (nil? (.get r)) true (> n 50) false :else (do (System/gc) (Thread/sleep 10) (recur (inc n))))))
+
+(deftest a-sub-before-the-router-starts-is-served
+  (in-world
+   (let [s (v2/stream)
+         t (task (let [p (ps/pub (v2/position s) identity)] (await (ps/sub p :a))))]
+     (is (v2/handle? (v2/value t 2000 ::timeout))))))
+
+(deftest a-long-running-task-does-not-retain-the-head-it-captured
+  (in-world
+   (let [s (v2/stream)
+         head (v2/position s)
+         first-row (weak-row head)
+         seen (atom 0)
+         reader (task (loop [p head] (when-let [[_ nx] (await p)] (swap! seen inc) (recur nx))))]
+     (dotimes [i 100] (v2/append! s i))
+     (is (= 100 @seen))
+     (is (collected? first-row) "the task's captures go once its body has started")
+     (v2/close! s)
+     (v2/value reader 2000 ::timeout))))
+
+(deftest the-pub-router-keeps-only-tails
+  (in-world
+   (let [s (v2/stream)
+         head (v2/position s)
+         first-row (weak-row head)
+         p (ps/pub head :t)
+         a (v2/value (ps/sub p :a) 2000 ::timeout)
+         r (as/into [] a)]
+     (dotimes [i 100] (v2/append! s {:t :a :i i}))
+     (v2/close! s)
+     (is (= 100 (count (v2/value r 2000 ::timeout))))
+     (is (collected? first-row) "the router does not hold the source history"))))
+
+(deftest markers-never-collide-with-elements
+  (in-world
+   (is (= [[:org.replikativ.spindel.v2.seq/end :ok] 1]
+          (all (as/merge (as/from-coll [[:org.replikativ.spindel.v2.seq/end :ok] 1])))))
+   (is (= [:org.replikativ.spindel.v2.seq/none 1]
+          (all (as/dedupe (as/from-coll [:org.replikativ.spindel.v2.seq/none 1])))))
+   (let [bus (v2/stream)
+         p (ps/pub (v2/position bus) (constantly :all))
+         r (as/into [] (v2/value (ps/sub p :all) 2000 ::timeout))]
+     (v2/append! bus :org.replikativ.spindel.v2.pubsub/end)
+     (v2/append! bus :after)
+     (v2/close! bus)
+     (is (= [:org.replikativ.spindel.v2.pubsub/end :after] (v2/value r 2000 ::timeout))))))
+
+(deftest sliding-reads-keep-their-values-before-a-failure
+  (in-world
+   (let [s (v2/stream) pos (v2/position s)]
+     (v2/append! s 1) (v2/append! s 2)
+     (v2/close! s (ex-info "bad" {}))
+     (let [[v nx] (v2/value (as/latest pos) 2000 ::timeout)]
+       (is (= 2 v))
+       (is (thrown-with-msg? Exception #"bad" (v2/value nx 2000 ::timeout)) "the error is the next read"))
+     (is (= [1 2] (first (v2/value (as/take-latest 2 pos) 2000 ::timeout)))))))
