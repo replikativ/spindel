@@ -387,6 +387,52 @@
    :acts {},
    :edges {},
    :cleanup {5 {:rows []}}}}
+ {:item [:finally-leave 5],
+  :accepted true,
+  :proj
+  {:scopes
+   {6 {:parent 2, :kind :run, :open true},
+    2 {:parent nil, :kind :root, :open true}},
+   :pubs {},
+   :pins {},
+   :next-id 10,
+   :sources
+   {3
+    {:owner 2,
+     :kind :deferred,
+     :state 0,
+     :version 0,
+     :open true,
+     :handles 1},
+    7
+    {:owner 6,
+     :kind :deferred,
+     :state 0,
+     :version 0,
+     :open true,
+     :handles 1}},
+   :pending-act nil,
+   :tasks
+   {4 {:owner 2, :run 5, :inputs [4 5], :result [:err 1], :handles 1}},
+   :comps {},
+   :released false,
+   :forks {},
+   :res {},
+   :runs
+   {5
+    {:effect-index 2,
+     :epoch 0,
+     :stamp 5,
+     :mode :unwinding,
+     :scope 6,
+     :act :done,
+     :finalizers [],
+     :slice true,
+     :resources [],
+     :of 4}},
+   :acts {},
+   :edges {},
+   :cleanup {5 {:rows []}}}}
  {:item [:slice-exit 5],
   :accepted true,
   :proj

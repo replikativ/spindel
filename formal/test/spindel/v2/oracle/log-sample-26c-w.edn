@@ -323,7 +323,7 @@
    :pending-act nil,
    :tasks {},
    :comps {},
-   :released false,
+   :released true,
    :forks {},
    :res {},
    :runs {},

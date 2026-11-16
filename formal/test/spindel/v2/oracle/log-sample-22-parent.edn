@@ -1380,6 +1380,63 @@
    :acts {},
    :edges {},
    :cleanup {4 {:rows []}}}}
+ {:item [:finally-leave 4],
+  :accepted true,
+  :proj
+  {:scopes
+   {5 {:parent 2, :kind :run, :open true},
+    2 {:parent nil, :kind :root, :open true},
+    10 {:parent 5, :kind :explicit, :open true}},
+   :pubs {},
+   :pins {},
+   :next-id 30,
+   :sources
+   {18
+    {:owner nil,
+     :kind :deferred,
+     :state 0,
+     :version 0,
+     :open false,
+     :handles 1},
+    21
+    {:owner nil,
+     :kind :deferred,
+     :state 0,
+     :version 0,
+     :open false,
+     :handles 1},
+    24
+    {:owner nil,
+     :kind :deferred,
+     :state 0,
+     :version 0,
+     :open false,
+     :handles 1}},
+   :pending-act nil,
+   :tasks
+   {3 {:owner 2, :run 4, :inputs [4 5], :result [:err 1], :handles 1},
+    11 {:owner 10, :run nil, :inputs [], :result [:err 1], :handles 1},
+    15
+    {:owner nil, :run nil, :inputs [], :result [:err 1], :handles 1}},
+   :comps {},
+   :released false,
+   :forks {},
+   :res {},
+   :runs
+   {4
+    {:effect-index 4,
+     :epoch 0,
+     :stamp 4,
+     :mode :unwinding,
+     :scope 5,
+     :act :done,
+     :finalizers [0],
+     :slice true,
+     :resources [],
+     :of 3}},
+   :acts {},
+   :edges {},
+   :cleanup {4 {:rows []}}}}
  {:item [:finally-exit 4],
   :accepted true,
   :proj
@@ -1438,6 +1495,63 @@
    :edges {},
    :cleanup {4 {:rows []}}}}
  {:item [:close-scope 10],
+  :accepted true,
+  :proj
+  {:scopes
+   {5 {:parent 2, :kind :run, :open true},
+    2 {:parent nil, :kind :root, :open true}},
+   :pubs {},
+   :pins {},
+   :next-id 30,
+   :sources
+   {18
+    {:owner nil,
+     :kind :deferred,
+     :state 0,
+     :version 0,
+     :open false,
+     :handles 1},
+    21
+    {:owner nil,
+     :kind :deferred,
+     :state 0,
+     :version 0,
+     :open false,
+     :handles 1},
+    24
+    {:owner nil,
+     :kind :deferred,
+     :state 0,
+     :version 0,
+     :open false,
+     :handles 1}},
+   :pending-act nil,
+   :tasks
+   {3 {:owner 2, :run 4, :inputs [4 5], :result [:err 1], :handles 1},
+    11
+    {:owner nil, :run nil, :inputs [], :result [:err 1], :handles 1},
+    15
+    {:owner nil, :run nil, :inputs [], :result [:err 1], :handles 1}},
+   :comps {},
+   :released false,
+   :forks {},
+   :res {},
+   :runs
+   {4
+    {:effect-index 4,
+     :epoch 0,
+     :stamp 4,
+     :mode :unwinding,
+     :scope 5,
+     :act :done,
+     :finalizers [],
+     :slice true,
+     :resources [],
+     :of 3}},
+   :acts {},
+   :edges {},
+   :cleanup {4 {:rows []}}}}
+ {:item [:finally-leave 4],
   :accepted true,
   :proj
   {:scopes
