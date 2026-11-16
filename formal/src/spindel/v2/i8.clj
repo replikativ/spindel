@@ -1593,6 +1593,8 @@
 ;; of a realization, an appended tail) is created only while the root scope is open: raw0's `c0-gate`
 ;; (engine.clj) refuses the item otherwise; the transitions below take the gate's fact
 ;; ===========================================================================
+(a/theorem root-ok-any [b :- Bool, w :- World] (=> (= (root-ok-if true w) true) (= (root-ok-if b w) true))
+  (intro h) (simp only [root-ok-if Bool.not_true Bool.false_or] at h) (simp only [root-ok-if h Bool.or_true]))
 (a/theorem root-ok-true [w :- World] (=> (= (root-ok-if true w) true) (= (scope-open-at w root-scope-id) true))
   (intro h) (simp only [root-ok-if Bool.not_true Bool.false_or] at h) (exact h))
 
@@ -2181,7 +2183,7 @@
     (c0-gate-inv w _ _ h (t-create-link-top-inv w sc l h))
     (c0-gate-inv w _ _ h (fn [hc0 :- (= (root-ok-if true w) true)] (t-create-link-top-inv w sc l h)))
     (c0-gate-inv w _ _ h (t-link-realize-inv w l tag v n h))
-    (c0-gate-inv w _ _ h (fn [hc0 :- (= (root-ok-if (Nat.beq tag res-ok) w) true)] (t-link-realize-inv w l tag v n hc0 h)))
+    (c0-gate-inv w _ _ h (fn [hc0 :- (= (root-ok-if true w) true)] (t-link-realize-inv w l tag v n (root-ok-any (Nat.beq tag res-ok) w hc0) h)))
     (c0-gate-inv w _ _ h (t-append-inv w x v t h))
     (c0-gate-inv w _ _ h (fn [hc0 :- (= (root-ok-if true w) true)] (t-append-inv w x v t hc0 h)))
     (t4-inv w _ _ _ _ h) (t4-inv w st b fresh ins (bshut-cur w st hc) h)})

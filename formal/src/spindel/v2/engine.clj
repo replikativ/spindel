@@ -2923,10 +2923,11 @@
   (simp only [t8-obs hs refuse]))
 
 ;; C0 (engine session, feat/v2-world-completion): a link owned by the root scope is created only
-;; while the root scope is open (create-link, create-link-top, link-realize with tag 1, append, a
-;; stream's first tail); once it is closed (T21) the item is refused, as the engine (append logs
-;; accepted false; link-realize logs nothing; the others are refused for a cancelled run or a
-;; released host). `b` says whether the item creates such a link.
+;; while the root scope is open (create-link, create-link-top, append, a stream's first tail), and no
+;; link is realized once it is closed (link-realize, every tag: the engine's link-done! realizes
+;; nothing and logs no item); once it is closed (T21) the item is refused, as the engine (append logs
+;; accepted false; the others are refused for a cancelled run or a released host). `b` says whether
+;; the item is gated.
 (a/defn root-ok-if [b :- Bool, w :- World] Bool (Bool.or (Bool.not b) (scope-open-at w root-scope-id)))
 (a/defn c0-gate [w :- World, b :- Bool, o :- Outcome] Outcome (if (root-ok-if b w) o (refuse w)))
 
@@ -2998,7 +2999,7 @@
     [(create-link st l) (if (in-cleanup w st) (refuse w) (c0-gate w true (t-create-link w st l)))]
     [(create-link-top sc l) (c0-gate w true (t-create-link-top w sc l))]
     [(link-demand l k) (t-link-demand w l k)]
-    [(link-realize l tag v n) (c0-gate w (Nat.beq tag res-ok) (t-link-realize w l tag v n))]
+    [(link-realize l tag v n) (c0-gate w true (t-link-realize w l tag v n))]
     [(append x v t) (c0-gate w true (t-append w x v t))]
     [(close x tag v) (t-close w x tag v)]))
 

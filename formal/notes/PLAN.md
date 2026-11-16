@@ -1149,11 +1149,14 @@ step-p3k, step-i14-total, step-p3l, step-h-mark-total, step-p3la, step-p3m, step
 sinv-step; g8 (literal I8) needs it. The engine session (feat/v2-world-completion) made it a rule: every root-owned link
 creation is refused once the root scope is closed (append logs `[:append s v 0]` accepted false, a cancelled
 finalizer's corner after release, Z#56; link-realize logs nothing; the others are refused for a cancelled run or a
-released host). Model: raw0 wraps `create-source(-top)` with kind `sk-stream`, `create-link`, `create-link-top`,
-`link-realize` with tag 1 and `append` in `c0-gate w b o = if (root-ok-if b w) o (refuse w)` (engine.clj, before
+released host); and link-done! realizes nothing at all once the root scope is closed (every tag, no item). Model:
+raw0 wraps `create-source(-top)` with kind `sk-stream`, `create-link`, `create-link-top`, `link-realize` (every tag:
+the end and an error realize nothing either) and `append` in `c0-gate w b o = if (root-ok-if b w) o (refuse w)` (engine.clj, before
 Part G; `root-ok-if b w = !b || scope-open-at w root-scope-id`), with `c0-gate-inv`/`-refuse`/`-l4`, `i10-gate`,
-`s9-gate`; engine_test `c0-root-gate`; samples 1-21 replay with no divergence. The proofs take the gate locally: g8's
-transition overrides take `root-ok-if`, `c0-gate-g8` gives it to them in raw0's copy (a refused item keeps the world),
+`s9-gate`; engine_test `c0-root-gate` (append, create-link-top and link-realize tags 0/1/2 refused with the world
+unchanged under a closed root scope, accepted under an open one); samples 1-21 replay with no divergence. The proofs
+take the gate locally: g8's transition overrides take `root-ok-if` (link-realize's through `root-ok-any`),
+`c0-gate-g8` gives it to them in raw0's copy (a refused item keeps the world),
 h3's raw0 assembly (hm17) wraps the gated arms in `c0-gate-h3`. Every theorem listed above has its original
 statement again.
 
