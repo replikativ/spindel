@@ -1437,12 +1437,15 @@
   '{(t6-inv w _ _ _ _ _ _ h) (t6-inv w _ _ _ _ _ _ hg7 h)
     (t22-inv w _ _ h) (t22-inv w _ _ hg7 h)
     (t8-full-inv w _ _ _ h) (t8-full-inv w _ _ _ hg7 h)
+    (t8-obs-inv w _ _ _ h) (t8-obs-inv w _ _ _ hg7 hg10 h)
     (t12-inv w _ _ _ h) (t12-inv w _ _ _ hg10 h)})
 (defn- gd-add-hyps [form calls]
   (let [[hd nm binders stmt & proof] form
         stmt2 (apply list '=> '(= (g7 w) true) '(= (g10r w) true) (rest stmt))
         proof2 (map (fn [t] (if (= t '(intro h)) '(intros hg7 hg10 h) t)) proof)]
     (subst-forms #(contains? calls %) calls (apply list hd nm binders stmt2 proof2))))
+;; C0: T8 goes through t8-obs (a stream is refused)
+(patch! GD 't8-obs-inv (fn [form] (gd-add-hyps (gd-patch form) '{(t8-full-inv w d cb fresh h) (t8-full-inv w d cb fresh hg7 h)})))
 (patch! GD 'raw0-inv (fn [form] (gd-add-hyps (gd-patch form) gd-calls)))
 (patch! GD 'raw0g-inv (fn [form] (gd-add-hyps (gd-patch form) '{(raw0-inv w it h) (raw0-inv w it hg7 hg10 h)})))
 (patch! GD 'raw-inv (fn [form] (gd-add-hyps (gd-patch form) '{(raw0g-inv w it h) (raw0g-inv w it hg7 hg10 h)})))
@@ -1501,11 +1504,11 @@
 (a/theorem p3j-parts [w :- World] (=> (= (p3j w) true) (And (= (p3i w) true) (= (gd w) true)))
   (intro h) (simp only [p3j Bool.and_eq_true] at h) (exact h))
 (a/theorem p3j-empty [] (= (p3j empty-world) true) (rfl))
-(a/theorem step-p3j [w :- World, it :- Item] (=> (= (p3j w) true) (= (p3j (:world (world-step w it))) true))
-  (intro h)
+(a/theorem step-p3j [w :- World, it :- Item] (=> (= (c0-root w it) true) (= (p3j w) true) (= (p3j (:world (world-step w it))) true))
+  (intros hc0 h)
   (have p := (p3j-parts w h))
   (have c := (p3i-ctx w (And.left p)))
-  (have a1 := (step-p3i w it (And.left p)))
+  (have a1 := (step-p3i w it hc0 (And.left p)))
   (have a2 := (step-gd w it (p3i-g7 w (And.left p)) (And.right c) (And.right p) (step-rule-r-safe w it (And.left c))))
   (simp only [p3j a1 a2 Bool.and_self]))
 
@@ -1532,8 +1535,8 @@
     (apply (tbl-all-mono RunRow _ _ _ (:runs w) cd))
     (intros q hq) (simp only [gd-ncur gdkey] at hq) (simp only [gd-noal]) (exact hq)))
 (a/theorem step-gd-facts-total [w :- World, it :- Item]
-  (=> (= (p3j w) true) (= (tbl-all (gd-fact (:world (world-step w it))) (:comps (:world (world-step w it)))) true))
-  (intro h) (exact (gd-facts _ (And.right (p3j-parts _ (step-p3j w it h))))))
+  (=> (= (c0-root w it) true) (= (p3j w) true) (= (tbl-all (gd-fact (:world (world-step w it))) (:comps (:world (world-step w it)))) true))
+  (intros hc0 h) (exact (gd-facts _ (And.right (p3j-parts _ (step-p3j w it hc0 h))))))
 
 ;; ===========================================================================
 ;; Part F. For the h-mark proof (PLAN z59 (1)): the marking's dirty set is closed backwards
