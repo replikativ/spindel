@@ -1168,7 +1168,8 @@ theorems listed above (commits ad4a953 .. f0ee12c on `formal/c0-model`); the roo
 ## C1 (2026-11-16): world-level completion, cancellation, synchronous finalizers, await-op
 
 Engine 823771c / engine-v2 d3b22f1 (spec Z#67, T14, T21, B8 reduced, §4.3 await-op/idle?; c1-cancellation-joins-design.md).
-Branch `formal/c1-model`. Stage A (model, oracle, tests) done; Stage B (downstream bundles) waits for confirmation.
+Branch `formal/c1-model`. Stage A (model, oracle, tests) and Stage B (downstream bundles, layer-2 completion) done;
+Stage B found one false obligation (completion stability, below). A4/A5 wait for spindel PR #268.
 
 ### Mapping of the C1 rules onto the model
 
@@ -1185,7 +1186,7 @@ Branch `formal/c1-model`. Stage A (model, oracle, tests) done; Stage B (downstre
 | tombstones: a done task leaves its owner scope once its run retired (Z#56, `release-ownership!`) | layer 1 | `subtree-empty` ignores a done task with no run (`task-held-in`): sample 22 closes scopes whose tasks the request-time cancel already retired. Was latent before C1. |
 | B8 reduced: suspending effects in a finally clause fail with ::invalid :finalizer; every await/take refused in a cancelled run's finally clause; custom effects refused in finally | layer 1 | the refused effect is never an item (it fails before any commit; samples 25, 25b). Modelled: in a cancelled run's cleanup slice (`in-cleanup`) T6 (`await-bad`) and take are refused. Not modelled: the normal-run clause (the engine logs no item for the clause's end, `leave-finalizer!`, so the model cannot track it; such items never appear). |
 | await-op (resource kind :op): start/cancel arbitration, hooks, ack when start returned ∧ hooks done ∧ settled, :detach | layer 1 | `rk-op 4`, armable (`arm-kind-ok`); arbitration, hooks and the ack condition are the engine's physical side: the log shows arm, fire (the result) and the ack (T15), which the model already admits in any phase without an edge on Z. |
-| a fired, unacknowledged op is still cancellable, also on a done run | layer 1 | `t-cancel` accepts a done, unretired task run holding no slice with no row change (`cancel-noop`; engine `cancel-task!` commits `[:cancel r]`). |
+| a fired, unacknowledged op is still cancellable, also on a done run | layer 1 | `t-cancel` on a done, unretired task run holding no slice (`host-cancel-done`) is `cancel-done`: T14 is idempotent on the run and R4 reaches its run scope's subtree at once, so the cascade cancels the alive runs owned in that subtree (none unless work was detached into a scope the done run still holds). Engine `cancel-task!` commits `[:cancel r]` (A2). |
 | link guards (append/link-realize/... under a closed root) | layer 1 | c0-guard's `c0-gate`, unchanged. |
 | idle? | host | out of scope (a snapshot of queues the model does not have: runnable work, cleanup queue, ingress). |
 
@@ -1194,35 +1195,62 @@ Branch `formal/c1-model`. Stage A (model, oracle, tests) done; Stage B (downstre
   `check-observations`: per sidecar checkpoint and world, the model's `runs` = W-RUNS, `released?`, derived `complete?`
   (released and: unborn, or no run and every owned child complete), and the engine's `kids` at most the model's open
   children; tokens are not compared (bookkeeping). `:unborn?` replays E4.
-- Deviations: `:released-proj` (the engine's verify projection, test/org/replikativ/spindel/v2/verify.clj, hard-codes
-  `:released false` after the release commit; the sidecar has `:released? true`) and `:lazy-run-scope` (an unmaterialized
-  run scope is no S-CHILD of its parent row, so a subtree close does not reach it while the projection shows it open;
-  samples 26b/26c/27; a materialized one is closed, sample 9). Both are engine-side; see the questions.
+- `kids` compared exactly (A3): accepted children not complete and not collected, at every sidecar checkpoint.
+  Acceptance is at creation (fork effect, host fork), at activation (instance), and for a host fork into a busy owner
+  at the owner's queued internal item (family spec `:accepted-from`, sample 23a's `:owner-free`).
+- A run scope that owns nothing (no task, no source owner, no child scope) reads as closed (A1: never materialized
+  means nothing to close); the former `:lazy-run-scope` deviation is dropped.
+- Deviation: `:released-proj` (the engine's verify projection, test/org/replikativ/spindel/v2/verify.clj, hard-codes
+  `:released false` after the release commit; the sidecar has `:released? true`). Dropped when PR #268 merges (A4).
 - Samples 22-27: every world replays with 0 divergences and every checkpoint of every sidecar matches; samples 1-21
   unchanged (0 divergences, triaged lists as before).
 
 ### Changed statements
 None: every theorem statement of the core is unchanged (definitions changed: `raw0` await/take arms, `t-cancel`,
 `subtree-empty`, `arm-kind-ok`, `res-kind-ok`; layer 2 `Cell`, `wake-one`, `fork-cell`/`fork-effect-cell`/`inst-cell`,
-`act-ok`). New: `await-bad`, `host-cancel-done`, `cancel-noop`, `task-held-in`, `release-unborn` (+`inv-release-unborn`),
+`act-ok`). New: `await-bad`, `host-cancel-done`, `cancel-done`, `task-held-in`, `release-unborn` (+`inv-release-unborn`),
 `world-runs`, `world-quiet`, `rk-op`; sys `res-ids`, `timer-kept`, `accept-cell`, `sys-accept`, `kid-done`,
 `complete-ready`, `complete-cell`, `sys-complete`, `release-unborn-cell`, `sys-release-unborn`, `sinv-accept`,
-`sinv-complete`, `complete-latch`. Test-side: sys_test's unarmable kind is `rk-native` (op is armable now).
+`sinv-complete`, `complete-latch`; Stage B: `p3l-release-unborn`, `sinv-release-unborn`, `wq`, `cinv` and its
+lemmas (below). Test-side: sys_test's unarmable kind is `rk-native` (op is armable now).
 
 ### Loads / breaks (Stage A)
 Core (state .. acts, rank, rank-step) load; lit .. hm11, skip, z59, cow, sys, mvcc load unchanged. Break: hm12
 (`await-kind-bad` -> `await-bad` in `h12-raw0-await-outcome`, mechanical), hm17 (h3's raw0 assembly: the await arm's
 guard and the take arm's cleanup refusal), hm18 (blocked by hm17).
 
-### Stage B obligations
-- the hm12/hm17 arms above (then hm18);
-- `sinv-release-unborn` (p3l through `set-released`: a copy per bundle of `inv-set-released`);
-- completion soundness `complete -> released, no run, no open accepted child` over the layer-2 operations, and stability:
-  a released world with no run stays without one under every layer-1 step (T5/T11 start runs only for demanded
-  computations; after T21 nothing is demanded) and every accepted child stays done;
-- the B8 refusal as an invariant fact (no wait edge created in a cleanup slice) where a bundle wants it.
+### Stage B results
+- hm12, hm17, hm18 repaired (mechanical: `await-bad` in the await arm, the take arm's cleanup refusal); the done-run
+  cancel (A2) needed the subtree cascade in i10 (`t-cancel-g10`), i8 (`t-cancel-g8`) and hm6 (`t-cancel-h3`). Every
+  namespace loads; no statement changed.
+- `sinv-release-unborn`: `p3l (release-unborn w) = p3l w` holds definitionally (`p3l-release-unborn`, `rfl`): no bundle
+  of `p3l` reads `released`. No per-bundle copies needed.
+- Completion soundness `cinv cells`: every live complete cell is `complete-ready` (released and: unborn, or no run and
+  every accepted child complete or collected). `cinv-none` (no complete cell); kept outright by `sys-accept`,
+  `sys-complete`, `sys-release-unborn`, `sys-activate` (a complete cell is released, so neither touches one),
+  `sys-drop`, `sys-idle-release`; by `sys-fork`, `sys-fork-effect`, `sys-instantiate` for an id no cell has accepted
+  (`forall j, tbl-all (nat-ne m) (:kids (cells j))`); by `sys-step`, `sys-wake`, `sys-resume`, `sys-merge`,
+  `sys-publish`, `sys-abandon` under the premise `hq`:
+  `forall w it, p3l w -> wq w (:world (world-step w it))`, `wq w w2` = released stays released and `world-quiet`
+  stays quiet. `complete-latch` (earlier) is the latch.
+- **Finding: `hq`'s quiet half is false in the current model**, so completion stability is NOT proved. Sequence
+  (layer 1, from the empty world): create-comp-top c, observe c, start c (run r), schedule r, release-world (T21: r cancelled,
+  mode unwinding, still holding the slice), `observe c` (or `pin c`) ACCEPTED (host-shut exempts a held slice), slice-exit
+  r: released, 0 runs (`world-quiet`), c observed/pinned and startable; `start c` accepted: a run in a quiet world. A
+  cell completed at the quiet point would be complete with a run. The released half (nothing clears `released`) is
+  believed true but not proved; `hq` stays an explicit premise, not a theorem.
+- B8 as an invariant fact: no bundle needed it.
 
 ### Questions (engine session)
+Answered: 1 (A4: the projection is fixed in PR #268; drop `:released-proj` then), 2 (A1), 4 (A2); 3 is A5 (after #268).
+New (Stage B finding):
+5. After T21, a cancelled run's cleanup slice still holds the slice, and Z#56 exempts a held slice from the host
+   refusal, so `observe`/`pin` (and other host items beyond Z#40's deliver/post/release/write/close) are accepted there.
+   Once the slice exits the world is released with no run but holds a demanded (or pinned) computation, which T5/T11
+   then start. Does the engine admit these in a cleanup slice after release, and if so what does completion do (latch
+   complete, then a run)? Candidate fixes: in a released world a cleanup slice admits only Z#40's items; or completion
+   also requires that no computation is demanded/startable.
+
 1. `:released` in the verify projection is `false` after the release commit (verify.clj `projection`); keep the
    deviation or fix the projection?
 2. A run scope never materialized is not closed by T16/T21 (it is no S-CHILD) while a materialized one is (sample 9 vs
