@@ -1293,6 +1293,21 @@ guard and the take arm's cleanup refusal), hm18 (blocked by hm17).
   scope's closure after T21, also not an invariant yet). With `handle-new` refused once released (as observe/pin),
   K extends by "released -> every handle count is 0" and the planned proof goes through.
 
+- Q8 answered (no handle after T21): 7881eaf refuses, once released, handle-new, the top-level creations,
+  create-source/spawn in a body (`body-shut`), create-comp/create-link in a body (`cc-shut`), link-demand,
+  link-realize and append (`root-shut`), besides observe/pin/host waits. Remaining for the quiet half, in order:
+  (1) K gains "released -> every comp/task/source handle count is 0": the `gk` copy then needs the handle facts
+  at `inv-comp-upd`/`inv-task-upd`/`inv-source-upd` (extra argument: f keeps a zero count; comp-h0/dec keep it,
+  comp-h1/task-h1/source-h1 only under `root-shut w = false`, from handle-new's guard) and a `released = false`
+  premise at every row creation (`inv-*-ins-fresh` in t1-body/t1-top, t3, spawn-rows (t4, t4-top, link-demand),
+  create-link(-top), link-realize, append), threaded from the raw0 guards above; `drop-edges`'s comps-resync and
+  `drop-cred`'s comp-set-pending keep the counts. (2) the closure lemma: K, I3 (`step-i3-total`), I1
+  (`lit-i1-scope`), ids-unique and no run give a live set of scopes and forks and no admitted row, hence no
+  computation, task, source, edge or resource (cleanup rows: to check that a cleanup entry's run exists); (3) the
+  quiet-world refusal lemma (token items: no run; host items: host-shut; start/dispatch/link/fire/ack: no row);
+  (4) sys.clj carries K and I3 for every live born cell (fork copies, instance basis via pinv, activation) and
+  discharges `hq` (E4 unborn cells need only `step-released`).
+
 ### Questions (engine session)
 Answered: 1 (A4: the projection is fixed in PR #268; drop `:released-proj` then), 2 (A1), 4 (A2); 3 is A5 (after #268).
 New (Stage B finding):
