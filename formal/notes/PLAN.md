@@ -1164,3 +1164,71 @@ statement again.
 
 `c0-root w it = !(c0-root-item it) || scope-open-at w root-scope-id` was defined in i8.clj and threaded through the
 theorems listed above (commits ad4a953 .. f0ee12c on `formal/c0-model`); the root gate removed it and its definition.
+
+## C1 (2026-11-16): world-level completion, cancellation, synchronous finalizers, await-op
+
+Engine 823771c / engine-v2 d3b22f1 (spec Z#67, T14, T21, B8 reduced, §4.3 await-op/idle?; c1-cancellation-joins-design.md).
+Branch `formal/c1-model`. Stage A (model, oracle, tests) done; Stage B (downstream bundles) waits for confirmation.
+
+### Mapping of the C1 rules onto the model
+
+| C1 rule | level | model |
+|---|---|---|
+| `runs` (+1 at run creation, -1 at T13) | layer 1, derived | the run rows: `world-runs w = length (:runs w)` (engine.clj). Rule R's filter keeps every run (gr0 `run-kept`), so rows = unretired runs. No counter. |
+| `kids`, child token, acceptance (own-child!, host fork!, activate!), "whichever of acceptance and completion comes second acknowledges", "a complete owner takes no new obligation" | layer 2 | `Cell.kids` (accepted children, never inherited) and `sys-accept` (a complete owner takes none). The exactly-once token is the engine's bookkeeping of the same relation: a child counts while it is accepted, live and not complete (`kid-done`); a child complete before its acceptance is done at once. Acceptance is its own operation (also for the fork effect: `sys-fork-effect` keeps its frame theorems). |
+| completion (released, runs = 0, kids = 0), latched | layer 2 | `Cell.complete`, set by `sys-complete` when `complete-ready` (released and: unborn, or no run and every kid done). Internal: no item (the engine logs none). Layer 1 has the local part `world-quiet`. |
+| host terminal subscriptions (on-complete), survive T21 | host | out of scope: callbacks after the gate; they observe the latch and change no row. |
+| fork/instance copy runs; kids/subscriptions/token start empty | layer 2 | a fork cell copies the world (so its run rows) with `kids []`, `complete false`. |
+| R1: inherited non-armed resources (cancelling, fired unacknowledged) acknowledged at the child's first turn | layer 2 | `fork-cell`/`fork-effect-cell`/`inst-cell` inherit every outstanding resource (`res-ids`); `wake-one` keeps only an armed timer and settles the rest (armed: fire ::forked + ack; non-armed: ack, its fire refused). |
+| E4: an unborn instance released before activation is complete at once | layer 1 + 2 | `release-unborn w` (engine.clj: the flag only, nothing in it runs), `sys-release-unborn`, `sys-complete` (unborn). A later activation is refused (`act-ok` requires an unreleased world; sample 24). |
+| T14/Q10: cancel the whole run-scope subtree at request time, release the subtree's worlds | layer 1 + 2 | the model already cancelled `owned-runs` of `scope-subtree` in the cancel's cascade (T14 job-next, T12's Q10, T16); no change. Releasing the owned worlds is the child's own `[:release-world]` through its ingress (layer 2: a `sys-step` of the child), as the engine (`release-child!`). |
+| tombstones: a done task leaves its owner scope once its run retired (Z#56, `release-ownership!`) | layer 1 | `subtree-empty` ignores a done task with no run (`task-held-in`): sample 22 closes scopes whose tasks the request-time cancel already retired. Was latent before C1. |
+| B8 reduced: suspending effects in a finally clause fail with ::invalid :finalizer; every await/take refused in a cancelled run's finally clause; custom effects refused in finally | layer 1 | the refused effect is never an item (it fails before any commit; samples 25, 25b). Modelled: in a cancelled run's cleanup slice (`in-cleanup`) T6 (`await-bad`) and take are refused. Not modelled: the normal-run clause (the engine logs no item for the clause's end, `leave-finalizer!`, so the model cannot track it; such items never appear). |
+| await-op (resource kind :op): start/cancel arbitration, hooks, ack when start returned ∧ hooks done ∧ settled, :detach | layer 1 | `rk-op 4`, armable (`arm-kind-ok`); arbitration, hooks and the ack condition are the engine's physical side: the log shows arm, fire (the result) and the ack (T15), which the model already admits in any phase without an edge on Z. |
+| a fired, unacknowledged op is still cancellable, also on a done run | layer 1 | `t-cancel` accepts a done, unretired task run holding no slice with no row change (`cancel-noop`; engine `cancel-task!` commits `[:cancel r]`). |
+| link guards (append/link-realize/... under a closed root) | layer 1 | c0-guard's `c0-gate`, unchanged. |
+| idle? | host | out of scope (a snapshot of queues the model does not have: runnable work, cleanup queue, ingress). |
+
+### Oracle (Stage A)
+- res kind `:op`; `replay-family` (root, host fork, fork effect, instance; `:from`/`:owner` separate, sample 23a) and
+  `check-observations`: per sidecar checkpoint and world, the model's `runs` = W-RUNS, `released?`, derived `complete?`
+  (released and: unborn, or no run and every owned child complete), and the engine's `kids` at most the model's open
+  children; tokens are not compared (bookkeeping). `:unborn?` replays E4.
+- Deviations: `:released-proj` (the engine's verify projection, test/org/replikativ/spindel/v2/verify.clj, hard-codes
+  `:released false` after the release commit; the sidecar has `:released? true`) and `:lazy-run-scope` (an unmaterialized
+  run scope is no S-CHILD of its parent row, so a subtree close does not reach it while the projection shows it open;
+  samples 26b/26c/27; a materialized one is closed, sample 9). Both are engine-side; see the questions.
+- Samples 22-27: every world replays with 0 divergences and every checkpoint of every sidecar matches; samples 1-21
+  unchanged (0 divergences, triaged lists as before).
+
+### Changed statements
+None: every theorem statement of the core is unchanged (definitions changed: `raw0` await/take arms, `t-cancel`,
+`subtree-empty`, `arm-kind-ok`, `res-kind-ok`; layer 2 `Cell`, `wake-one`, `fork-cell`/`fork-effect-cell`/`inst-cell`,
+`act-ok`). New: `await-bad`, `host-cancel-done`, `cancel-noop`, `task-held-in`, `release-unborn` (+`inv-release-unborn`),
+`world-runs`, `world-quiet`, `rk-op`; sys `res-ids`, `timer-kept`, `accept-cell`, `sys-accept`, `kid-done`,
+`complete-ready`, `complete-cell`, `sys-complete`, `release-unborn-cell`, `sys-release-unborn`, `sinv-accept`,
+`sinv-complete`, `complete-latch`. Test-side: sys_test's unarmable kind is `rk-native` (op is armable now).
+
+### Loads / breaks (Stage A)
+Core (state .. acts, rank, rank-step) load; lit .. hm11, skip, z59, cow, sys, mvcc load unchanged. Break: hm12
+(`await-kind-bad` -> `await-bad` in `h12-raw0-await-outcome`, mechanical), hm17 (h3's raw0 assembly: the await arm's
+guard and the take arm's cleanup refusal), hm18 (blocked by hm17).
+
+### Stage B obligations
+- the hm12/hm17 arms above (then hm18);
+- `sinv-release-unborn` (p3l through `set-released`: a copy per bundle of `inv-set-released`);
+- completion soundness `complete -> released, no run, no open accepted child` over the layer-2 operations, and stability:
+  a released world with no run stays without one under every layer-1 step (T5/T11 start runs only for demanded
+  computations; after T21 nothing is demanded) and every accepted child stays done;
+- the B8 refusal as an invariant fact (no wait edge created in a cleanup slice) where a bundle wants it.
+
+### Questions (engine session)
+1. `:released` in the verify projection is `false` after the release commit (verify.clj `projection`); keep the
+   deviation or fix the projection?
+2. A run scope never materialized is not closed by T16/T21 (it is no S-CHILD) while a materialized one is (sample 9 vs
+   27): is "the run scope closes at its run's retirement" the intended rule for both? The model closes both with the
+   subtree (as the materialized case).
+3. B8 in a normal run's finally clause: should the engine log `[:finally-leave r]` (the clause's end) so the model can
+   refuse suspending items there too? Without it the refusal is invisible in the log and unneeded for replay.
+4. `cancel-task!` on a done, unretired run commits `[:cancel r]` (no row change in the model); confirm that is intended
+   also when the run holds no op resource.
