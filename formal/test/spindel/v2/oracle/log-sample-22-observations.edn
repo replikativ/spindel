@@ -1,0 +1,33 @@
+[{:step :parked,
+  :log-length {:child 3, :parent 17},
+  :obs
+  {:child
+   {:complete? false,
+    :released? false,
+    :runs 1,
+    :kids nil,
+    :token :installed},
+   :parent
+   {:complete? false, :released? false, :runs 3, :kids 1, :token nil}}}
+ {:step :cancelled,
+  :log-length {:child 4, :parent 24},
+  :obs
+  {:child
+   {:complete? true,
+    :released? true,
+    :runs 0,
+    :kids nil,
+    :token :done},
+   :parent
+   {:complete? false, :released? false, :runs 0, :kids 0, :token nil}}}
+ {:step :released,
+  :log-length {:child 4, :parent 25},
+  :obs
+  {:child
+   {:complete? true,
+    :released? true,
+    :runs 0,
+    :kids nil,
+    :token :done},
+   :parent
+   {:complete? true, :released? true, :runs 0, :kids 0, :token nil}}}]
