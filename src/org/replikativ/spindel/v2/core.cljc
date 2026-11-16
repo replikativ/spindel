@@ -2993,7 +2993,8 @@
   [w x res err?]
   (s! x rw/X-RTASK nil)
   (when (and (zero? (gl x rw/VERSION)) (g x rw/X-OPEN)
-             (or (pos? (gl x rw/REFS)) (pos? (gl x rw/HANDLES))))
+             (or (pos? (gl x rw/REFS)) (pos? (gl x rw/HANDLES)))
+             (g (rv w (g w rw/W-ROOT)) rw/S-OPEN))    ; no root-owned link after release
     (let [fail (fn [e] (realize! w x (Failure. e))
                  (commit! w [:link-realize (g x rw/ID) 2 [:opaque e] 0]))]
       (cond
@@ -3102,7 +3103,11 @@
          (let [x (row-of h) w (cw)]
            (cond
              (not (stream? x)) (throw (invalid-op :append "append! is for streams"))
-             (closed? x) (refuse! w [:append (g x rw/ID) [:opaque v] 0])
+             ;; a released world's root scope is closed: no new root-owned
+             ;; link (an append from a cleanup finalizer is refused like one
+             ;; to a closed stream)
+             (or (closed? x) (not (g (rv w (g w rw/W-ROOT)) rw/S-OPEN)))
+             (refuse! w [:append (g x rw/ID) [:opaque v] 0])
              :else
              (let [t (row-of (g x rw/X-VALUE))
                    [_ _ _ sid i] (g t rw/X-REALIZE)
