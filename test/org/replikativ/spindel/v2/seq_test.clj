@@ -175,6 +175,17 @@
            (is (thrown-with-msg? Exception #"read through its positions" (v2/value s 2000 ::timeout))))))
      (v2/release-world! w))))
 
+(deftest a-computation-stream-ends-when-it-leaves-the-basis
+  (checked
+   (let [w (vworld)]
+     (binding [v2/*world* w]
+       (let [c (spin (let [s (v2/stream) p (v2/position s)] (v2/append! s 1) p))
+             p (v2/value c 2000 ::timeout)]
+         ;; the host read was the only demand: the computation goes idle and
+         ;; drops its basis, so its stream ends (like its tasks are cancelled)
+         (is (= [1] (v2/value (drain p) 2000 ::timeout)))))
+     (v2/release-world! w))))
+
 (deftest a-stream-closed-with-an-error
   (checked
    (let [w (vworld)]

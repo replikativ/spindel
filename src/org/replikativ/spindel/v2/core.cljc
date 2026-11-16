@@ -1216,6 +1216,8 @@
     (release-members! w a)
     a))
 
+(declare link-cancelled!)
+
 (defn- cancel!
   "T14 `cancel(R)`. Also `cancel(R, replace)` (Y#2): only T11 and demotion
    issue a replace, always on a computation run, which has no debtor side, so
@@ -1241,7 +1243,8 @@
     (let [x (rv w (g r rw/R-OF))]
       (when (task? x)
         ;; debtor side (R#14): the task fails with ::cancelled
-        (finish-task! w x (cancelled-ex reason) true)))
+        (finish-task! w x (cancelled-ex reason) true)
+        (when-let [l (g x rw/K-LINK)] (link-cancelled! (rv w l)))))
     (retire-check! w r)))
 
 (defn- slice!
@@ -1314,7 +1317,7 @@
         (ref-dec! w k))
       (remove-scope-if-empty! w owner))))
 
-(declare link-done!)
+(declare link-done! link-cancelled!)
 
 (defn- finish-task!
   "Sets a task's result and fires its creditors; ownership retention ends
@@ -1327,12 +1330,7 @@
     (s! k rw/VERSION (inc (gl k rw/VERSION)))
     (settle! w k)
     (when-not (rv w (g k rw/K-RUN))
-      (release-ownership! w k))
-    (when-let [l (g k rw/K-LINK)]
-      ;; the realizer's own run was cancelled (T14 sets unwinding first), as
-      ;; opposed to a body that ends with a propagated cancellation error
-      (let [r (rv w (g k rw/K-RUN))]
-        (link-done! w (rv w l) v err? (boolean (and r (== 1 (gl r rw/R-MODE)))))))))
+      (release-ownership! w k))))
 
 (defn- complete!
   "T12."
@@ -1367,7 +1365,9 @@
           (finish-task! w x v err?)
           (s! r rw/R-SLICE false)
           (retire-check! w r)
-          (commit! w [:complete (g r rw/ID) (if err? 2 1) [:opaque v]])))))
+          (commit! w [:complete (g r rw/ID) (if err? 2 1) [:opaque v]])
+          ;; a realizer's completion realizes its link in the next item (C0)
+          (when-let [l (g x rw/K-LINK)] (link-done! w (rv w l) v err?))))))
   nil)
 
 ;; ---------------------------------------------------------------------------
@@ -2345,6 +2345,7 @@
       (dotimes [i (acount b)]
         (let [x (rv w (anth b i))]
           (when (and (task? x) (rv w (g x rw/K-RUN))) (cancel! w (rv w (g x rw/K-RUN)) ::cancelled))
+          (when (stream? x) (close-source! w x))   ; C0: like its tasks, inside this item
           (ref-dec! w x))))
     (release-adoption! w c)
     (s! c rw/C-PENDING 0)
@@ -2847,21 +2848,20 @@
   "A link in `w`'s root scope, returned as its handle (a position): the top
    handle `top` when given, else a new one. `spec` is [f s frame stream-id
    index] (f nil for a push link; stream-id nil: the link's own ID). It is
-   retained by its positions, the chain that reaches it and its realizer.
-   A stream's first tail is part of the stream's creation item (no item)."
-  ([w spec top] (new-link! w spec top true))
-  ([w spec top item?]
-   (let [x (new-source! w rw/SRC-LINK nil (rv w (g w rw/W-ROOT)) 0 0)
-         spec (if (nil? (nth spec 3)) (assoc spec 3 (g x rw/ID)) spec)]
-     (s! x rw/X-REALIZE spec)
-     (let [h (if top (do (bind-handle! top x) top) (do (s! x rw/HANDLES 0) (handle! w x)))]
-       (when item? (commit! w [:create-link (g x rw/ID) [:opaque spec]]))
-       h))))
+   retained by its positions and the chain that reaches it. It makes no
+   item: the operation that creates it commits it (C0, one item each)."
+  [w spec top]
+  (let [x (new-source! w rw/SRC-LINK nil (rv w (g w rw/W-ROOT)) 0 0)
+        spec (if (nil? (nth spec 3)) (assoc spec 3 (g x rw/ID)) spec)]
+    (s! x rw/X-REALIZE spec)
+    (if top (do (bind-handle! top x) top) (do (s! x rw/HANDLES 0) (handle! w x)))))
+
+(defn- handle-id [h] (g (aget ^objects (.-cell ^Handle h) 0) rw/ID))
 
 (defn- start-realizer!
   "Demand on an unrealized pull link (C0 V1): a task owned by the root scope
-   runs `(f s)` with the creation bindings (B10); its end realizes the link
-   (link-done!). A reader's cancellation does not cancel it."
+   runs `(f s)` with the creation bindings (B10); its completion realizes
+   the link (link-done!). A reader's cancellation does not cancel it."
   [w x]
   (let [[f s frame] (g x rw/X-REALIZE)
         root (rv w (g w rw/W-ROOT))
@@ -2877,60 +2877,78 @@
 
 (defn- realize!
   "Delivers link `x` once with `value` ([v next-handle], nil or a Failure)
-   and fires its readers. Its realizer state goes (the next link carries
-   the next state), except for a computation's head, kept for adoption (V4)."
+   and fires its readers, inside the caller's item. Its realizer state goes
+   (the next link carries the next state), except for a computation's head,
+   kept for adoption (V4)."
   [w x value]
   (let [spec (g x rw/X-REALIZE)]
     (when (and (nth spec 0) (< (count spec) 6))
       (s! x rw/X-REALIZE [nil nil nil (nth spec 3) (nth spec 4)])))
   (s! x rw/X-VALUE value)
   (s! x rw/VERSION 1)
-  (settle! w x)
-  (commit! w [:link-realize (g x rw/ID) [:opaque value]]))
+  (settle! w x))
 
 (defn- link-done!
-  "The realizer of `x` ended with `res`: [v s'] → the next link; nil → the
-   end; an error → memoized (also a cancellation its body propagated),
-   except ::forked (V2), which leaves the link unrealized and restarts it
-   when it is demanded. A cancelled realizer (world release) realizes
-   nothing."
-  [w x res err? cancelled?]
+  "After the realizer of `x` completed (its T12 item) with `res`: [v s'] →
+   the next link; nil → the end; an error → memoized (also a cancellation
+   its body propagated), except ::forked (V2), which leaves the link
+   unrealized and restarts it when it is demanded. One item:
+   [:link-realize x tag v next] (tag 1 value, 0 end, 2 error; next 0 when
+   none). A link nothing reaches any more (no position, no reader) is left
+   alone: nobody can read it."
+  [w x res err?]
   (s! x rw/X-RTASK nil)
-  (when (and (zero? (gl x rw/VERSION)) (g x rw/X-OPEN))
-    (cond
-      cancelled? nil
-      (and err? (:spindel/forked (ex-data res)))
-      (when (hot? x) (start-realizer! w x))
-      err? (realize! w x (Failure. res))
-      (nil? res) (realize! w x nil)
-      (and (vector? res) (== 2 (count res)))
-      (let [[f _ frame sid i] (g x rw/X-REALIZE)]
-        (realize! w x [(nth res 0) (new-link! w [f (nth res 1) frame sid (inc (long i))] nil)]))
-      :else
-      (realize! w x (Failure. (ex-info "an aseq step returns [value next-state] or nil"
-                                       {:spindel/invalid :aseq :result res}))))))
+  (when (and (zero? (gl x rw/VERSION)) (g x rw/X-OPEN)
+             (or (pos? (gl x rw/REFS)) (pos? (gl x rw/HANDLES))))
+    (let [fail (fn [e] (realize! w x (Failure. e))
+                 (commit! w [:link-realize (g x rw/ID) 2 [:opaque e] 0]))]
+      (cond
+        (and err? (:spindel/forked (ex-data res)))
+        (when (hot? x) (start-realizer! w x))
+        err? (fail res)
+        (nil? res) (do (realize! w x nil)
+                       (commit! w [:link-realize (g x rw/ID) 0 [:opaque nil] 0]))
+        (and (vector? res) (== 2 (count res)))
+        (let [[f _ frame sid i] (g x rw/X-REALIZE)
+              nh (new-link! w [f (nth res 1) frame sid (inc (long i))] nil)]
+          (realize! w x [(nth res 0) nh])
+          (commit! w [:link-realize (g x rw/ID) 1 [:opaque (nth res 0)] (handle-id nh)]))
+        :else
+        (fail (ex-info "an aseq step returns [value next-state] or nil"
+                       {:spindel/invalid :aseq :result res}))))))
+
+(defn- link-cancelled!
+  "The realizer of `x` was cancelled (world release, T21): nothing is
+   realized; no item."
+  [x]
+  (s! x rw/X-RTASK nil))
 
 (defn new-aseq
   "A pull sequence from state `init`: `(f s)` returns a body whose value is
    `[v s']` or nil (the end). Returns its head position. Use the `aseq`
-   macro."
+   macro. Item: [:create-link run link] in a body, [:create-link-top root
+   link] on the host."
   ([f init] (new-aseq f init nil))
   ([f init id]
    (if-let [r (active-run)]
      (when (valid-run)
        (next-at! r)
-       (new-link! (cw) [f init (thread-frame) id 0] nil))
+       (let [w (cw) h (new-link! w [f init (thread-frame) id 0] nil)]
+         (commit! w [:create-link (g r rw/ID) (handle-id h)])
+         h))
      (let [w (or *world* (throw (ex-info "no world: bind v2/*world*" {})))
            h (top-handle w)
            fr (thread-frame)]
-       (gated w (new-link! w [f init fr id 0] h))
+       (gated w (new-link! w [f init fr id 0] h)
+              (commit! w [:create-link-top (g (rv w (g w rw/W-ROOT)) rw/ID) (handle-id h)]))
        h))))
 
 (defn new-aseq-at
   "`new-aseq` at creation site `site` with the captured `inputs` (the `aseq`
    macro). In a computation run the sequence is a creation in its basis: a
    re-entry with the same captures and initial state adopts it (V4), so its
-   readers keep the realized elements; otherwise it is a new sequence."
+   readers keep the realized elements; otherwise it is a new sequence. The
+   item is [:create-link run link], with the adopted link's id on adoption."
   [site inputs f init]
   (let [r (active-run)
         x (when r (rv (cw) (g r rw/R-OF)))]
@@ -2943,7 +2961,10 @@
               old (adopt! w x key)
               spec (when (and old (link? old)) (g old rw/X-REALIZE))]
           (if (and spec (same-inputs? inputs (nth spec 5)) (same-capture? init (nth spec 1)))
-            (do (s! old rw/AT at) (handle! w old))
+            (do (s! old rw/AT at)
+                (let [h (handle! w old)]
+                  (commit! w [:create-link (g r rw/ID) (g old rw/ID)])
+                  h))
             (do (when old
                   (let [basis (gm x rw/C-BASIS)]
                     (hs/remove-at! basis (idx-of basis old))
@@ -2954,35 +2975,40 @@
                   (s! nx rw/AT at)
                   (aadd! (gm x rw/C-BASIS) nx)
                   (ref-inc! nx)
+                  (commit! w [:create-link (g r rw/ID) (g nx rw/ID)])
                   h))))))))
 
 (defn stream
   "A push stream (C0): `append!` adds elements, `close!` ends it, and it ends
    when the scope that created it closes (Z#18: a task's stream at the task's
-   retirement). Readers hold positions: `(position s)` is the current tail.
-   `:id` names it for portable positions (C3); default its row ID."
+   retirement) or, created in a computation, when it leaves the
+   computation's basis. Readers hold positions: `(position s)` is the
+   current tail. `:id` names it for portable positions (C3); default its row
+   ID. Its first tail link is part of the creation item (ID = stream ID + 1)."
   ([] (stream *world* nil))
   ([w-or-opts] (if (map? w-or-opts) (stream *world* w-or-opts) (stream w-or-opts nil)))
   ([w {:keys [id]}]
    (create-source-top! w rw/SRC-STREAM nil
-                       (fn [x] (s! x rw/X-VALUE (new-link! (cw) [nil nil nil (or id (g x rw/ID)) 0] nil false))))))
+                       (fn [x] (s! x rw/X-VALUE (new-link! (cw) [nil nil nil (or id (g x rw/ID)) 0] nil))))))
 
 (defn- end-stream!
-  "Realizes the stream's tail as the end, or with the error `err`."
+  "Realizes the stream's tail as the end, or with the error `err`, inside the
+   caller's item."
   [w x err]
   (let [t (row-of (g x rw/X-VALUE))]
     (when (zero? (gl t rw/VERSION))
       (realize! w t (when err (Failure. err))))))
 
 (defn append!
-  "Appends `v` to stream `h`: its tail is realized with [v new-tail] in one
-   commit and its readers fire. Refused on a closed stream."
+  "Appends `v` to stream `h`: one item [:append s v new-tail] creates the new
+   tail, realizes the old one with [v new-tail] and fires its readers.
+   Refused on a closed stream."
   [h v]
   (gated (world-of h)
          (let [x (row-of h) w (cw)]
            (cond
              (not (stream? x)) (throw (invalid-op :append "append! is for streams"))
-             (closed? x) (refuse! w [:append (g x rw/ID) [:opaque v]])
+             (closed? x) (refuse! w [:append (g x rw/ID) [:opaque v] 0])
              :else
              (let [t (row-of (g x rw/X-VALUE))
                    [_ _ _ sid i] (g t rw/X-REALIZE)
@@ -2990,11 +3016,12 @@
                (s! x rw/X-VALUE nh)
                (s! x rw/VERSION (inc (gl x rw/VERSION)))
                (realize! w t [v nh])
-               (commit! w [:append (g x rw/ID) [:opaque v]])))))
+               (commit! w [:append (g x rw/ID) [:opaque v] (handle-id nh)])))))
   nil)
 
 (defn close!
-  "Ends stream `h`: its readers reach the end, or the error `err`."
+  "Ends stream `h`: its readers reach the end, or the error `err`. One item
+   [:close s tag v] (tag 0 end, 2 error)."
   ([h] (close! h nil))
   ([h err]
    (gated (world-of h)
@@ -3003,7 +3030,7 @@
             (when (g x rw/X-OPEN)
               (end-stream! w x err)
               (close-source! w x)
-              (commit! w [:close (g x rw/ID)]))))
+              (commit! w [:close (g x rw/ID) (if err 2 0) [:opaque err]]))))
    nil))
 
 (defn position
