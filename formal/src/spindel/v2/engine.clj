@@ -31,6 +31,15 @@
     F2 source operations (§4.3: deliver, post, take = take/acquire, release), finally regions
        (B3: finally-enter/-exit), the `finalize R` cleanup slice (B8), host cancel (T14),
        open/close-scope (T16), detach (Q10), release-world (T21), B8 refusals (`in-cleanup`)
+    F3 C0 async sequences (§4.3 link/stream, §8.1): create-link (a pull head, owned by the root
+       scope; in a computation a basis creation, adopted like a re-spawn), streams as a T1 kind
+       (`t1-body`/`t1-top-full`: the stream and its first tail link S + 1), link-demand (the
+       realizer task in the root scope, handles 0; `rtask` stale-tolerant: `realizer-live`),
+       link-realize (tag 1 next pull link, 0 end, 2 memoized error), append, close; built from
+       source-ins, source-upd and rule.clj's `realize-link` (= deliver with a result,
+       `deliver-raw-res`). T16's close-source ends a stream's tail first (`end-stream`), a
+       demotion closes the streams of the basis (`end-basis`); a stream is not awaitable
+       (`src-consuming`)
     G  `raw0` (every Item), `raw` = loser cancel after raw0, `world-step`, and the theorems
   Also: I12 ranks (`raise-run`: height adjustment before every new comp-comp dep edge of T6
   and of a reactivation; `ranks-ok`, checked by the tests after every step) and Blocked as
@@ -43,7 +52,8 @@
     t22-un-*, t8-full-*, sched-*, t-handle-new-*; t-deliver-*, t-post-*, t-take-* (+ -l4),
     t-release-*, t-finalize-*, t-cancel-*, t-release-world-*, t-open-scope-* (+ -l4),
     t-close-scope-*, t-detach-*, t-finally-enter-* / t-finally-exit-* (+ -l4), t-slice-exit-*
-    (-inv, -refuse); inv-deliver-fire;
+    (-inv, -refuse); inv-deliver-fire; C0: t-create-link-*, t-create-link-top-*, t1-stream-*,
+    t1-body-*, t1-top-full-*, t-link-demand-*, t-link-realize-*, t-append-*, t-close-* (-inv, -refuse);
     inv-raise-loop, inv-raise-for, blocked-sound, blocked-complete; raw0-inv, raw0-refuse, raw0-l4 (every
     constructor); raw-inv, raw-refuse, raw-l4 (with the loser cancel);
     step-refuse, step-l4 (invalid token -> (refuse w)), step-accepted,
@@ -1684,7 +1694,7 @@
               (:adopt-basis c) (:adopt-baselines c) 1))
 (a/defn task-h1 [t :- TaskRow] TaskRow (TaskRow.mk (:id t) (:owner t) (:run t) (:result t) 1 (:inputs t)))
 (a/defn source-h1 [s :- SourceRow] SourceRow
-  (SourceRow.mk (:id s) (:owner s) (:kind s) (:state s) (:version s) (:open s) 1 (:queue s)))
+  (SourceRow.mk (:id s) (:owner s) (:kind s) (:state s) (:version s) (:open s) 1 (:queue s) (:rtask s) (:next s) (:tail s) (:fail s)))
 (a/defn pub-h1 [p :- PubRow] PubRow (PubRow.mk (:id p) (:edge p) (:basis p) 1))
 (a/theorem comp-h1-id [c :- CompRow] (= (comp-id (comp-h1 c)) (comp-id c)) (rfl))
 (a/theorem comp-h1-pending [c :- CompRow] (= (:pending (comp-h1 c)) (:pending c)) (rfl))
@@ -1803,12 +1813,15 @@
 
 ;; ---- source rows
 (a/defn source-bump [s :- SourceRow] SourceRow
-  (SourceRow.mk (:id s) (:owner s) (:kind s) (:state s) (+ (:version s) 1) (:open s) (:handles s) (:queue s)))
+  (SourceRow.mk (:id s) (:owner s) (:kind s) (:state s) (+ (:version s) 1) (:open s) (:handles s) (:queue s)
+                (:rtask s) (:next s) (:tail s) (:fail s)))
 (a/defn source-enqueue [v :- Nat, s :- SourceRow] SourceRow
   (SourceRow.mk (:id s) (:owner s) (:kind s) (:state s) (:version s) (:open s) (:handles s)
-                (List.append Nat (:queue s) (List.cons Nat v (List.nil Nat)))))
+                (List.append Nat (:queue s) (List.cons Nat v (List.nil Nat)))
+                (:rtask s) (:next s) (:tail s) (:fail s)))
 (a/defn source-permit [s :- SourceRow] SourceRow
-  (SourceRow.mk (:id s) (:owner s) (:kind s) (+ (:state s) 1) (:version s) (:open s) (:handles s) (:queue s)))
+  (SourceRow.mk (:id s) (:owner s) (:kind s) (+ (:state s) 1) (:version s) (:open s) (:handles s) (:queue s)
+                (:rtask s) (:next s) (:tail s) (:fail s)))
 (a/defn nat-tail [xs :- (List Nat)] (List Nat) (match xs [nil (List.nil Nat)] [(cons h t) t]))
 ;; take's immediate path: a mailbox drops its head message, a semaphore one permit; version + 1 (as the
 ;; engine). Nothing left (reached only on a closed source, Z#57: the take fails with err ::closed): unchanged.
@@ -1817,8 +1830,10 @@
 (a/defn source-consume [s :- SourceRow] SourceRow
   (if (src-available s)
       (if (Nat.beq (:kind s) sk-mailbox)
-          (SourceRow.mk (:id s) (:owner s) (:kind s) (:state s) (+ (:version s) 1) (:open s) (:handles s) (nat-tail (:queue s)))
-          (SourceRow.mk (:id s) (:owner s) (:kind s) (- (:state s) 1) (+ (:version s) 1) (:open s) (:handles s) (:queue s)))
+          (SourceRow.mk (:id s) (:owner s) (:kind s) (:state s) (+ (:version s) 1) (:open s) (:handles s) (nat-tail (:queue s))
+                       (:rtask s) (:next s) (:tail s) (:fail s))
+          (SourceRow.mk (:id s) (:owner s) (:kind s) (- (:state s) 1) (+ (:version s) 1) (:open s) (:handles s) (:queue s)
+                (:rtask s) (:next s) (:tail s) (:fail s)))
       s))
 (a/theorem source-bump-id [s :- SourceRow] (= (source-id (source-bump s)) (source-id s)) (rfl))
 (a/theorem source-enqueue-id [v :- Nat, s :- SourceRow] (= (source-id (source-enqueue v s)) (source-id s)) (rfl))
@@ -2352,7 +2367,7 @@
               (:adopt-basis c) (:adopt-baselines c) 0))
 (a/defn task-h0 [t :- TaskRow] TaskRow (TaskRow.mk (:id t) (:owner t) (:run t) (:result t) 0 (:inputs t)))
 (a/defn source-h0 [s :- SourceRow] SourceRow
-  (SourceRow.mk (:id s) (:owner s) (:kind s) (:state s) (:version s) (:open s) 0 (:queue s)))
+  (SourceRow.mk (:id s) (:owner s) (:kind s) (:state s) (:version s) (:open s) 0 (:queue s) (:rtask s) (:next s) (:tail s) (:fail s)))
 (a/defn pub-h0 [p :- PubRow] PubRow (PubRow.mk (:id p) (:edge p) (:basis p) 0))
 (a/theorem comp-h0-id [c :- CompRow] (= (comp-id (comp-h0 c)) (comp-id c)) (rfl))
 (a/theorem comp-h0-pending [c :- CompRow] (= (:pending (comp-h0 c)) (:pending c)) (rfl))
@@ -2495,12 +2510,396 @@
 (a/defn complete-refused [w :- World, st :- Nat, tag :- Nat] Bool
   (Bool.or (fins-open w st) (Bool.not (res-tag-ok tag))))
 
+;; ===========================================================================
+;; Part F3. C0 async sequences (§4.3 link/stream, §8.1): links are once-cells owned by the root
+;; scope (deferred-like for finality and awaiting); a pull link is realized by a realizer task
+;; started at its first demand; a stream (a T1 kind) holds its tail link
+;; ===========================================================================
+
+(a/theorem deliver-raw-res [w :- World, x :- Nat, v :- Nat]
+  (= (deliver-raw w x v) (deliver-res w x v (RunResult.mk res-ok v))) (rfl))
+
+;; ---- create-link (a pull head; engine `[:create-link R L]` / `[:create-link-top root L]`): owned by
+;; the root scope, handles 1; in a computation run a creation in its basis (at = effect-index),
+;; and `l` naming a link of its basis or adoption basis adopts it (moved to the basis at the new
+;; site, like a re-spawn; no allocation, handles unchanged). Effect tick either way.
+(a/defn create-link-cur [w :- World, r :- RunRow] World
+  (run-upd (record-basis (bump (source-ins w (new-link (:next-id w) root-scope-id 0))) r (:next-id w)) (:id r) run-tick))
+(a/defn t-create-link [w :- World, st :- Nat, l :- Nat] Outcome
+  (match (tok-run w st)
+    [none (refuse w)]
+    [(some r) (match (readopt-source w r l)
+                [none (if (Nat.beq l (:next-id w)) (accept (create-link-cur w r)) (refuse w))]
+                [(some x) (if (Nat.beq (:kind x) sk-link) (accept (respawn-raw w r l)) (refuse w))])]))
+(a/defn t-create-link-top [w :- World, scope :- Nat, l :- Nat] Outcome
+  (if (Bool.and (Nat.beq l (:next-id w)) (scope-open-at w scope))
+      (accept (bump (source-ins w (new-link (:next-id w) scope 0))))
+      (refuse w)))
+
+(a/theorem inv-create-link-cur [w :- World, r :- RunRow]
+  (=> (= (inv-sample w) true) (= (inv-sample (create-link-cur w r)) true))
+  (intro h)
+  (simp only [create-link-cur])
+  (exact (inv-run-upd _ (:id r) run-tick run-tick-run-id
+           (inv-record-basis _ r (:next-id w)
+             (inv-source-ins-fresh w (new-link (:next-id w) root-scope-id 0) (rfl) h)))))
+
+(a/theorem t-create-link-inv [w :- World, st :- Nat, l :- Nat]
+  (=> (= (inv-sample w) true) (= (inv-sample (:world (t-create-link w st l))) true))
+  (intro h)
+  (cases ht (tok-run w st))
+  (case [none] (simp only [t-create-link ht refuse]) (exact h))
+  (case [some r]
+    (cases ho (readopt-source w r l))
+    (case [none]
+      (cases hg (Nat.beq l (:next-id w)))
+      (case [false] (simp only [t-create-link ht ho hg refuse]) (exact h))
+      (case [true] (simp only [t-create-link ht ho hg accept]) (exact (inv-create-link-cur w r h))))
+    (case [some x]
+      (cases hk (Nat.beq (:kind x) sk-link))
+      (case [false] (simp only [t-create-link ht ho hk refuse]) (exact h))
+      (case [true]
+        (simp only [t-create-link ht ho hk accept respawn-raw])
+        (exact (inv-run-upd _ (:id r) run-tick run-tick-run-id
+                 (inv-comp-upd w (:of r) _ (comp-rebasis-id _) (comp-rebasis-pending _) h)))))))
+
+(a/theorem t-create-link-refuse [w :- World, st :- Nat, l :- Nat]
+  (=> (= (:accepted (t-create-link w st l)) false) (= (:world (t-create-link w st l)) w))
+  (intro ha)
+  (cases ht (tok-run w st))
+  (case [none] (simp only [t-create-link ht refuse]))
+  (case [some r]
+    (cases ho (readopt-source w r l))
+    (case [none]
+      (cases hg (Nat.beq l (:next-id w)))
+      (case [false] (simp only [t-create-link ht ho hg refuse]))
+      (case [true] (simp [t-create-link ht ho hg accept] at ha)))
+    (case [some x]
+      (cases hk (Nat.beq (:kind x) sk-link))
+      (case [false] (simp only [t-create-link ht ho hk refuse]))
+      (case [true] (simp [t-create-link ht ho hk accept] at ha)))))
+
+(a/theorem t-create-link-top-inv [w :- World, scope :- Nat, l :- Nat]
+  (=> (= (inv-sample w) true) (= (inv-sample (:world (t-create-link-top w scope l))) true))
+  (intro h)
+  (cases hg (Bool.and (Nat.beq l (:next-id w)) (scope-open-at w scope)))
+  (simp only [t-create-link-top hg refuse]) (exact h)
+  (simp only [t-create-link-top hg accept])
+  (exact (inv-source-ins-fresh w (new-link (:next-id w) scope 0) (rfl) h)))
+
+(a/theorem t-create-link-top-refuse [w :- World, scope :- Nat, l :- Nat]
+  (=> (= (:accepted (t-create-link-top w scope l)) false) (= (:world (t-create-link-top w scope l)) w))
+  (intro ha)
+  (cases hg (Bool.and (Nat.beq l (:next-id w)) (scope-open-at w scope)))
+  (simp only [t-create-link-top hg refuse])
+  (simp [t-create-link-top hg accept] at ha))
+
+;; ---- streams (T1 with kind sk-stream; engine `[:create-source(-top) .. :stream 0 S]`): the stream
+;; S = next-id and its first tail, the push link S + 1 (no item of its own), owned by the root scope
+(a/defn stream-rows [w :- World, owner :- Nat, v :- Nat] World
+  (bump (source-ins (bump (source-ins w (new-stream (:next-id w) owner v)))
+                    (new-link (+ (:next-id w) 1) root-scope-id (:next-id w)))))
+(a/defn create-stream-cur [w :- World, r :- RunRow, v :- Nat] World
+  (run-upd (record-basis (stream-rows w (src-owner-cur w r) v) r (:next-id w)) (:id r) run-tick))
+;; in a body: as `t1-full` (adoption of a stream of C's basis or adoption basis, else fresh = next-id)
+(a/defn t1-stream [w :- World, st :- Nat, v :- Nat, fresh :- Nat] Outcome
+  (match (tok-run w st)
+    [none (refuse w)]
+    [(some r) (match (readopt-source w r fresh)
+                [none (if (Nat.beq fresh (:next-id w)) (accept (create-stream-cur w r v)) (refuse w))]
+                [(some x) (if (Nat.beq (:kind x) sk-stream) (accept (respawn-raw w r fresh)) (refuse w))])]))
+(a/defn t1-body [w :- World, st :- Nat, kind :- Nat, v :- Nat, fresh :- Nat] Outcome
+  (if (Nat.beq kind sk-stream) (t1-stream w st v fresh) (t1-full w st kind v fresh)))
+(a/defn t1-top-full [w :- World, scope :- Nat, kind :- Nat, v :- Nat, fresh :- Nat] Outcome
+  (if (Nat.beq kind sk-stream)
+      (if (Bool.and (Nat.beq fresh (:next-id w)) (scope-open-at w scope)) (accept (stream-rows w scope v)) (refuse w))
+      (t1-create-source-top w scope kind v fresh)))
+
+(a/theorem inv-stream-rows [w :- World, owner :- Nat, v :- Nat]
+  (=> (= (inv-sample w) true) (= (inv-sample (stream-rows w owner v)) true))
+  (intro h)
+  (simp only [stream-rows])
+  (exact (inv-source-ins-fresh (bump (source-ins w (new-stream (:next-id w) owner v)))
+           (new-link (+ (:next-id w) 1) root-scope-id (:next-id w)) (rfl)
+           (inv-source-ins-fresh w (new-stream (:next-id w) owner v) (rfl) h))))
+
+(a/theorem inv-create-stream-cur [w :- World, r :- RunRow, v :- Nat]
+  (=> (= (inv-sample w) true) (= (inv-sample (create-stream-cur w r v)) true))
+  (intro h)
+  (simp only [create-stream-cur])
+  (exact (inv-run-upd _ (:id r) run-tick run-tick-run-id
+           (inv-record-basis _ r (:next-id w) (inv-stream-rows w (src-owner-cur w r) v h)))))
+
+(a/theorem t1-stream-inv [w :- World, st :- Nat, v :- Nat, fresh :- Nat]
+  (=> (= (inv-sample w) true) (= (inv-sample (:world (t1-stream w st v fresh))) true))
+  (intro h)
+  (cases ht (tok-run w st))
+  (case [none] (simp only [t1-stream ht refuse]) (exact h))
+  (case [some r]
+    (cases ho (readopt-source w r fresh))
+    (case [none]
+      (cases hg (Nat.beq fresh (:next-id w)))
+      (case [false] (simp only [t1-stream ht ho hg refuse]) (exact h))
+      (case [true] (simp only [t1-stream ht ho hg accept]) (exact (inv-create-stream-cur w r v h))))
+    (case [some x]
+      (cases hk (Nat.beq (:kind x) sk-stream))
+      (case [false] (simp only [t1-stream ht ho hk refuse]) (exact h))
+      (case [true]
+        (simp only [t1-stream ht ho hk accept respawn-raw])
+        (exact (inv-run-upd _ (:id r) run-tick run-tick-run-id
+                 (inv-comp-upd w (:of r) _ (comp-rebasis-id _) (comp-rebasis-pending _) h)))))))
+
+(a/theorem t1-stream-refuse [w :- World, st :- Nat, v :- Nat, fresh :- Nat]
+  (=> (= (:accepted (t1-stream w st v fresh)) false) (= (:world (t1-stream w st v fresh)) w))
+  (intro ha)
+  (cases ht (tok-run w st))
+  (case [none] (simp only [t1-stream ht refuse]))
+  (case [some r]
+    (cases ho (readopt-source w r fresh))
+    (case [none]
+      (cases hg (Nat.beq fresh (:next-id w)))
+      (case [false] (simp only [t1-stream ht ho hg refuse]))
+      (case [true] (simp [t1-stream ht ho hg accept] at ha)))
+    (case [some x]
+      (cases hk (Nat.beq (:kind x) sk-stream))
+      (case [false] (simp only [t1-stream ht ho hk refuse]))
+      (case [true] (simp [t1-stream ht ho hk accept] at ha)))))
+
+(a/theorem t1-body-inv [w :- World, st :- Nat, kind :- Nat, v :- Nat, fresh :- Nat]
+  (=> (= (inv-sample w) true) (= (inv-sample (:world (t1-body w st kind v fresh))) true))
+  (intro h)
+  (cases hk (Nat.beq kind sk-stream))
+  (simp only [t1-body hk]) (exact (t1-full-inv w st kind v fresh h))
+  (simp only [t1-body hk]) (exact (t1-stream-inv w st v fresh h)))
+
+(a/theorem t1-body-refuse [w :- World, st :- Nat, kind :- Nat, v :- Nat, fresh :- Nat]
+  (=> (= (:accepted (t1-body w st kind v fresh)) false) (= (:world (t1-body w st kind v fresh)) w))
+  (intro ha)
+  (cases hk (Nat.beq kind sk-stream))
+  (simp only [t1-body hk] at ha) (simp only [t1-body hk]) (exact (t1-full-refuse w st kind v fresh ha))
+  (simp only [t1-body hk] at ha) (simp only [t1-body hk]) (exact (t1-stream-refuse w st v fresh ha)))
+
+(a/theorem t1-top-full-inv [w :- World, scope :- Nat, kind :- Nat, v :- Nat, fresh :- Nat]
+  (=> (= (inv-sample w) true) (= (inv-sample (:world (t1-top-full w scope kind v fresh))) true))
+  (intro h)
+  (cases hk (Nat.beq kind sk-stream))
+  (simp only [t1-top-full hk]) (exact (t1-top-inv w scope kind v fresh h))
+  (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (scope-open-at w scope)))
+  (simp only [t1-top-full hk hg refuse]) (exact h)
+  (simp only [t1-top-full hk hg accept]) (exact (inv-stream-rows w scope v h)))
+
+(a/theorem t1-top-full-refuse [w :- World, scope :- Nat, kind :- Nat, v :- Nat, fresh :- Nat]
+  (=> (= (:accepted (t1-top-full w scope kind v fresh)) false) (= (:world (t1-top-full w scope kind v fresh)) w))
+  (intro ha)
+  (cases hk (Nat.beq kind sk-stream))
+  (simp only [t1-top-full hk] at ha) (simp only [t1-top-full hk]) (exact (t1-top-refuse w scope kind v fresh ha))
+  (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (scope-open-at w scope)))
+  (simp only [t1-top-full hk hg refuse])
+  (simp [t1-top-full hk hg accept] at ha))
+
+;; ---- link-demand (`[:link-demand L K]`, after the T6/T22 commit that demanded L): an unrealized
+;; open pull link without a live realizer (rtask is stale-tolerant: the realizer is live while its
+;; task exists without a result) starts its realizer: task K owned by the root scope (handles 0),
+;; its run and run scope (T4's rows, started: its first slice is a scheduling choice); L.rtask := K
+(a/defn task-live [w :- World, k :- Nat] Bool
+  (match (task-find w k) [none false] [(some t) (Nat.beq (:tag (:result t)) res-none)]))
+(a/defn realizer-live [w :- World, s :- SourceRow] Bool
+  (Bool.and (Bool.not (Nat.beq (:rtask s) 0)) (task-live w (:rtask s))))
+(a/defn link-idle [w :- World, s :- SourceRow] Bool
+  (Bool.and (link-open s) (Bool.and (Nat.beq (:tail s) 0) (Bool.not (realizer-live w s)))))
+(a/defn link-demand-raw [w :- World, l :- Nat] World
+  (source-upd (task-upd (spawn-rows w root-scope-id (List.nil Nat)) (:next-id w) task-h0) l (link-set-rtask (:next-id w))))
+(a/defn t-link-demand [w :- World, l :- Nat, k :- Nat] Outcome
+  (match (source-find w l)
+    [none (refuse w)]
+    [(some s) (if (Bool.and (link-idle w s) (Bool.and (Nat.beq k (:next-id w)) (scope-open-at w root-scope-id)))
+                  (accept (link-demand-raw w l)) (refuse w))]))
+
+(a/theorem inv-link-demand-raw [w :- World, l :- Nat]
+  (=> (= (inv-sample w) true) (= (inv-sample (link-demand-raw w l)) true))
+  (intro h)
+  (simp only [link-demand-raw])
+  (exact (inv-source-upd _ l _ (link-set-rtask-id _)
+           (inv-task-upd _ (:next-id w) task-h0 task-h0-id (inv-spawn-rows w root-scope-id (List.nil Nat) h)))))
+
+(a/theorem t-link-demand-inv [w :- World, l :- Nat, k :- Nat]
+  (=> (= (inv-sample w) true) (= (inv-sample (:world (t-link-demand w l k))) true))
+  (intro h)
+  (cases hf (source-find w l)) (case' [some s]) (case' [none])
+  (simp only [t-link-demand hf refuse]) (exact h)
+  (cases hg (Bool.and (link-idle w s) (Bool.and (Nat.beq k (:next-id w)) (scope-open-at w root-scope-id))))
+  (simp only [t-link-demand hf hg refuse]) (exact h)
+  (simp only [t-link-demand hf hg accept]) (exact (inv-link-demand-raw w l h)))
+
+(a/theorem t-link-demand-refuse [w :- World, l :- Nat, k :- Nat]
+  (=> (= (:accepted (t-link-demand w l k)) false) (= (:world (t-link-demand w l k)) w))
+  (intro ha)
+  (cases hf (source-find w l)) (case' [some s]) (case' [none])
+  (simp only [t-link-demand hf refuse])
+  (cases hg (Bool.and (link-idle w s) (Bool.and (Nat.beq k (:next-id w)) (scope-open-at w root-scope-id))))
+  (simp only [t-link-demand hf hg refuse])
+  (simp [t-link-demand hf hg accept] at ha))
+
+;; ---- link-realize (`[:link-realize L tag v N]`, after the realizer's T12 item): L (an unrealized
+;; open pull link whose realizer is no longer live) is realized: tag 1 (res-ok) creates the next
+;; pull link N = next-id and realizes L with [v N]; tag 0 the end (N = 0); tag 2 (res-err) the
+;; memoized error v (N = 0). ::forked realizes nothing (no item; the next demand restarts it).
+(a/defn link-next-raw [w :- World, l :- Nat, v :- Nat] World
+  (realize-link (bump (source-ins w (new-link (:next-id w) root-scope-id 0))) l v false (:next-id w)))
+(a/defn link-realize-raw [w :- World, l :- Nat, tag :- Nat, v :- Nat, n :- Nat] Outcome
+  (if (Nat.beq tag res-ok)
+      (if (Nat.beq n (:next-id w)) (accept (link-next-raw w l v)) (refuse w))
+      (if (Nat.beq n 0)
+          (if (Nat.beq tag res-none) (accept (realize-link w l 0 false 0))
+              (if (Nat.beq tag res-err) (accept (realize-link w l v true 0)) (refuse w)))
+          (refuse w))))
+(a/defn t-link-realize [w :- World, l :- Nat, tag :- Nat, v :- Nat, n :- Nat] Outcome
+  (match (source-find w l)
+    [none (refuse w)]
+    [(some s) (if (link-idle w s) (link-realize-raw w l tag v n) (refuse w))]))
+
+(a/theorem inv-link-next-raw [w :- World, l :- Nat, v :- Nat]
+  (=> (= (inv-sample w) true) (= (inv-sample (link-next-raw w l v)) true))
+  (intro h)
+  (simp only [link-next-raw])
+  (exact (inv-realize-link _ l v false _ (inv-source-ins-fresh w (new-link (:next-id w) root-scope-id 0) (rfl) h))))
+
+(a/theorem link-realize-raw-inv [w :- World, l :- Nat, tag :- Nat, v :- Nat, n :- Nat]
+  (=> (= (inv-sample w) true) (= (inv-sample (:world (link-realize-raw w l tag v n))) true))
+  (intro h)
+  (cases h1 (Nat.beq tag res-ok))
+  (case [true]
+    (cases h2 (Nat.beq n (:next-id w)))
+    (case [false] (simp only [link-realize-raw h1 h2 refuse]) (exact h))
+    (case [true] (simp only [link-realize-raw h1 h2 accept]) (exact (inv-link-next-raw w l v h))))
+  (case [false]
+    (cases h2 (Nat.beq n 0))
+    (case [false] (simp only [link-realize-raw h1 h2 refuse]) (exact h))
+    (case [true]
+      (cases h3 (Nat.beq tag res-none))
+      (case [true] (simp only [link-realize-raw h1 h2 h3 accept]) (exact (inv-realize-link w l 0 false 0 h)))
+      (case [false]
+        (cases h4 (Nat.beq tag res-err))
+        (case [false] (simp only [link-realize-raw h1 h2 h3 h4 refuse]) (exact h))
+        (case [true] (simp only [link-realize-raw h1 h2 h3 h4 accept]) (exact (inv-realize-link w l v true 0 h)))))))
+
+(a/theorem link-realize-raw-refuse [w :- World, l :- Nat, tag :- Nat, v :- Nat, n :- Nat]
+  (=> (= (:accepted (link-realize-raw w l tag v n)) false) (= (:world (link-realize-raw w l tag v n)) w))
+  (intro ha)
+  (cases h1 (Nat.beq tag res-ok))
+  (case [true]
+    (cases h2 (Nat.beq n (:next-id w)))
+    (case [false] (simp only [link-realize-raw h1 h2 refuse]))
+    (case [true] (simp [link-realize-raw h1 h2 accept] at ha)))
+  (case [false]
+    (cases h2 (Nat.beq n 0))
+    (case [false] (simp only [link-realize-raw h1 h2 refuse]))
+    (case [true]
+      (cases h3 (Nat.beq tag res-none))
+      (case [true] (simp [link-realize-raw h1 h2 h3 accept] at ha))
+      (case [false]
+        (cases h4 (Nat.beq tag res-err))
+        (case [false] (simp only [link-realize-raw h1 h2 h3 h4 refuse]))
+        (case [true] (simp [link-realize-raw h1 h2 h3 h4 accept] at ha))))))
+
+(a/theorem t-link-realize-inv [w :- World, l :- Nat, tag :- Nat, v :- Nat, n :- Nat]
+  (=> (= (inv-sample w) true) (= (inv-sample (:world (t-link-realize w l tag v n))) true))
+  (intro h)
+  (cases hf (source-find w l)) (case' [some s]) (case' [none])
+  (simp only [t-link-realize hf refuse]) (exact h)
+  (cases hg (link-idle w s))
+  (simp only [t-link-realize hf hg refuse]) (exact h)
+  (simp only [t-link-realize hf hg]) (exact (link-realize-raw-inv w l tag v n h)))
+
+(a/theorem t-link-realize-refuse [w :- World, l :- Nat, tag :- Nat, v :- Nat, n :- Nat]
+  (=> (= (:accepted (t-link-realize w l tag v n)) false) (= (:world (t-link-realize w l tag v n)) w))
+  (intro ha)
+  (cases hf (source-find w l)) (case' [some s]) (case' [none])
+  (simp only [t-link-realize hf refuse])
+  (cases hg (link-idle w s))
+  (simp only [t-link-realize hf hg refuse])
+  (simp only [t-link-realize hf hg] at ha) (simp only [t-link-realize hf hg]) (exact (link-realize-raw-refuse w l tag v n ha)))
+
+;; ---- append (`[:append S v T]`): on an open stream whose tail is unrealized: the new tail T =
+;; next-id (a push link), S.tail := T (version + 1), the old tail realized with [v T]; refused on a
+;; closed stream
+(a/defn append-raw [w :- World, x :- Nat, v :- Nat, old :- Nat] World
+  (realize-link (source-upd (bump (source-ins w (new-link (:next-id w) root-scope-id x))) x (stream-set-tail (:next-id w)))
+                old v false (:next-id w)))
+(a/defn t-append [w :- World, x :- Nat, v :- Nat, t :- Nat] Outcome
+  (match (source-find w x)
+    [none (refuse w)]
+    [(some s) (if (Bool.and (open-kind sk-stream s) (Bool.and (Nat.beq t (:next-id w)) (link-pending w (:tail s))))
+                  (accept (append-raw w x v (:tail s))) (refuse w))]))
+
+(a/theorem inv-append-raw [w :- World, x :- Nat, v :- Nat, old :- Nat]
+  (=> (= (inv-sample w) true) (= (inv-sample (append-raw w x v old)) true))
+  (intro h)
+  (simp only [append-raw])
+  (exact (inv-realize-link _ old v false _
+           (inv-source-upd _ x _ (stream-set-tail-id _)
+             (inv-source-ins-fresh w (new-link (:next-id w) root-scope-id x) (rfl) h)))))
+
+(a/theorem t-append-inv [w :- World, x :- Nat, v :- Nat, t :- Nat]
+  (=> (= (inv-sample w) true) (= (inv-sample (:world (t-append w x v t))) true))
+  (intro h)
+  (cases hf (source-find w x)) (case' [some s]) (case' [none])
+  (simp only [t-append hf refuse]) (exact h)
+  (cases hg (Bool.and (open-kind sk-stream s) (Bool.and (Nat.beq t (:next-id w)) (link-pending w (:tail s)))))
+  (simp only [t-append hf hg refuse]) (exact h)
+  (simp only [t-append hf hg accept]) (exact (inv-append-raw w x v _ h)))
+
+(a/theorem t-append-refuse [w :- World, x :- Nat, v :- Nat, t :- Nat]
+  (=> (= (:accepted (t-append w x v t)) false) (= (:world (t-append w x v t)) w))
+  (intro ha)
+  (cases hf (source-find w x)) (case' [some s]) (case' [none])
+  (simp only [t-append hf refuse])
+  (cases hg (Bool.and (open-kind sk-stream s) (Bool.and (Nat.beq t (:next-id w)) (link-pending w (:tail s)))))
+  (simp only [t-append hf hg refuse])
+  (simp [t-append hf hg accept] at ha))
+
+;; ---- close (`[:close S tag v]`, tag 0 end / 2 error): on an open stream: its tail is realized
+;; (the end, or the error v), then S closes (T16's close-source: the tail is no longer pending)
+(a/defn close-tag-ok [tag :- Nat] Bool (Bool.or (Nat.beq tag res-none) (Nat.beq tag res-err)))
+(a/defn close-raw [w :- World, x :- Nat, t :- Nat, tag :- Nat, v :- Nat] World
+  (close-source (end-link w t (Nat.beq tag res-err) v) x))
+(a/defn t-close [w :- World, x :- Nat, tag :- Nat, v :- Nat] Outcome
+  (match (source-find w x)
+    [none (refuse w)]
+    [(some s) (if (Bool.and (open-kind sk-stream s) (close-tag-ok tag))
+                  (accept (close-raw w x (:tail s) tag v)) (refuse w))]))
+
+(a/theorem inv-close-raw [w :- World, x :- Nat, t :- Nat, tag :- Nat, v :- Nat]
+  (=> (= (inv-sample w) true) (= (inv-sample (close-raw w x t tag v)) true))
+  (intro h)
+  (simp only [close-raw])
+  (exact (inv-close-source _ x (inv-end-link w t _ v h))))
+
+(a/theorem t-close-inv [w :- World, x :- Nat, tag :- Nat, v :- Nat]
+  (=> (= (inv-sample w) true) (= (inv-sample (:world (t-close w x tag v))) true))
+  (intro h)
+  (cases hf (source-find w x)) (case' [some s]) (case' [none])
+  (simp only [t-close hf refuse]) (exact h)
+  (cases hg (Bool.and (open-kind sk-stream s) (close-tag-ok tag)))
+  (simp only [t-close hf hg refuse]) (exact h)
+  (simp only [t-close hf hg accept]) (exact (inv-close-raw w x _ tag v h)))
+
+(a/theorem t-close-refuse [w :- World, x :- Nat, tag :- Nat, v :- Nat]
+  (=> (= (:accepted (t-close w x tag v)) false) (= (:world (t-close w x tag v)) w))
+  (intro ha)
+  (cases hf (source-find w x)) (case' [some s]) (case' [none])
+  (simp only [t-close hf refuse])
+  (cases hg (Bool.and (open-kind sk-stream s) (close-tag-ok tag)))
+  (simp only [t-close hf hg refuse])
+  (simp [t-close hf hg accept] at ha))
+
 ;; Z#54 (§4.3, operation by kind): a mailbox or semaphore is only taken (`take`, a wait edge):
 ;; `await` with such a member (one, all or any; the engine logs `await` on a mailbox as `take`)
 ;; and the host read (T22) of one fail with no commit (refused here), so no dep edge ever has a
-;; mailbox or semaphore debtor. `track` on another kind than signal/cell is T7's refusal.
+;; mailbox or semaphore debtor. `track` on another kind than signal/cell is T7's refusal. C0: a
+;; stream is not awaitable either (readers hold positions, its links): await/T22 on one refused.
 (a/defn src-consuming [s :- SourceRow] Bool
-  (Bool.or (Nat.beq (:kind s) sk-mailbox) (Nat.beq (:kind s) sk-semaphore)))
+  (Bool.or (Nat.beq (:kind s) sk-mailbox) (Bool.or (Nat.beq (:kind s) sk-semaphore) (Nat.beq (:kind s) sk-stream))))
 (a/defn deb-consuming [w :- World, d :- Nat] Bool (opt-test src-consuming (source-find w d)))
 (a/defn await-kind-bad [w :- World, ds :- (List Nat)] Bool (tbl-any (deb-consuming w) ds))
 
@@ -2510,8 +2909,8 @@
 
 (a/defn raw0 [w :- World, it :- Item] Outcome
   (match it
-    [(create-source st kind v fresh) (if (body-shut w st) (refuse w) (t1-full w st kind v fresh))]
-    [(create-source-top scope kind v fresh) (t1-create-source-top w scope kind v fresh)]
+    [(create-source st kind v fresh) (if (body-shut w st) (refuse w) (t1-body w st kind v fresh))]
+    [(create-source-top scope kind v fresh) (t1-top-full w scope kind v fresh)]
     [(write x v) (t2-write w x v)]
     [(track st x k fresh) (if (in-cleanup w st) (refuse w) (t7-track w st x k fresh))]
     [(observe d cb fresh) (t8-full w d cb fresh)]
@@ -2547,7 +2946,13 @@
     [(detach k s) (t-detach w k s)]
     [(finally-enter st) (t-finally-enter w st)]
     [(finally-exit st) (t-finally-exit w st)]
-    [(slice-exit r) (t-slice-exit w r)]))
+    [(slice-exit r) (t-slice-exit w r)]
+    [(create-link st l) (if (in-cleanup w st) (refuse w) (t-create-link w st l))]
+    [(create-link-top sc l) (t-create-link-top w sc l)]
+    [(link-demand l k) (t-link-demand w l k)]
+    [(link-realize l tag v n) (t-link-realize w l tag v n)]
+    [(append x v t) (t-append w x v t)]
+    [(close x tag v) (t-close w x tag v)]))
 
 ;; Z#56 (T21): a released world refuses the HOST's admissions (top-level creations, writes, observe,
 ;; pins, handles, host waits, source operations, cancel, close, detach), except while a run holds the
@@ -2593,7 +2998,13 @@
     [(detach k s) true]
     [(finally-enter st) false]
     [(finally-exit st) false]
-    [(slice-exit r) false]))
+    [(slice-exit r) false]
+    [(create-link st l) false]
+    [(create-link-top sc l) true]
+    [(link-demand l k) false]
+    [(link-realize l tag v n) false]
+    [(append x v t) true]
+    [(close x tag v) true]))
 (a/defn slice-held [w :- World] Bool (tbl-any run-slice (:runs w)))
 (a/defn host-shut [w :- World, it :- Item] Bool
   (Bool.and (:released w) (Bool.and (host-item it) (Bool.not (slice-held w)))))
@@ -2616,9 +3027,9 @@
   (cases it)
   (all_goals (simp only [raw0]))
   (rename_i st kind v fresh) (cases hc (body-shut w st))
-  (simp only [hc]) (exact (t1-full-inv w _ _ _ _ h))
+  (simp only [hc]) (exact (t1-body-inv w _ _ _ _ h))
   (simp only [hc refuse]) (exact h)
-  (exact (t1-top-inv w _ _ _ _ h))
+  (exact (t1-top-full-inv w _ _ _ _ h))
   (exact (t2-inv w _ _ h))
   (rename_i st x k fresh) (cases hc (in-cleanup w st))
   (simp only [hc]) (exact (t7-inv w _ _ _ _ h))
@@ -2668,7 +3079,15 @@
   (exact (t-detach-inv w _ _ h))
   (exact (t-finally-enter-inv w _ h))
   (exact (t-finally-exit-inv w _ h))
-  (exact (t-slice-exit-inv w _ h)))
+  (exact (t-slice-exit-inv w _ h))
+  (rename_i st l) (cases hc (in-cleanup w st))
+  (simp only [hc]) (exact (t-create-link-inv w _ _ h))
+  (simp only [hc refuse]) (exact h)
+  (exact (t-create-link-top-inv w _ _ h))
+  (exact (t-link-demand-inv w _ _ h))
+  (exact (t-link-realize-inv w _ _ _ _ h))
+  (exact (t-append-inv w _ _ _ h))
+  (exact (t-close-inv w _ _ _ h)))
 
 (a/theorem raw0-refuse [w :- World, it :- Item]
   (=> (= (:accepted (raw0 w it)) false) (= (:world (raw0 w it)) w))
@@ -2677,9 +3096,9 @@
   (all_goals (simp only [raw0] at ha))
   (all_goals (simp only [raw0]))
   (rename_i st kind v fresh) (cases hc (body-shut w st))
-  (simp only [hc] at ha) (simp only [hc]) (exact (t1-full-refuse w _ _ _ _ ha))
+  (simp only [hc] at ha) (simp only [hc]) (exact (t1-body-refuse w _ _ _ _ ha))
   (simp only [hc refuse])
-  (exact (t1-top-refuse w _ _ _ _ ha))
+  (exact (t1-top-full-refuse w _ _ _ _ ha))
   (exact (t2-refuse w _ _ ha))
   (rename_i st x k fresh) (cases hc (in-cleanup w st))
   (simp only [hc] at ha) (simp only [hc]) (exact (t7-refuse w _ _ _ _ ha))
@@ -2729,7 +3148,15 @@
   (exact (t-detach-refuse w _ _ ha))
   (exact (t-finally-enter-refuse w _ ha))
   (exact (t-finally-exit-refuse w _ ha))
-  (exact (t-slice-exit-refuse w _ ha)))
+  (exact (t-slice-exit-refuse w _ ha))
+  (rename_i st l) (cases hc (in-cleanup w st))
+  (simp only [hc] at ha) (simp only [hc]) (exact (t-create-link-refuse w _ _ ha))
+  (simp only [hc refuse])
+  (exact (t-create-link-top-refuse w _ _ ha))
+  (exact (t-link-demand-refuse w _ _ ha))
+  (exact (t-link-realize-refuse w _ _ _ _ ha))
+  (exact (t-append-refuse w _ _ _ ha))
+  (exact (t-close-refuse w _ _ _ ha)))
 
 (a/theorem inv-cancel-losers [w0 :- World, w1 :- World]
   (=> (= (inv-sample w1) true) (= (inv-sample (cancel-losers w0 w1)) true))
@@ -2778,7 +3205,7 @@
   (intro hg)
   (simp only [raw-token-ok] at hg)
   (cases it)
-  (simp only [raw0 body-shut in-cleanup cur-closed opt-test t1-full (run-tok-none w _ hg) refuse Bool.or_false])
+  (simp only [raw0 body-shut in-cleanup cur-closed opt-test t1-body t1-stream t1-full (run-tok-none w _ hg) refuse Bool.or_false ite_self])
   (simp [item-token-ok] at hg)
   (simp [item-token-ok] at hg)
   (simp only [raw0 in-cleanup opt-test t7-track (run-tok-none w _ hg) refuse])
@@ -2817,7 +3244,9 @@
   (simp [item-token-ok] at hg)
   (simp only [raw0 t-finally-enter (run-tok-none w _ hg) refuse])
   (simp only [raw0 t-finally-exit (run-tok-none w _ hg) refuse])
-  (simp [item-token-ok] at hg))
+  (simp [item-token-ok] at hg)
+  (simp only [raw0 in-cleanup opt-test t-create-link (run-tok-none w _ hg) refuse])
+  (all_goals (simp [item-token-ok] at hg)))
 
 (a/theorem raw-l4 [w :- World, it :- Item]
   (=> (= (raw-token-ok w it) false) (= (:accepted (raw w it)) false))

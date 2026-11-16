@@ -43,7 +43,7 @@
 (defn fresh-comp [w]
   (let [id (:next-id w)] [id (s/bump (s/comp-ins w (comp-row id)))]))
 (defn fresh-source [w]
-  (let [id (:next-id w)] [id (s/bump (s/source-ins w (s/->SourceRow id 0 s/sk-signal 0 0 true 1 [])))]))
+  (let [id (:next-id w)] [id (s/bump (s/source-ins w (s/->SourceRow id 0 s/sk-signal 0 0 true 1 [] 0 0 0 false)))]))
 (defn fresh-edge [w row]
   (let [id (:next-id w)] [id (e/insert-edge-fresh w row)]))
 

@@ -14,6 +14,13 @@
   - Source kinds (§4.3): a deferred is delivered iff version > 0 (it is created with version 0
     and `deliver` sets it to 1); a semaphore's `state` is its permit count; a mailbox's queued
     messages are `SourceRow.queue` (FIFO, head first; `state` keeps the creation value).
+  - C0 async sequences (§4.3 link/stream, §8.1): a link (`sk-link`) is a once-cell owned by the
+    root scope, realized iff version > 0 (like a deferred): with `state` = v and `next` = the
+    next link (a value), `next` = 0 (the end, state 0), or `fail` = true (a memoized error,
+    `state` = the opaque error). `rtask` is its realizer task (0 none; stale-tolerant: the
+    realizer is live only while that task exists without a result). `tail` is 0 on a pull link
+    and the stream on a push link; a stream (`sk-stream`) keeps its tail link in `tail`. The
+    other kinds keep rtask = next = tail = 0, fail = false.
   - Edge `cont`: `cont-restart` (0) is the reserved restart code; any other Nat is a k.
   - Edge `seen : Nat?` (Z#15): the pair (`has-seen`, `seen`), none = (false, 0).
   - Activation `members : [(E, i)]` (Z#7): `Member {edge, idx}`; `slots` has one RunResult per
@@ -71,6 +78,8 @@
   rp-armed 0  rp-fired 1  rp-cancelling 2
   ;; SourceRow.kind
   sk-signal 0  sk-cell 1  sk-deferred 2  sk-mailbox 3  sk-semaphore 4  sk-rerun 5
+  ;; C0 async sequences (§4.3 rows link, stream; engine SRC-LINK 5 / SRC-STREAM 6)
+  sk-link 6  sk-stream 7
   ;; ResRow.kind
   rk-timer 0  rk-external 1  rk-offload 2  rk-native 3)
 
@@ -102,7 +111,8 @@
   (id Nat) (of Nat) (stamp Nat) (epoch Nat) (scope Nat) (act Nat) (mode Nat)
   (slice Bool) (effect-index Nat) (finalizers (List Finalizer)) (resources (List Nat)))
 (a/structure SourceRow []
-  (id Nat) (owner Nat) (kind Nat) (state Nat) (version Nat) (open Bool) (handles Nat) (queue (List Nat)))
+  (id Nat) (owner Nat) (kind Nat) (state Nat) (version Nat) (open Bool) (handles Nat) (queue (List Nat))
+  (rtask Nat) (next Nat) (tail Nat) (fail Bool))
 (a/structure EdgeRow []
   (id Nat) (kind Nat) (creditor Nat) (debtor Nat) (cont Nat) (at Nat) (phase Nat)
   (marked Bool) (has-seen Bool) (seen Nat) (has-base Bool) (base-value Nat) (base-version Nat))

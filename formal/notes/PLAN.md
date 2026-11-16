@@ -1089,3 +1089,28 @@ No counterexample. Tripwire: i10_test random drivers (g10r and lit-i10-current o
 - **`step-h3`**, `p3m = p3la && h3 []`, `step-p3m`, `p3m-empty`, `step-h3-total`, and
   **`l5-safety-total : p3m w -> quiescent w -> ... -> False`** with no honest hypothesis (h-mark and h-mem2 are invariants).
 - Open after P11: I15 as a literal statement over `p3m`, random lockstep in CI, the formal CI job, spec §8 rows.
+
+### Branch `formal/c0-model` (2026-11-15): C0 async sequences, Stage A (engine 60f6a62)
+
+- Links and streams are source kinds of the ONE model (`sk-link 6`, `sk-stream 7`; `sk-rerun 5` stays, never
+  created). `SourceRow` gains `rtask next tail fail` (state.clj docstring: a link is realized iff version > 0 with
+  state v / next N, the end (next 0), or `fail` (memoized error, `src-result` = err state); `tail` = a push link's
+  stream (0 = pull link) or a stream's tail link). Row functions + id lemmas at the end of edits.clj.
+- Items 38-43 (step.clj table): `create-link st l` / `create-link-top scope l` (pull head in the root scope; in a
+  computation a basis creation adopted like a re-spawn), `link-demand l k` (realizer task k in the root scope with
+  handles 0, run, run scope = T4's rows; `rtask` is stale-tolerant: `realizer-live` = task exists without result),
+  `link-realize l tag v n` (1 next pull link n / 0 end / 2 error), `append x v t`, `close x tag v`. Streams are T1's
+  kind 7 (`t1-body`, `t1-top-full`: stream S and its first tail link S + 1). All built from source-ins, source-upd and
+  rule.clj's `realize-link` = `deliver-res` (deliver with a result: `deliver-raw-res`, rfl).
+- Changed: `close-source` = `close-source0 (end-stream w x) x` (T16/T13/T21/Rule R: a stream's tail ends first);
+  `demote-edges` closes the streams of C's basis after C's dep edges go (`end-basis`, engine `demote!`); links are
+  deferred-like (`once-kind` in `src-valueless`/`src-delivered`); `src-consuming` refuses await/T22 on a stream.
+  No existing theorem statement changed; the sl-/s9- chains, casc (`ri-*`, `bn-end-basis`, `demote-lt`) and the copiers
+  (bc, ga/gx) cover the new items.
+- Oracle: projection `:rtask` (raw; none when that task exists with a result: the engine clears it at a cancel with no
+  item), `:pull` (tail 0 and unrealized, or a computation's head), `:next`, stream `:tail`/`:state nil`; deviation
+  `:link-state` (the engine interns [v next-handle]). Samples 18-21 replay with no divergence (oracle_test
+  `sample-18` .. `sample-21`, `projection-roundtrip-c0`); engine_test `random-steps-c0` (C0 items mixed in, all
+  per-step tripwires).
+- Stage B (not loaded on this branch): lit fails first (`kw-close-source`, close-source's new shape); every namespace
+  above lit is blocked by it (rank, rank-step, z59, cow, mvcc load).

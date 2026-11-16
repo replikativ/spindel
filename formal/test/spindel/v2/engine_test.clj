@@ -85,6 +85,12 @@
 (defn finally-enter [st] [35 st])
 (defn finally-exit [st] [36 st])
 (defn slice-exit [r] [37 r])
+(defn create-link [st l] [38 st l])
+(defn create-link-top [scope l] [39 scope l])
+(defn link-demand [l k] [40 l k])
+(defn link-realize [l tag v n] [41 l tag v n])
+(defn append* [x v t] [42 x v t])
+(defn close* [x tag v] [43 x tag v])
 
 (def root s/root-scope-id)
 (defn find-row [w field id] (first (filter #(= id (:id %)) (get w field))))
@@ -693,10 +699,10 @@
       (is (= (s/->RunResult s/res-err 2) (st/deb-result w y)) "err ::closed")
       (is (true? (inv/lit-i5-dep-final w))))
     (testing "a closed source with a value delivers it"
-      (is (= (s/->RunResult s/res-ok 7) (st/src-result (s/->SourceRow 1 0 s/sk-signal 7 3 false 1 []))))
-      (is (= (s/->RunResult s/res-ok 7) (st/src-result (s/->SourceRow 1 0 s/sk-deferred 7 1 false 1 []))))
-      (is (= (s/->RunResult s/res-err 2) (st/src-result (s/->SourceRow 1 0 s/sk-deferred 0 0 false 1 []))))
-      (is (= (s/->RunResult s/res-ok 0) (st/src-result (s/->SourceRow 1 0 s/sk-mailbox 0 0 true 1 [])))
+      (is (= (s/->RunResult s/res-ok 7) (st/src-result (s/->SourceRow 1 0 s/sk-signal 7 3 false 1 [] 0 0 0 false))))
+      (is (= (s/->RunResult s/res-ok 7) (st/src-result (s/->SourceRow 1 0 s/sk-deferred 7 1 false 1 [] 0 0 0 false))))
+      (is (= (s/->RunResult s/res-err 2) (st/src-result (s/->SourceRow 1 0 s/sk-deferred 0 0 false 1 [] 0 0 0 false))))
+      (is (= (s/->RunResult s/res-ok 0) (st/src-result (s/->SourceRow 1 0 s/sk-mailbox 0 0 true 1 [] 0 0 0 false)))
           "an open source: its state"))))
 
 (deftest blocked-least-fixpoint
@@ -822,4 +828,56 @@
             (recur (inc i) w2)))))
     (testing "the item kinds that matter were accepted"
       (is (every? #(pos? (get @accepted % 0)) [1 2 3 4 13 14 15 16 17 18 19 20 21 22 25 26 27 28 29 30 31 32 33 34 35 36 37])
+          (pr-str (into (sorted-map) @accepted))))))
+
+;; C0 (links and streams): random items with the C0 kinds mixed in, same per-step checks
+(defn random-c0-item [^java.util.Random rng w]
+  (let [pick (fn [xs] (if (seq xs) (nth (vec xs) (.nextInt rng (count xs))) 0))
+        n (:next-id w)
+        links (filter #(= s/sk-link (:kind %)) (:sources w))
+        pending (map :id (filter #(and (zero? (:version %)) (zero? (:tail %))) links))
+        streams (map :id (filter #(= s/sk-stream (:kind %)) (:sources w)))
+        slice-runs (filter :slice (:runs w))
+        st (if (seq slice-runs) (:stamp (first slice-runs)) (pick (map :stamp (:runs w))))
+        v (+ 3 (.nextInt rng 4))
+        lk (fn [] (if (and (seq pending) (< (.nextInt rng 10) 8)) (pick pending) (pick (map :id links))))]
+    (case (.nextInt rng 12)
+      0 (create-link st (if (< (.nextInt rng 10) 8) n (pick (map :id links))))
+      1 (create-link-top root n)
+      2 (link-demand (lk) n)
+      3 (link-demand (lk) n)
+      4 (let [tag (.nextInt rng 3)] (link-realize (lk) tag v (if (= 1 tag) n 0)))
+      5 (let [tag (.nextInt rng 3)] (link-realize (lk) tag v (if (= 1 tag) n 0)))
+      6 (append* (pick streams) v n)
+      7 (append* (pick streams) v n)
+      8 (close* (pick streams) (* 2 (.nextInt rng 2)) v)
+      9 (create-source-top root s/sk-stream 0 n)
+      10 (create-source st s/sk-stream 0 n)
+      11 (await* st [(lk)] s/am-one 1 n []))))
+
+(deftest random-steps-c0
+  (let [rng (java.util.Random. 20261115)
+        accepted (atom {})]
+    (dotimes [run 40]
+      (loop [i 0 w (prefix-world)]
+        (when (< i 50)
+          (let [item (if (< (.nextInt rng 10) 4) (random-c0-item rng w) (random-item rng w))
+                raw (en/raw w item)
+                o (en/world-step w item)
+                w2 (:world o)
+                msg (str "run " run " step " i " " (pr-str item))]
+            (is (rlt/ok? (:world raw)) (str "raw inv " msg))
+            (if (:accepted raw)
+              (do (swap! accepted update (first item) (fnil inc 0))
+                  (is (= w2 (rlt/rule-r-checks (:world raw) msg)) msg))
+              (do (is (= w2 w) (str "refusal changed the world " msg))
+                  (is (= raw o))))
+            (when (false? (en/raw-token-ok w item)) (is (= (st/->Outcome w false) o) (str "L4 " msg)))
+            (is (rlt/ok? w2) msg)
+            (is (true? (en/ranks-ok w2)) (str "I12 " msg))
+            (is (true? (inv/inv-all w2)) (str "I1 I5 I7 I9 I10 I11a (spindel.v2.inv) " msg))
+            (is (true? (en/blocked-converged w2)) (str "Blocked converged " msg))
+            (recur (inc i) w2)))))
+    (testing "the C0 items were accepted"
+      (is (every? #(pos? (get @accepted % 0)) [38 39 40 41 42 43])
           (pr-str (into (sorted-map) @accepted))))))

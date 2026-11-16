@@ -70,6 +70,22 @@
                                                             committed at the block's start) -
     37  slice-exit r                           Z#35 the slice of a cancelled run returns (after
                                                             its last finally block; T13) -
+    38  create-link st l                       C0 a pull head in a run      link (owned by the root
+                                                            scope; in a computation recorded in its
+                                                            basis, and `l` naming a link of its
+                                                            basis/adoption basis adopts it: nothing)
+    39  create-link-top scope l                C0 a pull head on the host   link
+    40  link-demand l k                        C0 demand on an unrealized pull link without a live
+                                                            realizer (after T6/T22's commit)
+                                                            task k (handles 0, root scope), run,
+                                                            run scope (T4's order)
+    41  link-realize l tag v n                 C0 after the realizer's T12: tag 1 realizes l with
+                                                            [v n], tag 0 the end, tag 2 the error v
+                                                            the next pull link n (tag 1 only)
+    42  append x v t                           C0 stream append            the new tail link t
+    43  close x tag v                          C0 stream close (tag 0 end, 2 error) -
+  A stream is created by T1 (`create-source(-top)` with kind `sk-stream`, spindel.v2.engine), which
+  also allocates its first tail link (id = the stream's + 1).
   Indices 0-24 are unchanged; later items get the next indices.
 
   Outcome {world accepted}. Refusal = (input world, false). Validity tokens (§2, V#5) have
@@ -202,7 +218,13 @@
   (detach [k Nat] [s Nat])                                         ; Q10 detach (§5.2)
   (finally-enter [st Nat])                                         ; a finally region opens (B3)
   (finally-exit [st Nat])                                          ; a finally region closes (B3)
-  (slice-exit [r Nat]))                                            ; a cancelled run's slice returns (Z#35)
+  (slice-exit [r Nat])                                             ; a cancelled run's slice returns (Z#35)
+  (create-link [st Nat] [l Nat])                                   ; C0 create-link in a run (pull head)
+  (create-link-top [scope Nat] [l Nat])                            ; C0 create-link on the host
+  (link-demand [l Nat] [k Nat])                                    ; C0 demand starts the realizer task k
+  (link-realize [l Nat] [tag Nat] [v Nat] [n Nat])                 ; C0 the realizer's completion realizes l
+  (append [x Nat] [v Nat] [t Nat])                                 ; C0 stream append (new tail t)
+  (close [x Nat] [tag Nat] [v Nat]))                               ; C0 stream close (end 0 / error 2)
 
 ;; ---- validity tokens (§2, V#5): one check per token kind
 
@@ -280,9 +302,11 @@
               (:basis c) (:adopt-basis c) (:adopt-baselines c) (- (:handles c) 1)))
 
 (a/defn source-write [v :- Nat, s :- SourceRow] SourceRow
-  (SourceRow.mk (:id s) (:owner s) (:kind s) v (+ (:version s) 1) (:open s) (:handles s) (:queue s)))
+  (SourceRow.mk (:id s) (:owner s) (:kind s) v (+ (:version s) 1) (:open s) (:handles s) (:queue s)
+                (:rtask s) (:next s) (:tail s) (:fail s)))
 (a/defn source-dec-handles [s :- SourceRow] SourceRow
-  (SourceRow.mk (:id s) (:owner s) (:kind s) (:state s) (:version s) (:open s) (- (:handles s) 1) (:queue s)))
+  (SourceRow.mk (:id s) (:owner s) (:kind s) (:state s) (:version s) (:open s) (- (:handles s) 1) (:queue s)
+                (:rtask s) (:next s) (:tail s) (:fail s)))
 (a/defn task-dec-handles [t :- TaskRow] TaskRow
   (TaskRow.mk (:id t) (:owner t) (:run t) (:result t) (- (:handles t) 1) (:inputs t)))
 (a/defn pub-dec-handles [p :- PubRow] PubRow
@@ -392,17 +416,20 @@
 ;; Z#53: the model's error code for ::closed, the reserved Nat 2 (::cancelled = 1, rule.clj
 ;; `cancelled-code`; the engine's opaque values start at 3)
 (a/defn closed-code [] Nat 2)
-;; a source without a value (Z#53): a mailbox, a semaphore, an undelivered deferred
+;; a source delivered once (§4.3): a deferred, or a link (C0: deferred-like for finality/awaiting)
+(a/defn once-kind [k :- Nat] Bool (Bool.or (Nat.beq k sk-deferred) (Nat.beq k sk-link)))
+;; a source without a value (Z#53): a mailbox, a semaphore, an undelivered deferred or link
 (a/defn src-valueless [s :- SourceRow] Bool
   (Bool.or (Nat.beq (:kind s) sk-mailbox)
    (Bool.or (Nat.beq (:kind s) sk-semaphore)
-            (Bool.and (Nat.beq (:kind s) sk-deferred) (Nat.beq (:version s) 0)))))
+            (Bool.and (once-kind (:kind s)) (Nat.beq (:version s) 0)))))
 ;; what a source delivers: its state as ok; once closed (final), a source without a value gives
-;; err ::closed (Z#53)
+;; err ::closed (Z#53); a link realized with an error (C0) gives err (its state)
 (a/defn src-result [s :- SourceRow] RunResult
-  (if (Bool.and (Bool.not (:open s)) (src-valueless s))
-      (RunResult.mk res-err closed-code)
-      (RunResult.mk res-ok (:state s))))
+  (if (:fail s) (RunResult.mk res-err (:state s))
+      (if (Bool.and (Bool.not (:open s)) (src-valueless s))
+          (RunResult.mk res-err closed-code)
+          (RunResult.mk res-ok (:state s)))))
 ;; the result a debtor delivers: a computation's or task's result, a source's `src-result`
 (a/defn deb-result [w :- World, d :- Nat] RunResult
   (match (comp-find w d)
@@ -430,9 +457,9 @@
 (a/defn invalidate [w :- World, e :- EdgeRow] World
   (comp-upd (edge-upd w (:id e) (edge-set-phase ph-fired)) (:creditor e) comp-inc-epoch))
 
-;; D1 final debtors: a closed source, a delivered deferred (version > 0, §4.3), a completed
-;; task; never a computation (Z#32)
-(a/defn src-delivered [s :- SourceRow] Bool (Bool.and (Nat.beq (:kind s) sk-deferred) (Nat.blt 0 (:version s))))
+;; D1 final debtors: a closed source, a delivered deferred or realized link (version > 0, §4.3),
+;; a completed task; never a computation (Z#32)
+(a/defn src-delivered [s :- SourceRow] Bool (Bool.and (once-kind (:kind s)) (Nat.blt 0 (:version s))))
 (a/defn deb-final [w :- World, d :- Nat] Bool
   (match (source-find w d)
     [none (match (task-find w d)
@@ -605,7 +632,7 @@
 ;; §5.2: inside a computation run the owner is the computation, inside a task run its run scope
 (a/defn src-owner [w :- World, r :- RunRow] Nat (if (in-comp w r) (:of r) (:scope r)))
 (a/defn new-source [id :- Nat, owner :- Nat, kind :- Nat, v :- Nat] SourceRow
-  (SourceRow.mk id owner kind v 0 true 1 (List.nil Nat)))
+  (SourceRow.mk id owner kind v 0 true 1 (List.nil Nat) 0 0 0 false))
 ;; §5.2: a computation run records the creation in its basis, with at = effect-index
 (a/defn record-basis [w :- World, r :- RunRow, id :- Nat] World
   (if (in-comp w r) (comp-upd w (:of r) (comp-add-basis (Created.mk id (:effect-index r)))) w))
@@ -1327,7 +1354,13 @@
     [(detach k s) (refuse w)]
     [(finally-enter st) (refuse w)]
     [(finally-exit st) (refuse w)]
-    [(slice-exit r) (refuse w)]))
+    [(slice-exit r) (refuse w)]
+    [(create-link st l) (refuse w)]
+    [(create-link-top sc l) (refuse w)]
+    [(link-demand l k) (refuse w)]
+    [(link-realize l tag v n) (refuse w)]
+    [(append x v t) (refuse w)]
+    [(close x tag v) (refuse w)]))
 
 ;; the item's validity token (§2), true for host operations that carry none
 (a/defn item-token-ok [w :- World, it :- Item] Bool
@@ -1369,7 +1402,13 @@
     [(detach k s) true]
     [(finally-enter st) (run-tok-ok w st)]
     [(finally-exit st) (run-tok-ok w st)]
-    [(slice-exit r) true]))
+    [(slice-exit r) true]
+    [(create-link st l) (run-tok-ok w st)]
+    [(create-link-top sc l) true]
+    [(link-demand l k) true]
+    [(link-realize l tag v n) true]
+    [(append x v t) true]
+    [(close x tag v) true]))
 
 (a/theorem dispatch-inv [w :- World, it :- Item]
   (=> (= (inv-sample w) true) (= (inv-sample (:world (dispatch w it))) true))
@@ -1412,7 +1451,9 @@
   (simp only [dispatch refuse]) (exact h)
   (simp only [dispatch refuse]) (exact h)
   (simp only [dispatch refuse]) (exact h)
-  (simp only [dispatch refuse]) (exact h))
+  (simp only [dispatch refuse]) (exact h)
+  (all_goals (simp only [dispatch refuse]))
+  (all_goals (exact h)))
 
 (a/theorem dispatch-refuse [w :- World, it :- Item]
   (=> (= (:accepted (dispatch w it)) false) (= (:world (dispatch w it)) w))
@@ -1455,7 +1496,8 @@
   (simp only [dispatch refuse])
   (simp only [dispatch refuse])
   (simp only [dispatch refuse])
-  (simp only [dispatch refuse]))
+  (simp only [dispatch refuse])
+  (all_goals (simp only [dispatch refuse])))
 
 ;; L4: an operation with an invalid token changes nothing
 (a/theorem dispatch-l4 [w :- World, it :- Item]
@@ -1499,7 +1541,8 @@
   (simp only [dispatch refuse])
   (simp only [dispatch refuse])
   (simp only [dispatch refuse])
-  (simp only [dispatch refuse]))
+  (simp only [dispatch refuse])
+  (all_goals (simp only [dispatch refuse])))
 
 ;; the step's raw part preserves the sample bundle along any item sequence
 (a/defn run-items [w :- World, its :- (List Item)] World

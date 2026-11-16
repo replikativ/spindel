@@ -141,7 +141,7 @@
 (defn task [id owner run result handles] (s/->TaskRow id owner run result handles []))
 (defn run-row [m] (s/map->RunRow (merge {:id 0 :of 0 :stamp 0 :epoch 1 :scope 0 :act s/act-active :mode 0
                                           :slice false :effect-index 0 :finalizers [] :resources []} m)))
-(defn source [id owner handles] (s/->SourceRow id owner s/sk-signal 0 0 true handles []))
+(defn source [id owner handles] (s/->SourceRow id owner s/sk-signal 0 0 true handles [] 0 0 0 false))
 (defn edge [id kind creditor debtor] (s/->EdgeRow id kind creditor debtor s/cont-restart 0 s/ph-armed false false 0 false 0 0))
 (defn act [id run members] (s/->ActRow id run s/am-one (vec (map-indexed (fn [i m] (s/->Member m i)) members)) [] (count members) 0 []))
 (defn world [m] (s/map->World (merge {:scopes [] :comps [] :tasks [] :runs [] :sources [] :edges [] :acts []

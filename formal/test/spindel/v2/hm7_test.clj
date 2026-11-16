@@ -150,8 +150,8 @@
                (s/->CompRow id 2 [] 1 0 epoch done 0 rank version (s/->RunResult s/res-ok (+ 40 id)) idle validity [] [] [] 1))]
     (assoc s/empty-world
            :next-id 11
-           :sources [(s/->SourceRow 3 2 s/sk-signal 30 8 true 1 [])
-                     (s/->SourceRow 10 2 s/sk-deferred 0 0 true 1 [])]
+           :sources [(s/->SourceRow 3 2 s/sk-signal 30 8 true 1 [] 0 0 0 false)
+                     (s/->SourceRow 10 2 s/sk-deferred 0 0 true 1 [] 0 0 0 false)]
            :comps [(assoc (comp 4 2 1 3 2 false []) :run 7 :result none)
                    (comp 5 1 1 2 10 true [(s/->Valid 6 11 0 1)])
                    (comp 6 1 1 1 11 true [(s/->Valid 3 8 0 0)])]
