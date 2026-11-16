@@ -310,12 +310,8 @@
                   only (re-entry point); the engine leaves 0, the model stores the site index
   :link-state     `:sources :state` of a realized link (C0): the engine interns its value
                   [v next-handle] (or the failure box) as one opaque value; the model keeps v
-                  in `state` and next in `:next` (compared), the error in `state` with `fail`
-  :released-proj  `:released` (C1 samples 22-27): the engine's verify projection
-                  (test/org/replikativ/spindel/v2/verify.clj `projection`) hard-codes `:released false`
-                  except on the `[:release-world]` commit itself; the world's flag stays set (the
-                  host-observation sidecars record `:released? true`). Compared through the sidecar."
-  {:mailbox-state true :wait-at true :link-state true :released-proj true})
+                  in `state` and next in `:next` (compared), the error in `state` with `fail`"
+  {:mailbox-state true :wait-at true :link-state true})
 
 (def ^:dynamic *deviations* pending-deviations)
 
@@ -384,7 +380,6 @@
                             {:table t :id id :field f :engine (get er f) :model (get mr f)}))]
         d)
       (for [t [:cleanup :pins :pending-act :released :next-id]
-            :when (not (and (= t :released) (:released-proj *deviations*)))
             :when (not= (get e t) (get m t))]
         {:table t :id nil :field t :engine (get e t) :model (get m t)})))))
 
