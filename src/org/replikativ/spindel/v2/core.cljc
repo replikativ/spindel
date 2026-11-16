@@ -202,6 +202,8 @@
      (s! w rw/W-SWEEP-GEN 0)
      (s! w rw/W-SWEEP-PENDING (hs/flag false))
      (s! w rw/W-META-CLOSED false)
+     (s! w rw/W-RUNS 0)                       ; C1 W1; kids, subscriptions and the
+     (s! w rw/W-COMPLETE false)               ; outstanding set are made on first use
      (when verify?
        (s! w rw/W-REG (hs/lmap))
        (s! w rw/W-LOG (alist))
@@ -257,17 +259,26 @@
      [w & body]
      `(host! ~w (fn [] ~@body))))
 
+(defn- control-ex
+  "An engine control signal (cancelled, closed, released, forked, unborn):
+   an ExceptionInfo without a stack trace on the JVM. It is a signal, not a
+   fault, and the engine makes one per affected entity: a trace each cost
+   ~1.5 KB per retained row (foerster: ~150 MB)."
+  [msg data]
+  #?(:clj (proxy [clojure.lang.ExceptionInfo] [msg data] (fillInStackTrace [] this))
+     :cljs (ex-info msg data)))
+
 (defn cancelled-ex
   "The error a cancelled entity's creditors and cleanup slices receive."
   [reason]
-  (ex-info "cancelled" {:spindel/cancelled reason}))
+  (control-ex "cancelled" {:spindel/cancelled reason}))
 
 (defn cancelled? [t] (some? (:spindel/cancelled (ex-data t))))
 
 (defn closed-ex
   "The error a waiter on a closed source without a value receives (Z#53)."
   []
-  (ex-info "source closed" {:spindel/closed true}))
+  (control-ex "source closed" {:spindel/closed true}))
 
 #?(:clj
    (defmacro rv
@@ -1050,6 +1061,7 @@
     (s! r rw/R-PATH (g x (if (comp? x) rw/C-PATH rw/K-PATH)))   ; §8.2 P3: fixed at creation
     (when (comp? x) (s! r rw/R-BIND (g x rw/C-BIND)))           ; a task's: start-task!
     (if (comp? x) (s! x rw/C-RUN r) (s! x rw/K-RUN r))
+    (s! w rw/W-RUNS (inc (gl w rw/W-RUNS)))     ; C1 W1: until its retirement
     (register! w r)))
 
 (defn- run-scope!
@@ -1110,10 +1122,13 @@
   (hs/mpsc-add! (g child rw/W-INGRESS) #(release-world* child))
   (aadd! (g w rw/W-AFTER) child))
 
+(declare accept-child! kid-collected! kid-collector)
+
 (defn- own-child!
   "F2: the fork marker of `child` in `w`, owned by `scope`, held strongly or
    weakly (see above). An owner that has closed releases the child at once."
   [w scope child strong?]
+  (accept-child! w child strong?)   ; C1 R2: counted until it completes
   (if (or (g w rw/W-RELEASED) (not (g scope rw/S-OPEN)))
     (do (release-child! w child) child)
     (let [sid (id-of scope)
@@ -1171,6 +1186,8 @@
 
 (declare release-ownership!)
 
+(declare maybe-complete!)
+
 (defn- retire!
   "T13, in Z#18 order."
   [w r]
@@ -1183,6 +1200,8 @@
       (s! s rw/S-HELD false)
       (close-scope! w s))
     (unregister! w r)
+    (s! w rw/W-RUNS (dec (gl w rw/W-RUNS)))     ; C1 W1
+    (maybe-complete! w)
     ;; the tombstone and its owner chain go with the run (Z#56)
     (when (and (task? x) (g x rw/K-DONE)) (release-ownership! w x))
     ;; a computation kept only as this run's tombstone (§3.2) goes now
@@ -1216,13 +1235,32 @@
     (release-members! w a)
     a))
 
-(declare link-cancelled!)
+(declare link-cancelled! cancel!)
+
+(defn- cancel-subtree!
+  "C1 R4: a cancellation request reaches the whole subtree of scope `s` at
+   once: the runs of its tasks and of the tasks of its explicit child scopes
+   are cancelled, and the worlds these scopes own are released (their
+   completion obligations stay until the children complete). Sources still
+   close, and scopes are still removed, at retirement (Z#18)."
+  [w s reason]
+  (doseq [t (hs/oset-vals (g s rw/S-TASKS))]
+    (when-let [cr (rv w (g (rv w t) rw/K-RUN))] (cancel! w cr reason)))
+  (release-owned! w (id-of s))
+  (let [cs (acopy (g s rw/S-CHILDREN))]
+    (dotimes [i (acount cs)]
+      (let [c (rv w (anth cs i))]
+        (when (= :explicit (g c rw/S-KIND)) (cancel-subtree! w c reason))))))
 
 (defn- cancel!
   "T14 `cancel(R)`. Also `cancel(R, replace)` (Y#2): only T11 and demotion
    issue a replace, always on a computation run, which has no debtor side, so
    it is the same operation; on a task run a replace is an ordinary cancel."
   [w r reason]
+  ;; C1: a run that completed but still holds an unfinished await-op (its
+  ;; result delivered, its start still running) gets that op cancelled
+  (when (and (== rw/ACT-DONE (gl r rw/R-ACT)) (g r rw/R-RES))
+    (doseq [z (vec (g r rw/R-RES))] (cancel-resource! w (rv w z))))
   (when-not (== rw/ACT-DONE (gl r rw/R-ACT))
     (s! r rw/R-ACT rw/ACT-DONE)
     (s! r rw/R-MODE 1)
@@ -1235,11 +1273,8 @@
     ;; Resources are told to cancel; they join through their acknowledgement.
     (when-let [zs (g r rw/R-RES)]
       (doseq [z (vec zs)] (cancel-resource! w (rv w z))))   ; M5: this world's copy, never the basis
-    ;; children: runs owned by the run scope
-    (when-let [s (rv w (g r rw/R-SROW))]
-      (let [ts (hs/oset-vals (g s rw/S-TASKS))]
-        (doseq [t ts]
-          (when-let [cr (rv w (g (rv w t) rw/K-RUN))] (cancel! w cr reason)))))
+    ;; children: the whole run-scope subtree, now (C1 R4)
+    (when-let [s (rv w (g r rw/R-SROW))] (cancel-subtree! w s reason))
     (let [x (rv w (g r rw/R-OF))]
       (when (task? x)
         ;; debtor side (R#14): the task fails with ::cancelled
@@ -1357,11 +1392,9 @@
           (retire-check! w r)
           (commit! w [:complete (g r rw/ID) (if err? 2 1) [:opaque v]]))
         (do
-          ;; Q10: children not awaited and not detached are cancelled
-          (when-let [s (rv w (g r rw/R-SROW))]
-            (let [ts (hs/oset-vals (g s rw/S-TASKS))]
-              (doseq [t ts]
-                (when-let [cr (rv w (g (rv w t) rw/K-RUN))] (cancel! w cr ::cancelled)))))
+          ;; Q10: children not awaited and not detached are cancelled, in the
+          ;; whole run-scope subtree (C1 R4)
+          (when-let [s (rv w (g r rw/R-SROW))] (cancel-subtree! w s ::cancelled))
           (finish-task! w x v err?)
           (s! r rw/R-SLICE false)
           (retire-check! w r)
@@ -1593,11 +1626,39 @@
     (commit! (cw) [:finally-enter (g r rw/ID)])))
 
 (defn exit-finally!
-  "A `finally` region closes; its block runs now."
+  "A `finally` region closes; its block runs now (C1 W4: the run is in a
+   finally clause until `leave-finalizer!`)."
   []
   (when-let [r (active-run)]
     (s! r rw/R-FINS (max 0 (dec (fins r))))
+    (s! r rw/R-INFIN (inc (long (or (g r rw/R-INFIN) 0))))
     (commit! (cw) [:finally-exit (g r rw/ID)])))
+
+(defn leave-finalizer!
+  "The finally clause entered by `exit-finally!` ended (also by a throw)."
+  []
+  (when-let [r (active-run)]
+    (s! r rw/R-INFIN (max 0 (dec (long (or (g r rw/R-INFIN) 0)))))))
+
+(defn- finalizer-refusal
+  "C1 W4 (B8 reduced to suspension): finalizers are synchronous. A
+   suspending effect inside a finally clause, on normal and cancellation
+   entry alike, fails with this error; nil when allowed."
+  []
+  (when-let [r (active-run)]
+    (when (pos? (long (or (g r rw/R-INFIN) 0)))
+      (ex-info "a finally clause may not suspend (finalizers are synchronous)"
+               {:spindel/invalid :finalizer}))))
+
+(defn- unwinding-finalizer-refusal
+  "In a finally clause of a cancelled run, every effect is refused
+   explicitly (even one that would not suspend): the run cannot take
+   effects any more, and silently dropping the continuation would skip the
+   rest of the cleanup."
+  []
+  (when-let [r (active-run)]
+    (when (and (pos? (long (or (g r rw/R-INFIN) 0))) (== rw/ACT-DONE (gl r rw/R-ACT)))
+      (finalizer-refusal))))
 
 (defn- invalid-op [op msg] (ex-info msg {:spindel/invalid op}))
 
@@ -1832,26 +1893,40 @@
   (and (source? x)
        (let [kind (gl x rw/X-KIND)] (or (== kind rw/SRC-MAILBOX) (== kind rw/SRC-SEMAPHORE)))))
 
+(defn- settled-now?
+  "Whether an await on `d` completes without suspending (C1 W4): a value
+   read at once, or a settled debtor."
+  [d]
+  (or (and (source? d) (not (deferred? d)) (not (consuming? d)) (not (stream? d)))
+      (and (not (and (comp? d) (g d rw/C-IDLE))) (settled? d))))
+
 (defn- stream-ex [] (invalid-op :await "a stream is read through its positions: (position s)"))
 
 (defn await-effect!
   "T6 with mode `one`; on a mailbox it is `take` (Z#54)."
   [d k ek]
-  (cond
-    (stream? d) (ek (stream-ex))
-    (consuming? d)
-    (if (== rw/SRC-MAILBOX (gl d rw/X-KIND))
-      (consume-effect! d k ek)
-      (ek (invalid-op :await "await on a semaphore: use acquire!")))
-    :else (await-group! [d] :one k ek)))
+  (if-let [refusal (or (unwinding-finalizer-refusal) (when-not (settled-now? (row-of d)) (finalizer-refusal)))] (ek refusal)
+          (cond
+            (stream? d) (ek (stream-ex))
+            (consuming? d)
+            (if (== rw/SRC-MAILBOX (gl d rw/X-KIND))
+              (consume-effect! d k ek)
+              (ek (invalid-op :await "await on a semaphore: use acquire!")))
+            :else (await-group! [d] :one k ek))))
 
 (defn- group-effect! [ds mode k ek]
   (let [ds (vec ds)]
-    (cond
-      (some #(consuming? (row-of %)) ds)
-      (ek (invalid-op mode "a group await cannot take from a mailbox or semaphore"))
-      (some #(stream? (row-of %)) ds) (ek (stream-ex))
-      :else (await-group! ds mode k ek))))
+    (if-let [refusal (or (unwinding-finalizer-refusal)
+                         (when-not (if (= mode :any)
+                                     (some #(settled-now? (row-of %)) ds)
+                                     (every? #(settled-now? (row-of %)) ds))
+                           (finalizer-refusal)))]
+      (ek refusal)
+      (cond
+        (some #(consuming? (row-of %)) ds)
+        (ek (invalid-op mode "a group await cannot take from a mailbox or semaphore"))
+        (some #(stream? (row-of %)) ds) (ek (stream-ex))
+        :else (await-group! ds mode k ek)))))
 
 (defn await-all-effect! [ds k ek] (group-effect! ds :all k ek))
 (defn await-any-effect! [ds k ek] (group-effect! ds :any k ek))
@@ -2317,8 +2392,10 @@
         (when (and (needs-run? w d) (eligible? w d))
           (dispatch! w d)))
     (task? d) nil
+    ;; a released world's root scope is closed: no realizer starts there
     (link? d) (when (and (zero? (gl d rw/VERSION)) (g d rw/X-OPEN) (nil? (g d rw/X-RTASK))
-                         (some? (nth (g d rw/X-REALIZE) 0)))
+                         (some? (nth (g d rw/X-REALIZE) 0))
+                         (g (rv w (g w rw/W-ROOT)) rw/S-OPEN))
                 (start-realizer! w d))))
 
 ;; ---------------------------------------------------------------------------
@@ -2473,7 +2550,7 @@
   (let [unborn? (g w rw/W-UNBORN)]
     ;; E4: an unborn instance commits host items only: its inherited work and
     ;; dormant resources wait for activate!
-    (when (and (not unborn?) (g w rw/W-DORMANT)) (activate-dormant! w))
+    (when (and (not unborn?) (or (g w rw/W-DORMANT) (g w rw/W-DISCHARGE))) (activate-dormant! w))
     (try
       (loop [n (gl w rw/W-BUDGET) unborn? unborn?]
         (if (zero? n)
@@ -2494,10 +2571,26 @@
     (when (pos? (acount l))
       (let [cs (acopy l)] (aclear! l) cs))))
 
+(declare holding-gate?)
+
 (defn- run-after!
-  "After the gate is released: schedule the released children's drains."
+  "After the gate is released: schedule the released children's drains, and
+   run the after-gate actions (C1: completion callbacks, child acks), each
+   isolated."
   [cs]
-  (when cs (dotimes [i (acount cs)] (handoff! (anth cs i)))))
+  (when cs
+    (dotimes [i (acount cs)]
+      (let [x (anth cs i)]
+        (cond
+          ;; still under an enclosing world's gate (a nested entry): the
+          ;; action waits for that gate to be left too
+          (and (fn? x) (holding-gate?)) (aadd! (g (cw) rw/W-AFTER) x)
+          (fn? x)
+          (try (x)
+               (catch #?(:clj Throwable :cljs :default) t
+                 #?(:clj (binding [*out* *err*] (println "after-gate action failed:" t))
+                    :cljs (js/console.error "after-gate action failed:" t))))
+          :else (handoff! x))))))
 
 (defn- process!
   "H2: try the gate; the winner runs a bounded turn, then hands off. The
@@ -2527,7 +2620,7 @@
     (when (and (work-pending? w) (hs/flag-cas! sched false true))
       (hs/execute! (g w rw/W-EXEC) (fn [] (hs/flag-set! sched false) (process! w))))))
 
-(defn released-ex [] (ex-info "world released" {:spindel/released true}))
+(defn released-ex [] (control-ex "world released" {:spindel/released true}))
 
 (defn- withdraw!
   "`(f)`, a withdrawal (unobserve, unawait): in a released world there is
@@ -2718,35 +2811,36 @@
   "`take!` (mailbox) or `acquire!` (semaphore): a consuming operation, always
    a wait edge, never a dependency (§4.3). Waiters are served FIFO."
   [x k ek]
-  (if-let [r (valid-run)]
-    (let [w (cw)
-          at (next-at! r)
-          aid (alloc-id! w)]
-      (cond
-        (available? x)
-        (let [v (consume! x)]
-          (alloc-id! w)                             ; the consumed wait edge
-          (s! x rw/VERSION (inc (gl x rw/VERSION)))
-          (commit! w [:take (g r rw/ID) (g x rw/ID) [:opaque k] aid])
-          (k v))
+  (if-let [refusal (or (unwinding-finalizer-refusal) (when-not (let [x (row-of x)] (or (available? x) (closed? x))) (finalizer-refusal)))] (ek refusal)
+          (if-let [r (valid-run)]
+            (let [w (cw)
+                  at (next-at! r)
+                  aid (alloc-id! w)]
+              (cond
+                (available? x)
+                (let [v (consume! x)]
+                  (alloc-id! w)                             ; the consumed wait edge
+                  (s! x rw/VERSION (inc (gl x rw/VERSION)))
+                  (commit! w [:take (g r rw/ID) (g x rw/ID) [:opaque k] aid])
+                  (k v))
         ;; Z#57: closed and empty, nothing can arrive: fail at once, like a
         ;; waiter woken by the close (Z#53)
-        (closed? x)
-        (do (alloc-id! w)                           ; the consumed wait edge
-            (commit! w [:take (g r rw/ID) (g x rw/ID) [:opaque k] aid])
-            (ek (closed-ex)))
-        :else
-        (let [members (object-array 1)
-              a (new-activation! w aid r :one k ek members (object-array 1) 1)
-              e (link! w rw/EK-WAIT a x at)]
-          (aset members 0 e)
-          (hs/dq-push! (deque x rw/X-WAITERS) e)
-          (park! r a)
-          (s! a rw/A-INLINE false)
-          (commit! w [:take (g r rw/ID) (g x rw/ID) [:opaque k] aid])
-          (notify-blocked! (rv w (g r rw/R-OF)) 0)
-          nil)))
-    (unwind! ek)))
+                (closed? x)
+                (do (alloc-id! w)                           ; the consumed wait edge
+                    (commit! w [:take (g r rw/ID) (g x rw/ID) [:opaque k] aid])
+                    (ek (closed-ex)))
+                :else
+                (let [members (object-array 1)
+                      a (new-activation! w aid r :one k ek members (object-array 1) 1)
+                      e (link! w rw/EK-WAIT a x at)]
+                  (aset members 0 e)
+                  (hs/dq-push! (deque x rw/X-WAITERS) e)
+                  (park! r a)
+                  (s! a rw/A-INLINE false)
+                  (commit! w [:take (g r rw/ID) (g x rw/ID) [:opaque k] aid])
+                  (notify-blocked! (rv w (g r rw/R-OF)) 0)
+                  nil)))
+            (unwind! ek))))
 
 (defn- serve-waiter!
   "The first waiter whose activation can still receive gets `v`. Waiters of
@@ -2899,7 +2993,8 @@
   [w x res err?]
   (s! x rw/X-RTASK nil)
   (when (and (zero? (gl x rw/VERSION)) (g x rw/X-OPEN)
-             (or (pos? (gl x rw/REFS)) (pos? (gl x rw/HANDLES))))
+             (or (pos? (gl x rw/REFS)) (pos? (gl x rw/HANDLES)))
+             (g (rv w (g w rw/W-ROOT)) rw/S-OPEN))    ; no root-owned link after release
     (let [fail (fn [e] (realize! w x (Failure. e))
                  (commit! w [:link-realize (g x rw/ID) 2 [:opaque e] 0]))]
       (cond
@@ -3008,7 +3103,11 @@
          (let [x (row-of h) w (cw)]
            (cond
              (not (stream? x)) (throw (invalid-op :append "append! is for streams"))
-             (closed? x) (refuse! w [:append (g x rw/ID) [:opaque v] 0])
+             ;; a released world's root scope is closed: no new root-owned
+             ;; link (an append from a cleanup finalizer is refused like one
+             ;; to a closed stream)
+             (or (closed? x) (not (g (rv w (g w rw/W-ROOT)) rw/S-OPEN)))
+             (refuse! w [:append (g x rw/ID) [:opaque v] 0])
              :else
              (let [t (row-of (g x rw/X-VALUE))
                    [_ _ _ sid i] (g t rw/X-REALIZE)
@@ -3118,7 +3217,7 @@
                  nil)))
 
 (defn unborn-ex []
-  (ex-info "instance not activated: only writes before activate! (S3)" {:spindel/unborn true}))
+  (control-ex "instance not activated: only writes before activate! (S3)" {:spindel/unborn true}))
 
 (defn observe!
   "T8: `cb` receives (value err?) on each change. Returns an unobserve fn."
@@ -3127,13 +3226,16 @@
         ev (volatile! nil)]
     (when (g w rw/W-UNBORN) (throw (unborn-ex)))
     (gated w
-           (let [d (row-of h)
-                 e (link! w rw/EK-OBSERVE cb d 0)]
-             (vreset! ev e)
-             (when (and (comp? d) (g d rw/C-IDLE)) (validate! w d))
-             (deliver-observe! w e)
-             (commit! w [:observe (g d rw/ID) [:opaque cb] (g e rw/ID)])
-             (demand! w d)))
+           (let [d (row-of h)]
+             (if (stream? d)
+               ;; a stream is read through its positions (as value-async, C0)
+               (aadd! (g w rw/W-CALLBACKS) [cb [(stream-ex) true]])
+               (let [e (link! w rw/EK-OBSERVE cb d 0)]
+                 (vreset! ev e)
+                 (when (and (comp? d) (g d rw/C-IDLE)) (validate! w d))
+                 (deliver-observe! w e)
+                 (commit! w [:observe (g d rw/ID) [:opaque cb] (g e rw/ID)])
+                 (demand! w d)))))
     (fn []
       (withdraw!
        (fn []
@@ -3547,9 +3649,9 @@
 (defn- armed-set [w]
   (or (g w rw/W-ARMED) (let [s (hs/oset)] (s! w rw/W-ARMED s) s)))
 
-(defn forked-ex [] (ex-info "forked" {:spindel/forked true}))
+(defn forked-ex [] (control-ex "forked" {:spindel/forked true}))
 
-(declare join! cancel-resource! resource-fire! resource-ack!)
+(declare join! cancel-resource! resource-fire! resource-ack! op-cancel!)
 
 (defn- set-ctl!
   "A resource's physical controller, owned by world `w` (copies elsewhere
@@ -3565,6 +3667,15 @@
    ::forked into its edges and joins at once. An instance's pending
    savepoint has fired by then (activate!)."
   [w]
+  ;; C1 R1: inherited resources that were cancelling or fired but not yet
+  ;; acknowledged have no counterpart here: they acknowledge now, without
+  ;; touching the source's controller
+  (when-let [zs (g w rw/W-DISCHARGE)]
+    (s! w rw/W-DISCHARGE nil)
+    (doseq [z0 zs]
+      (let [z (rv w z0)]
+        (when (not= rw/Z-ARMED (gl z rw/Z-PHASE))
+          (resource-ack! w z)))))
   (when-let [zs (g w rw/W-DORMANT)]
     (s! w rw/W-DORMANT nil)
     (doseq [z0 zs]
@@ -3584,6 +3695,8 @@
     (s! z rw/Z-KIND kind)
     (s! z rw/Z-PHASE rw/Z-ARMED)
     (hs/oset-add! (armed-set w) (id-of z) z)
+    (hs/oset-add! (or (g w rw/W-OUTSTANDING) (let [o (hs/oset)] (s! w rw/W-OUTSTANDING o) o))
+                  (id-of z) z)                         ; C1 R1: until acknowledged
     (aadd! (or (gm r rw/R-RES) (let [l (alist)] (s! r rw/R-RES l) l)) z)
     (register! w z)))
 
@@ -3612,6 +3725,7 @@
       (when-not (neg? i)
         (hs/remove-at! zs i)
         (when (zero? (acount zs)) (s! r rw/R-RES nil))
+        (some-> (g w rw/W-OUTSTANDING) (hs/oset-del! (id-of z)))
         (unregister! w z)
         ;; T15, then T13 within the item (Z#55)
         (retire-check! w r)
@@ -3638,8 +3752,13 @@
 (defn- cancel-resource!
   "T14: an armed resource is told to cancel. One that provably never started
    (or whose timer was unscheduled) joins at once; a running offload is
-   interrupted and joins when its function returns."
+   interrupted and joins when its function returns. An await-op that
+   delivered its result but has not finished is cancelled too (C1): its
+   hooks run, and a detached one joins at once."
   [w z]
+  (when (and (== rw/Z-FIRED (gl z rw/Z-PHASE)) (= :op (g z rw/Z-KIND)))
+    (when-let [c (:op (g z rw/Z-CTL))]
+      (when (op-cancel! c) (aadd! (g w rw/W-CLEANUP) [z]))))
   (when (== rw/Z-ARMED (gl z rw/Z-PHASE))
     (s! z rw/Z-PHASE rw/Z-CANCELLING)
     (hs/oset-del! (armed-set w) (id-of z))
@@ -3650,6 +3769,7 @@
                       (cond (nil? ctl) true
                             (hs/timer? ctl) (hs/unschedule! ctl)
                             (:external ctl) (external-cancel! ctl)
+                            (:op ctl) (op-cancel! (:op ctl))
                             :else (hs/ctl-cancel! ctl)))]
       ;; the acknowledgement is its own item, after the cancelling one
       (when joined? (aadd! (g w rw/W-CLEANUP) [z])))))
@@ -3683,38 +3803,40 @@
    outside every world (§4.3). `f` must not call into the world
    synchronously; it may enqueue ingress."
   [f opts k ek]
-  (if-let [r (valid-run)]
-    (arm-and-park!
-     r :offload k ek
-     (fn [w z]
-       (let [ctl (hs/offload-ctl)]
-         (set-ctl! w z ctl)
+  (if-let [refusal (finalizer-refusal)] (ek refusal)
+          (if-let [r (valid-run)]
+            (arm-and-park!
+             r :offload k ek
+             (fn [w z]
+               (let [ctl (hs/offload-ctl)]
+                 (set-ctl! w z ctl)
          ;; :pool runs f on another executor than the world's (M6 R8, blocking)
-         (hs/execute-or! (or (:pool opts) (g w rw/W-EXEC))
+                 (hs/execute-or! (or (:pool opts) (g w rw/W-EXEC))
                       ;; a rejecting executor fails the effect (old blocking)
-                         (fn [t] (hs/ctl-cancel! ctl) (join! w z [t true]))
-                         (fn []
-                           (when (hs/ctl-start! ctl)
-                             (let [res (try [(f) false] (catch #?(:clj Throwable :cljs :default) t [t true]))]
-                               #?(:clj (do (hs/ctl-finish! ctl) (join! w z res))
+                                 (fn [t] (hs/ctl-cancel! ctl) (join! w z [t true]))
+                                 (fn []
+                                   (when (hs/ctl-start! ctl)
+                                     (let [res (try [(f) false] (catch #?(:clj Throwable :cljs :default) t [t true]))]
+                                       #?(:clj (do (hs/ctl-finish! ctl) (join! w z res))
                                ;; a returned promise is awaited (old blocking on JS)
-                                  :cljs (if (and (not (second res)) (instance? js/Promise (first res)))
-                                          (.then (first res)
-                                                 (fn [v] (hs/ctl-finish! ctl) (join! w z [v false]))
-                                                 (fn [e] (hs/ctl-finish! ctl) (join! w z [e true])))
-                                          (do (hs/ctl-finish! ctl) (join! w z res)))))))))))
-    (unwind! ek)))
+                                          :cljs (if (and (not (second res)) (instance? js/Promise (first res)))
+                                                  (.then (first res)
+                                                         (fn [v] (hs/ctl-finish! ctl) (join! w z [v false]))
+                                                         (fn [e] (hs/ctl-finish! ctl) (join! w z [e true])))
+                                                  (do (hs/ctl-finish! ctl) (join! w z res)))))))))))
+            (unwind! ek))))
 
 (defn sleep-effect!
   "`(sleep ms)`: a timer resource."
   [ms k ek]
-  (if-let [r (valid-run)]
-    (arm-and-park!
-     r :timer k ek
-     (fn [w z]
-       (s! z rw/Z-DEADLINE (+ (hs/now-ms) (long ms)))
-       (set-ctl! w z (hs/schedule! ms (fn [] (join! w z [nil false]))))))
-    (unwind! ek)))
+  (if-let [refusal (finalizer-refusal)] (ek refusal)
+          (if-let [r (valid-run)]
+            (arm-and-park!
+             r :timer k ek
+             (fn [w z]
+               (s! z rw/Z-DEADLINE (+ (hs/now-ms) (long ms)))
+               (set-ctl! w z (hs/schedule! ms (fn [] (join! w z [nil false]))))))
+            (unwind! ek))))
 
 (defn external-effect!
   "R2 `(external f)`: parks on an external operation. After the commit, under
@@ -3727,28 +3849,284 @@
    physical completion, whose value is dropped. If `f` throws, the effect
    fails with that error."
   [f k ek]
-  (if-let [r (valid-run)]
-    (arm-and-park!
-     r :external k ek
-     (fn [w z]
-       (let [cell (doto (object-array 2) (aset 0 w) (aset 1 z))
-             flag (hs/flag false)
-             complete! (fn complete!
-                         ([v] (complete! v false))
-                         ([v err?]
-                          (when (hs/flag-cas! flag false true)
-                            (let [w (aget cell 0) z (aget cell 1)]
-                              (aset cell 0 nil) (aset cell 1 nil)
-                              (when w (join! w z [v (boolean err?)]))))
-                          nil))
-             ctl {:external true :flag flag :cell cell}]
-         (set-ctl! w z ctl)
-         (let [res (try [(f complete!) nil] (catch #?(:clj Throwable :cljs :default) t [nil t]))]
-           (if-let [t (second res)]
-             (complete! t true)
-             (when (fn? (first res))
-               (set-ctl! w z (assoc ctl :cancel (first res)))))))))
-    (unwind! ek)))
+  (if-let [refusal (finalizer-refusal)] (ek refusal)
+          (if-let [r (valid-run)]
+            (arm-and-park!
+             r :external k ek
+             (fn [w z]
+               (let [cell (doto (object-array 2) (aset 0 w) (aset 1 z))
+                     flag (hs/flag false)
+                     complete! (fn complete!
+                                 ([v] (complete! v false))
+                                 ([v err?]
+                                  (when (hs/flag-cas! flag false true)
+                                    (let [w (aget cell 0) z (aget cell 1)]
+                                      (aset cell 0 nil) (aset cell 1 nil)
+                                      (when w (join! w z [v (boolean err?)]))))
+                                  nil))
+                     ctl {:external true :flag flag :cell cell}]
+                 (set-ctl! w z ctl)
+                 (let [res (try [(f complete!) nil] (catch #?(:clj Throwable :cljs :default) t [nil t]))]
+                   (if-let [t (second res)]
+                     (complete! t true)
+                     (when (fn? (first res))
+                       (set-ctl! w z (assoc ctl :cancel (first res)))))))))
+            (unwind! ek))))
+
+;; ---------------------------------------------------------------------------
+;; await-op (C1 W5/R3): a partial-cps op `(fn [resolve reject])` as a resource
+;; with a controller. Start and cancel are arbitrated atomically; the result
+;; (first resolve/reject) fires the resource; the resource acknowledges only
+;; when start has returned, every committed cancel hook has returned, and the
+;; op settled (or was cancelled before it started). `:detach` waives the
+;; physical join. Start and hooks run on the world's executor after the gate.
+
+(def ^:dynamic *op-ctl* nil)
+
+;; controller: [0 state :new|:started|:never  1 cancelled?  2 result
+;;              3 start-returned?  4 hooks  5 hooks-pending  6 acked?
+;;              7 detach?  8 world  9 resource  10 executor]
+(defn- op-ack-ready? [^objects c]
+  (and (not (aget c 6))
+       (zero? (long (aget c 5)))
+       ;; cancelled before it started, or started, returned and settled (a
+       ;; cancellation after start still waits for the physical result)
+       (or (identical? :never (aget c 0))
+           (and (aget c 3) (some? (aget c 2))))))
+
+(defn- op-finish!
+  "Acknowledges the resource once every part of the op is done."
+  [^objects c]
+  (let [wz (rw/locking-row c
+                           (when (op-ack-ready? c)
+                             (aset c 6 true)
+                             (let [wz [(aget c 8) (aget c 9)]] (aset c 8 nil) (aset c 9 nil) wz)))]
+    (when-let [[w z] wz]
+      ;; the result's fire may still be queued: fire it here if not (the
+      ;; fire item then finds the resource fired), so the ack never precedes it
+      (when w (internal! w #(let [z (rv w z)
+                                  res (rw/locking-row c (when-not (aget c 1) (aget c 2)))]
+                              (when (and res (== rw/Z-ARMED (gl z rw/Z-PHASE))) (resource-fire! w z res))
+                              (resource-ack! w z)))))))
+
+(defn- op-run-hook! [^objects c f]
+  (try (f) (catch #?(:clj Throwable :cljs :default) t
+             #?(:clj (binding [*out* *err*] (println "await-op cancel hook failed:" t))
+                :cljs (js/console.error "await-op cancel hook failed:" t))))
+  (rw/locking-row c (aset c 5 (dec (long (aget c 5)))))
+  (op-finish! c))
+
+(defn- op-settle!
+  "resolve/reject: the first result fires the resource (dropped after
+   cancellation or detachment)."
+  [^objects c v err?]
+  (let [fire (rw/locking-row c
+                             (when (nil? (aget c 2))
+                               (aset c 2 [v (boolean err?)])
+                               (when-not (aget c 1) [(aget c 8) (aget c 9)])))]
+    (when-let [[w z] fire]
+      (when w (internal! w #(let [z (rv w z)] (when (== rw/Z-ARMED (gl z rw/Z-PHASE)) (resource-fire! w z [v (boolean err?)]))))))
+    (op-finish! c)))
+
+(defn on-cancel!
+  "Inside an `await-op` op's start: registers `f` to run once when the op is
+   cancelled (at once if it already is). Hooks run on the executor, outside
+   every world, and the op's join waits for them."
+  [f]
+  (let [^objects c (or *op-ctl* (throw (ex-info "on-cancel! outside an await-op start" {:spindel/invalid :on-cancel})))
+        now? (rw/locking-row c
+                             (if (aget c 1)
+                               (do (aset c 5 (inc (long (aget c 5)))) true)
+                               (do (aset c 4 (conj (aget c 4) f)) false)))]
+    (when now? (op-run-hook! c f))
+    nil))
+
+(defn- op-cancel!
+  "T14 on an :op resource, under the gate. True when it joins at once
+   (cancelled before start, or detached)."
+  [^objects c]
+  (let [[hooks joined?]
+        (rw/locking-row c
+                        (if (aget c 1)
+                          [nil false]
+                          (do (aset c 1 true)
+                              (let [before? (identical? :new (aget c 0))
+                                    hooks (aget c 4)]
+                                (when before? (aset c 0 :never))
+                                (aset c 4 [])
+                                (aset c 5 (+ (long (aget c 5)) (count hooks)))
+                                (if (or before? (aget c 7))
+                                  (do (aset c 6 true) (aset c 8 nil) (aset c 9 nil) [hooks true])
+                                  [hooks false])))))]
+    (when (seq hooks)
+      (let [ex (aget c 10)]
+        (aadd! (g (cw) rw/W-AFTER)
+               #(doseq [f hooks] (hs/execute-or! ex (fn [_] (op-run-hook! c f)) (fn [] (op-run-hook! c f)))))))
+    joined?))
+
+(defn await-op-effect!
+  "`(await-op op)` / `(await-op op {:detach true})`."
+  [op opts k ek]
+  (if-let [refusal (finalizer-refusal)] (ek refusal)
+          (if-let [r (valid-run)]
+            (let [#?@(:clj [frame (thread-frame)])]
+              (arm-and-park!
+               r :op k ek
+               (fn [w z]
+                 (let [ex (g w rw/W-EXEC)
+                       c (object-array [:new false nil false [] 0 false (boolean (:detach opts)) w z ex])
+                       start (fn []
+                               (when (rw/locking-row c (when (identical? :new (aget c 0)) (aset c 0 :started) true))
+                                 (try
+                                   ;; B10: the run's bindings, plus the originating world
+                                   #?(:clj (let [prev (clojure.lang.Var/getThreadBindingFrame)]
+                                             (clojure.lang.Var/resetThreadBindingFrame frame)
+                                             (try (push-thread-bindings {#'*op-ctl* c #'*world* w})
+                                                  (try (op (fn [v] (op-settle! c v false)) (fn [e] (op-settle! c e true)))
+                                                       (finally (pop-thread-bindings)))
+                                                  (finally (clojure.lang.Var/resetThreadBindingFrame prev))))
+                                      :cljs (binding [*op-ctl* c *world* w]
+                                              (op (fn [v] (op-settle! c v false)) (fn [e] (op-settle! c e true)))))
+                                   (catch #?(:clj Throwable :cljs :default) t (op-settle! c t true))
+                                   (finally (rw/locking-row c (aset c 3 true)))))
+                               (op-finish! c))]
+                   (set-ctl! w z {:op c})
+                   (aadd! (g w rw/W-AFTER)
+                          #(hs/execute-or! ex
+                                           ;; a rejecting executor fails the op
+                                           (fn [t] (rw/locking-row c (aset c 0 :never)) (op-settle! c t true))
+                                           start))))))
+            (unwind! ek))))
+
+;; ---------------------------------------------------------------------------
+;; World completion (C1, c1-cancellation-joins-design.md W1-W2, R1-R2): a world
+;; is complete when it is released, none of its runs is unretired and every
+;; child world it owns is complete or was collected. Cancellation settles at
+;; once (T14); completion is when the work has physically stopped.
+
+(defn- kid-done!
+  "Child token `t` ends once (the child completed, or was collected): its
+   owner's obligation ends. Runs outside every gate (an after-gate action or
+   a Cleaner)."
+  [^objects t]
+  (when (hs/flag-cas! (aget t 1) false true)
+    (when-let [o (hs/deref-weak (aget t 0))]
+      (let [k (g o rw/W-KIDS)]
+        (when (and (zero? (hs/kids-add! k -1)) (hs/kids-released? k))
+          (internal! o #(maybe-complete! o)))))))
+
+(defn- complete-world!
+  "Marks `w` complete: its subscribers run and its owner is acknowledged,
+   both after the gate."
+  [w]
+  (when-not (g w rw/W-COMPLETE)
+    (s! w rw/W-COMPLETE true)
+    ;; the owner first: a subscriber may wait for the owner's completion
+    (when-let [kc (g w rw/W-KID-TOKEN)]
+      (when-let [t (hs/kid-finish! kc)]
+        (aadd! (g w rw/W-AFTER) #(kid-done! t))))
+    (when-let [subs (g w rw/W-COMPLETE-SUBS)]
+      (s! w rw/W-COMPLETE-SUBS nil)
+      (dotimes [i (acount subs)]
+        (let [[live cb] (anth subs i)]
+          (when (hs/flag? live) (aadd! (g w rw/W-AFTER) #(when (hs/flag-cas! live true false) (cb)))))))))
+
+(defn- maybe-complete!
+  "W1: complete once released, with no unretired run and no owned child
+   left."
+  [w]
+  (when (and (g w rw/W-RELEASED) (not (g w rw/W-COMPLETE))
+             (zero? (gl w rw/W-RUNS))
+             (let [k (g w rw/W-KIDS)] (or (nil? k) (zero? (hs/kids-count k)))))
+    (complete-world! w)))
+
+(defn- kid-collected!
+  "C1 R2: a fork or instance was collected (its world's single collection
+   action): if its owner accepted it and it never completed, the obligation
+   ends (abandoned, F2). Runs outside every gate."
+  [kc]
+  (when-let [t (hs/kid-finish! kc)] (kid-done! t)))
+
+(defn- kid-collector
+  "The collection action's owner acknowledgement for a world's kid cell,
+   built in its own function: a JS closure shares its enclosing function's
+   context, so one made in fork-world* would also hold the child world and
+   keep it alive (the FinalizationRegistry holds the action strongly)."
+  [kc]
+  (fn [] (kid-collected! kc)))
+
+(defn- accept-child!
+  "R2: owner `w` takes an obligation for `child` until its completion or its
+   collection. A complete owner takes none. A child that is already done
+   (completed or collected) acknowledges at once."
+  [w child _strong?]
+  (when-not (g w rw/W-COMPLETE)
+    (let [t (object-array [(hs/weak w) (hs/flag false)])
+          k (or (g w rw/W-KIDS)
+                (let [k (hs/kids)] (when (g w rw/W-RELEASED) (hs/kids-released! k)) (s! w rw/W-KIDS k) k))]
+      (hs/kids-add! k 1)
+      (when-not (hs/kid-accept! (g child rw/W-KID-TOKEN) t)
+        (kid-done! t)))))
+
+(defn- internal-after!
+  "`(f)` as an internal item of `w`, never taking two gates: from inside
+   another world's gate it is scheduled after that gate is left."
+  [w f]
+  (if (and (holding-gate?) (not (identical? w (cw))))
+    (do (hs/mpsc-add! (g w rw/W-INGRESS) f)
+        (aadd! (g (cw) rw/W-AFTER) w))
+    (internal! w f)))
+
+(defn on-complete
+  "W2: calls `(cb)` once, after the gate, when world `w` is complete
+   (released, all its runs retired, its owned worlds complete); at once if
+   it is. Accepted after release. Returns a fn that withdraws it."
+  [w cb]
+  (let [live (hs/flag true)]
+    (internal-after! w (fn []
+                         (if (g w rw/W-COMPLETE)
+                           (aadd! (g w rw/W-AFTER) #(when (hs/flag-cas! live true false) (cb)))
+                           (let [subs (or (g w rw/W-COMPLETE-SUBS) (let [l (alist)] (s! w rw/W-COMPLETE-SUBS l) l))]
+                             ;; withdrawn entries are pruned as the list grows
+                             (when (and (>= (acount subs) 16) (zero? (mod (acount subs) 16)))
+                               (s! w rw/W-COMPLETE-SUBS
+                                   (let [l (alist)]
+                                     (dotimes [i (acount subs)]
+                                       (when (hs/flag? (first (anth subs i))) (aadd! l (anth subs i))))
+                                     l)))
+                             (aadd! (g w rw/W-COMPLETE-SUBS) [live cb])))))
+    (fn [] (hs/flag-set! live false) nil)))
+
+(defn idle?
+  "W6: a snapshot of world `w`: nothing runnable, no cleanup queued, no
+   outstanding resource in any phase, nothing dormant and no queued ingress.
+   Parked runs may remain (waiting on deferreds, positions, ...): idle is not
+   complete. To wait for work to stop, release and use `on-complete`."
+  [w]
+  (host-call! w #(and (not (work-pending? w))
+                      (let [o (g w rw/W-OUTSTANDING)] (or (nil? o) (zero? (hs/oset-count o))))
+                      (nil? (g w rw/W-DORMANT))
+                      (nil? (g w rw/W-DISCHARGE)))))
+
+(defn complete?
+  "Whether world `w` is complete (W1): a snapshot."
+  [w]
+  (boolean (g w rw/W-COMPLETE)))
+
+#?(:clj
+   (defn await-complete
+     "JVM host: blocks until world `w` is complete; with a timeout, returns
+      `timeout-val` if it is not in time (and withdraws). Returns true."
+     ([w] (await-complete w nil nil))
+     ([w timeout-ms timeout-val]
+      (when (active-run) (throw (ex-info "blocking await-complete inside a body (B7)" {})))
+      (when (holding-gate?) (throw (ex-info "blocking await-complete while processing a world (B7)" {})))
+      (let [p (promise)
+            withdraw (on-complete w #(deliver p true))]
+        (if timeout-ms
+          (let [r (deref p timeout-ms ::timeout)]
+            (if (= ::timeout r) (do (withdraw) timeout-val) true))
+          @p)))))
 
 (defn release-world!
   "T21: revokes the roots (observe callbacks and host waits receive
@@ -3778,7 +4156,10 @@
     (if (g w rw/W-UNBORN)
       ;; E4: an instance that never ran is discarded as if dropped: nothing
       ;; in it runs, its copied finalizers included
-      (do (commit! w [:release-world]) (s! w rw/W-RELEASED true) (finish-metadata! w) (maybe-finish-token! w))
+      (do (commit! w [:release-world]) (s! w rw/W-RELEASED true) (finish-metadata! w) (maybe-finish-token! w)
+          ;; nothing in it ever ran: complete at once (C1 W1, E4 abandonment)
+          (some-> (g w rw/W-KIDS) hs/kids-released!)
+          (complete-world! w))
       (let [ex (released-ex)
             roots (g w rw/W-ROOTS)]
         (doseq [e (map #(rv w %) (hs/mvals roots))]
@@ -3801,7 +4182,9 @@
                 (s! x rw/HANDLES 0)
                 (when (zero? (gl x rw/REFS)) (aadd! (g w rw/W-RQ) x))))))
         (commit! w [:release-world])
-        (s! w rw/W-RELEASED true)))))
+        (s! w rw/W-RELEASED true)
+        (some-> (g w rw/W-KIDS) hs/kids-released!)
+        (maybe-complete! w)))))
 
 (declare work-pending?)
 
@@ -3933,6 +4316,19 @@
     ;; dormant: this world's armed resources (savepoints among them), plus
     ;; what it still holds dormant itself (a basis is never run, only forked)
     (s! c rw/W-DORMANT (seq (concat (when armed (hs/oset-vals armed)) (g w rw/W-DORMANT))))
+    ;; C1: the child inherits every unretired run (W-RUNS, copied) and every
+    ;; outstanding resource; the non-armed ones are discharged at its first
+    ;; turn (R1); its own completion ledger starts empty (W1, R2)
+    (let [o (g w rw/W-OUTSTANDING)
+          o (when (and o (pos? (hs/oset-count o))) o)]
+      (s! c rw/W-OUTSTANDING (when o (hs/oset-copy o)))
+      (s! c rw/W-DISCHARGE (seq (concat (when o (remove #(and armed (some? (hs/oset-get armed (id-of %))))
+                                                        (hs/oset-vals o)))
+                                        (g w rw/W-DISCHARGE)))))
+    (s! c rw/W-KIDS nil)
+    (s! c rw/W-KID-TOKEN (hs/kid-cell))
+    (s! c rw/W-COMPLETE false)
+    (s! c rw/W-COMPLETE-SUBS nil)
     (s! c rw/W-PENDING-ACT nil)
     (s! c rw/W-MBASE nil)
     (s! c rw/W-MPARENT nil)
@@ -3947,7 +4343,8 @@
                        m))
       (s! c rw/W-LOG (alist)))
     (lt/register-world! (g c rw/W-FAMILY) c (g c rw/ID) (g c rw/W-WATCHES)
-                        (gl c rw/W-SWEEP-GEN) request-atom-sweep!)
+                        (gl c rw/W-SWEEP-GEN) request-atom-sweep!
+                        (kid-collector (g c rw/W-KID-TOKEN)))
     c))
 
 (defn- instance-world*
@@ -3981,6 +4378,12 @@
     (s! c rw/W-ROOTS (hs/mcopy (g b rw/W-ROOTS)))
     (s! c rw/W-ARMED nil)
     (s! c rw/W-DORMANT (g b rw/W-DORMANT))
+    (s! c rw/W-OUTSTANDING (some-> (g b rw/W-OUTSTANDING) hs/oset-copy))
+    (s! c rw/W-DISCHARGE (g b rw/W-DISCHARGE))
+    (s! c rw/W-KIDS nil)
+    (s! c rw/W-KID-TOKEN (hs/kid-cell))
+    (s! c rw/W-COMPLETE false)
+    (s! c rw/W-COMPLETE-SUBS nil)
     (s! c rw/W-PENDING-ACT nil)
     (s! c rw/W-MBASE nil)
     (s! c rw/W-MPARENT nil)
@@ -3988,7 +4391,8 @@
       (s! c rw/W-REG (hs/mcopy reg))
       (s! c rw/W-LOG (alist)))
     (lt/register-world! (g c rw/W-FAMILY) c (g c rw/ID) (g c rw/W-WATCHES)
-                        (gl c rw/W-SWEEP-GEN) request-atom-sweep!)
+                        (gl c rw/W-SWEEP-GEN) request-atom-sweep!
+                        (kid-collector (g c rw/W-KID-TOKEN)))
     c))
 
 (defn- host-fork-call!
@@ -4104,44 +4508,45 @@
    The parent continues with [:parent child-world]; in the child the run
    exists parked at the effect and resumes with [:child nil] (Q4)."
   [k ek]
-  (if-let [r (valid-run)]
-    (cond
-      (comp? (rv (cw) (g r rw/R-OF)))
-      (ek (ex-info "fork in a computation body is not supported" {}))
-      (> (long (or (aget (ctx) 2) 0)) 1)
-      (ek (ex-info "fork in a nested slice is not supported yet" {}))
-      :else
-      (let [w (cw)
-            owner (current-scope! w r)            ; F2: materialized before the boundary
+  (if-let [refusal (finalizer-refusal)] (ek refusal)
+          (if-let [r (valid-run)]
+            (cond
+              (comp? (rv (cw) (g r rw/R-OF)))
+              (ek (ex-info "fork in a computation body is not supported" {}))
+              (> (long (or (aget (ctx) 2) 0)) 1)
+              (ek (ex-info "fork in a nested slice is not supported yet" {}))
+              :else
+              (let [w (cw)
+                    owner (current-scope! w r)            ; F2: materialized before the boundary
             ;; in the child the effect is a resource its run arms, fired and acknowledged at
             ;; once: the ids in T17's order (resource, activation, wait edge)
-            _ (alloc-id! w)
-            aid (alloc-id! w)
-            _ (alloc-id! w)
-            a (new-activation! w aid r :one k ek (object-array 1) (object-array 1) 0)
-            eidx (gl r rw/R-EIDX)]
+                    _ (alloc-id! w)
+                    aid (alloc-id! w)
+                    _ (alloc-id! w)
+                    a (new-activation! w aid r :one k ek (object-array 1) (object-array 1) 0)
+                    eidx (gl r rw/R-EIDX)]
         ;; the child's view: the run resumed at the effect with its delivery
-        (s! a rw/A-RESULT [[:child nil] false])
-        (s! a rw/A-RESUMED true)
-        (s! a rw/A-INLINE false)
-        (s! r rw/R-SLICE false)
-        (s! r rw/R-EIDX (inc eidx))       ; the child's run took the effect; the parent's did not
-        (s! r rw/R-BIND (thread-frame))   ; the child resumes with the frame live at the effect
-        (aadd! (g w rw/W-RESUME) a)
-        (unregister! w a)                 ; a delivery carrier, not a parked activation
-        (let [child (fork-world* w)]
-          (own-child! w owner child true)
+                (s! a rw/A-RESULT [[:child nil] false])
+                (s! a rw/A-RESUMED true)
+                (s! a rw/A-INLINE false)
+                (s! r rw/R-SLICE false)
+                (s! r rw/R-EIDX (inc eidx))       ; the child's run took the effect; the parent's did not
+                (s! r rw/R-BIND (thread-frame))   ; the child resumes with the frame live at the effect
+                (aadd! (g w rw/W-RESUME) a)
+                (unregister! w a)                 ; a delivery carrier, not a parked activation
+                (let [child (fork-world* w)]
+                  (own-child! w owner child true)
           ;; the parent takes the delivery back and continues on its own copy
-          (remove-row! (g w rw/W-RESUME) a)
-          (let [r (rv w r)]
-            (s! r rw/R-SLICE true)
-            (s! r rw/R-EIDX eidx)
-            (set-active! r)
-            (commit! w [:fork (g r rw/ID) (g child rw/ID)])
+                  (remove-row! (g w rw/W-RESUME) a)
+                  (let [r (rv w r)]
+                    (s! r rw/R-SLICE true)
+                    (s! r rw/R-EIDX eidx)
+                    (set-active! r)
+                    (commit! w [:fork (g r rw/ID) (g child rw/ID)])
             ;; scheduled after the parent's gate is released (E3)
-            (aadd! (g w rw/W-AFTER) child)
-            (k [:parent child])))))
-    (unwind! ek)))
+                    (aadd! (g w rw/W-AFTER) child)
+                    (k [:parent child])))))
+            (unwind! ek))))
 
 (defn fork [] (throw (ex-info "fork outside a body" {})))
 
@@ -4204,26 +4609,27 @@
    one the effect is the identity on `payload`. The resource has no
    controller: cancelled, it joins at once."
   [site payload k ek]
-  (if-let [r (valid-run)]
-    (let [w (cw)
-          handlers (g w rw/W-SP-HANDLERS)
-          h (or (get handlers site) (get handlers :default))]
-      (cond
-        (nil? h) (k payload)
-        (comp? (rv w (g r rw/R-OF))) (ek (ex-info "savepoint in a computation body is not supported" {}))
-        (> (long (or (aget (ctx) 2) 0)) 1) (ek (ex-info "savepoint in a nested slice is not supported yet" {}))
-        :else
-        (arm-and-park! r :savepoint k ek
-                       (fn [w z]
+  (if-let [refusal (finalizer-refusal)] (ek refusal)
+          (if-let [r (valid-run)]
+            (let [w (cw)
+                  handlers (g w rw/W-SP-HANDLERS)
+                  h (or (get handlers site) (get handlers :default))]
+              (cond
+                (nil? h) (k payload)
+                (comp? (rv w (g r rw/R-OF))) (ek (ex-info "savepoint in a computation body is not supported" {}))
+                (> (long (or (aget (ctx) 2) 0)) 1) (ek (ex-info "savepoint in a nested slice is not supported yet" {}))
+                :else
+                (arm-and-park! r :savepoint k ek
+                               (fn [w z]
                          ;; the basis is a fork of this commit that is never run, only forked;
                          ;; its run continues with the frame live at the effect
-                         (s! (rv w r) rw/R-BIND (thread-frame))
-                         (let [basis (fork-world* w)
-                               pub (publication w (id-of z) site payload basis)]
+                                 (s! (rv w r) rw/R-BIND (thread-frame))
+                                 (let [basis (fork-world* w)
+                                       pub (publication w (id-of z) site payload basis)]
                            ;; the parent's own copy of the run keeps no slice (it is parked)
-                           (set-active! (rv w r))
-                           (aadd! (g w rw/W-CALLBACKS) [(fn [_ _] (h pub)) [nil false]]))))))
-    (unwind! ek)))
+                                   (set-active! (rv w r))
+                                   (aadd! (g w rw/W-CALLBACKS) [(fn [_ _] (h pub)) [nil false]]))))))
+            (unwind! ek))))
 
 (defn savepoint [_ _] (throw (ex-info "savepoint outside a body" {})))
 
@@ -4370,12 +4776,13 @@
              (sp-fire! w zid v))
            ;; the other inherited resources: this item is the first turn's
            ;; work, so they are settled here, not at a later turn entry
-           (when (and born? (g w rw/W-DORMANT)) (activate-dormant! w))))
+           (when (and born? (or (g w rw/W-DORMANT) (g w rw/W-DISCHARGE))) (activate-dormant! w))))
   w)
 
 (defn offload [& _] (throw (ex-info "offload outside a body" {})))
 
 (defn external [_] (throw (ex-info "external outside a body" {})))
+(defn await-op [& _] (throw (ex-info "await-op outside a body" {})))
 
 (defn sleep [_] (throw (ex-info "sleep outside a body" {})))
 
@@ -4412,22 +4819,24 @@
 
 (defn custom-effect!
   [sym args site k ek]
-  (if-let [r (valid-run)]
-    (let [h (or (get @effect-handlers sym)
-                (throw (ex-info "unregistered effect" {:spindel/invalid :effect :effect sym})))
+  (if-let [refusal (finalizer-refusal)]
+    (ek refusal)
+    (if-let [r (valid-run)]
+      (let [h (or (get @effect-handlers sym)
+                  (throw (ex-info "unregistered effect" {:spindel/invalid :effect :effect sym})))
           ;; §8.2 addresses: counted on entry, before a savepoint freezes the run
-          key (creation-key! r site)
-          op (try (h args {:effect sym :site site :run (g r rw/ID) :effect-index (gl r rw/R-EIDX)
-                           :key key :frame (frame-of (rv (cw) (g r rw/R-OF))) :path (g r rw/R-PATH)})
-                  (catch #?(:clj Throwable :cljs :default) t [:error t]))]
-      (case (when (vector? op) (first op))
-        :value (k (nth op 1))
-        :error (ek (nth op 1))
-        :external (external-effect! (nth op 1) k ek)
-        :savepoint (savepoint-effect! (nth op 1) (nth op 2) k ek)
-        :await (await-effect! (row-of (nth op 1)) k ek)
-        (ek (ex-info "an effect handler returned no op" {:spindel/invalid :effect :effect sym :op op}))))
-    (unwind! ek)))
+            key (creation-key! r site)
+            op (try (h args {:effect sym :site site :run (g r rw/ID) :effect-index (gl r rw/R-EIDX)
+                             :key key :frame (frame-of (rv (cw) (g r rw/R-OF))) :path (g r rw/R-PATH)})
+                    (catch #?(:clj Throwable :cljs :default) t [:error t]))]
+        (case (when (vector? op) (first op))
+          :value (k (nth op 1))
+          :error (ek (nth op 1))
+          :external (external-effect! (nth op 1) k ek)
+          :savepoint (savepoint-effect! (nth op 1) (nth op 2) k ek)
+          :await (await-effect! (row-of (nth op 1)) k ek)
+          (ek (ex-info "an effect handler returned no op" {:spindel/invalid :effect :effect sym :op op}))))
+      (unwind! ek))))
 
 ;; ---------------------------------------------------------------------------
 ;; Body macros (partial-cps)
@@ -4448,6 +4857,8 @@
        (fn [_] `(fork-effect! ~r ~e)))
      (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-offload [_ctx r e]
        (fn [[f opts]] `(offload-effect! ~f ~opts ~r ~e)))
+     (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-await-op [_ctx r e]
+       (fn [[op opts]] `(await-op-effect! ~op ~opts ~r ~e)))
      (defn ^:is.simm.partial-cps.ioc/eager-arguments bp-external [_ctx r e]
        (fn [[f]] `(external-effect! ~f ~r ~e)))
      (declare site-of)
@@ -4468,6 +4879,7 @@
         'org.replikativ.spindel.v2.core/take! `bp-consume
         'org.replikativ.spindel.v2.core/offload `bp-offload
         'org.replikativ.spindel.v2.core/external `bp-external
+        'org.replikativ.spindel.v2.core/await-op `bp-await-op
         'org.replikativ.spindel.v2.core/fork `bp-fork
         'org.replikativ.spindel.v2.core/savepoint `bp-savepoint
         'org.replikativ.spindel.v2.core/sleep `bp-sleep
@@ -4518,7 +4930,7 @@
                           [~@(doall (for [[v e] (partition 2 bvec)]
                                       `[~(var-key *env* v) (fn [] ~v) (fn [x#] (set! ~v x#)) ~(register-finally e)]))])]
               (~'try (do (enter-finally!) ~@(mapv register-finally body))
-                     (~'finally (exit-finally!) (pop-bindings! ~saved))))
+                     (~'finally (exit-finally!) (~'try (pop-bindings! ~saved) (~'finally (leave-finalizer!))))))
            (meta form))))
      (defn- register-finally
        "Body contract (§7): each `try` with a `finally` registers its region
@@ -4543,7 +4955,8 @@
                  (with-meta
                    `(~'try (do (enter-finally!) ~@body)
                            ~@(map (fn [c] (if (= 'finally (first c))
-                                            (list* 'finally `(exit-finally!) (rest c))
+                                            (list 'finally `(exit-finally!)
+                                                  (list 'try (cons 'do (rest c)) (list 'finally `(leave-finalizer!))))
                                             c))
                                   cfs))
                    (meta form))
@@ -4582,7 +4995,7 @@
        (let [s (gensym "scope")]
          `(let [~s (open-scope!)]
             (~'try (do (enter-finally!) ~@body)
-                   (~'finally (exit-finally!) (close-scope-fx! ~s))))))
+                   (~'finally (exit-finally!) (~'try (close-scope-fx! ~s) (~'finally (leave-finalizer!))))))))
      (defmacro convey
        "B10: host-level `binding`s of dynamic var `v` reach the tasks and
         computations created under them. JVM: every binding does; no-op. CLJS:
@@ -4600,7 +5013,7 @@
        (let [saved (gensym "path")]
          `(let [~saved (push-path! ~p)]
             (~'try (do (enter-finally!) ~@body)
-                   (~'finally (exit-finally!) (pop-path! ~saved))))))
+                   (~'finally (exit-finally!) (~'try (pop-path! ~saved) (~'finally (leave-finalizer!))))))))
      (defmacro defeffect
        "R3: defines effect `name` in this namespace: `(defeffect choose [args
         ctx] op-form)`; see register-effect!. It registers at expansion too,

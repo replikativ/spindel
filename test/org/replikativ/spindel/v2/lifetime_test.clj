@@ -84,9 +84,9 @@
    (fn [{:keys [collect! drain!]}]
      (let [p (v2/world) a (binding [v2/*world* p] (v2/atom 1))
            register lt/register-world!
-           c (with-redefs [lt/register-world! (fn [family w id idx generation request!]
+           c (with-redefs [lt/register-world! (fn [family w id idx generation request! & collected]
                                                 (collect! a)
-                                                (register family w id idx generation request!))]
+                                                (apply register family w id idx generation request! collected))]
                (v2/fork! p))]
        (drain!)
        (is (empty? (aget ^objects c rw/W-ATOMS)))

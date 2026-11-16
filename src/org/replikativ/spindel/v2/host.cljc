@@ -53,6 +53,32 @@
      :cljs (if (= (.-v ^js f) old) (do (set! (.-v ^js f) new) true) false)))
 (defn flag? [f] #?(:clj (.get ^java.util.concurrent.atomic.AtomicBoolean f) :cljs (.-v ^js f)))
 (defn flag-set! [f v] #?(:clj (.set ^java.util.concurrent.atomic.AtomicBoolean f (boolean v)) :cljs (set! (.-v ^js f) v)) nil)
+;; A world's child-completion obligations (C1 R2): a count changed from any
+;; thread, and a released flag, both sequentially consistent, so a child's
+;; decrement to zero and its owner's release never both miss each other.
+(defn kids [] #?(:clj (object-array [(java.util.concurrent.atomic.AtomicLong. 0) (flag false)])
+                 :cljs (object-array [#js {:v 0} (flag false)])))
+(defn kids-add! [k d]
+  #?(:clj (.addAndGet ^java.util.concurrent.atomic.AtomicLong (aget ^objects k 0) (long d))
+     :cljs (let [c (aget k 0)] (set! (.-v c) (+ (.-v c) d)) (.-v c))))
+(defn kids-count [k]
+  #?(:clj (.get ^java.util.concurrent.atomic.AtomicLong (aget ^objects k 0)) :cljs (.-v (aget k 0))))
+(defn kids-released! [k] (flag-set! (aget ^objects k 1) true))
+(defn kids-released? [k] (flag? (aget ^objects k 1)))
+;; A fork's link to its owner (C1 R2), one atomic reference: nil, then the
+;; owner's token (accepted) or :done (the world completed or was collected).
+;; Whichever of acceptance and completion comes second acknowledges.
+(defn kid-cell [] #?(:clj (java.util.concurrent.atomic.AtomicReference.) :cljs #js {:v nil}))
+(defn kid-accept!
+  "Installs token `t`; false when the world was already done."
+  [c t]
+  #?(:clj (.compareAndSet ^java.util.concurrent.atomic.AtomicReference c nil t)
+     :cljs (if (nil? (.-v c)) (do (set! (.-v c) t) true) false)))
+(defn kid-finish!
+  "Marks the world done; returns the token installed before, if any."
+  [c]
+  #?(:clj (let [old (.getAndSet ^java.util.concurrent.atomic.AtomicReference c :done)] (when-not (keyword? old) old))
+     :cljs (let [old (.-v c)] (set! (.-v c) :done) (when-not (keyword? old) old))))
 
 (defn lock [] #?(:clj (java.util.concurrent.locks.ReentrantLock.) :cljs #js {:held false}))
 (defn held? [lk] #?(:clj (.isHeldByCurrentThread ^java.util.concurrent.locks.ReentrantLock lk) :cljs (.-held ^js lk)))
@@ -181,6 +207,7 @@
 (defn oset [] #?(:clj (java.util.LinkedHashMap.) :cljs (js/Map.)))
 (defn oset-add! [s id x] #?(:clj (.put ^java.util.LinkedHashMap s id x) :cljs (.set s id x)) nil)
 (defn oset-del! [s id] #?(:clj (some? (.remove ^java.util.LinkedHashMap s id)) :cljs (.delete s id)))
+(defn oset-get [s id] #?(:clj (.get ^java.util.LinkedHashMap s id) :cljs (.get s id)))
 (defn oset-count [s] #?(:clj (.size ^java.util.LinkedHashMap s) :cljs (.-size s)))
 (defn oset-vals "A snapshot vector, in insertion order." [s]
   #?(:clj (vec (.values ^java.util.LinkedHashMap s)) :cljs (vec (es6-iterator-seq (.values s)))))
