@@ -202,12 +202,8 @@
      (s! w rw/W-SWEEP-GEN 0)
      (s! w rw/W-SWEEP-PENDING (hs/flag false))
      (s! w rw/W-META-CLOSED false)
-     (s! w rw/W-RUNS 0)
-     (s! w rw/W-KIDS (hs/kids))
-     (s! w rw/W-KID-TOKEN (hs/kid-cell))
-     (s! w rw/W-COMPLETE false)
-     (s! w rw/W-COMPLETE-SUBS (alist))
-     (s! w rw/W-OUTSTANDING (hs/oset))
+     (s! w rw/W-RUNS 0)                       ; C1 W1; kids, subscriptions and the
+     (s! w rw/W-COMPLETE false)               ; outstanding set are made on first use
      (when verify?
        (s! w rw/W-REG (hs/lmap))
        (s! w rw/W-LOG (alist))
@@ -263,17 +259,26 @@
      [w & body]
      `(host! ~w (fn [] ~@body))))
 
+(defn- control-ex
+  "An engine control signal (cancelled, closed, released, forked, unborn):
+   an ExceptionInfo without a stack trace on the JVM. It is a signal, not a
+   fault, and the engine makes one per affected entity: a trace each cost
+   ~1.5 KB per retained row (foerster: ~150 MB)."
+  [msg data]
+  #?(:clj (proxy [clojure.lang.ExceptionInfo] [msg data] (fillInStackTrace [] this))
+     :cljs (ex-info msg data)))
+
 (defn cancelled-ex
   "The error a cancelled entity's creditors and cleanup slices receive."
   [reason]
-  (ex-info "cancelled" {:spindel/cancelled reason}))
+  (control-ex "cancelled" {:spindel/cancelled reason}))
 
 (defn cancelled? [t] (some? (:spindel/cancelled (ex-data t))))
 
 (defn closed-ex
   "The error a waiter on a closed source without a value receives (Z#53)."
   []
-  (ex-info "source closed" {:spindel/closed true}))
+  (control-ex "source closed" {:spindel/closed true}))
 
 #?(:clj
    (defmacro rv
@@ -1117,7 +1122,7 @@
   (hs/mpsc-add! (g child rw/W-INGRESS) #(release-world* child))
   (aadd! (g w rw/W-AFTER) child))
 
-(declare accept-child!)
+(declare accept-child! kid-collected!)
 
 (defn- own-child!
   "F2: the fork marker of `child` in `w`, owned by `scope`, held strongly or
@@ -2615,7 +2620,7 @@
     (when (and (work-pending? w) (hs/flag-cas! sched false true))
       (hs/execute! (g w rw/W-EXEC) (fn [] (hs/flag-set! sched false) (process! w))))))
 
-(defn released-ex [] (ex-info "world released" {:spindel/released true}))
+(defn released-ex [] (control-ex "world released" {:spindel/released true}))
 
 (defn- withdraw!
   "`(f)`, a withdrawal (unobserve, unawait): in a released world there is
@@ -3207,7 +3212,7 @@
                  nil)))
 
 (defn unborn-ex []
-  (ex-info "instance not activated: only writes before activate! (S3)" {:spindel/unborn true}))
+  (control-ex "instance not activated: only writes before activate! (S3)" {:spindel/unborn true}))
 
 (defn observe!
   "T8: `cb` receives (value err?) on each change. Returns an unobserve fn."
@@ -3639,7 +3644,7 @@
 (defn- armed-set [w]
   (or (g w rw/W-ARMED) (let [s (hs/oset)] (s! w rw/W-ARMED s) s)))
 
-(defn forked-ex [] (ex-info "forked" {:spindel/forked true}))
+(defn forked-ex [] (control-ex "forked" {:spindel/forked true}))
 
 (declare join! cancel-resource! resource-fire! resource-ack! op-cancel!)
 
@@ -3685,7 +3690,8 @@
     (s! z rw/Z-KIND kind)
     (s! z rw/Z-PHASE rw/Z-ARMED)
     (hs/oset-add! (armed-set w) (id-of z) z)
-    (hs/oset-add! (g w rw/W-OUTSTANDING) (id-of z) z)   ; C1 R1: until acknowledged
+    (hs/oset-add! (or (g w rw/W-OUTSTANDING) (let [o (hs/oset)] (s! w rw/W-OUTSTANDING o) o))
+                  (id-of z) z)                         ; C1 R1: until acknowledged
     (aadd! (or (gm r rw/R-RES) (let [l (alist)] (s! r rw/R-RES l) l)) z)
     (register! w z)))
 
@@ -3714,7 +3720,7 @@
       (when-not (neg? i)
         (hs/remove-at! zs i)
         (when (zero? (acount zs)) (s! r rw/R-RES nil))
-        (hs/oset-del! (g w rw/W-OUTSTANDING) (id-of z))
+        (some-> (g w rw/W-OUTSTANDING) (hs/oset-del! (id-of z)))
         (unregister! w z)
         ;; T15, then T13 within the item (Z#55)
         (retire-check! w r)
@@ -4011,12 +4017,11 @@
   (when-not (g w rw/W-COMPLETE)
     (s! w rw/W-COMPLETE true)
     ;; the owner first: a subscriber may wait for the owner's completion
-    (let [kc (g w rw/W-KID-TOKEN)]
-      (hs/kid-completed! kc)
-      (when-let [t (hs/kid-token kc)]
+    (when-let [kc (g w rw/W-KID-TOKEN)]
+      (when-let [t (hs/kid-finish! kc)]
         (aadd! (g w rw/W-AFTER) #(kid-done! t))))
-    (let [subs (g w rw/W-COMPLETE-SUBS)]
-      (s! w rw/W-COMPLETE-SUBS (alist))
+    (when-let [subs (g w rw/W-COMPLETE-SUBS)]
+      (s! w rw/W-COMPLETE-SUBS nil)
       (dotimes [i (acount subs)]
         (let [[live cb] (anth subs i)]
           (when (hs/flag? live) (aadd! (g w rw/W-AFTER) #(when (hs/flag-cas! live true false) (cb)))))))))
@@ -4026,26 +4031,29 @@
    left."
   [w]
   (when (and (g w rw/W-RELEASED) (not (g w rw/W-COMPLETE))
-             (zero? (gl w rw/W-RUNS)) (zero? (hs/kids-count (g w rw/W-KIDS))))
+             (zero? (gl w rw/W-RUNS))
+             (let [k (g w rw/W-KIDS)] (or (nil? k) (zero? (hs/kids-count k)))))
     (complete-world! w)))
 
+(defn- kid-collected!
+  "C1 R2: a fork or instance was collected (its world's single collection
+   action): if its owner accepted it and it never completed, the obligation
+   ends (abandoned, F2). Runs outside every gate."
+  [kc]
+  (when-let [t (hs/kid-finish! kc)] (kid-done! t)))
+
 (defn- accept-child!
-  "R2: owner `w` takes an obligation for `child` until its completion (or
-   its collection, when held weakly). A complete owner takes none."
-  [w child strong?]
+  "R2: owner `w` takes an obligation for `child` until its completion or its
+   collection. A complete owner takes none. A child that is already done
+   (completed or collected) acknowledges at once."
+  [w child _strong?]
   (when-not (g w rw/W-COMPLETE)
     (let [t (object-array [(hs/weak w) (hs/flag false)])
-          kc (g child rw/W-KID-TOKEN)]
-      (hs/kids-add! (g w rw/W-KIDS) 1)
-      (hs/kid-token! kc t)
-      ;; a child that completed before this acceptance acknowledges now
-      ;; (the completion reads the token after setting its flag: one of the
-      ;; two sides sees the other; kid-done! is exactly once)
-      (when (hs/kid-completed? kc) (kid-done! t))
-      (when-not strong?
-        ;; a weakly held child may be collected without completing (F2): that
-        ;; ends the obligation too; the action holds the token, not the child
-        (hs/on-collect! child #(kid-done! t))))))
+          k (or (g w rw/W-KIDS)
+                (let [k (hs/kids)] (when (g w rw/W-RELEASED) (hs/kids-released! k)) (s! w rw/W-KIDS k) k))]
+      (hs/kids-add! k 1)
+      (when-not (hs/kid-accept! (g child rw/W-KID-TOKEN) t)
+        (kid-done! t)))))
 
 (defn- internal-after!
   "`(f)` as an internal item of `w`, never taking two gates: from inside
@@ -4065,7 +4073,7 @@
     (internal-after! w (fn []
                          (if (g w rw/W-COMPLETE)
                            (aadd! (g w rw/W-AFTER) #(when (hs/flag-cas! live true false) (cb)))
-                           (let [subs (g w rw/W-COMPLETE-SUBS)]
+                           (let [subs (or (g w rw/W-COMPLETE-SUBS) (let [l (alist)] (s! w rw/W-COMPLETE-SUBS l) l))]
                              ;; withdrawn entries are pruned as the list grows
                              (when (and (>= (acount subs) 16) (zero? (mod (acount subs) 16)))
                                (s! w rw/W-COMPLETE-SUBS
@@ -4083,7 +4091,7 @@
    complete. To wait for work to stop, release and use `on-complete`."
   [w]
   (host-call! w #(and (not (work-pending? w))
-                      (zero? (hs/oset-count (g w rw/W-OUTSTANDING)))
+                      (let [o (g w rw/W-OUTSTANDING)] (or (nil? o) (zero? (hs/oset-count o))))
                       (nil? (g w rw/W-DORMANT))
                       (nil? (g w rw/W-DISCHARGE)))))
 
@@ -4137,7 +4145,7 @@
       ;; in it runs, its copied finalizers included
       (do (commit! w [:release-world]) (s! w rw/W-RELEASED true) (finish-metadata! w) (maybe-finish-token! w)
           ;; nothing in it ever ran: complete at once (C1 W1, E4 abandonment)
-          (hs/kids-released! (g w rw/W-KIDS))
+          (some-> (g w rw/W-KIDS) hs/kids-released!)
           (complete-world! w))
       (let [ex (released-ex)
             roots (g w rw/W-ROOTS)]
@@ -4162,7 +4170,7 @@
                 (when (zero? (gl x rw/REFS)) (aadd! (g w rw/W-RQ) x))))))
         (commit! w [:release-world])
         (s! w rw/W-RELEASED true)
-        (hs/kids-released! (g w rw/W-KIDS))
+        (some-> (g w rw/W-KIDS) hs/kids-released!)
         (maybe-complete! w)))))
 
 (declare work-pending?)
@@ -4298,14 +4306,16 @@
     ;; C1: the child inherits every unretired run (W-RUNS, copied) and every
     ;; outstanding resource; the non-armed ones are discharged at its first
     ;; turn (R1); its own completion ledger starts empty (W1, R2)
-    (s! c rw/W-OUTSTANDING (hs/oset-copy (g w rw/W-OUTSTANDING)))
-    (s! c rw/W-DISCHARGE (seq (concat (remove #(and armed (some? (hs/oset-get armed (id-of %))))
-                                              (hs/oset-vals (g w rw/W-OUTSTANDING)))
-                                      (g w rw/W-DISCHARGE))))
-    (s! c rw/W-KIDS (hs/kids))
+    (let [o (g w rw/W-OUTSTANDING)
+          o (when (and o (pos? (hs/oset-count o))) o)]
+      (s! c rw/W-OUTSTANDING (when o (hs/oset-copy o)))
+      (s! c rw/W-DISCHARGE (seq (concat (when o (remove #(and armed (some? (hs/oset-get armed (id-of %))))
+                                                        (hs/oset-vals o)))
+                                        (g w rw/W-DISCHARGE)))))
+    (s! c rw/W-KIDS nil)
     (s! c rw/W-KID-TOKEN (hs/kid-cell))
     (s! c rw/W-COMPLETE false)
-    (s! c rw/W-COMPLETE-SUBS (alist))
+    (s! c rw/W-COMPLETE-SUBS nil)
     (s! c rw/W-PENDING-ACT nil)
     (s! c rw/W-MBASE nil)
     (s! c rw/W-MPARENT nil)
@@ -4320,7 +4330,8 @@
                        m))
       (s! c rw/W-LOG (alist)))
     (lt/register-world! (g c rw/W-FAMILY) c (g c rw/ID) (g c rw/W-WATCHES)
-                        (gl c rw/W-SWEEP-GEN) request-atom-sweep!)
+                        (gl c rw/W-SWEEP-GEN) request-atom-sweep!
+                        (let [kc (g c rw/W-KID-TOKEN)] #(kid-collected! kc)))
     c))
 
 (defn- instance-world*
@@ -4354,12 +4365,12 @@
     (s! c rw/W-ROOTS (hs/mcopy (g b rw/W-ROOTS)))
     (s! c rw/W-ARMED nil)
     (s! c rw/W-DORMANT (g b rw/W-DORMANT))
-    (s! c rw/W-OUTSTANDING (hs/oset-copy (g b rw/W-OUTSTANDING)))
+    (s! c rw/W-OUTSTANDING (some-> (g b rw/W-OUTSTANDING) hs/oset-copy))
     (s! c rw/W-DISCHARGE (g b rw/W-DISCHARGE))
-    (s! c rw/W-KIDS (hs/kids))
+    (s! c rw/W-KIDS nil)
     (s! c rw/W-KID-TOKEN (hs/kid-cell))
     (s! c rw/W-COMPLETE false)
-    (s! c rw/W-COMPLETE-SUBS (alist))
+    (s! c rw/W-COMPLETE-SUBS nil)
     (s! c rw/W-PENDING-ACT nil)
     (s! c rw/W-MBASE nil)
     (s! c rw/W-MPARENT nil)
@@ -4367,7 +4378,8 @@
       (s! c rw/W-REG (hs/mcopy reg))
       (s! c rw/W-LOG (alist)))
     (lt/register-world! (g c rw/W-FAMILY) c (g c rw/ID) (g c rw/W-WATCHES)
-                        (gl c rw/W-SWEEP-GEN) request-atom-sweep!)
+                        (gl c rw/W-SWEEP-GEN) request-atom-sweep!
+                        (let [kc (g c rw/W-KID-TOKEN)] #(kid-collected! kc)))
     c))
 
 (defn- host-fork-call!
