@@ -1584,7 +1584,11 @@
   (case [none] (simp only [t-cancel hf refuse]) (exact h))
   (case [some r]
     (cases hc (host-cancel-ok w r))
-    (case [false] (simp only [t-cancel hf hc refuse]) (exact h))
+    (case [false]
+      ;; C1: a done task run's cancel cascades over its scope subtree
+      (cases hd (host-cancel-done w r))
+      (case [false] (simp only [t-cancel hf hc cancel-done hd refuse]) (exact h))
+      (case [true] (simp only [t-cancel hf hc cancel-done hd accept]) (exact (h3-run-cascade-g xm hxm gxz gkz w _ hg hk he h))))
     (case [true] (simp only [t-cancel hf hc]) (exact (t14-h3 xm hxm gxz gkz w rid false hk hg he h)))))
 (a/theorem t16-h3 [xm :- (List Nat), hxm :- (List Nat), gxz :- (List Nat), gkz :- (List Nat), w :- World, s :- Nat]
   (=> (= (hmk hxm w) true) (= (g10 gxz gkz w) true) (= (ekb w) true) (= (h3 xm w) true) (= (h3 xm (:world (t16-close-scope w s))) true))
