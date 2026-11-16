@@ -629,3 +629,18 @@ succeeds (α and p are implicit and unified with the goal). Workaround used in s
   goals; probe by stating the sub-step as its own lemma instead.
 - REPL vs file: `lcopy-try!` in the REPL registers copies (`hm3-take-now`, `hm3-arm-raw`, ...) that a file load lacks;
   add the `lcopy!` calls to the file and check the namespace standalone (`clojure -M:test -n <ns>-test`).
+
+## mvcc (2026-11-15, ansatz 0.2.634): tactic gaps met while proving spindel.v2.mvcc
+
+Workarounds are in the proofs; each is a divergence from Lean 4.33.1 to fix in ansatz.
+- `simp only [f] at h` does not apply the `reduceCtorEq` simproc to a hypothesis: `none = some y` or
+  `false = true` stays (Lean rewrites it to `False` and closes the goal). Workaround: `(cases h)`.
+- `exfalso` makes the `False` goal the last goal instead of the main one, so the next tactic runs on another
+  goal ("Unknown constant: hne"). Workaround: `(exact (absurd ... h))`.
+- `by_cases h :- (< a b)` splits on the Bool reflection (`Nat.blt a b = true/false`), not on the Prop.
+  Workaround: prove `Not (< a b)` by `intro` and use `omega`.
+- No `injection` tactic. Workaround: `(Option.some.inj h)`.
+- `simp only [some-def]` on a goal containing projections of a structure-building def (`(:h (mv-write s ...))`)
+  unfolds the def (`reduceProjFn` with delta), so later rewrites stated with the folded form no longer match.
+  Workaround: introduce binders without simp (`intros` sees through the def) or restate with `show`.
+- `(by (omega))` is not accepted as a term argument inside a tactic. Workaround: a named `have` first.
