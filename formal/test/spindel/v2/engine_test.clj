@@ -927,3 +927,100 @@
     (doseq [it [(link-realize l 0 0 0) (link-realize l 2 9 0)]]
       (is (false? (acc w3 it)) (str "no realization under a closed root scope " (pr-str it)))
       (is (= w3 (:world (en/raw0 w3 it))) "and the world is unchanged"))))
+
+;; ---------------------------------------------------------------------------
+;; C1 (spec Z#67, T14, T21, B8 reduced; engine 823771c)
+
+(defn- c1-steps [w0 fs]
+  (reduce (fn [[w log] f] (let [it (f w) o (en/world-step w it)] [(:world o) (conj log [it (:accepted o)])]))
+          [w0 []] fs))
+(defn- task-run [w k] (:run (find-row w :tasks k)))
+
+;; W1: complete = released, no unretired run (and no open child: layer 2); a run kept by an
+;; outstanding resource keeps a released world incomplete until its acknowledgement (sample 27)
+(deftest c1-completion
+  (let [[w log] (c1-steps s/empty-world
+                         [(fn [w] (spawn-top root 1 (:next-id w)))
+                          (fn [w] (schedule (task-run w 3)))
+                          (fn [w] (arm (stamp w (task-run w 3)) s/rk-offload 7 (:next-id w)))
+                          (fn [w] (release-world))])
+        z (:id (first (:res w)))
+        [w2 log2] (c1-steps w [(fn [_] (resource-fire z 1 0)) (fn [_] (resource-ack z))])]
+    (is (every? second log) (pr-str log))
+    (is (= 1 (en/world-runs w)) "the cancelled run waits for its offload")
+    (is (false? (en/world-quiet w)) "released, not complete")
+    (is (= [false true] (mapv second log2)) "the cancelling offload's fire is refused, its ack accepted")
+    (is (= 0 (en/world-runs w2)))
+    (is (true? (en/world-quiet w2)) "complete after the acknowledgement retires the run")))
+
+;; T14 (C1): a cancellation reaches the whole run-scope subtree in its item: the runs of the tasks
+;; in the run's explicit scopes, nested ones included (sample 22)
+(deftest c1-subtree-cancel
+  (let [k (:next-id s/empty-world)
+        [w log] (c1-steps s/empty-world
+                         [(fn [w] (spawn-top root 1 (:next-id w)))
+                          (fn [w] (schedule (task-run w k)))
+                          (fn [w] (open-scope (stamp w (task-run w k)) (:next-id w)))
+                          (fn [w] (spawn (stamp w (task-run w k)) 2 (:next-id w)))
+                          (fn [w] (open-scope (stamp w (task-run w k)) (:next-id w)))
+                          (fn [w] (spawn (stamp w (task-run w k)) 3 (:next-id w)))
+                          (fn [w] (create-source (stamp w (task-run w k)) s/sk-deferred 0 (:next-id w)))
+                          (fn [w] (await* (stamp w (task-run w k)) [(apply max (map :id (:sources w)))] s/am-one 1 (:next-id w) []))])
+        kids (remove #{k} (map :id (:tasks w)))
+        runs (fn [w] (map #(find-row w :runs (task-run w %)) kids))
+        o (en/world-step w (cancel (task-run w k)))]
+    (is (every? second log) (pr-str log))
+    (is (= 2 (count kids)) "two child tasks, in nested explicit scopes")
+    (is (every? #(= s/act-active (:act %)) (runs w)))
+    (is (:accepted o))
+    (is (every? #(or (nil? %) (= s/act-done (:act %))) (runs (:world o))) "both cancelled by the one cancel item")))
+
+;; B8 reduced (C1): in a cancelled run's finally clause (its cleanup slice) every await and take is
+;; refused, settled debtor or not (sample 25); the item is never logged
+(deftest c1-finalizer-refusal
+  (let [k (:next-id s/empty-world)
+        [w log] (c1-steps s/empty-world
+                         [(fn [w] (create-source-top root s/sk-signal 5 (:next-id w)))
+                          (fn [w] (create-source-top root s/sk-mailbox 0 (:next-id w)))
+                          (fn [w] (spawn-top root 1 (:next-id w)))
+                          (fn [w] (schedule (task-run w (+ k 2))))
+                          (fn [w] (finally-enter (stamp w (task-run w (+ k 2)))))
+                          (fn [w] (create-source (stamp w (task-run w (+ k 2))) s/sk-deferred 0 (:next-id w)))
+                          (fn [w] (await* (stamp w (task-run w (+ k 2))) [(dec (:next-id w))] s/am-one 1 (:next-id w) []))])
+        r (task-run w (+ k 2))]
+    (is (every? second log) (pr-str log))
+    (let [w1 (:world (en/world-step w (cancel r)))
+          o2 (en/world-step w1 (finalize r))
+          w2 (:world o2)
+          st (stamp w2 r)]
+      (is (:accepted o2) "T14 schedules the head finalizer as a cleanup slice")
+      (is (true? (en/in-cleanup w2 st)) "the cancelled run's cleanup slice")
+      (is (false? (:accepted (en/world-step w2 (await* st [k] s/am-one 1 (:next-id w2) [])))) "await on a settled signal: refused")
+      (is (false? (:accepted (en/world-step w2 (take* st (inc k) 1 (:next-id w2))))) "take: refused"))))
+
+;; E4 (C1): an unborn instance released before its activation only sets the flag: nothing in it
+;; runs (sample 24); a done task run that holds no slice is still cancellable, with no row change
+(deftest c1-unborn-release-and-done-cancel
+  (let [w (:world (en/world-step (prefix-world) (release-world)))
+        w0 (prefix-world)
+        wu (en/release-unborn w0)]
+    (is (true? (:released wu)))
+    (is (= (dissoc w0 :released) (dissoc wu :released)) "the rows stay as copied")
+    (is (pos? (en/world-runs wu)) "complete at once all the same (layer 2): its runs never run")
+    (is (some? w)))
+  (let [k (:next-id s/empty-world)
+        [w log] (c1-steps s/empty-world
+                         [(fn [w] (spawn-top root 1 (:next-id w)))
+                          (fn [w] (schedule (task-run w k)))
+                          (fn [w] (arm (stamp w (task-run w k)) s/rk-offload 7 (:next-id w)))])
+        r (task-run w k)
+        z (:id (first (:res w)))
+        w1 (:world (en/world-step w (resource-fire z 1 0)))
+        w2 (:world (en/world-step w1 (schedule r)))
+        w3 (:world (en/world-step w2 (complete (stamp w2 r) 1 5)))]
+    (is (every? second log))
+    (when (find-row w3 :runs r)
+      (is (= s/act-done (:act (find-row w3 :runs r))))
+      (let [o (en/world-step w3 (cancel r))]
+        (is (:accepted o) "accepted on a done run")
+        (is (= (:world o) (:world (en/world-step w3 (cancel r)))))))))

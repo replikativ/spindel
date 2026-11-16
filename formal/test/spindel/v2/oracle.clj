@@ -22,6 +22,7 @@
                  skipped and the driver re-syncs from the engine projection
     replay       the driver; `summary` the report map"
   (:require [clojure.edn :as edn]
+            [clojure.java.io :as io]
             [clojure.set :as set]
             [ansatz.core :as a]
             [spindel.v2.state :as s]
@@ -47,7 +48,7 @@
 ;; model codes (state.clj): 5 = rerun (never created), C0's link/stream are 6/7 (the engine's
 ;; SRC-LINK 5 / SRC-STREAM 6 are mapped through their keywords)
 (def source-kinds [:signal :cell :deferred :mailbox :semaphore :rerun :link :stream])
-(def res-kinds [:timer :external :offload :native])
+(def res-kinds [:timer :external :offload :native :op])
 
 (defn- index-of [v x] (let [i (.indexOf ^java.util.List v x)] (when (neg? i) (throw (ex-info "unknown code" {:v v :x x}))) i))
 (defn- code-of
@@ -235,7 +236,7 @@
                             :members (mapv (fn [[e i]] (s/->Member e i)) (:members x))
                             :slots (mapv edn->result (:slots x)) :remaining (:remaining x)
                             :cont (nil0 (:cont x)) :spawned []})))
-            :res (rows :res (fn [id z] (s/map->ResRow {:id id :owner (:owner z) :kind (code-of res-kinds (:kind z)) :at (:at z) :phase (code-of res-phases (:phase z))})))
+            :res (rows :res (fn [id z] (s/map->ResRow {:id id :owner (:owner z) :kind (code-of res-kinds (get {:savepoint :offload} (:kind z) (:kind z))) :at (:at z) :phase (code-of res-phases (:phase z))})))
             :cleanup []
             :pubs (rows :pubs (fn [id x] (s/map->PubRow {:id id :edge (:edge x) :basis (vec (:basis x)) :handles (:handles x)})))
             :pins (vec (mapcat (fn [[x n]] (repeat n x)) (sort (:pins p))))
@@ -309,8 +310,17 @@
                   only (re-entry point); the engine leaves 0, the model stores the site index
   :link-state     `:sources :state` of a realized link (C0): the engine interns its value
                   [v next-handle] (or the failure box) as one opaque value; the model keeps v
-                  in `state` and next in `:next` (compared), the error in `state` with `fail`"
-  {:mailbox-state true :wait-at true :link-state true})
+                  in `state` and next in `:next` (compared), the error in `state` with `fail`
+  :released-proj  `:released` (C1 samples 22-27): the engine's verify projection
+                  (test/org/replikativ/spindel/v2/verify.clj `projection`) hard-codes `:released false`
+                  except on the `[:release-world]` commit itself; the world's flag stays set (the
+                  host-observation sidecars record `:released? true`). Compared through the sidecar.
+  :lazy-run-scope `:scopes :open` of a run scope that owns nothing (C1 samples 26b, 26c, 27): the engine
+                  materializes a run scope on first use (`run-scope!`); one never used is no child
+                  of its parent row, so T16/T21's close of the subtree does not reach it, while
+                  its projection shows it (open). The model has the row and closes it with the
+                  subtree, as the engine does for a materialized run scope (sample 9)."
+  {:mailbox-state true :wait-at true :link-state true :released-proj true :lazy-run-scope true})
 
 (def ^:dynamic *deviations* pending-deviations)
 
@@ -325,7 +335,15 @@
   zero count dropped; `ignored-fields` removed; enums as keywords."
   [p]
   (letfn [(rows [t f] (into (sorted-map) (map (fn [[id x]] [id (apply dissoc (f x) (ignored-fields t))])) (get p t)))]
-    {:scopes (rows :scopes #(update % :kind (partial kw-of scope-kinds)))
+    {:scopes (let [owns (set (concat (keep :owner (vals (:tasks p))) (keep :owner (vals (:sources p)))
+                                     (keep :parent (vals (:scopes p)))))
+                   used? (fn [id] (contains? owns id))]
+               (into (sorted-map)
+                     (map (fn [[id x]]
+                            (let [x (apply dissoc (update x :kind (partial kw-of scope-kinds)) (ignored-fields :scopes))]
+                              [id (cond-> x (and (:lazy-run-scope *deviations*) (= :run (:kind x)) (not (used? id)))
+                                    (dissoc :open))])))
+                     (:scopes p)))
      :comps (rows :comps #(-> % (update :basis set) (update :validity canon-validity)
                               (update :adoption canon-adoption) (update :inputs inputs-val)))
      :tasks (rows :tasks #(cond-> % (contains? % :inputs) (update :inputs inputs-val)))
@@ -369,6 +387,7 @@
                             {:table t :id id :field f :engine (get er f) :model (get mr f)}))]
         d)
       (for [t [:cleanup :pins :pending-act :released :next-id]
+            :when (not (and (= t :released) (:released-proj *deviations*)))
             :when (not= (get e t) (get m t))]
         {:table t :id nil :field t :engine (get e t) :model (get m t)})))))
 
@@ -664,9 +683,11 @@
   (default false: lockstep, re-sync only after skipped items), :max-diffs (per divergence, 8),
   :init (the model world to start from, default `empty-world`: a fork's log starts from its
   parent's world at the fork commit), :family? (the log is of a world with forks: `align` the
-  allocator before every item), :worlds? (keep the model world after every commit as :worlds).
+  allocator before every item), :worlds? (keep the model world after every commit as :worlds),
+  :unborn? (an instance's log: a `[:release-world]` before its activation, the first
+  `:resource-fire`, is E4's release of an unborn instance, engine.clj `release-unborn`).
   Returns the summary map."
-  [log & {:keys [format from resync-on-divergence? max-diffs strict? init family? worlds?] :or {from 0 max-diffs 8}}]
+  [log & {:keys [format from resync-on-divergence? max-diffs strict? init family? worlds? unborn?] :or {from 0 max-diffs 8}}]
   (binding [*deviations* (if strict? {} pending-deviations)]
   (let [fmt (or format (log-format log))
         ;; logs with `[:finally-enter st]`/`[:finally-exit st]` items (sample 4 on) need no
@@ -696,6 +717,16 @@
             a (adapt fmt ctx item)
             keep (fn [acc w] (cond-> acc worlds? (update :worlds conj w)))]
         (cond
+          (and unborn? (= :release-world (first item))
+               (not-any? #(= :resource-fire (first (:item %))) (take i log)))
+          (let [w1 (cond-> (en/release-unborn w) (and family? proj) (skip-to (:next-id proj)))
+                ds (if proj (diff proj (world->proj w1)) [])
+                div? (or (not= accepted true) (seq ds))]
+            (recur (inc i) w1 (or proj prev)
+                   (cond-> (keep (update acc :checked inc) w1)
+                     div? (update :divergences conj {:commit i :item item :model-items [:release-unborn] :class :real
+                                                     :accepted {:engine accepted :model true}
+                                                     :n-diffs (count ds) :diffs (vec (take max-diffs ds)) :diffs-all ds}))))
           (:bump a)
           (let [c (:bump a)
                 w1 (skip-to w (inc c))
@@ -758,3 +789,69 @@
   (update res :divergences (partial mapv #(dissoc % :diffs-all))))
 
 (defn run-file [path & opts] (summary (apply replay (read-log path) opts)))
+
+;; ===========================================================================
+;; C1 world completion (spec T21, Z#67): derived state, compared against the engine's
+;; host-observation sidecar (`log-sample-N-observations.edn`: a vector of {:step :log-length {world
+;; n} :obs {world {:complete? :released? :runs :kids :token}}} at settled host checkpoints).
+;; The model keeps no counter, token or flag for it (the engine logs none):
+;;   runs       the run rows (every unretired task and computation run, cleanup included)
+;;   complete?  released and (an unborn instance, or no run left and every owned child world
+;;              complete); a child world counts from its creation commit in its owner's log
+;;   kids       the engine's count of accepted, unfinished children: at most the number of the
+;;              owner's children that are not complete in the model (acceptance is the engine's)
+;; Tokens are the engine's exactly-once bookkeeping of the same relation and are not compared.
+
+(defn read-observations [path]
+  (let [f (io/file path)] (when (.exists f) (edn/read-string (slurp f)))))
+
+(defn replay-family
+  "Replays the worlds of a family. `spec`: {world {:log entries :from p :at i :kind k :owner o}}
+  with kind :root (from empty-world), :fork-host / :instance (from world p's world after its
+  commit i: the fork-host commit, the savepoint's arm), :fork (the fork effect `[:fork r c]` at
+  commit i of p, `fork-child` of p's world before it); :owner (default p) is the world that owns
+  it (completion). Returns {world {:res :init}}."
+  [spec]
+  (loop [todo (keys spec) out {}]
+    (if-let [k (first (filter #(let [p (:from (spec %))] (or (nil? p) (contains? out p))) todo))]
+      (let [{:keys [log at kind] parent :from} (spec k)
+            pw (fn [n] (let [{:keys [res init]} (out parent)] (if (zero? n) init (nth (:worlds res) (dec n)))))
+            init (case kind
+                   :root s/empty-world
+                   (:fork-host :instance) (pw (inc at))
+                   :fork (:world (fork-child (pw at) (second (:item (nth (:log (spec parent)) at))))))
+            res (replay log :family? true :init init :worlds? true :format :table :unborn? (= kind :instance))]
+        (recur (remove #{k} todo) (assoc out k {:res res :init init})))
+      out)))
+
+(defn check-observations
+  "Mismatches of the model's derived C1 state against the sidecar `obs` for the replayed family
+  `fam` (replay-family of `spec`): a vector of {:step :world :field :engine :model}."
+  [spec fam obs]
+  (vec
+   (for [{:keys [step log-length] eo :obs} obs
+         :let [at (fn [k] (let [{:keys [res init]} (fam k) n (get log-length k 0)]
+                            (if (zero? n) init (nth (:worlds res) (dec n)))))
+               exists? (fn [k] (let [{:keys [at] parent :from} (spec k)]
+                                 (or (nil? parent) (> (get log-length parent 0) at))))
+               unborn? (fn [k] (and (= :instance (:kind (spec k)))
+                                    (not-any? #(= :resource-fire (first (:item %)))
+                                              (take (get log-length k 0) (:log (spec k))))))
+               owner (fn [c] (let [x (spec c)] (get x :owner (:from x))))
+               children (fn [k] (filter #(and (= k (owner %)) (exists? %)) (keys spec)))
+               complete? (fn complete? [k]
+                           (let [w (at k)]
+                             (boolean (and (:released w)
+                                           (or (unborn? k)
+                                               (and (empty? (:runs w)) (every? complete? (children k))))))))
+               model (fn [k] {:runs (count (:runs (at k))) :released? (boolean (:released (at k)))
+                              :complete? (complete? k)
+                              :open-kids (count (remove complete? (children k)))})]
+         [k e] eo
+         :let [m (model k)]
+         d (concat
+            (for [f [:runs :released? :complete?] :when (not= (get e f) (get m f))]
+              {:step step :world k :field f :engine (get e f) :model (get m f)})
+            (when (> (or (:kids e) 0) (:open-kids m))
+              [{:step step :world k :field :kids :engine (:kids e) :model (:open-kids m)}]))]
+     d)))

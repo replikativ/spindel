@@ -478,3 +478,42 @@
 
 (deftest projection-roundtrip-c0
   (doseq [n ["18" "19-parent" "19-child" "20-parent" "20-child" "21"]] (is (= [] (o/roundtrip (log n))) (str "sample " n))))
+
+;; ---------------------------------------------------------------------------
+;; C1 samples 22-27 (engine 823771c, generator oracle/gen/samples-c1.clj): every world of each
+;; family replays with no divergence, and the model's derived completion state (runs, released?,
+;; complete?, kids bound; oracle `check-observations`) matches the host-observation sidecar at
+;; every checkpoint
+(defn- c1-idx [l pred] (first (keep-indexed (fn [i c] (when (pred (:item c)) i)) l)))
+(def ^:private c1-specs
+  {"22" (let [p (log "22-parent")]
+          {:parent {:log p :kind :root}
+           :child {:log (log "22-child") :from :parent :kind :fork :at (c1-idx p #(= :fork (first %)))}})
+   "23a" (let [s (log "23a-src") fh (keep-indexed (fn [i c] (when (= :fork-host (first (:item c))) i)) s)]
+           {:src {:log s :kind :root}
+            :owner {:log (log "23a-owner") :from :src :kind :fork-host :at (first fh)}
+            :child {:log (log "23a-child") :from :src :owner :owner :kind :fork-host :at (second fh)}})
+   "23b" (let [p (log "23b-parent")]
+           {:parent {:log p :kind :root}
+            :instance {:log (log "23b-instance") :from :parent :kind :instance :at (c1-idx p #(= [:arm 4 :savepoint] (take 3 %)))}})
+   "24" (let [p (log "24-parent")]
+          {:parent {:log p :kind :root}
+           :instance {:log (log "24-instance") :from :parent :kind :instance :at (c1-idx p #(= [:arm 4 :savepoint] (take 3 %)))}})
+   "25" {:w {:log (log "25-w") :kind :root}} "25b" {:w {:log (log "25b-w") :kind :root}}
+   "26a" {:w {:log (log "26a-w") :kind :root}} "26b" {:w {:log (log "26b-w") :kind :root}}
+   "26c" {:w {:log (log "26c-w") :kind :root}} "27" {:w {:log (log "27-w") :kind :root}}})
+
+(deftest c1-samples
+  (doseq [[n spec] c1-specs]
+    (let [fam (o/replay-family spec)
+          obs (o/read-observations (str "test/spindel/v2/oracle/log-sample-" n "-observations.edn"))]
+      (is (seq obs) (str "sample " n ": sidecar"))
+      (doseq [[k {:keys [res]}] fam]
+        (is (= [(count (:log (spec k))) 0 0] ((juxt :checked :n-divergences :resyncs) res)) (str "sample " n " " k)))
+      (is (= [] (o/check-observations spec fam obs)) (str "sample " n ": host observations")))))
+
+(deftest c1-sample-shapes
+  (is (= [[:cancel 4] [:finalize 4]] (map :item (subvec (log "22-parent") 17 19))) "22: one cancel item for the subtree")
+  (is (= [[:release-world]] (map :item (log "24-instance"))) "24: the unborn instance's release")
+  (is (not-any? #(= :await (first (:item %))) (drop 6 (log "25-w"))) "25: the refused finalizer await is no item")
+  (is (= [:arm 4 :op] (take 3 (:item (first (filter #(= :arm (first (:item %))) (log "26a-w")))))) "26: await-op arms an :op resource"))
