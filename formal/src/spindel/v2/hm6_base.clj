@@ -48,10 +48,10 @@
 (a/theorem p3la-empty [] (= (p3la empty-world) true)
   (simp only [p3la p3l-empty ar-empty ekb-empty Bool.and_self]))
 (a/theorem step-p3la [w :- World, it :- Item]
-  (=> (= (c0-root w it) true) (= (p3la w) true) (= (p3la (:world (world-step w it))) true))
-  (intros hc0 h)
+  (=> (= (p3la w) true) (= (p3la (:world (world-step w it))) true))
+  (intro h)
   (have hs := (step-rule-r-safe w it (p3la-p3b w h)))
-  (have hp := (step-p3l w it hc0 (p3la-p3l w h)))
+  (have hp := (step-p3l w it (p3la-p3l w h)))
   (have ha := (step-ar w it (p3la-g7 w h) (p3la-ga w h) (p3la-ar w h) hs))
   (have he := (step-ekb w it (p3la-ekb w h) hs))
   (simp only [p3la hp ha he Bool.and_self]))

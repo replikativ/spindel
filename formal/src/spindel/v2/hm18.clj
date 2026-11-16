@@ -911,15 +911,15 @@
 (a/theorem p3m-parts [w :- World] (=> (= (p3m w) true) (And (= (p3la w) true) (= (h3 (List.nil Nat) w) true)))
   (intro h) (simp only [p3m Bool.and_eq_true] at h) (exact h))
 (a/theorem p3m-empty [] (= (p3m empty-world) true) (rfl))
-(a/theorem step-p3m [w :- World, it :- Item] (=> (= (c0-root w it) true) (= (p3m w) true) (= (p3m (:world (world-step w it))) true))
-  (intros hc0 h)
+(a/theorem step-p3m [w :- World, it :- Item] (=> (= (p3m w) true) (= (p3m (:world (world-step w it))) true))
+  (intro h)
   (have p := (p3m-parts w h))
-  (have a1 := (step-p3la w it hc0 (And.left p)))
+  (have a1 := (step-p3la w it (And.left p)))
   (have a2 := (step-h3 w it (And.left p) (And.right p)))
   (simp only [p3m a1 a2 Bool.and_self]))
 ;; Theorem (h-mem2, P11 second half): the memory bundle holds after every step
-(a/theorem step-h3-total [w :- World, it :- Item] (=> (= (c0-root w it) true) (= (p3m w) true) (= (h3 (List.nil Nat) (:world (world-step w it))) true))
-  (intros hc0 h) (exact (And.right (p3m-parts _ (step-p3m w it hc0 h)))))
+(a/theorem step-h3-total [w :- World, it :- Item] (=> (= (p3m w) true) (= (h3 (List.nil Nat) (:world (world-step w it))) true))
+  (intro h) (exact (And.right (p3m-parts _ (step-p3m w it h)))))
 ;; Theorem (L5 safety, unconditional): in a p3m world a quiescent waiting computation has a blocked dependency,
 ;; an eligible one or an unblocked task -- no honest hypothesis (h-mark and h-mem2 are invariants)
 (a/theorem l5-safety-total [w :- World, c0 :- Nat, c :- CompRow]
@@ -933,8 +933,8 @@
   (have h3c (= (p3c w) true)) (simp only [p3c (And.left pc) (And.right pc) Bool.and_self])
   (exact (h3-l5-safety w c0 c h3c (And.right pj) (And.right p) hq (p3l-h-mark w hl) hf hw nb ne tb)))
 ;; the literal h-mem2 of l5.clj, after every step
-(a/theorem step-h-mem2-total [w :- World, it :- Item] (=> (= (c0-root w it) true) (= (p3m w) true) (= (h-mem2 (:world (world-step w it))) true))
-  (intros hc0 h)
-  (have p := (p3m-parts _ (step-p3m w it hc0 h)))
+(a/theorem step-h-mem2-total [w :- World, it :- Item] (=> (= (p3m w) true) (= (h-mem2 (:world (world-step w it))) true))
+  (intro h)
+  (have p := (p3m-parts _ (step-p3m w it h)))
   (have pj := (p3j-parts _ (And.left (p3k-parts _ (And.left (p3l-parts _ (p3la-p3l _ (And.left p))))))))
   (exact (h3-h-mem2 _ (And.right p) (And.right pj))))

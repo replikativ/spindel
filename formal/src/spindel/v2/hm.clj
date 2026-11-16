@@ -1504,11 +1504,11 @@
 (a/theorem p3j-parts [w :- World] (=> (= (p3j w) true) (And (= (p3i w) true) (= (gd w) true)))
   (intro h) (simp only [p3j Bool.and_eq_true] at h) (exact h))
 (a/theorem p3j-empty [] (= (p3j empty-world) true) (rfl))
-(a/theorem step-p3j [w :- World, it :- Item] (=> (= (c0-root w it) true) (= (p3j w) true) (= (p3j (:world (world-step w it))) true))
-  (intros hc0 h)
+(a/theorem step-p3j [w :- World, it :- Item] (=> (= (p3j w) true) (= (p3j (:world (world-step w it))) true))
+  (intro h)
   (have p := (p3j-parts w h))
   (have c := (p3i-ctx w (And.left p)))
-  (have a1 := (step-p3i w it hc0 (And.left p)))
+  (have a1 := (step-p3i w it (And.left p)))
   (have a2 := (step-gd w it (p3i-g7 w (And.left p)) (And.right c) (And.right p) (step-rule-r-safe w it (And.left c))))
   (simp only [p3j a1 a2 Bool.and_self]))
 
@@ -1535,8 +1535,8 @@
     (apply (tbl-all-mono RunRow _ _ _ (:runs w) cd))
     (intros q hq) (simp only [gd-ncur gdkey] at hq) (simp only [gd-noal]) (exact hq)))
 (a/theorem step-gd-facts-total [w :- World, it :- Item]
-  (=> (= (c0-root w it) true) (= (p3j w) true) (= (tbl-all (gd-fact (:world (world-step w it))) (:comps (:world (world-step w it)))) true))
-  (intros hc0 h) (exact (gd-facts _ (And.right (p3j-parts _ (step-p3j w it hc0 h))))))
+  (=> (= (p3j w) true) (= (tbl-all (gd-fact (:world (world-step w it))) (:comps (:world (world-step w it)))) true))
+  (intro h) (exact (gd-facts _ (And.right (p3j-parts _ (step-p3j w it h))))))
 
 ;; ===========================================================================
 ;; Part F. For the h-mark proof (PLAN z59 (1)): the marking's dirty set is closed backwards

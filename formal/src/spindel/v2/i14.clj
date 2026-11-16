@@ -2333,13 +2333,13 @@
 (a/theorem p3k-parts [w :- World] (=> (= (p3k w) true) (And (= (p3j w) true) (= (v14 w) true)))
   (intro h) (simp only [p3k Bool.and_eq_true] at h) (exact h))
 (a/theorem p3k-empty [] (= (p3k empty-world) true) (rfl))
-(a/theorem step-p3k [w :- World, it :- Item] (=> (= (c0-root w it) true) (= (p3k w) true) (= (p3k (:world (world-step w it))) true))
-  (intros hc0 h)
+(a/theorem step-p3k [w :- World, it :- Item] (=> (= (p3k w) true) (= (p3k (:world (world-step w it))) true))
+  (intro h)
   (have p := (p3k-parts w h))
   (have pi := (And.left (p3j-parts w (And.left p))))
   (have pb := (And.left (p3i-ctx w pi)))
   (have hk := (And.left (And.right (p3b-parts w pb))))
-  (have a1 := (step-p3j w it hc0 (And.left p)))
+  (have a1 := (step-p3j w it (And.left p)))
   (have a2 := (step-v14 w it (And.right p) (p3i-g7 w pi) hk (step-rule-r-safe w it pb)))
   (simp only [p3k a1 a2 Bool.and_self]))
 
@@ -2513,8 +2513,8 @@
 
 ;; Theorem: after every step from a p3k world, I14 holds (no honest hypothesis)
 (a/theorem step-i14-total [w :- World, it :- Item, x :- Nat]
-  (=> (= (c0-root w it) true) (= (p3k w) true) (Not (Reach (vsucc14 (:world (world-step w it))) (vsucc14 (:world (world-step w it)) x) x)))
-  (intros hc0 h) (exact (i14-acyclic _ x (And.right (p3k-parts _ (step-p3k w it hc0 h))))))
+  (=> (= (p3k w) true) (Not (Reach (vsucc14 (:world (world-step w it))) (vsucc14 (:world (world-step w it)) x) x)))
+  (intro h) (exact (i14-acyclic _ x (And.right (p3k-parts _ (step-p3k w it h))))))
 
 ;; ===========================================================================
 ;; Part J. P10 (i8's raw0 guard `cur-closed` / `body-shut`) reduced to the run scope: an alive normal task

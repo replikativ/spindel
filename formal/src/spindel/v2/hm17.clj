@@ -128,7 +128,7 @@
 (doseq [t '[t1-full-inv t1-top-inv t19-inv t20-pin-inv t20-unpin-inv t3-inv t3-top-inv t4-inv t4-top-inv t5-inv sched-inv
             t-handle-new-inv t-post-inv t-release-inv t-finalize-inv t-open-scope-inv t-detach-inv t-finally-enter-inv
             t-finally-exit-inv
-            t1-body-inv t1-top-full-inv t-create-link-inv t-create-link-top-inv t-link-demand-inv]]
+            t1-body-inv t1-top-full-inv t-create-link-inv t-create-link-top-inv t-link-demand-inv c0-gate-inv]]
   (lcopy! H3 t))
 
 ;; ---- C0: a link's realization, an append, a stream close (hmk: the realized link / closed stream is a source)
@@ -203,9 +203,9 @@
   (have hg10 := (p3la-g10r w hp)) (simp only [g10r] at hg10)
   (cases it)
   (case [create-source st kind v fresh] (simp only [raw0]) (cases hc (body-shut w st))
-    (case [false] (simp only [hc]) (exact (t1-body-h3 xm w _ _ _ _ h)))
+    (case [false] (simp only [hc]) (exact (c0-gate-h3 xm w _ _ h (t1-body-h3 xm w st kind v fresh h))))
     (case [true] (simp only [hc refuse]) (exact h)))
-  (case [create-source-top scope kind v fresh] (simp only [raw0]) (exact (t1-top-full-h3 xm w _ _ _ _ h)))
+  (case [create-source-top scope kind v fresh] (simp only [raw0]) (exact (c0-gate-h3 xm w _ _ h (t1-top-full-h3 xm w scope kind v fresh h))))
   (case [write x v] (simp only [raw0]) (exact (t2-h3 xm w _ _ h)))
   (case [track st x k fresh] (simp only [raw0]) (cases hc (in-cleanup w st))
     (case [false] (simp only [hc]) (exact (t7-h3 xm w _ _ _ _ hc hg7 hga har hk h)))
@@ -256,12 +256,12 @@
   (case [finally-exit st] (simp only [raw0]) (exact (t-finally-exit-h3 xm w _ h)))
   (case [slice-exit r] (simp only [raw0]) (exact (t-slice-exit-h3 xm (List.nil Nat) (List.nil Nat) (List.nil Nat) w _ hk hg10 hke h)))
   (case [create-link st l] (simp only [raw0]) (cases hc (in-cleanup w st))
-    (case [false] (simp only [hc]) (exact (t-create-link-h3 xm w _ _ h)))
+    (case [false] (simp only [hc]) (exact (c0-gate-h3 xm w _ _ h (t-create-link-h3 xm w st l h))))
     (case [true] (simp only [hc refuse]) (exact h)))
-  (case [create-link-top sc l] (simp only [raw0]) (exact (t-create-link-top-h3 xm w _ _ h)))
+  (case [create-link-top sc l] (simp only [raw0]) (exact (c0-gate-h3 xm w _ _ h (t-create-link-top-h3 xm w sc l h))))
   (case [link-demand l k] (simp only [raw0]) (exact (t-link-demand-h3 xm w _ _ h)))
-  (case [link-realize l tag v n] (simp only [raw0]) (exact (h17-t-link-realize xm (List.nil Nat) w _ _ _ _ hk h)))
-  (case [append x v t] (simp only [raw0]) (exact (h17-t-append xm (List.nil Nat) w _ _ _ hk h)))
+  (case [link-realize l tag v n] (simp only [raw0]) (exact (c0-gate-h3 xm w _ _ h (h17-t-link-realize xm (List.nil Nat) w l tag v n hk h))))
+  (case [append x v t] (simp only [raw0]) (exact (c0-gate-h3 xm w _ _ h (h17-t-append xm (List.nil Nat) w x v t hk h))))
   (case [close x tag v] (simp only [raw0]) (exact (h17-t-close xm (List.nil Nat) w _ _ _ hk h))))
 
 (a/theorem h17-raw-h3 [xm :- (List Nat), w :- World, it :- Item]
