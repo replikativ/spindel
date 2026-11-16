@@ -314,13 +314,8 @@
   :released-proj  `:released` (C1 samples 22-27): the engine's verify projection
                   (test/org/replikativ/spindel/v2/verify.clj `projection`) hard-codes `:released false`
                   except on the `[:release-world]` commit itself; the world's flag stays set (the
-                  host-observation sidecars record `:released? true`). Compared through the sidecar.
-  :lazy-run-scope `:scopes :open` of a run scope that owns nothing (C1 samples 26b, 26c, 27): the engine
-                  materializes a run scope on first use (`run-scope!`); one never used is no child
-                  of its parent row, so T16/T21's close of the subtree does not reach it, while
-                  its projection shows it (open). The model has the row and closes it with the
-                  subtree, as the engine does for a materialized run scope (sample 9)."
-  {:mailbox-state true :wait-at true :link-state true :released-proj true :lazy-run-scope true})
+                  host-observation sidecars record `:released? true`). Compared through the sidecar."
+  {:mailbox-state true :wait-at true :link-state true :released-proj true})
 
 (def ^:dynamic *deviations* pending-deviations)
 
@@ -341,8 +336,10 @@
                (into (sorted-map)
                      (map (fn [[id x]]
                             (let [x (apply dissoc (update x :kind (partial kw-of scope-kinds)) (ignored-fields :scopes))]
-                              [id (cond-> x (and (:lazy-run-scope *deviations*) (= :run (:kind x)) (not (used? id)))
-                                    (dissoc :open))])))
+                              ;; a run scope that owns nothing reads as closed (engine session, C1): the
+                              ;; engine materializes a run scope on first use (`run-scope!`), and one never
+                              ;; materialized is nothing to close, the same as a closed, empty one
+                              [id (cond-> x (and (= :run (:kind x)) (not (used? id))) (assoc :open false))])))
                      (:scopes p)))
      :comps (rows :comps #(-> % (update :basis set) (update :validity canon-validity)
                               (update :adoption canon-adoption) (update :inputs inputs-val)))
