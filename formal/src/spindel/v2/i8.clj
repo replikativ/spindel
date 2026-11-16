@@ -1976,7 +1976,9 @@
      (cases hf (run-find w rid)) (case' [some r]) (case' [none])
      (simp only [t-cancel hf refuse]) (exact h)
      (cases hg (host-cancel-ok w r))
-     (simp only [t-cancel hf hg refuse]) (exact h)
+     (cases hd (host-cancel-done w r))
+     (simp only [t-cancel hf hg cancel-done hd refuse]) (exact h)
+     (simp only [t-cancel hf hg cancel-done hd accept]) (exact (g8-run-cascade-ga x8s w _ hga h))
      (simp only [t-cancel hf hg]) (exact (t14-g8 x8s w rid false hga h))))
 (override! G8 't16-inv '[]
   '(a/theorem t16-g8 [x8s :- (List Nat), w :- World, s :- Nat]

@@ -1880,7 +1880,15 @@
      (case [none] (simp only [t-cancel hf refuse]) (exact h))
      (case [some r]
        (cases hg (host-cancel-ok w r))
-       (case [false] (simp only [t-cancel hf hg refuse]) (exact h))
+       (case [false]
+         ;; C1: a done task run's cancel reaches its scope subtree (its owned task runs)
+         (cases hd (host-cancel-done w r))
+         (case [false] (simp only [t-cancel hf hg cancel-done hd refuse]) (exact h))
+         (case [true]
+           (have hj (= (tbl-all (job-ok gxz gkz w) (cancel-jobs (owned-runs w (scope-subtree w (:scope r))))) true))
+           (rw [jl-cancel-jobs]) (exact (owned-ncw gxz gkz w _ (g10-sample gxz gkz w h)))
+           (simp only [t-cancel hf hg cancel-done hd accept])
+           (exact (g10-run-cascade gxz gkz w _ hj h))))
        (case [true]
          (simp only [t-cancel hf hg])
          (have hg2 := hg) (simp only [host-cancel-ok Bool.and_eq_true] at hg2)
