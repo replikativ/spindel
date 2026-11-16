@@ -216,6 +216,12 @@ prototypes are not acceptance evidence for this smaller operation API.
     finalizers (B8 reduced to suspension), `await-op` with a race-safe
     controller and `idle?`. Task-level joins, deadlines and cross-world
     `spawn-in` follow; Z#66's cleanup operations remain planned.
+  - Z#68 (T21, Z#40, Z#56; found by the C1 model): a released world takes no
+    new root, also from its own cleanup slice: observe, pin and host waits
+    are refused (`::released`, no item), so a quiet released world stays
+    quiet. A Z#40 effect on a row Rule R already removed (a finalizer still
+    holding a handle T21 revoked) reaches nobody and is not an item; the
+    engine cannot record a finalizer's refs (§3.2 X#7) and relies on this.
 
 Once approved, this document is the normative contract for the v2 engine. It
 supersedes `engine-formalism.md` Part 4 and `engine-memory-v2.md`. Parts 1–3

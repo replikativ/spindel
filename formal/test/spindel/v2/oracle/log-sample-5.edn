@@ -23,7 +23,7 @@
    :acts {},
    :edges {},
    :cleanup {}}}
- {:item [:spawn-top 2 2 4 [3 4]],
+ {:item [:spawn-top 2 3 4 []],
   :accepted true,
   :proj
   {:scopes
@@ -41,8 +41,7 @@
      :open true,
      :handles 1}},
    :pending-act nil,
-   :tasks
-   {4 {:owner 2, :run 5, :inputs [3 4], :result nil, :handles 1}},
+   :tasks {4 {:owner 2, :run 5, :inputs [], :result nil, :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -80,8 +79,7 @@
      :open true,
      :handles 1}},
    :pending-act nil,
-   :tasks
-   {4 {:owner 2, :run 5, :inputs [3 4], :result nil, :handles 1}},
+   :tasks {4 {:owner 2, :run 5, :inputs [], :result nil, :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -101,7 +99,7 @@
    :acts {},
    :edges {},
    :cleanup {}}}
- {:item [:create-source 5 :signal 5 7],
+ {:item [:create-source 5 :signal 4 7],
   :accepted true,
   :proj
   {:scopes
@@ -121,13 +119,12 @@
     7
     {:owner 6,
      :kind :signal,
-     :state 5,
+     :state 4,
      :version 0,
      :open true,
      :handles 1}},
    :pending-act nil,
-   :tasks
-   {4 {:owner 2, :run 5, :inputs [3 4], :result nil, :handles 1}},
+   :tasks {4 {:owner 2, :run 5, :inputs [], :result nil, :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -167,20 +164,19 @@
     7
     {:owner 6,
      :kind :signal,
-     :state 5,
+     :state 4,
      :version 0,
      :open true,
      :handles 1},
     8
     {:owner 6,
      :kind :mailbox,
-     :state 6,
+     :state 5,
      :version 0,
      :open true,
      :handles 1}},
    :pending-act nil,
-   :tasks
-   {4 {:owner 2, :run 5, :inputs [3 4], :result nil, :handles 1}},
+   :tasks {4 {:owner 2, :run 5, :inputs [], :result nil, :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -200,7 +196,7 @@
    :acts {},
    :edges {},
    :cleanup {}}}
- {:item [:complete 5 1 7],
+ {:item [:complete 5 1 8],
   :accepted true,
   :proj
   {:scopes {2 {:parent nil, :kind :root, :open true}},
@@ -218,21 +214,20 @@
     7
     {:owner nil,
      :kind :signal,
-     :state 5,
+     :state 4,
      :version 0,
      :open false,
      :handles 1},
     8
     {:owner nil,
      :kind :mailbox,
-     :state 6,
+     :state 5,
      :version 0,
      :open false,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4
-    {:owner 2, :run nil, :inputs [3 4], :result [:ok 7], :handles 1}},
+   {4 {:owner 2, :run nil, :inputs [], :result [:ok 8], :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -259,21 +254,20 @@
     7
     {:owner nil,
      :kind :signal,
-     :state 5,
+     :state 4,
      :version 0,
      :open false,
      :handles 1},
     8
     {:owner nil,
      :kind :mailbox,
-     :state 6,
+     :state 5,
      :version 0,
      :open false,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4
-    {:owner 2, :run nil, :inputs [3 4], :result [:ok 7], :handles 1}},
+   {4 {:owner 2, :run nil, :inputs [], :result [:ok 8], :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -282,7 +276,7 @@
    :acts {},
    :edges {},
    :cleanup {}}}
- {:item [:create-comp-top 2 10 [8] 9],
+ {:item [:create-comp-top 2 10 [6] 9],
   :accepted true,
   :proj
   {:scopes {2 {:parent nil, :kind :root, :open true}},
@@ -300,21 +294,20 @@
     7
     {:owner nil,
      :kind :signal,
-     :state 5,
+     :state 4,
      :version 0,
      :open false,
      :handles 1},
     8
     {:owner nil,
      :kind :mailbox,
-     :state 6,
+     :state 5,
      :version 0,
      :open false,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4
-    {:owner 2, :run nil, :inputs [3 4], :result [:ok 7], :handles 1}},
+   {4 {:owner 2, :run nil, :inputs [], :result [:ok 8], :handles 1}},
    :comps
    {10
     {:epoch 1,
@@ -325,7 +318,7 @@
      :rank 0,
      :basis [],
      :adoption nil,
-     :inputs [8],
+     :inputs [6],
      :result nil,
      :handles 1,
      :version 0,
@@ -357,21 +350,20 @@
     7
     {:owner nil,
      :kind :signal,
-     :state 5,
+     :state 4,
      :version 0,
      :open false,
      :handles 1},
     8
     {:owner nil,
      :kind :mailbox,
-     :state 6,
+     :state 5,
      :version 0,
      :open false,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4
-    {:owner 2, :run nil, :inputs [3 4], :result [:ok 7], :handles 1}},
+   {4 {:owner 2, :run nil, :inputs [], :result [:ok 8], :handles 1}},
    :comps
    {10
     {:epoch 1,
@@ -382,7 +374,7 @@
      :rank 0,
      :basis [],
      :adoption nil,
-     :inputs [8],
+     :inputs [6],
      :result nil,
      :handles 1,
      :version 0,
@@ -426,21 +418,20 @@
     7
     {:owner nil,
      :kind :signal,
-     :state 5,
+     :state 4,
      :version 0,
      :open false,
      :handles 1},
     8
     {:owner nil,
      :kind :mailbox,
-     :state 6,
+     :state 5,
      :version 0,
      :open false,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4
-    {:owner 2, :run nil, :inputs [3 4], :result [:ok 7], :handles 1}},
+   {4 {:owner 2, :run nil, :inputs [], :result [:ok 8], :handles 1}},
    :comps
    {10
     {:epoch 1,
@@ -451,7 +442,7 @@
      :rank 0,
      :basis [],
      :adoption nil,
-     :inputs [8],
+     :inputs [6],
      :result nil,
      :handles 1,
      :version 0,
@@ -506,21 +497,20 @@
     7
     {:owner nil,
      :kind :signal,
-     :state 5,
+     :state 4,
      :version 0,
      :open false,
      :handles 1},
     8
     {:owner nil,
      :kind :mailbox,
-     :state 6,
+     :state 5,
      :version 0,
      :open false,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4
-    {:owner 2, :run nil, :inputs [3 4], :result [:ok 7], :handles 1}},
+   {4 {:owner 2, :run nil, :inputs [], :result [:ok 8], :handles 1}},
    :comps
    {10
     {:epoch 1,
@@ -531,7 +521,7 @@
      :rank 0,
      :basis [],
      :adoption nil,
-     :inputs [8],
+     :inputs [6],
      :result nil,
      :handles 1,
      :version 0,
@@ -586,21 +576,20 @@
     7
     {:owner nil,
      :kind :signal,
-     :state 5,
+     :state 4,
      :version 0,
      :open false,
      :handles 1},
     8
     {:owner nil,
      :kind :mailbox,
-     :state 6,
+     :state 5,
      :version 0,
      :open false,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4
-    {:owner 2, :run nil, :inputs [3 4], :result [:ok 7], :handles 1}},
+   {4 {:owner 2, :run nil, :inputs [], :result [:ok 8], :handles 1}},
    :comps
    {10
     {:epoch 1,
@@ -611,7 +600,7 @@
      :rank 0,
      :basis [],
      :adoption nil,
-     :inputs [8],
+     :inputs [6],
      :result nil,
      :handles 1,
      :version 0,
@@ -644,19 +633,9 @@
      :seen nil,
      :kind :observe,
      :at 0,
-     :debtor 10},
-    14
-    {:baseline [5 0],
-     :marked false,
-     :cont 11,
-     :phase :armed,
-     :creditor 10,
-     :seen 0,
-     :kind :dep,
-     :at 0,
-     :debtor 7}},
+     :debtor 10}},
    :cleanup {}}}
- {:item [:complete 12 1 12],
+ {:item [:complete 12 1 4],
   :accepted true,
   :proj
   {:scopes {2 {:parent nil, :kind :root, :open true}},
@@ -674,21 +653,20 @@
     7
     {:owner nil,
      :kind :signal,
-     :state 5,
+     :state 4,
      :version 0,
      :open false,
      :handles 1},
     8
     {:owner nil,
      :kind :mailbox,
-     :state 6,
+     :state 5,
      :version 0,
      :open false,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4
-    {:owner 2, :run nil, :inputs [3 4], :result [:ok 7], :handles 1}},
+   {4 {:owner 2, :run nil, :inputs [], :result [:ok 8], :handles 1}},
    :comps
    {10
     {:epoch 1,
@@ -699,8 +677,8 @@
      :rank 0,
      :basis [],
      :adoption nil,
-     :inputs [8],
-     :result [:ok 12],
+     :inputs [6],
+     :result [:ok 4],
      :handles 1,
      :version 1,
      :body 9,
@@ -721,21 +699,11 @@
      :seen 1,
      :kind :observe,
      :at 0,
-     :debtor 10},
-    14
-    {:baseline [5 0],
-     :marked false,
-     :cont 11,
-     :phase :armed,
-     :creditor 10,
-     :seen 0,
-     :kind :dep,
-     :at 0,
-     :debtor 7}},
+     :debtor 10}},
    :cleanup {}}}
- {:item [:write 7 [:opaque 5]], :accepted false}
- {:item [:post 8 [:opaque :late]], :accepted false}
- {:item [:spawn-top 2 13 15 [14 15 16]],
+ {:item [:write 7 12], :accepted false}
+ {:item [:post 8 13], :accepted false}
+ {:item [:spawn-top 2 14 15 [15]],
   :accepted true,
   :proj
   {:scopes
@@ -755,22 +723,21 @@
     7
     {:owner nil,
      :kind :signal,
-     :state 5,
+     :state 4,
      :version 0,
      :open false,
      :handles 1},
     8
     {:owner nil,
      :kind :mailbox,
-     :state 6,
+     :state 5,
      :version 0,
      :open false,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [3 4], :result [:ok 7], :handles 1},
-    15
-    {:owner 2, :run 16, :inputs [14 15 16], :result nil, :handles 1}},
+   {4 {:owner 2, :run nil, :inputs [], :result [:ok 8], :handles 1},
+    15 {:owner 2, :run 16, :inputs [15], :result nil, :handles 1}},
    :comps
    {10
     {:epoch 1,
@@ -781,8 +748,8 @@
      :rank 0,
      :basis [],
      :adoption nil,
-     :inputs [8],
-     :result [:ok 12],
+     :inputs [6],
+     :result [:ok 4],
      :handles 1,
      :version 1,
      :body 9,
@@ -814,17 +781,7 @@
      :seen 1,
      :kind :observe,
      :at 0,
-     :debtor 10},
-    14
-    {:baseline [5 0],
-     :marked false,
-     :cont 11,
-     :phase :armed,
-     :creditor 10,
-     :seen 0,
-     :kind :dep,
-     :at 0,
-     :debtor 7}},
+     :debtor 10}},
    :cleanup {}}}
  {:item [:schedule 16],
   :accepted true,
@@ -846,22 +803,21 @@
     7
     {:owner nil,
      :kind :signal,
-     :state 5,
+     :state 4,
      :version 0,
      :open false,
      :handles 1},
     8
     {:owner nil,
      :kind :mailbox,
-     :state 6,
+     :state 5,
      :version 0,
      :open false,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [3 4], :result [:ok 7], :handles 1},
-    15
-    {:owner 2, :run 16, :inputs [14 15 16], :result nil, :handles 1}},
+   {4 {:owner 2, :run nil, :inputs [], :result [:ok 8], :handles 1},
+    15 {:owner 2, :run 16, :inputs [15], :result nil, :handles 1}},
    :comps
    {10
     {:epoch 1,
@@ -872,8 +828,8 @@
      :rank 0,
      :basis [],
      :adoption nil,
-     :inputs [8],
-     :result [:ok 12],
+     :inputs [6],
+     :result [:ok 4],
      :handles 1,
      :version 1,
      :body 9,
@@ -905,17 +861,7 @@
      :seen 1,
      :kind :observe,
      :at 0,
-     :debtor 10},
-    14
-    {:baseline [5 0],
-     :marked false,
-     :cont 11,
-     :phase :armed,
-     :creditor 10,
-     :seen 0,
-     :kind :dep,
-     :at 0,
-     :debtor 7}},
+     :debtor 10}},
    :cleanup {}}}
  {:item [:open-scope 16 18],
   :accepted true,
@@ -938,22 +884,21 @@
     7
     {:owner nil,
      :kind :signal,
-     :state 5,
+     :state 4,
      :version 0,
      :open false,
      :handles 1},
     8
     {:owner nil,
      :kind :mailbox,
-     :state 6,
+     :state 5,
      :version 0,
      :open false,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [3 4], :result [:ok 7], :handles 1},
-    15
-    {:owner 2, :run 16, :inputs [14 15 16], :result nil, :handles 1}},
+   {4 {:owner 2, :run nil, :inputs [], :result [:ok 8], :handles 1},
+    15 {:owner 2, :run 16, :inputs [15], :result nil, :handles 1}},
    :comps
    {10
     {:epoch 1,
@@ -964,8 +909,8 @@
      :rank 0,
      :basis [],
      :adoption nil,
-     :inputs [8],
-     :result [:ok 12],
+     :inputs [6],
+     :result [:ok 4],
      :handles 1,
      :version 1,
      :body 9,
@@ -997,17 +942,7 @@
      :seen 1,
      :kind :observe,
      :at 0,
-     :debtor 10},
-    14
-    {:baseline [5 0],
-     :marked false,
-     :cont 11,
-     :phase :armed,
-     :creditor 10,
-     :seen 0,
-     :kind :dep,
-     :at 0,
-     :debtor 7}},
+     :debtor 10}},
    :cleanup {}}}
  {:item [:finally-enter 16],
   :accepted true,
@@ -1030,22 +965,21 @@
     7
     {:owner nil,
      :kind :signal,
-     :state 5,
+     :state 4,
      :version 0,
      :open false,
      :handles 1},
     8
     {:owner nil,
      :kind :mailbox,
-     :state 6,
+     :state 5,
      :version 0,
      :open false,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [3 4], :result [:ok 7], :handles 1},
-    15
-    {:owner 2, :run 16, :inputs [14 15 16], :result nil, :handles 1}},
+   {4 {:owner 2, :run nil, :inputs [], :result [:ok 8], :handles 1},
+    15 {:owner 2, :run 16, :inputs [15], :result nil, :handles 1}},
    :comps
    {10
     {:epoch 1,
@@ -1056,8 +990,8 @@
      :rank 0,
      :basis [],
      :adoption nil,
-     :inputs [8],
-     :result [:ok 12],
+     :inputs [6],
+     :result [:ok 4],
      :handles 1,
      :version 1,
      :body 9,
@@ -1089,19 +1023,9 @@
      :seen 1,
      :kind :observe,
      :at 0,
-     :debtor 10},
-    14
-    {:baseline [5 0],
-     :marked false,
-     :cont 11,
-     :phase :armed,
-     :creditor 10,
-     :seen 0,
-     :kind :dep,
-     :at 0,
-     :debtor 7}},
+     :debtor 10}},
    :cleanup {}}}
- {:item [:spawn 16 17 19 [14]],
+ {:item [:spawn 16 16 19 [15]],
   :accepted true,
   :proj
   {:scopes
@@ -1123,23 +1047,22 @@
     7
     {:owner nil,
      :kind :signal,
-     :state 5,
+     :state 4,
      :version 0,
      :open false,
      :handles 1},
     8
     {:owner nil,
      :kind :mailbox,
-     :state 6,
+     :state 5,
      :version 0,
      :open false,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [3 4], :result [:ok 7], :handles 1},
-    15
-    {:owner 2, :run 16, :inputs [14 15 16], :result nil, :handles 1},
-    19 {:owner 18, :run 20, :inputs [14], :result nil, :handles 1}},
+   {4 {:owner 2, :run nil, :inputs [], :result [:ok 8], :handles 1},
+    15 {:owner 2, :run 16, :inputs [15], :result nil, :handles 1},
+    19 {:owner 18, :run 20, :inputs [15], :result nil, :handles 1}},
    :comps
    {10
     {:epoch 1,
@@ -1150,8 +1073,8 @@
      :rank 0,
      :basis [],
      :adoption nil,
-     :inputs [8],
-     :result [:ok 12],
+     :inputs [6],
+     :result [:ok 4],
      :handles 1,
      :version 1,
      :body 9,
@@ -1194,19 +1117,9 @@
      :seen 1,
      :kind :observe,
      :at 0,
-     :debtor 10},
-    14
-    {:baseline [5 0],
-     :marked false,
-     :cont 11,
-     :phase :armed,
-     :creditor 10,
-     :seen 0,
-     :kind :dep,
-     :at 0,
-     :debtor 7}},
+     :debtor 10}},
    :cleanup {}}}
- {:item [:spawn 16 18 22 [14]],
+ {:item [:spawn 16 17 22 [15]],
   :accepted true,
   :proj
   {:scopes
@@ -1229,24 +1142,23 @@
     7
     {:owner nil,
      :kind :signal,
-     :state 5,
+     :state 4,
      :version 0,
      :open false,
      :handles 1},
     8
     {:owner nil,
      :kind :mailbox,
-     :state 6,
+     :state 5,
      :version 0,
      :open false,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [3 4], :result [:ok 7], :handles 1},
-    15
-    {:owner 2, :run 16, :inputs [14 15 16], :result nil, :handles 1},
-    19 {:owner 18, :run 20, :inputs [14], :result nil, :handles 1},
-    22 {:owner 18, :run 23, :inputs [14], :result nil, :handles 1}},
+   {4 {:owner 2, :run nil, :inputs [], :result [:ok 8], :handles 1},
+    15 {:owner 2, :run 16, :inputs [15], :result nil, :handles 1},
+    19 {:owner 18, :run 20, :inputs [15], :result nil, :handles 1},
+    22 {:owner 18, :run 23, :inputs [15], :result nil, :handles 1}},
    :comps
    {10
     {:epoch 1,
@@ -1257,8 +1169,8 @@
      :rank 0,
      :basis [],
      :adoption nil,
-     :inputs [8],
-     :result [:ok 12],
+     :inputs [6],
+     :result [:ok 4],
      :handles 1,
      :version 1,
      :body 9,
@@ -1312,17 +1224,7 @@
      :seen 1,
      :kind :observe,
      :at 0,
-     :debtor 10},
-    14
-    {:baseline [5 0],
-     :marked false,
-     :cont 11,
-     :phase :armed,
-     :creditor 10,
-     :seen 0,
-     :kind :dep,
-     :at 0,
-     :debtor 7}},
+     :debtor 10}},
    :cleanup {}}}
  {:item [:detach 22 2],
   :accepted true,
@@ -1347,24 +1249,23 @@
     7
     {:owner nil,
      :kind :signal,
-     :state 5,
+     :state 4,
      :version 0,
      :open false,
      :handles 1},
     8
     {:owner nil,
      :kind :mailbox,
-     :state 6,
+     :state 5,
      :version 0,
      :open false,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [3 4], :result [:ok 7], :handles 1},
-    15
-    {:owner 2, :run 16, :inputs [14 15 16], :result nil, :handles 1},
-    19 {:owner 18, :run 20, :inputs [14], :result nil, :handles 1},
-    22 {:owner 2, :run 23, :inputs [14], :result nil, :handles 1}},
+   {4 {:owner 2, :run nil, :inputs [], :result [:ok 8], :handles 1},
+    15 {:owner 2, :run 16, :inputs [15], :result nil, :handles 1},
+    19 {:owner 18, :run 20, :inputs [15], :result nil, :handles 1},
+    22 {:owner 2, :run 23, :inputs [15], :result nil, :handles 1}},
    :comps
    {10
     {:epoch 1,
@@ -1375,8 +1276,8 @@
      :rank 0,
      :basis [],
      :adoption nil,
-     :inputs [8],
-     :result [:ok 12],
+     :inputs [6],
+     :result [:ok 4],
      :handles 1,
      :version 1,
      :body 9,
@@ -1430,19 +1331,9 @@
      :seen 1,
      :kind :observe,
      :at 0,
-     :debtor 10},
-    14
-    {:baseline [5 0],
-     :marked false,
-     :cont 11,
-     :phase :armed,
-     :creditor 10,
-     :seen 0,
-     :kind :dep,
-     :at 0,
-     :debtor 7}},
+     :debtor 10}},
    :cleanup {}}}
- {:item [:spawn 16 19 25 []],
+ {:item [:spawn 16 18 25 []],
   :accepted true,
   :proj
   {:scopes
@@ -1466,24 +1357,23 @@
     7
     {:owner nil,
      :kind :signal,
-     :state 5,
+     :state 4,
      :version 0,
      :open false,
      :handles 1},
     8
     {:owner nil,
      :kind :mailbox,
-     :state 6,
+     :state 5,
      :version 0,
      :open false,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [3 4], :result [:ok 7], :handles 1},
-    15
-    {:owner 2, :run 16, :inputs [14 15 16], :result nil, :handles 1},
-    19 {:owner 18, :run 20, :inputs [14], :result nil, :handles 1},
-    22 {:owner 2, :run 23, :inputs [14], :result nil, :handles 1},
+   {4 {:owner 2, :run nil, :inputs [], :result [:ok 8], :handles 1},
+    15 {:owner 2, :run 16, :inputs [15], :result nil, :handles 1},
+    19 {:owner 18, :run 20, :inputs [15], :result nil, :handles 1},
+    22 {:owner 2, :run 23, :inputs [15], :result nil, :handles 1},
     25 {:owner 18, :run 26, :inputs [], :result nil, :handles 1}},
    :comps
    {10
@@ -1495,8 +1385,8 @@
      :rank 0,
      :basis [],
      :adoption nil,
-     :inputs [8],
-     :result [:ok 12],
+     :inputs [6],
+     :result [:ok 4],
      :handles 1,
      :version 1,
      :body 9,
@@ -1561,19 +1451,9 @@
      :seen 1,
      :kind :observe,
      :at 0,
-     :debtor 10},
-    14
-    {:baseline [5 0],
-     :marked false,
-     :cont 11,
-     :phase :armed,
-     :creditor 10,
-     :seen 0,
-     :kind :dep,
-     :at 0,
-     :debtor 7}},
+     :debtor 10}},
    :cleanup {}}}
- {:item [:await 16 [25] :one 20 28 []],
+ {:item [:await 16 [25] :one 19 28 []],
   :accepted true,
   :proj
   {:scopes
@@ -1597,24 +1477,23 @@
     7
     {:owner nil,
      :kind :signal,
-     :state 5,
+     :state 4,
      :version 0,
      :open false,
      :handles 1},
     8
     {:owner nil,
      :kind :mailbox,
-     :state 6,
+     :state 5,
      :version 0,
      :open false,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [3 4], :result [:ok 7], :handles 1},
-    15
-    {:owner 2, :run 16, :inputs [14 15 16], :result nil, :handles 1},
-    19 {:owner 18, :run 20, :inputs [14], :result nil, :handles 1},
-    22 {:owner 2, :run 23, :inputs [14], :result nil, :handles 1},
+   {4 {:owner 2, :run nil, :inputs [], :result [:ok 8], :handles 1},
+    15 {:owner 2, :run 16, :inputs [15], :result nil, :handles 1},
+    19 {:owner 18, :run 20, :inputs [15], :result nil, :handles 1},
+    22 {:owner 2, :run 23, :inputs [15], :result nil, :handles 1},
     25 {:owner 18, :run 26, :inputs [], :result nil, :handles 1}},
    :comps
    {10
@@ -1626,8 +1505,8 @@
      :rank 0,
      :basis [],
      :adoption nil,
-     :inputs [8],
-     :result [:ok 12],
+     :inputs [6],
+     :result [:ok 4],
      :handles 1,
      :version 1,
      :body 9,
@@ -1688,7 +1567,7 @@
      :members [[29 0]],
      :slots [nil],
      :remaining 1,
-     :cont 20}},
+     :cont 19}},
    :edges
    {11
     {:baseline nil,
@@ -1700,16 +1579,6 @@
      :kind :observe,
      :at 0,
      :debtor 10},
-    14
-    {:baseline [5 0],
-     :marked false,
-     :cont 11,
-     :phase :armed,
-     :creditor 10,
-     :seen 0,
-     :kind :dep,
-     :at 0,
-     :debtor 7},
     29
     {:baseline nil,
      :marked false,
@@ -1745,24 +1614,23 @@
     7
     {:owner nil,
      :kind :signal,
-     :state 5,
+     :state 4,
      :version 0,
      :open false,
      :handles 1},
     8
     {:owner nil,
      :kind :mailbox,
-     :state 6,
+     :state 5,
      :version 0,
      :open false,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [3 4], :result [:ok 7], :handles 1},
-    15
-    {:owner 2, :run 16, :inputs [14 15 16], :result nil, :handles 1},
-    19 {:owner 18, :run 20, :inputs [14], :result nil, :handles 1},
-    22 {:owner 2, :run 23, :inputs [14], :result nil, :handles 1},
+   {4 {:owner 2, :run nil, :inputs [], :result [:ok 8], :handles 1},
+    15 {:owner 2, :run 16, :inputs [15], :result nil, :handles 1},
+    19 {:owner 18, :run 20, :inputs [15], :result nil, :handles 1},
+    22 {:owner 2, :run 23, :inputs [15], :result nil, :handles 1},
     25 {:owner 18, :run 26, :inputs [], :result nil, :handles 1}},
    :comps
    {10
@@ -1774,8 +1642,8 @@
      :rank 0,
      :basis [],
      :adoption nil,
-     :inputs [8],
-     :result [:ok 12],
+     :inputs [6],
+     :result [:ok 4],
      :handles 1,
      :version 1,
      :body 9,
@@ -1836,7 +1704,7 @@
      :members [[29 0]],
      :slots [nil],
      :remaining 1,
-     :cont 20}},
+     :cont 19}},
    :edges
    {11
     {:baseline nil,
@@ -1848,16 +1716,6 @@
      :kind :observe,
      :at 0,
      :debtor 10},
-    14
-    {:baseline [5 0],
-     :marked false,
-     :cont 11,
-     :phase :armed,
-     :creditor 10,
-     :seen 0,
-     :kind :dep,
-     :at 0,
-     :debtor 7},
     29
     {:baseline nil,
      :marked false,
@@ -1869,7 +1727,7 @@
      :at 3,
      :debtor 25}},
    :cleanup {}}}
- {:item [:await 20 [3] :one 21 30 []],
+ {:item [:await 20 [3] :one 20 30 []],
   :accepted true,
   :proj
   {:scopes
@@ -1893,24 +1751,23 @@
     7
     {:owner nil,
      :kind :signal,
-     :state 5,
+     :state 4,
      :version 0,
      :open false,
      :handles 1},
     8
     {:owner nil,
      :kind :mailbox,
-     :state 6,
+     :state 5,
      :version 0,
      :open false,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [3 4], :result [:ok 7], :handles 1},
-    15
-    {:owner 2, :run 16, :inputs [14 15 16], :result nil, :handles 1},
-    19 {:owner 18, :run 20, :inputs [14], :result nil, :handles 1},
-    22 {:owner 2, :run 23, :inputs [14], :result nil, :handles 1},
+   {4 {:owner 2, :run nil, :inputs [], :result [:ok 8], :handles 1},
+    15 {:owner 2, :run 16, :inputs [15], :result nil, :handles 1},
+    19 {:owner 18, :run 20, :inputs [15], :result nil, :handles 1},
+    22 {:owner 2, :run 23, :inputs [15], :result nil, :handles 1},
     25 {:owner 18, :run 26, :inputs [], :result nil, :handles 1}},
    :comps
    {10
@@ -1922,8 +1779,8 @@
      :rank 0,
      :basis [],
      :adoption nil,
-     :inputs [8],
-     :result [:ok 12],
+     :inputs [6],
+     :result [:ok 4],
      :handles 1,
      :version 1,
      :body 9,
@@ -1984,14 +1841,14 @@
      :members [[29 0]],
      :slots [nil],
      :remaining 1,
-     :cont 20},
+     :cont 19},
     30
     {:run 20,
      :mode :one,
      :members [[31 0]],
      :slots [nil],
      :remaining 1,
-     :cont 21}},
+     :cont 20}},
    :edges
    {11
     {:baseline nil,
@@ -2003,16 +1860,6 @@
      :kind :observe,
      :at 0,
      :debtor 10},
-    14
-    {:baseline [5 0],
-     :marked false,
-     :cont 11,
-     :phase :armed,
-     :creditor 10,
-     :seen 0,
-     :kind :dep,
-     :at 0,
-     :debtor 7},
     29
     {:baseline nil,
      :marked false,
@@ -2058,24 +1905,23 @@
     7
     {:owner nil,
      :kind :signal,
-     :state 5,
+     :state 4,
      :version 0,
      :open false,
      :handles 1},
     8
     {:owner nil,
      :kind :mailbox,
-     :state 6,
+     :state 5,
      :version 0,
      :open false,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [3 4], :result [:ok 7], :handles 1},
-    15
-    {:owner 2, :run 16, :inputs [14 15 16], :result nil, :handles 1},
-    19 {:owner 18, :run 20, :inputs [14], :result nil, :handles 1},
-    22 {:owner 2, :run 23, :inputs [14], :result nil, :handles 1},
+   {4 {:owner 2, :run nil, :inputs [], :result [:ok 8], :handles 1},
+    15 {:owner 2, :run 16, :inputs [15], :result nil, :handles 1},
+    19 {:owner 18, :run 20, :inputs [15], :result nil, :handles 1},
+    22 {:owner 2, :run 23, :inputs [15], :result nil, :handles 1},
     25 {:owner 18, :run 26, :inputs [], :result nil, :handles 1}},
    :comps
    {10
@@ -2087,8 +1933,8 @@
      :rank 0,
      :basis [],
      :adoption nil,
-     :inputs [8],
-     :result [:ok 12],
+     :inputs [6],
+     :result [:ok 4],
      :handles 1,
      :version 1,
      :body 9,
@@ -2149,14 +1995,14 @@
      :members [[29 0]],
      :slots [nil],
      :remaining 1,
-     :cont 20},
+     :cont 19},
     30
     {:run 20,
      :mode :one,
      :members [[31 0]],
      :slots [nil],
      :remaining 1,
-     :cont 21}},
+     :cont 20}},
    :edges
    {11
     {:baseline nil,
@@ -2168,16 +2014,6 @@
      :kind :observe,
      :at 0,
      :debtor 10},
-    14
-    {:baseline [5 0],
-     :marked false,
-     :cont 11,
-     :phase :armed,
-     :creditor 10,
-     :seen 0,
-     :kind :dep,
-     :at 0,
-     :debtor 7},
     29
     {:baseline nil,
      :marked false,
@@ -2199,7 +2035,7 @@
      :at 0,
      :debtor 3}},
    :cleanup {}}}
- {:item [:await 23 [3] :one 21 32 []],
+ {:item [:await 23 [3] :one 20 32 []],
   :accepted true,
   :proj
   {:scopes
@@ -2223,24 +2059,23 @@
     7
     {:owner nil,
      :kind :signal,
-     :state 5,
+     :state 4,
      :version 0,
      :open false,
      :handles 1},
     8
     {:owner nil,
      :kind :mailbox,
-     :state 6,
+     :state 5,
      :version 0,
      :open false,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [3 4], :result [:ok 7], :handles 1},
-    15
-    {:owner 2, :run 16, :inputs [14 15 16], :result nil, :handles 1},
-    19 {:owner 18, :run 20, :inputs [14], :result nil, :handles 1},
-    22 {:owner 2, :run 23, :inputs [14], :result nil, :handles 1},
+   {4 {:owner 2, :run nil, :inputs [], :result [:ok 8], :handles 1},
+    15 {:owner 2, :run 16, :inputs [15], :result nil, :handles 1},
+    19 {:owner 18, :run 20, :inputs [15], :result nil, :handles 1},
+    22 {:owner 2, :run 23, :inputs [15], :result nil, :handles 1},
     25 {:owner 18, :run 26, :inputs [], :result nil, :handles 1}},
    :comps
    {10
@@ -2252,8 +2087,8 @@
      :rank 0,
      :basis [],
      :adoption nil,
-     :inputs [8],
-     :result [:ok 12],
+     :inputs [6],
+     :result [:ok 4],
      :handles 1,
      :version 1,
      :body 9,
@@ -2314,21 +2149,21 @@
      :members [[29 0]],
      :slots [nil],
      :remaining 1,
-     :cont 20},
+     :cont 19},
     30
     {:run 20,
      :mode :one,
      :members [[31 0]],
      :slots [nil],
      :remaining 1,
-     :cont 21},
+     :cont 20},
     32
     {:run 23,
      :mode :one,
      :members [[33 0]],
      :slots [nil],
      :remaining 1,
-     :cont 21}},
+     :cont 20}},
    :edges
    {11
     {:baseline nil,
@@ -2340,16 +2175,6 @@
      :kind :observe,
      :at 0,
      :debtor 10},
-    14
-    {:baseline [5 0],
-     :marked false,
-     :cont 11,
-     :phase :armed,
-     :creditor 10,
-     :seen 0,
-     :kind :dep,
-     :at 0,
-     :debtor 7},
     29
     {:baseline nil,
      :marked false,
@@ -2405,24 +2230,23 @@
     7
     {:owner nil,
      :kind :signal,
-     :state 5,
+     :state 4,
      :version 0,
      :open false,
      :handles 1},
     8
     {:owner nil,
      :kind :mailbox,
-     :state 6,
+     :state 5,
      :version 0,
      :open false,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [3 4], :result [:ok 7], :handles 1},
-    15
-    {:owner 2, :run 16, :inputs [14 15 16], :result nil, :handles 1},
-    19 {:owner 18, :run 20, :inputs [14], :result nil, :handles 1},
-    22 {:owner 2, :run 23, :inputs [14], :result nil, :handles 1},
+   {4 {:owner 2, :run nil, :inputs [], :result [:ok 8], :handles 1},
+    15 {:owner 2, :run 16, :inputs [15], :result nil, :handles 1},
+    19 {:owner 18, :run 20, :inputs [15], :result nil, :handles 1},
+    22 {:owner 2, :run 23, :inputs [15], :result nil, :handles 1},
     25 {:owner 18, :run 26, :inputs [], :result nil, :handles 1}},
    :comps
    {10
@@ -2434,8 +2258,8 @@
      :rank 0,
      :basis [],
      :adoption nil,
-     :inputs [8],
-     :result [:ok 12],
+     :inputs [6],
+     :result [:ok 4],
      :handles 1,
      :version 1,
      :body 9,
@@ -2496,21 +2320,21 @@
      :members [[29 0]],
      :slots [nil],
      :remaining 1,
-     :cont 20},
+     :cont 19},
     30
     {:run 20,
      :mode :one,
      :members [[31 0]],
      :slots [nil],
      :remaining 1,
-     :cont 21},
+     :cont 20},
     32
     {:run 23,
      :mode :one,
      :members [[33 0]],
      :slots [nil],
      :remaining 1,
-     :cont 21}},
+     :cont 20}},
    :edges
    {11
     {:baseline nil,
@@ -2522,16 +2346,6 @@
      :kind :observe,
      :at 0,
      :debtor 10},
-    14
-    {:baseline [5 0],
-     :marked false,
-     :cont 11,
-     :phase :armed,
-     :creditor 10,
-     :seen 0,
-     :kind :dep,
-     :at 0,
-     :debtor 7},
     29
     {:baseline nil,
      :marked false,
@@ -2563,7 +2377,7 @@
      :at 0,
      :debtor 3}},
    :cleanup {}}}
- {:item [:complete 26 1 22],
+ {:item [:complete 26 1 21],
   :accepted true,
   :proj
   {:scopes
@@ -2586,26 +2400,25 @@
     7
     {:owner nil,
      :kind :signal,
-     :state 5,
+     :state 4,
      :version 0,
      :open false,
      :handles 1},
     8
     {:owner nil,
      :kind :mailbox,
-     :state 6,
+     :state 5,
      :version 0,
      :open false,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [3 4], :result [:ok 7], :handles 1},
-    15
-    {:owner 2, :run 16, :inputs [14 15 16], :result nil, :handles 1},
-    19 {:owner 18, :run 20, :inputs [14], :result nil, :handles 1},
-    22 {:owner 2, :run 23, :inputs [14], :result nil, :handles 1},
+   {4 {:owner 2, :run nil, :inputs [], :result [:ok 8], :handles 1},
+    15 {:owner 2, :run 16, :inputs [15], :result nil, :handles 1},
+    19 {:owner 18, :run 20, :inputs [15], :result nil, :handles 1},
+    22 {:owner 2, :run 23, :inputs [15], :result nil, :handles 1},
     25
-    {:owner 18, :run nil, :inputs [], :result [:ok 22], :handles 1}},
+    {:owner 18, :run nil, :inputs [], :result [:ok 21], :handles 1}},
    :comps
    {10
     {:epoch 1,
@@ -2616,8 +2429,8 @@
      :rank 0,
      :basis [],
      :adoption nil,
-     :inputs [8],
-     :result [:ok 12],
+     :inputs [6],
+     :result [:ok 4],
      :handles 1,
      :version 1,
      :body 9,
@@ -2667,14 +2480,14 @@
      :members [[31 0]],
      :slots [nil],
      :remaining 1,
-     :cont 21},
+     :cont 20},
     32
     {:run 23,
      :mode :one,
      :members [[33 0]],
      :slots [nil],
      :remaining 1,
-     :cont 21}},
+     :cont 20}},
    :edges
    {11
     {:baseline nil,
@@ -2686,16 +2499,6 @@
      :kind :observe,
      :at 0,
      :debtor 10},
-    14
-    {:baseline [5 0],
-     :marked false,
-     :cont 11,
-     :phase :armed,
-     :creditor 10,
-     :seen 0,
-     :kind :dep,
-     :at 0,
-     :debtor 7},
     31
     {:baseline nil,
      :marked false,
@@ -2740,26 +2543,25 @@
     7
     {:owner nil,
      :kind :signal,
-     :state 5,
+     :state 4,
      :version 0,
      :open false,
      :handles 1},
     8
     {:owner nil,
      :kind :mailbox,
-     :state 6,
+     :state 5,
      :version 0,
      :open false,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [3 4], :result [:ok 7], :handles 1},
-    15
-    {:owner 2, :run 16, :inputs [14 15 16], :result nil, :handles 1},
-    19 {:owner 18, :run 20, :inputs [14], :result nil, :handles 1},
-    22 {:owner 2, :run 23, :inputs [14], :result nil, :handles 1},
+   {4 {:owner 2, :run nil, :inputs [], :result [:ok 8], :handles 1},
+    15 {:owner 2, :run 16, :inputs [15], :result nil, :handles 1},
+    19 {:owner 18, :run 20, :inputs [15], :result nil, :handles 1},
+    22 {:owner 2, :run 23, :inputs [15], :result nil, :handles 1},
     25
-    {:owner 18, :run nil, :inputs [], :result [:ok 22], :handles 1}},
+    {:owner 18, :run nil, :inputs [], :result [:ok 21], :handles 1}},
    :comps
    {10
     {:epoch 1,
@@ -2770,8 +2572,8 @@
      :rank 0,
      :basis [],
      :adoption nil,
-     :inputs [8],
-     :result [:ok 12],
+     :inputs [6],
+     :result [:ok 4],
      :handles 1,
      :version 1,
      :body 9,
@@ -2821,14 +2623,14 @@
      :members [[31 0]],
      :slots [nil],
      :remaining 1,
-     :cont 21},
+     :cont 20},
     32
     {:run 23,
      :mode :one,
      :members [[33 0]],
      :slots [nil],
      :remaining 1,
-     :cont 21}},
+     :cont 20}},
    :edges
    {11
     {:baseline nil,
@@ -2840,16 +2642,6 @@
      :kind :observe,
      :at 0,
      :debtor 10},
-    14
-    {:baseline [5 0],
-     :marked false,
-     :cont 11,
-     :phase :armed,
-     :creditor 10,
-     :seen 0,
-     :kind :dep,
-     :at 0,
-     :debtor 7},
     31
     {:baseline nil,
      :marked false,
@@ -2894,26 +2686,25 @@
     7
     {:owner nil,
      :kind :signal,
-     :state 5,
+     :state 4,
      :version 0,
      :open false,
      :handles 1},
     8
     {:owner nil,
      :kind :mailbox,
-     :state 6,
+     :state 5,
      :version 0,
      :open false,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [3 4], :result [:ok 7], :handles 1},
-    15
-    {:owner 2, :run 16, :inputs [14 15 16], :result nil, :handles 1},
-    19 {:owner 18, :run 20, :inputs [14], :result nil, :handles 1},
-    22 {:owner 2, :run 23, :inputs [14], :result nil, :handles 1},
+   {4 {:owner 2, :run nil, :inputs [], :result [:ok 8], :handles 1},
+    15 {:owner 2, :run 16, :inputs [15], :result nil, :handles 1},
+    19 {:owner 18, :run 20, :inputs [15], :result nil, :handles 1},
+    22 {:owner 2, :run 23, :inputs [15], :result nil, :handles 1},
     25
-    {:owner 18, :run nil, :inputs [], :result [:ok 22], :handles 1}},
+    {:owner 18, :run nil, :inputs [], :result [:ok 21], :handles 1}},
    :comps
    {10
     {:epoch 1,
@@ -2924,8 +2715,8 @@
      :rank 0,
      :basis [],
      :adoption nil,
-     :inputs [8],
-     :result [:ok 12],
+     :inputs [6],
+     :result [:ok 4],
      :handles 1,
      :version 1,
      :body 9,
@@ -2975,14 +2766,14 @@
      :members [[31 0]],
      :slots [nil],
      :remaining 1,
-     :cont 21},
+     :cont 20},
     32
     {:run 23,
      :mode :one,
      :members [[33 0]],
      :slots [nil],
      :remaining 1,
-     :cont 21}},
+     :cont 20}},
    :edges
    {11
     {:baseline nil,
@@ -2994,16 +2785,6 @@
      :kind :observe,
      :at 0,
      :debtor 10},
-    14
-    {:baseline [5 0],
-     :marked false,
-     :cont 11,
-     :phase :armed,
-     :creditor 10,
-     :seen 0,
-     :kind :dep,
-     :at 0,
-     :debtor 7},
     31
     {:baseline nil,
      :marked false,
@@ -3046,27 +2827,26 @@
     7
     {:owner nil,
      :kind :signal,
-     :state 5,
+     :state 4,
      :version 0,
      :open false,
      :handles 1},
     8
     {:owner nil,
      :kind :mailbox,
-     :state 6,
+     :state 5,
      :version 0,
      :open false,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [3 4], :result [:ok 7], :handles 1},
-    15
-    {:owner 2, :run 16, :inputs [14 15 16], :result nil, :handles 1},
+   {4 {:owner 2, :run nil, :inputs [], :result [:ok 8], :handles 1},
+    15 {:owner 2, :run 16, :inputs [15], :result nil, :handles 1},
     19
-    {:owner nil, :run nil, :inputs [14], :result [:err 1], :handles 1},
-    22 {:owner 2, :run 23, :inputs [14], :result nil, :handles 1},
+    {:owner nil, :run nil, :inputs [15], :result [:err 1], :handles 1},
+    22 {:owner 2, :run 23, :inputs [15], :result nil, :handles 1},
     25
-    {:owner nil, :run nil, :inputs [], :result [:ok 22], :handles 1}},
+    {:owner nil, :run nil, :inputs [], :result [:ok 21], :handles 1}},
    :comps
    {10
     {:epoch 1,
@@ -3077,8 +2857,8 @@
      :rank 0,
      :basis [],
      :adoption nil,
-     :inputs [8],
-     :result [:ok 12],
+     :inputs [6],
+     :result [:ok 4],
      :handles 1,
      :version 1,
      :body 9,
@@ -3117,7 +2897,7 @@
      :members [[33 0]],
      :slots [nil],
      :remaining 1,
-     :cont 21}},
+     :cont 20}},
    :edges
    {11
     {:baseline nil,
@@ -3129,16 +2909,6 @@
      :kind :observe,
      :at 0,
      :debtor 10},
-    14
-    {:baseline [5 0],
-     :marked false,
-     :cont 11,
-     :phase :armed,
-     :creditor 10,
-     :seen 0,
-     :kind :dep,
-     :at 0,
-     :debtor 7},
     33
     {:baseline nil,
      :marked false,
@@ -3150,7 +2920,121 @@
      :at 0,
      :debtor 3}},
    :cleanup {}}}
- {:item [:complete 16 1 23],
+ {:item [:finally-leave 16],
+  :accepted true,
+  :proj
+  {:scopes
+   {17 {:parent 2, :kind :run, :open true},
+    24 {:parent 2, :kind :run, :open true},
+    2 {:parent nil, :kind :root, :open true}},
+   :pubs {},
+   :pins {},
+   :next-id 34,
+   :sources
+   {3
+    {:owner 2,
+     :kind :deferred,
+     :state 0,
+     :version 0,
+     :open true,
+     :handles 1},
+    7
+    {:owner nil,
+     :kind :signal,
+     :state 4,
+     :version 0,
+     :open false,
+     :handles 1},
+    8
+    {:owner nil,
+     :kind :mailbox,
+     :state 5,
+     :version 0,
+     :open false,
+     :handles 1}},
+   :pending-act nil,
+   :tasks
+   {4 {:owner 2, :run nil, :inputs [], :result [:ok 8], :handles 1},
+    15 {:owner 2, :run 16, :inputs [15], :result nil, :handles 1},
+    19
+    {:owner nil, :run nil, :inputs [15], :result [:err 1], :handles 1},
+    22 {:owner 2, :run 23, :inputs [15], :result nil, :handles 1},
+    25
+    {:owner nil, :run nil, :inputs [], :result [:ok 21], :handles 1}},
+   :comps
+   {10
+    {:epoch 1,
+     :done-epoch 1,
+     :idle false,
+     :run nil,
+     :pending 0,
+     :rank 0,
+     :basis [],
+     :adoption nil,
+     :inputs [6],
+     :result [:ok 4],
+     :handles 1,
+     :version 1,
+     :body 9,
+     :owner 2,
+     :validity nil}},
+   :released false,
+   :forks {},
+   :res {},
+   :runs
+   {16
+    {:effect-index 4,
+     :epoch 0,
+     :stamp 16,
+     :mode :normal,
+     :scope 17,
+     :act :active,
+     :finalizers [],
+     :slice true,
+     :resources [],
+     :of 15},
+    23
+    {:effect-index 1,
+     :epoch 0,
+     :stamp 23,
+     :mode :normal,
+     :scope 24,
+     :act :parked,
+     :finalizers [],
+     :slice false,
+     :resources [],
+     :of 22}},
+   :acts
+   {32
+    {:run 23,
+     :mode :one,
+     :members [[33 0]],
+     :slots [nil],
+     :remaining 1,
+     :cont 20}},
+   :edges
+   {11
+    {:baseline nil,
+     :marked false,
+     :cont :restart,
+     :phase :armed,
+     :creditor 0,
+     :seen 1,
+     :kind :observe,
+     :at 0,
+     :debtor 10},
+    33
+    {:baseline nil,
+     :marked false,
+     :cont :restart,
+     :phase :armed,
+     :creditor 32,
+     :seen nil,
+     :kind :wait,
+     :at 0,
+     :debtor 3}},
+   :cleanup {}}}
+ {:item [:complete 16 1 22],
   :accepted true,
   :proj
   {:scopes
@@ -3170,31 +3054,27 @@
     7
     {:owner nil,
      :kind :signal,
-     :state 5,
+     :state 4,
      :version 0,
      :open false,
      :handles 1},
     8
     {:owner nil,
      :kind :mailbox,
-     :state 6,
+     :state 5,
      :version 0,
      :open false,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [3 4], :result [:ok 7], :handles 1},
+   {4 {:owner 2, :run nil, :inputs [], :result [:ok 8], :handles 1},
     15
-    {:owner 2,
-     :run nil,
-     :inputs [14 15 16],
-     :result [:ok 23],
-     :handles 1},
+    {:owner 2, :run nil, :inputs [15], :result [:ok 22], :handles 1},
     19
-    {:owner nil, :run nil, :inputs [14], :result [:err 1], :handles 1},
-    22 {:owner 2, :run 23, :inputs [14], :result nil, :handles 1},
+    {:owner nil, :run nil, :inputs [15], :result [:err 1], :handles 1},
+    22 {:owner 2, :run 23, :inputs [15], :result nil, :handles 1},
     25
-    {:owner nil, :run nil, :inputs [], :result [:ok 22], :handles 1}},
+    {:owner nil, :run nil, :inputs [], :result [:ok 21], :handles 1}},
    :comps
    {10
     {:epoch 1,
@@ -3205,8 +3085,8 @@
      :rank 0,
      :basis [],
      :adoption nil,
-     :inputs [8],
-     :result [:ok 12],
+     :inputs [6],
+     :result [:ok 4],
      :handles 1,
      :version 1,
      :body 9,
@@ -3234,7 +3114,7 @@
      :members [[33 0]],
      :slots [nil],
      :remaining 1,
-     :cont 21}},
+     :cont 20}},
    :edges
    {11
     {:baseline nil,
@@ -3246,16 +3126,6 @@
      :kind :observe,
      :at 0,
      :debtor 10},
-    14
-    {:baseline [5 0],
-     :marked false,
-     :cont 11,
-     :phase :armed,
-     :creditor 10,
-     :seen 0,
-     :kind :dep,
-     :at 0,
-     :debtor 7},
     33
     {:baseline nil,
      :marked false,
@@ -3287,31 +3157,27 @@
     7
     {:owner nil,
      :kind :signal,
-     :state 5,
+     :state 4,
      :version 0,
      :open false,
      :handles 1},
     8
     {:owner nil,
      :kind :mailbox,
-     :state 6,
+     :state 5,
      :version 0,
      :open false,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [3 4], :result [:ok 7], :handles 1},
+   {4 {:owner 2, :run nil, :inputs [], :result [:ok 8], :handles 1},
     15
-    {:owner 2,
-     :run nil,
-     :inputs [14 15 16],
-     :result [:ok 23],
-     :handles 1},
+    {:owner 2, :run nil, :inputs [15], :result [:ok 22], :handles 1},
     19
-    {:owner nil, :run nil, :inputs [14], :result [:err 1], :handles 1},
-    22 {:owner 2, :run 23, :inputs [14], :result nil, :handles 1},
+    {:owner nil, :run nil, :inputs [15], :result [:err 1], :handles 1},
+    22 {:owner 2, :run 23, :inputs [15], :result nil, :handles 1},
     25
-    {:owner nil, :run nil, :inputs [], :result [:ok 22], :handles 1}},
+    {:owner nil, :run nil, :inputs [], :result [:ok 21], :handles 1}},
    :comps
    {10
     {:epoch 1,
@@ -3322,8 +3188,8 @@
      :rank 0,
      :basis [],
      :adoption nil,
-     :inputs [8],
-     :result [:ok 12],
+     :inputs [6],
+     :result [:ok 4],
      :handles 1,
      :version 1,
      :body 9,
@@ -3351,7 +3217,7 @@
      :members [[33 0]],
      :slots [nil],
      :remaining 1,
-     :cont 21}},
+     :cont 20}},
    :edges
    {11
     {:baseline nil,
@@ -3363,16 +3229,6 @@
      :kind :observe,
      :at 0,
      :debtor 10},
-    14
-    {:baseline [5 0],
-     :marked false,
-     :cont 11,
-     :phase :armed,
-     :creditor 10,
-     :seen 0,
-     :kind :dep,
-     :at 0,
-     :debtor 7},
     33
     {:baseline nil,
      :marked false,
@@ -3384,7 +3240,7 @@
      :at 0,
      :debtor 3}},
    :cleanup {}}}
- {:item [:deliver 3 24],
+ {:item [:deliver 3 23],
   :accepted true,
   :proj
   {:scopes
@@ -3397,38 +3253,34 @@
    {3
     {:owner 2,
      :kind :deferred,
-     :state 24,
+     :state 23,
      :version 1,
      :open true,
      :handles 1},
     7
     {:owner nil,
      :kind :signal,
-     :state 5,
+     :state 4,
      :version 0,
      :open false,
      :handles 1},
     8
     {:owner nil,
      :kind :mailbox,
-     :state 6,
+     :state 5,
      :version 0,
      :open false,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [3 4], :result [:ok 7], :handles 1},
+   {4 {:owner 2, :run nil, :inputs [], :result [:ok 8], :handles 1},
     15
-    {:owner 2,
-     :run nil,
-     :inputs [14 15 16],
-     :result [:ok 23],
-     :handles 1},
+    {:owner 2, :run nil, :inputs [15], :result [:ok 22], :handles 1},
     19
-    {:owner nil, :run nil, :inputs [14], :result [:err 1], :handles 1},
-    22 {:owner 2, :run 23, :inputs [14], :result nil, :handles 1},
+    {:owner nil, :run nil, :inputs [15], :result [:err 1], :handles 1},
+    22 {:owner 2, :run 23, :inputs [15], :result nil, :handles 1},
     25
-    {:owner nil, :run nil, :inputs [], :result [:ok 22], :handles 1}},
+    {:owner nil, :run nil, :inputs [], :result [:ok 21], :handles 1}},
    :comps
    {10
     {:epoch 1,
@@ -3439,8 +3291,8 @@
      :rank 0,
      :basis [],
      :adoption nil,
-     :inputs [8],
-     :result [:ok 12],
+     :inputs [6],
+     :result [:ok 4],
      :handles 1,
      :version 1,
      :body 9,
@@ -3472,17 +3324,7 @@
      :seen 1,
      :kind :observe,
      :at 0,
-     :debtor 10},
-    14
-    {:baseline [5 0],
-     :marked false,
-     :cont 11,
-     :phase :armed,
-     :creditor 10,
-     :seen 0,
-     :kind :dep,
-     :at 0,
-     :debtor 7}},
+     :debtor 10}},
    :cleanup {}}}
  {:item [:schedule 23],
   :accepted true,
@@ -3497,38 +3339,34 @@
    {3
     {:owner 2,
      :kind :deferred,
-     :state 24,
+     :state 23,
      :version 1,
      :open true,
      :handles 1},
     7
     {:owner nil,
      :kind :signal,
-     :state 5,
+     :state 4,
      :version 0,
      :open false,
      :handles 1},
     8
     {:owner nil,
      :kind :mailbox,
-     :state 6,
+     :state 5,
      :version 0,
      :open false,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [3 4], :result [:ok 7], :handles 1},
+   {4 {:owner 2, :run nil, :inputs [], :result [:ok 8], :handles 1},
     15
-    {:owner 2,
-     :run nil,
-     :inputs [14 15 16],
-     :result [:ok 23],
-     :handles 1},
+    {:owner 2, :run nil, :inputs [15], :result [:ok 22], :handles 1},
     19
-    {:owner nil, :run nil, :inputs [14], :result [:err 1], :handles 1},
-    22 {:owner 2, :run 23, :inputs [14], :result nil, :handles 1},
+    {:owner nil, :run nil, :inputs [15], :result [:err 1], :handles 1},
+    22 {:owner 2, :run 23, :inputs [15], :result nil, :handles 1},
     25
-    {:owner nil, :run nil, :inputs [], :result [:ok 22], :handles 1}},
+    {:owner nil, :run nil, :inputs [], :result [:ok 21], :handles 1}},
    :comps
    {10
     {:epoch 1,
@@ -3539,8 +3377,8 @@
      :rank 0,
      :basis [],
      :adoption nil,
-     :inputs [8],
-     :result [:ok 12],
+     :inputs [6],
+     :result [:ok 4],
      :handles 1,
      :version 1,
      :body 9,
@@ -3572,19 +3410,9 @@
      :seen 1,
      :kind :observe,
      :at 0,
-     :debtor 10},
-    14
-    {:baseline [5 0],
-     :marked false,
-     :cont 11,
-     :phase :armed,
-     :creditor 10,
-     :seen 0,
-     :kind :dep,
-     :at 0,
-     :debtor 7}},
+     :debtor 10}},
    :cleanup {}}}
- {:item [:complete 23 1 24],
+ {:item [:complete 23 1 23],
   :accepted true,
   :proj
   {:scopes {2 {:parent nil, :kind :root, :open true}},
@@ -3595,39 +3423,35 @@
    {3
     {:owner 2,
      :kind :deferred,
-     :state 24,
+     :state 23,
      :version 1,
      :open true,
      :handles 1},
     7
     {:owner nil,
      :kind :signal,
-     :state 5,
+     :state 4,
      :version 0,
      :open false,
      :handles 1},
     8
     {:owner nil,
      :kind :mailbox,
-     :state 6,
+     :state 5,
      :version 0,
      :open false,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [3 4], :result [:ok 7], :handles 1},
+   {4 {:owner 2, :run nil, :inputs [], :result [:ok 8], :handles 1},
     15
-    {:owner 2,
-     :run nil,
-     :inputs [14 15 16],
-     :result [:ok 23],
-     :handles 1},
+    {:owner 2, :run nil, :inputs [15], :result [:ok 22], :handles 1},
     19
-    {:owner nil, :run nil, :inputs [14], :result [:err 1], :handles 1},
+    {:owner nil, :run nil, :inputs [15], :result [:err 1], :handles 1},
     22
-    {:owner 2, :run nil, :inputs [14], :result [:ok 24], :handles 1},
+    {:owner 2, :run nil, :inputs [15], :result [:ok 23], :handles 1},
     25
-    {:owner nil, :run nil, :inputs [], :result [:ok 22], :handles 1}},
+    {:owner nil, :run nil, :inputs [], :result [:ok 21], :handles 1}},
    :comps
    {10
     {:epoch 1,
@@ -3638,8 +3462,8 @@
      :rank 0,
      :basis [],
      :adoption nil,
-     :inputs [8],
-     :result [:ok 12],
+     :inputs [6],
+     :result [:ok 4],
      :handles 1,
      :version 1,
      :body 9,
@@ -3660,17 +3484,7 @@
      :seen 1,
      :kind :observe,
      :at 0,
-     :debtor 10},
-    14
-    {:baseline [5 0],
-     :marked false,
-     :cont 11,
-     :phase :armed,
-     :creditor 10,
-     :seen 0,
-     :kind :dep,
-     :at 0,
-     :debtor 7}},
+     :debtor 10}},
    :cleanup {}}}
  {:item [:host-await 22 35],
   :accepted true,
@@ -3683,39 +3497,35 @@
    {3
     {:owner 2,
      :kind :deferred,
-     :state 24,
+     :state 23,
      :version 1,
      :open true,
      :handles 1},
     7
     {:owner nil,
      :kind :signal,
-     :state 5,
+     :state 4,
      :version 0,
      :open false,
      :handles 1},
     8
     {:owner nil,
      :kind :mailbox,
-     :state 6,
+     :state 5,
      :version 0,
      :open false,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [3 4], :result [:ok 7], :handles 1},
+   {4 {:owner 2, :run nil, :inputs [], :result [:ok 8], :handles 1},
     15
-    {:owner 2,
-     :run nil,
-     :inputs [14 15 16],
-     :result [:ok 23],
-     :handles 1},
+    {:owner 2, :run nil, :inputs [15], :result [:ok 22], :handles 1},
     19
-    {:owner nil, :run nil, :inputs [14], :result [:err 1], :handles 1},
+    {:owner nil, :run nil, :inputs [15], :result [:err 1], :handles 1},
     22
-    {:owner 2, :run nil, :inputs [14], :result [:ok 24], :handles 1},
+    {:owner 2, :run nil, :inputs [15], :result [:ok 23], :handles 1},
     25
-    {:owner nil, :run nil, :inputs [], :result [:ok 22], :handles 1}},
+    {:owner nil, :run nil, :inputs [], :result [:ok 21], :handles 1}},
    :comps
    {10
     {:epoch 1,
@@ -3726,8 +3536,8 @@
      :rank 0,
      :basis [],
      :adoption nil,
-     :inputs [8],
-     :result [:ok 12],
+     :inputs [6],
+     :result [:ok 4],
      :handles 1,
      :version 1,
      :body 9,
@@ -3748,17 +3558,7 @@
      :seen 1,
      :kind :observe,
      :at 0,
-     :debtor 10},
-    14
-    {:baseline [5 0],
-     :marked false,
-     :cont 11,
-     :phase :armed,
-     :creditor 10,
-     :seen 0,
-     :kind :dep,
-     :at 0,
-     :debtor 7}},
+     :debtor 10}},
    :cleanup {}}}
  {:item [:unobserve 11],
   :accepted true,
@@ -3771,39 +3571,35 @@
    {3
     {:owner 2,
      :kind :deferred,
-     :state 24,
+     :state 23,
      :version 1,
      :open true,
      :handles 1},
     7
     {:owner nil,
      :kind :signal,
-     :state 5,
+     :state 4,
      :version 0,
      :open false,
      :handles 1},
     8
     {:owner nil,
      :kind :mailbox,
-     :state 6,
+     :state 5,
      :version 0,
      :open false,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [3 4], :result [:ok 7], :handles 1},
+   {4 {:owner 2, :run nil, :inputs [], :result [:ok 8], :handles 1},
     15
-    {:owner 2,
-     :run nil,
-     :inputs [14 15 16],
-     :result [:ok 23],
-     :handles 1},
+    {:owner 2, :run nil, :inputs [15], :result [:ok 22], :handles 1},
     19
-    {:owner nil, :run nil, :inputs [14], :result [:err 1], :handles 1},
+    {:owner nil, :run nil, :inputs [15], :result [:err 1], :handles 1},
     22
-    {:owner 2, :run nil, :inputs [14], :result [:ok 24], :handles 1},
+    {:owner 2, :run nil, :inputs [15], :result [:ok 23], :handles 1},
     25
-    {:owner nil, :run nil, :inputs [], :result [:ok 22], :handles 1}},
+    {:owner nil, :run nil, :inputs [], :result [:ok 21], :handles 1}},
    :comps
    {10
     {:epoch 1,
@@ -3814,13 +3610,13 @@
      :rank 0,
      :basis [],
      :adoption nil,
-     :inputs [8],
-     :result [:ok 12],
+     :inputs [6],
+     :result [:ok 4],
      :handles 1,
      :version 1,
      :body 9,
      :owner 2,
-     :validity [[7 0]]}},
+     :validity []}},
    :released false,
    :forks {},
    :res {},
