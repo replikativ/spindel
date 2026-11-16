@@ -104,3 +104,36 @@
       (v2/release-world! w)
       (is (true? (v2/await-complete w 2000 ::timeout)))
       (is (realized? hook-done) "the hook had returned before the world completed"))))
+
+;; ---------------------------------------------------------------------------
+;; Code review findings (c1-review-sol.md)
+
+(deftest a-fired-op-is-still-cancelled
+  ;; finding 3: the op resolved during its start, which waits for its stop
+  ;; hook; cancellation (here: release) must still run the hook
+  (in-world [w]
+    (let [stop (promise) hooks (atom 0)
+          t (task (await-op (fn [res _]
+                              (v2/on-cancel! (fn [] (swap! hooks inc) (deliver stop true)))
+                              (res :early)
+                              (deref stop 5000 nil))))]
+      (is (= :early (v2/value t 2000 ::timeout)))
+      (v2/release-world! w)
+      (is (true? (v2/await-complete w 2000 ::timeout)))
+      (is (= 1 @hooks)))))
+
+(deftest after-gate-actions-wait-for-an-enclosing-gate
+  ;; finding 6: an op started from a nested entry (world b inside world a's
+  ;; item) must not run while a's gate is held
+  (let [inline (reify java.util.concurrent.Executor (execute [_ r] (.run ^Runnable r)))
+        a (v2/world) b (v2/world {:executor inline})
+        under-a (promise)]
+    (v2/host-call! a (fn []
+                       (v2/host! b (fn [] (binding [v2/*world* b]
+                                            (task (await-op (fn [res _]
+                                                              (deliver under-a (.isHeldByCurrentThread
+                                                                                ^java.util.concurrent.locks.ReentrantLock
+                                                                                (aget ^objects a 2)))
+                                                              (res :ok)))))))
+                       nil))
+    (is (false? (deref under-a 2000 ::timeout)))))

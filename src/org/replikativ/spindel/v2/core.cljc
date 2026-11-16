@@ -204,6 +204,7 @@
      (s! w rw/W-META-CLOSED false)
      (s! w rw/W-RUNS 0)
      (s! w rw/W-KIDS (hs/kids))
+     (s! w rw/W-KID-TOKEN (hs/kid-cell))
      (s! w rw/W-COMPLETE false)
      (s! w rw/W-COMPLETE-SUBS (alist))
      (s! w rw/W-OUTSTANDING (hs/oset))
@@ -1251,6 +1252,10 @@
    issue a replace, always on a computation run, which has no debtor side, so
    it is the same operation; on a task run a replace is an ordinary cancel."
   [w r reason]
+  ;; C1: a run that completed but still holds an unfinished await-op (its
+  ;; result delivered, its start still running) gets that op cancelled
+  (when (and (== rw/ACT-DONE (gl r rw/R-ACT)) (g r rw/R-RES))
+    (doseq [z (vec (g r rw/R-RES))] (cancel-resource! w (rv w z))))
   (when-not (== rw/ACT-DONE (gl r rw/R-ACT))
     (s! r rw/R-ACT rw/ACT-DONE)
     (s! r rw/R-MODE 1)
@@ -1640,6 +1645,16 @@
       (ex-info "a finally clause may not suspend (finalizers are synchronous)"
                {:spindel/invalid :finalizer}))))
 
+(defn- unwinding-finalizer-refusal
+  "In a finally clause of a cancelled run, every effect is refused
+   explicitly (even one that would not suspend): the run cannot take
+   effects any more, and silently dropping the continuation would skip the
+   rest of the cleanup."
+  []
+  (when-let [r (active-run)]
+    (when (and (pos? (long (or (g r rw/R-INFIN) 0))) (== rw/ACT-DONE (gl r rw/R-ACT)))
+      (finalizer-refusal))))
+
 (defn- invalid-op [op msg] (ex-info msg {:spindel/invalid op}))
 
 (defn track-effect!
@@ -1885,7 +1900,7 @@
 (defn await-effect!
   "T6 with mode `one`; on a mailbox it is `take` (Z#54)."
   [d k ek]
-  (if-let [refusal (when-not (settled-now? (row-of d)) (finalizer-refusal))] (ek refusal)
+  (if-let [refusal (or (unwinding-finalizer-refusal) (when-not (settled-now? (row-of d)) (finalizer-refusal)))] (ek refusal)
   (cond
     (stream? d) (ek (stream-ex))
     (consuming? d)
@@ -1896,10 +1911,11 @@
 
 (defn- group-effect! [ds mode k ek]
   (let [ds (vec ds)]
-   (if-let [refusal (when-not (if (= mode :any)
+   (if-let [refusal (or (unwinding-finalizer-refusal)
+                        (when-not (if (= mode :any)
                                 (some #(settled-now? (row-of %)) ds)
                                 (every? #(settled-now? (row-of %)) ds))
-                      (finalizer-refusal))]
+                          (finalizer-refusal)))]
     (ek refusal)
     (cond
       (some #(consuming? (row-of %)) ds)
@@ -2550,6 +2566,8 @@
     (when (pos? (acount l))
       (let [cs (acopy l)] (aclear! l) cs))))
 
+(declare holding-gate?)
+
 (defn- run-after!
   "After the gate is released: schedule the released children's drains, and
    run the after-gate actions (C1: completion callbacks, child acks), each
@@ -2558,12 +2576,16 @@
   (when cs
     (dotimes [i (acount cs)]
       (let [x (anth cs i)]
-        (if (fn? x)
+        (cond
+          ;; still under an enclosing world's gate (a nested entry): the
+          ;; action waits for that gate to be left too
+          (and (fn? x) (holding-gate?)) (aadd! (g (cw) rw/W-AFTER) x)
+          (fn? x)
           (try (x)
                (catch #?(:clj Throwable :cljs :default) t
                  #?(:clj (binding [*out* *err*] (println "after-gate action failed:" t))
                     :cljs (js/console.error "after-gate action failed:" t))))
-          (handoff! x))))))
+          :else (handoff! x))))))
 
 (defn- process!
   "H2: try the gate; the winner runs a bounded turn, then hands off. The
@@ -2784,7 +2806,7 @@
   "`take!` (mailbox) or `acquire!` (semaphore): a consuming operation, always
    a wait edge, never a dependency (§4.3). Waiters are served FIFO."
   [x k ek]
-  (if-let [refusal (when-not (let [x (row-of x)] (or (available? x) (closed? x))) (finalizer-refusal))] (ek refusal)
+  (if-let [refusal (or (unwinding-finalizer-refusal) (when-not (let [x (row-of x)] (or (available? x) (closed? x))) (finalizer-refusal)))] (ek refusal)
   (if-let [r (valid-run)]
     (let [w (cw)
           at (next-at! r)
@@ -3719,8 +3741,13 @@
 (defn- cancel-resource!
   "T14: an armed resource is told to cancel. One that provably never started
    (or whose timer was unscheduled) joins at once; a running offload is
-   interrupted and joins when its function returns."
+   interrupted and joins when its function returns. An await-op that
+   delivered its result but has not finished is cancelled too (C1): its
+   hooks run, and a detached one joins at once."
   [w z]
+  (when (and (== rw/Z-FIRED (gl z rw/Z-PHASE)) (= :op (g z rw/Z-KIND)))
+    (when-let [c (:op (g z rw/Z-CTL))]
+      (when (op-cancel! c) (aadd! (g w rw/W-CLEANUP) [z]))))
   (when (== rw/Z-ARMED (gl z rw/Z-PHASE))
     (s! z rw/Z-PHASE rw/Z-CANCELLING)
     (hs/oset-del! (armed-set w) (id-of z))
@@ -3864,7 +3891,12 @@
                              (aset c 6 true)
                              (let [wz [(aget c 8) (aget c 9)]] (aset c 8 nil) (aset c 9 nil) wz)))]
     (when-let [[w z] wz]
-      (when w (internal! w #(resource-ack! w (rv w z)))))))
+      ;; the result's fire may still be queued: fire it here if not (the
+      ;; fire item then finds the resource fired), so the ack never precedes it
+      (when w (internal! w #(let [z (rv w z)
+                                  res (rw/locking-row c (when-not (aget c 1) (aget c 2)))]
+                              (when (and res (== rw/Z-ARMED (gl z rw/Z-PHASE))) (resource-fire! w z res))
+                              (resource-ack! w z)))))))
 
 (defn- op-run-hook! [^objects c f]
   (try (f) (catch #?(:clj Throwable :cljs :default) t
@@ -3978,13 +4010,16 @@
   [w]
   (when-not (g w rw/W-COMPLETE)
     (s! w rw/W-COMPLETE true)
+    ;; the owner first: a subscriber may wait for the owner's completion
+    (let [kc (g w rw/W-KID-TOKEN)]
+      (hs/kid-completed! kc)
+      (when-let [t (hs/kid-token kc)]
+        (aadd! (g w rw/W-AFTER) #(kid-done! t))))
     (let [subs (g w rw/W-COMPLETE-SUBS)]
       (s! w rw/W-COMPLETE-SUBS (alist))
       (dotimes [i (acount subs)]
         (let [[live cb] (anth subs i)]
-          (when (hs/flag? live) (aadd! (g w rw/W-AFTER) #(when (hs/flag-cas! live true false) (cb)))))))
-    (when-let [t (g w rw/W-KID-TOKEN)]
-      (aadd! (g w rw/W-AFTER) #(kid-done! t)))))
+          (when (hs/flag? live) (aadd! (g w rw/W-AFTER) #(when (hs/flag-cas! live true false) (cb)))))))))
 
 (defn- maybe-complete!
   "W1: complete once released, with no unretired run and no owned child
@@ -3999,9 +4034,14 @@
    its collection, when held weakly). A complete owner takes none."
   [w child strong?]
   (when-not (g w rw/W-COMPLETE)
-    (let [t (object-array [(hs/weak w) (hs/flag false)])]
+    (let [t (object-array [(hs/weak w) (hs/flag false)])
+          kc (g child rw/W-KID-TOKEN)]
       (hs/kids-add! (g w rw/W-KIDS) 1)
-      (s! child rw/W-KID-TOKEN t)
+      (hs/kid-token! kc t)
+      ;; a child that completed before this acceptance acknowledges now
+      ;; (the completion reads the token after setting its flag: one of the
+      ;; two sides sees the other; kid-done! is exactly once)
+      (when (hs/kid-completed? kc) (kid-done! t))
       (when-not strong?
         ;; a weakly held child may be collected without completing (F2): that
         ;; ends the obligation too; the action holds the token, not the child
@@ -4263,7 +4303,7 @@
                                               (hs/oset-vals (g w rw/W-OUTSTANDING)))
                                       (g w rw/W-DISCHARGE))))
     (s! c rw/W-KIDS (hs/kids))
-    (s! c rw/W-KID-TOKEN nil)
+    (s! c rw/W-KID-TOKEN (hs/kid-cell))
     (s! c rw/W-COMPLETE false)
     (s! c rw/W-COMPLETE-SUBS (alist))
     (s! c rw/W-PENDING-ACT nil)
@@ -4317,7 +4357,7 @@
     (s! c rw/W-OUTSTANDING (hs/oset-copy (g b rw/W-OUTSTANDING)))
     (s! c rw/W-DISCHARGE (g b rw/W-DISCHARGE))
     (s! c rw/W-KIDS (hs/kids))
-    (s! c rw/W-KID-TOKEN nil)
+    (s! c rw/W-KID-TOKEN (hs/kid-cell))
     (s! c rw/W-COMPLETE false)
     (s! c rw/W-COMPLETE-SUBS (alist))
     (s! c rw/W-PENDING-ACT nil)
@@ -4754,6 +4794,8 @@
 
 (defn custom-effect!
   [sym args site k ek]
+  (if-let [refusal (finalizer-refusal)]
+    (ek refusal)
   (if-let [r (valid-run)]
     (let [h (or (get @effect-handlers sym)
                 (throw (ex-info "unregistered effect" {:spindel/invalid :effect :effect sym})))
@@ -4769,7 +4811,7 @@
         :savepoint (savepoint-effect! (nth op 1) (nth op 2) k ek)
         :await (await-effect! (row-of (nth op 1)) k ek)
         (ek (ex-info "an effect handler returned no op" {:spindel/invalid :effect :effect sym :op op}))))
-    (unwind! ek)))
+    (unwind! ek))))
 
 ;; ---------------------------------------------------------------------------
 ;; Body macros (partial-cps)

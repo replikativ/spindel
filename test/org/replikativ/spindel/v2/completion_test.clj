@@ -234,3 +234,42 @@
           (is (wait-until #(v2/idle? w))))))
     (v2/release-world! w)
     (is (true? (v2/await-complete w 2000 ::timeout)))))
+
+(deftest a-ready-await-in-a-cancellation-finalizer-is-refused-explicitly
+  ;; review finding 4: never a silently dropped continuation
+  (let [w (v2/world) seen (atom [])]
+    (binding [v2/*world* w]
+      (let [ready (v2/deferred) _ (v2/deliver! ready :r) started (promise)
+            t (task (try (deliver started true) (await (v2/deferred))
+                         (finally (swap! seen conj :entered)
+                                  (try (await ready)
+                                       (catch Exception e (swap! seen conj (:spindel/invalid (ex-data e)))))
+                                  (swap! seen conj :rest))))]
+        (deref started 2000 nil)
+        (v2/cancel-task! t)
+        (is (wait-until #(= [:entered :finalizer :rest] @seen)))))
+    (v2/release-world! w)))
+
+(deftest a-child-callback-may-wait-for-its-owner
+  ;; review finding 5: the owner's acknowledgement precedes the child's
+  ;; subscribers
+  (let [w (v2/world) result (promise)]
+    (binding [v2/*world* w] (v2/signal 0))
+    (let [child (v2/fork! w)]
+      (v2/on-complete child #(future (deliver result (v2/await-complete w 2000 ::timeout))))
+      (v2/release-world! w)
+      (is (true? (deref result 3000 ::slow))))))
+
+(deftest a-child-completed-before-its-acceptance-is-acknowledged
+  ;; review finding 2: ownership by another world queued behind its busy gate
+  (let [src (v2/world) _ (binding [v2/*world* src] (v2/signal 0))
+        owner (v2/fork! src) hold (promise) holding (promise)]
+    (future (v2/host-call! owner (fn [] (deliver holding true) (deref hold 5000 nil) nil)))
+    (deref holding 2000 nil)
+    (let [child (v2/fork! src {:owner owner})]
+      (v2/release-world! child)
+      (is (true? (v2/await-complete child 2000 ::timeout)))
+      (deliver hold true)
+      (Thread/sleep 50)
+      (v2/release-world! owner)
+      (is (true? (v2/await-complete owner 2000 ::timeout))))))

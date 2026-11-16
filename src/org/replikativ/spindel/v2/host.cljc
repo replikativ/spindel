@@ -65,6 +65,15 @@
   #?(:clj (.get ^java.util.concurrent.atomic.AtomicLong (aget ^objects k 0)) :cljs (.-v (aget k 0))))
 (defn kids-released! [k] (flag-set! (aget ^objects k 1) true))
 (defn kids-released? [k] (flag? (aget ^objects k 1)))
+;; A world's link to its owner (C1 R2): the owner's token (set when the owner
+;; accepts it) and whether the world completed, both atomic, so a completion
+;; racing the acceptance is acknowledged by whichever side sees the other.
+(defn kid-cell [] #?(:clj (object-array [(java.util.concurrent.atomic.AtomicReference.) (flag false)])
+                     :cljs (object-array [#js {:v nil} (flag false)])))
+(defn kid-token [c] #?(:clj (.get ^java.util.concurrent.atomic.AtomicReference (aget ^objects c 0)) :cljs (.-v (aget c 0))))
+(defn kid-token! [c t] #?(:clj (.set ^java.util.concurrent.atomic.AtomicReference (aget ^objects c 0) t) :cljs (set! (.-v (aget c 0)) t)) nil)
+(defn kid-completed! [c] (flag-set! (aget ^objects c 1) true))
+(defn kid-completed? [c] (flag? (aget ^objects c 1)))
 
 (defn lock [] #?(:clj (java.util.concurrent.locks.ReentrantLock.) :cljs #js {:held false}))
 (defn held? [lk] #?(:clj (.isHeldByCurrentThread ^java.util.concurrent.locks.ReentrantLock lk) :cljs (.-held ^js lk)))
