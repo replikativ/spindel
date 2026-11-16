@@ -1409,6 +1409,11 @@ cases.
     host-visible handle. The callback only enqueues T19 (H1).
 13. **Logging and direct compilation:** trace and debug logging is elided at
     compile time; bodies that cannot park are compiled direct.
+14. **Task captures:** a task runs its body once, so its row drops the body
+    once the first slice starts, and keeps its captured inputs only where a
+    computation may adopt it (§5.2) or in verify mode, where the projection
+    reads them. A long-running task therefore does not retain what it
+    captured, e.g. the head of a sequence it walks (C0).
 
 ---
 
