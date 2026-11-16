@@ -208,10 +208,20 @@
                          :finalizers (vec (repeat (long (or (f r rw/R-FINS) 0)) 0))
                          :resources (mapv id (f r rw/R-RES))}))
      :sources (tbl rw/T-SOURCE
-                   (fn [x] {:owner (owner-id w (f x rw/OWNER))
-                            :kind (rw/kind-names (f x rw/X-KIND))
-                            :state (intern! w (f x rw/X-VALUE)) :version (f x rw/VERSION)
-                            :open (f x rw/X-OPEN) :handles (f x rw/HANDLES)}))
+                   (fn [x] (let [kind (long (f x rw/X-KIND))
+                                 row-of (fn [h] (when h (aget ^objects (.-cell ^org.replikativ.spindel.v2.core.Handle h) 0)))]
+                             (cond-> {:owner (owner-id w (f x rw/OWNER))
+                                      :kind (rw/kind-names kind)
+                                      :state (intern! w (f x rw/X-VALUE)) :version (f x rw/VERSION)
+                                      :open (f x rw/X-OPEN) :handles (f x rw/HANDLES)}
+                               ;; C0: a link's realizer task, pull/push, and its next link once realized
+                               (== kind rw/SRC-LINK)
+                               (assoc :rtask (id (f x rw/X-RTASK))
+                                      :pull (some? (nth (f x rw/X-REALIZE) 0))
+                                      :next (let [v (f x rw/X-VALUE)] (when (vector? v) (id (row-of (nth v 1))))))
+                               ;; C0: a stream's tail link
+                               (== kind rw/SRC-STREAM)
+                               (assoc :tail (id (row-of (f x rw/X-VALUE))))))))
      :edges (tbl rw/T-EDGE
                  (fn [e] (let [k (long (f e rw/E-KIND))
                                cred (f e rw/E-CRED)]
