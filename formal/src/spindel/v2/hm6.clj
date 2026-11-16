@@ -1379,6 +1379,8 @@
   (have er (= (Nat.beq (:id r) (:run t)) true)) (rw [et]) (exact (Nat.beq_refl _))
   (simp only [tof-pair rk10 tk10 rp er Bool.not_true Bool.false_or] at p)
   (exact (Eq.symm (Nat.eq_of_beq_eq_true p))))
+;; C0: T14 on a realizer task clears its link's rtask (a source frame)
+(lcopy! H3 'inv-clear-rtasks)
 (a/theorem h3-cancel-run-local-g [xm :- (List Nat), hx :- (List Nat), gx :- (List Nat), gk :- (List Nat), w :- World, r :- RunRow, rep :- Bool]
   (=> (List.Mem r (:runs w)) (= (g10 gx gk w) true) (= (hmk hx w) true) (= (ekb w) true) (= (h3 xm w) true)
       (= (h3 xm (cancel-run-local w r rep)) true))
@@ -1426,14 +1428,14 @@
       (have z2 := (tbl-find-none-has TaskRow task-id (:of r) (:tasks w) ht))
       (have ei (= (task-id t) (:of r))) (exact (tf t mt et))
       (rw [ei z2] at z) (cases z)
-      (exact (h3-cancel-task xm hx w r hc htk hk h)))
+      (exact (hm3-clear-rtasks xm _ (:of r) (h3-cancel-task xm hx w r hc htk hk h))))
     (case [some t0]
       (cases hxk (reach-mem (:of r) xm))
       (case [true]
         (have htk (forall [t :- TaskRow] (=> (List.Mem t (:tasks w)) (= (:run t) (:id r)) (= (reach-mem (:id t) xm) true))))
         (intros t mt et) (rw [(tf t mt et)]) (exact hxk)
-        (exact (h3-cancel-task xm hx w r hc htk hk h)))
-      (case [false] (exact (h3-cancel-task-x xm hx w r t0 hc ht hxk tf hk he h))))))
+        (exact (hm3-clear-rtasks xm _ (:of r) (h3-cancel-task xm hx w r hc htk hk h))))
+      (case [false] (exact (hm3-clear-rtasks xm _ (:of r) (h3-cancel-task-x xm hx w r t0 hc ht hxk tf hk he h)))))))
 
 ;; Retirement and scope-close use this frame lemma. Generate/check it during
 ;; fresh namespace loading rather than relying on a prior REPL copier call.

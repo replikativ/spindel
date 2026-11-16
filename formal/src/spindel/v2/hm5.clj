@@ -1087,15 +1087,56 @@
   (intros hd hk h)
   (have hn (= (tbl-all (hk-noc (:comps w)) (List.cons Nat d (List.nil Nat))) true)) (simp only [tbl-all hk-noc hd Bool.not_false Bool.and_self])
   (exact (h3-fin-loop xm hx (fin-fuel w) w _ hn hk h)))
-(a/theorem h3-close-source [xm :- (List Nat), hx :- (List Nat), w :- World, x :- Nat]
-  (=> (= (tbl-has comp-id x (:comps w)) false) (= (hmk hx w) true) (= (h3 xm w) true) (= (h3 xm (close-source w x)) true))
+;; C0: a link's realization (deliver-res on a link, no computation), a stream's end
+(a/theorem h3-deliver-res [xm :- (List Nat), hx :- (List Nat), w :- World, x :- Nat, v :- Nat, rr :- RunResult]
+  (=> (= (tbl-has comp-id x (:comps w)) false) (= (hmk hx w) true) (= (h3 xm w) true) (= (h3 xm (deliver-res w x v rr)) true))
+  (intros hc hk h)
+  (have k0 := (hmk-source-upd hx w x (source-write v) (source-write-source-id v) hk))
+  (have k1 := (nat-fold-hmk hx (fire-edge rr) (hmk-fire-edge hx rr) (edges-onto x (:edges w)) _ k0))
+  (have k2 := (nat-fold-hmk hx (fire-edge rr) (hmk-fire-edge hx rr) (waits-on x (:edges w)) _ k1))
+  (have h0 := (hm3-source-upd xm w x (source-write v) (source-write-source-id v) h))
+  (have h1 := (nat-fold-h3 xm (fire-edge rr) (h3-fire-edge xm rr) (edges-onto x (:edges w)) _ h0))
+  (have h2 := (nat-fold-h3 xm (fire-edge rr) (h3-fire-edge xm rr) (waits-on x (:edges w)) _ h1))
+  (have hx2 (= (tbl-has comp-id x (:comps (nat-fold (fire-edge rr) (nat-fold (fire-edge rr) (source-upd w x (source-write v)) (edges-onto x (:edges w))) (waits-on x (:edges w))))) false))
+  (exact (Eq.trans (hk-fold-fire-has rr (waits-on x (:edges w)) _ x)
+           (Eq.trans (hk-fold-fire-has rr (edges-onto x (:edges w)) (source-upd w x (source-write v)) x) hc)))
+  (simp only [deliver-res])
+  (exact (h3-finalize-debtor xm hx _ x hx2 k2 h2)))
+(a/theorem h3-realize-link [xm :- (List Nat), hx :- (List Nat), w :- World, x :- Nat, v :- Nat, fl :- Bool, n :- Nat]
+  (=> (= (tbl-has comp-id x (:comps w)) false) (= (hmk hx w) true) (= (h3 xm w) true) (= (h3 xm (realize-link w x v fl n)) true))
+  (intros hc hk h)
+  (simp only [realize-link])
+  (exact (h3-deliver-res xm hx (source-upd w x (link-done-row fl n)) x v _ hc (hmk-source-upd hx w x (link-done-row fl n) (link-done-row-id fl n) hk)
+           (hm3-source-upd xm w x (link-done-row fl n) (link-done-row-id fl n) h))))
+(a/theorem h3-end-link [xm :- (List Nat), hx :- (List Nat), w :- World, x :- Nat, fl :- Bool, v :- Nat]
+  (=> (= (hmk hx w) true) (= (h3 xm w) true) (= (h3 xm (end-link w x fl v)) true))
+  (intros hk h)
+  (cases hp (link-pending w x))
+  (simp only [end-link hp]) (exact h)
+  (simp only [end-link hp])
+  (exact (h3-realize-link xm hx w x _ fl 0 (hk-src-not-comp w x (h3-sample xm w h) (link-pending-has w x hp)) hk h)))
+(a/theorem h3-end-stream [xm :- (List Nat), hx :- (List Nat), w :- World, x :- Nat]
+  (=> (= (hmk hx w) true) (= (h3 xm w) true) (= (h3 xm (end-stream w x)) true))
+  (intros hk h)
+  (cases hf (source-find w x)) (case' [some s]) (case' [none])
+  (simp only [end-stream hf]) (exact h)
+  (cases hs (Nat.beq (:kind s) sk-stream))
+  (simp only [end-stream hf hs]) (exact h)
+  (simp only [end-stream hf hs]) (exact (h3-end-link xm hx w _ false 0 hk h)))
+(a/theorem h3-close-source0 [xm :- (List Nat), hx :- (List Nat), w :- World, x :- Nat]
+  (=> (= (tbl-has comp-id x (:comps w)) false) (= (hmk hx w) true) (= (h3 xm w) true) (= (h3 xm (close-source0 w x)) true))
   (intros hc hk h)
   (have k1 := (hmk-wake-closed hx (source-upd w x source-close-row) x (hmk-source-upd hx w x source-close-row source-close-row-id hk)))
   (have h1 := (hm3-wake-closed xm (source-upd w x source-close-row) x (hm3-source-upd xm w x source-close-row source-close-row-id h)))
   (have hx2 (= (tbl-has comp-id x (:comps (wake-closed (source-upd w x source-close-row) x))) false))
   (exact (Eq.trans (hk-has-wake-closed (source-upd w x source-close-row) x x) hc))
-  (simp only [close-source])
+  (simp only [close-source0])
   (exact (h3-finalize-debtor xm hx (wake-closed (source-upd w x source-close-row) x) x hx2 k1 h1)))
+(a/theorem h3-close-source [xm :- (List Nat), hx :- (List Nat), w :- World, x :- Nat]
+  (=> (= (tbl-has comp-id x (:comps w)) false) (= (hmk hx w) true) (= (h3 xm w) true) (= (h3 xm (close-source w x)) true))
+  (intros hc hk h)
+  (simp only [close-source])
+  (exact (h3-close-source0 xm hx (end-stream w x) x (Eq.trans (hk-has-end-stream w x x) hc) (hmk-end-stream hx w x hk) (h3-end-stream xm hx w x hk h))))
 (a/theorem h3-fold-noc2 [xm :- (List Nat), hx :- (List Nat), f :- (=> World Nat World),
                          hf :- (forall [w :- World, x :- Nat] (=> (= (tbl-has comp-id x (:comps w)) false) (= (hmk hx w) true) (= (h3 xm w) true) (= (h3 xm (f w x)) true))),
                          hg :- (forall [w :- World, x :- Nat] (=> (= (tbl-has comp-id x (:comps w)) false) (= (hmk hx w) true) (= (hmk hx (f w x)) true))),

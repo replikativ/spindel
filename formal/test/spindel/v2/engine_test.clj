@@ -85,6 +85,12 @@
 (defn finally-enter [st] [35 st])
 (defn finally-exit [st] [36 st])
 (defn slice-exit [r] [37 r])
+(defn create-link [st l] [38 st l])
+(defn create-link-top [scope l] [39 scope l])
+(defn link-demand [l k] [40 l k])
+(defn link-realize [l tag v n] [41 l tag v n])
+(defn append* [x v t] [42 x v t])
+(defn close* [x tag v] [43 x tag v])
 
 (def root s/root-scope-id)
 (defn find-row [w field id] (first (filter #(= id (:id %)) (get w field))))
@@ -693,10 +699,10 @@
       (is (= (s/->RunResult s/res-err 2) (st/deb-result w y)) "err ::closed")
       (is (true? (inv/lit-i5-dep-final w))))
     (testing "a closed source with a value delivers it"
-      (is (= (s/->RunResult s/res-ok 7) (st/src-result (s/->SourceRow 1 0 s/sk-signal 7 3 false 1 []))))
-      (is (= (s/->RunResult s/res-ok 7) (st/src-result (s/->SourceRow 1 0 s/sk-deferred 7 1 false 1 []))))
-      (is (= (s/->RunResult s/res-err 2) (st/src-result (s/->SourceRow 1 0 s/sk-deferred 0 0 false 1 []))))
-      (is (= (s/->RunResult s/res-ok 0) (st/src-result (s/->SourceRow 1 0 s/sk-mailbox 0 0 true 1 [])))
+      (is (= (s/->RunResult s/res-ok 7) (st/src-result (s/->SourceRow 1 0 s/sk-signal 7 3 false 1 [] 0 0 0 false))))
+      (is (= (s/->RunResult s/res-ok 7) (st/src-result (s/->SourceRow 1 0 s/sk-deferred 7 1 false 1 [] 0 0 0 false))))
+      (is (= (s/->RunResult s/res-err 2) (st/src-result (s/->SourceRow 1 0 s/sk-deferred 0 0 false 1 [] 0 0 0 false))))
+      (is (= (s/->RunResult s/res-ok 0) (st/src-result (s/->SourceRow 1 0 s/sk-mailbox 0 0 true 1 [] 0 0 0 false)))
           "an open source: its state"))))
 
 (deftest blocked-least-fixpoint
@@ -823,3 +829,101 @@
     (testing "the item kinds that matter were accepted"
       (is (every? #(pos? (get @accepted % 0)) [1 2 3 4 13 14 15 16 17 18 19 20 21 22 25 26 27 28 29 30 31 32 33 34 35 36 37])
           (pr-str (into (sorted-map) @accepted))))))
+
+;; C0 (links and streams): random items with the C0 kinds mixed in, same per-step checks
+(defn random-c0-item [^java.util.Random rng w]
+  (let [pick (fn [xs] (if (seq xs) (nth (vec xs) (.nextInt rng (count xs))) 0))
+        n (:next-id w)
+        links (filter #(= s/sk-link (:kind %)) (:sources w))
+        pending (map :id (filter #(and (zero? (:version %)) (zero? (:tail %))) links))
+        streams (map :id (filter #(= s/sk-stream (:kind %)) (:sources w)))
+        slice-runs (filter :slice (:runs w))
+        st (if (seq slice-runs) (:stamp (first slice-runs)) (pick (map :stamp (:runs w))))
+        v (+ 3 (.nextInt rng 4))
+        lk (fn [] (if (and (seq pending) (< (.nextInt rng 10) 8)) (pick pending) (pick (map :id links))))]
+    (case (.nextInt rng 12)
+      0 (create-link st (if (< (.nextInt rng 10) 8) n (pick (map :id links))))
+      1 (create-link-top root n)
+      2 (link-demand (lk) n)
+      3 (link-demand (lk) n)
+      4 (let [tag (.nextInt rng 3)] (link-realize (lk) tag v (if (= 1 tag) n 0)))
+      5 (let [tag (.nextInt rng 3)] (link-realize (lk) tag v (if (= 1 tag) n 0)))
+      6 (append* (pick streams) v n)
+      7 (append* (pick streams) v n)
+      8 (close* (pick streams) (* 2 (.nextInt rng 2)) v)
+      9 (create-source-top root s/sk-stream 0 n)
+      10 (create-source st s/sk-stream 0 n)
+      11 (await* st [(lk)] s/am-one 1 n []))))
+
+(deftest random-steps-c0
+  (let [rng (java.util.Random. 20261115)
+        accepted (atom {})]
+    (dotimes [run 40]
+      (loop [i 0 w (prefix-world)]
+        (when (< i 50)
+          (let [item (if (< (.nextInt rng 10) 4) (random-c0-item rng w) (random-item rng w))
+                raw (en/raw w item)
+                o (en/world-step w item)
+                w2 (:world o)
+                msg (str "run " run " step " i " " (pr-str item))]
+            (is (rlt/ok? (:world raw)) (str "raw inv " msg))
+            (if (:accepted raw)
+              (do (swap! accepted update (first item) (fnil inc 0))
+                  (is (= w2 (rlt/rule-r-checks (:world raw) msg)) msg))
+              (do (is (= w2 w) (str "refusal changed the world " msg))
+                  (is (= raw o))))
+            (when (false? (en/raw-token-ok w item)) (is (= (st/->Outcome w false) o) (str "L4 " msg)))
+            (is (rlt/ok? w2) msg)
+            (is (true? (en/ranks-ok w2)) (str "I12 " msg))
+            (is (true? (inv/inv-all w2)) (str "I1 I5 I7 I9 I10 I11a (spindel.v2.inv) " msg))
+            (is (true? (en/blocked-converged w2)) (str "Blocked converged " msg))
+            (recur (inc i) w2)))))
+    (testing "the C0 items were accepted"
+      (is (every? #(pos? (get @accepted % 0)) [38 39 40 41 42 43])
+          (pr-str (into (sorted-map) @accepted))))))
+
+;; C0 (engine session 2026-11-16): T14 on a link's realizer clears the link's rtask (engine
+;; link-cancelled!); T8 observe on a stream is refused (no edge, no item), as await/T22
+(deftest c0-realizer-cancel-and-stream-observe
+  (let [step (fn [w it] (let [o (en/world-step w it)] [(:accepted o) (:world o)]))
+        w0 s/empty-world
+        l (:next-id w0)
+        [a1 w1] (step w0 (create-link-top root l))
+        k (:next-id w1)
+        [a2 w2] (step w1 (link-demand l k))
+        r (:run (find-row w2 :tasks k))
+        [a3 w3] (step w2 (cancel r))
+        sx (:next-id w3)
+        [a4 w4] (step w3 (create-source-top root s/sk-stream 0 sx))
+        [a5 w5] (step w4 (observe sx 1 (:next-id w4)))]
+    (is (= [true true true true false] [a1 a2 a3 a4 a5]))
+    (is (= k (:rtask (find-row w2 :sources l))) "demand sets the realizer")
+    (is (= 0 (:rtask (find-row w3 :sources l))) "the realizer's cancel clears rtask")
+    (is (= w4 w5) "observe on a stream is refused")))
+
+;; C0 (engine session, feat/v2-world-completion): a link owned by the root scope is created only
+;; while the root scope is open, and no link is realized once it is closed (raw0's `c0-gate`): with
+;; the root scope closed (T21) an append is refused (the engine logs [:append s v 0] accepted false),
+;; so are create-link-top and link-realize with every tag (the engine's link-done! realizes nothing)
+(deftest c0-root-gate
+  (let [step (fn [w i] (en/world-step w i))
+        sx (:next-id s/empty-world)
+        w1 (:world (step s/empty-world (create-source-top root s/sk-stream 0 sx)))
+        l (:next-id w1)
+        w2 (:world (step w1 (create-link-top root l)))
+        shut (fn [w] (update w :scopes (fn [ss] (map #(if (= (:id %) root) (st/scope-close %) %) ss))))
+        w3 (shut w2)
+        acc (fn [w it] (:accepted (en/raw0 w it)))]
+    (is (true? (st/scope-open-at w2 root)))
+    (is (false? (st/scope-open-at w3 root)))
+    (is (= [true true true true true]
+           [(acc w2 (append* sx 5 (:next-id w2))) (acc w2 (link-realize l 1 5 (:next-id w2)))
+            (acc w2 (link-realize l 0 0 0)) (acc w2 (link-realize l 2 9 0))
+            (acc w2 (create-link-top root (:next-id w2)))]) "root scope open: accepted")
+    (is (false? (acc w3 (append* sx 5 (:next-id w3)))) "append refused under a closed root scope")
+    (is (= w3 (:world (en/raw0 w3 (append* sx 5 (:next-id w3))))) "and changes nothing")
+    (is (false? (acc w3 (link-realize l 1 5 (:next-id w3)))) "no next link under a closed root scope")
+    (is (false? (acc w3 (create-link-top root (:next-id w3)))))
+    (doseq [it [(link-realize l 0 0 0) (link-realize l 2 9 0)]]
+      (is (false? (acc w3 it)) (str "no realization under a closed root scope " (pr-str it)))
+      (is (= w3 (:world (en/raw0 w3 it))) "and the world is unchanged"))))

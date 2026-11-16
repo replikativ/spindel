@@ -1089,3 +1089,78 @@ No counterexample. Tripwire: i10_test random drivers (g10r and lit-i10-current o
 - **`step-h3`**, `p3m = p3la && h3 []`, `step-p3m`, `p3m-empty`, `step-h3-total`, and
   **`l5-safety-total : p3m w -> quiescent w -> ... -> False`** with no honest hypothesis (h-mark and h-mem2 are invariants).
 - Open after P11: I15 as a literal statement over `p3m`, random lockstep in CI, the formal CI job, spec §8 rows.
+
+### Branch `formal/c0-model` (2026-11-15): C0 async sequences, Stage A (engine 60f6a62)
+
+- Links and streams are source kinds of the ONE model (`sk-link 6`, `sk-stream 7`; `sk-rerun 5` stays, never
+  created). `SourceRow` gains `rtask next tail fail` (state.clj docstring: a link is realized iff version > 0 with
+  state v / next N, the end (next 0), or `fail` (memoized error, `src-result` = err state); `tail` = a push link's
+  stream (0 = pull link) or a stream's tail link). Row functions + id lemmas at the end of edits.clj.
+- Items 38-43 (step.clj table): `create-link st l` / `create-link-top scope l` (pull head in the root scope; in a
+  computation a basis creation adopted like a re-spawn), `link-demand l k` (realizer task k in the root scope with
+  handles 0, run, run scope = T4's rows; `rtask` is stale-tolerant: `realizer-live` = task exists without result),
+  `link-realize l tag v n` (1 next pull link n / 0 end / 2 error), `append x v t`, `close x tag v`. Streams are T1's
+  kind 7 (`t1-body`, `t1-top-full`: stream S and its first tail link S + 1). All built from source-ins, source-upd and
+  rule.clj's `realize-link` = `deliver-res` (deliver with a result: `deliver-raw-res`, rfl).
+- Changed: `close-source` = `close-source0 (end-stream w x) x` (T16/T13/T21/Rule R: a stream's tail ends first);
+  `demote-edges` closes the streams of C's basis after C's dep edges go (`end-basis`, engine `demote!`); links are
+  deferred-like (`once-kind` in `src-valueless`/`src-delivered`); `src-consuming` refuses await/T22 on a stream.
+  No existing theorem statement changed; the sl-/s9- chains, casc (`ri-*`, `bn-end-basis`, `demote-lt`) and the copiers
+  (bc, ga/gx) cover the new items.
+- Oracle: projection `:rtask` (raw; none when that task exists with a result: the engine clears it at a cancel with no
+  item), `:pull` (tail 0 and unrealized, or a computation's head), `:next`, stream `:tail`/`:state nil`; deviation
+  `:link-state` (the engine interns [v next-handle]). Samples 18-21 replay with no divergence (oracle_test
+  `sample-18` .. `sample-21`, `projection-roundtrip-c0`); engine_test `random-steps-c0` (C0 items mixed in, all
+  per-step tripwires).
+- Stage B: see the next section (every namespace loads).
+
+### Stage B (2026-11-16): model changes settled with the engine session
+
+- **rtask at cancel** (T14/T21): `debtor-side` of a task run ends with `clear-rtasks w k` (rule.clj: every link whose
+  `rtask` is k gets `link-set-rtask 0`), the engine's cancel! -> finish-task! -> link-cancelled!. The oracle's
+  `:rtask` projection is now the raw field (the "none once the task has a result" case is gone; samples 1-21 at 0
+  divergences). `realizer-live` keeps its task check (harmless).
+- **T8 observe on a stream** is refused (`t8-obs` in engine.clj, raw0's observe arm), as await/T22 (`src-consuming`).
+- engine_test `c0-realizer-cancel-and-stream-observe` checks both.
+
+### Stage B (2026-11-16): every bundle outside the core loads under C0
+
+- **All namespaces load** (lit .. hm18, skip, sys, z59, cow, mvcc), kernel-checked, no `sorry`, no statement weakened
+  (the temporary hypothesis `c0-root` of the first pass is discharged by the root gate, below).
+- Repair pattern: one lemma per bundle and C0 primitive, reused by the copiers: the frames `kw`/`kw8`/`res`/`hk-has`
+  for `deliver-res`, `end-link`, `end-stream`, `close-source0`, `clear-rtasks`; overrides where a bundle reads the
+  realized row (`g5-deliver-res`, `g5-append-raw` with the guard's stream row, `svb` with `stream-set-tail-hv`, `gso`
+  fresh links owned, `hmk-deliver-res`/`hmk-realize-link`/`hmk-close-raw` and the `h3-` analogues with the realized
+  link / closed stream a source, i.e. no computation). Demote's `end-basis`: `kdb-end-basis` (no run of C revives:
+  `end-basis-dead`), the bundle `edb` (no dep edge of C appears: `end-basis-no-dep`), `wdom-end-basis` (i14: comps keep
+  id/idle/rank/validity, edges keep kind/creditor/debtor, the allocator stays), so `vr-demote-tail`, `hmk-demote-x`,
+  `h18-demote-x`, `g7-demote`, `gr0-demote-aa`, `ar-demote`, `demote-tail` (i10) carry their facts across it.
+- Model refactor (same worlds): `append-raw` updates the stream row before inserting the new tail link (the rows are
+  independent), so a bundle can use the guard's row of the stream.
+- Layer 2 (L12, spec §4.3 Links and forks): `diff` in sys.clj leaves links out of a mergeable fork's basis (`not-link`);
+  a stream the fork appended to stays in, so that merge is refused (stream merge: C2). sys_test
+  `c0-merge-links-out-streams-in`.
+
+#### Root gate (branch `formal/c0-guard`, 2026-11-16): `c0-root` is no hypothesis any more
+
+The first Stage B pass carried a temporary hypothesis `c0-root w it` (an item that creates a link owned by the root
+scope runs while the root scope is open) on step-g8, step-p3i, step-lit-i8-total, step-p3j, step-gd-facts-total,
+step-p3k, step-i14-total, step-p3l, step-h-mark-total, step-p3la, step-p3m, step-h3-total, step-h-mem2-total and
+sinv-step; g8 (literal I8) needs it. The engine session (feat/v2-world-completion) made it a rule: every root-owned link
+creation is refused once the root scope is closed (append logs `[:append s v 0]` accepted false, a cancelled
+finalizer's corner after release, Z#56; link-realize logs nothing; the others are refused for a cancelled run or a
+released host); and link-done! realizes nothing at all once the root scope is closed (every tag, no item). Model:
+raw0 wraps `create-source(-top)` with kind `sk-stream`, `create-link`, `create-link-top`, `link-realize` (every tag:
+the end and an error realize nothing either) and `append` in `c0-gate w b o = if (root-ok-if b w) o (refuse w)` (engine.clj, before
+Part G; `root-ok-if b w = !b || scope-open-at w root-scope-id`), with `c0-gate-inv`/`-refuse`/`-l4`, `i10-gate`,
+`s9-gate`; engine_test `c0-root-gate` (append, create-link-top and link-realize tags 0/1/2 refused with the world
+unchanged under a closed root scope, accepted under an open one); samples 1-21 replay with no divergence. The proofs
+take the gate locally: g8's transition overrides take `root-ok-if` (link-realize's through `root-ok-any`),
+`c0-gate-g8` gives it to them in raw0's copy (a refused item keeps the world),
+h3's raw0 assembly (hm17) wraps the gated arms in `c0-gate-h3`. Every theorem listed above has its original
+statement again.
+
+#### Former temporary hypothesis `c0-root w it` (first pass, superseded)
+
+`c0-root w it = !(c0-root-item it) || scope-open-at w root-scope-id` was defined in i8.clj and threaded through the
+theorems listed above (commits ad4a953 .. f0ee12c on `formal/c0-model`); the root gate removed it and its definition.

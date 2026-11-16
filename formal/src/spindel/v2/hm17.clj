@@ -127,8 +127,68 @@
 ;; ===========================================================================
 (doseq [t '[t1-full-inv t1-top-inv t19-inv t20-pin-inv t20-unpin-inv t3-inv t3-top-inv t4-inv t4-top-inv t5-inv sched-inv
             t-handle-new-inv t-post-inv t-release-inv t-finalize-inv t-open-scope-inv t-detach-inv t-finally-enter-inv
-            t-finally-exit-inv]]
+            t-finally-exit-inv
+            t1-body-inv t1-top-full-inv t-create-link-inv t-create-link-top-inv t-link-demand-inv c0-gate-inv]]
   (lcopy! H3 t))
+
+;; ---- C0: a link's realization, an append, a stream close (hmk: the realized link / closed stream is a source)
+(a/theorem h17-link-realize-raw [xm :- (List Nat), hx :- (List Nat), w :- World, l :- Nat, tag :- Nat, v :- Nat, n :- Nat]
+  (=> (= (tbl-has comp-id l (:comps w)) false) (= (hmk hx w) true) (= (h3 xm w) true) (= (h3 xm (:world (link-realize-raw w l tag v n))) true))
+  (intros hc hk h)
+  (cases h1 (Nat.beq tag res-ok))
+  (case [true]
+    (cases h2 (Nat.beq n (:next-id w)))
+    (case [false] (simp only [link-realize-raw h1 h2 refuse]) (exact h))
+    (case [true]
+      (simp only [link-realize-raw h1 h2 accept link-next-raw])
+      (exact (h3-realize-link xm hx (bump (source-ins w (new-link (:next-id w) root-scope-id 0))) l v false _ hc
+               (hmk-source-ins-fresh hx w (new-link (:next-id w) root-scope-id 0) (rfl) hk)
+               (hm3-source-ins-fresh xm w (new-link (:next-id w) root-scope-id 0) (rfl) h)))))
+  (case [false]
+    (cases h2 (Nat.beq n 0))
+    (case [false] (simp only [link-realize-raw h1 h2 refuse]) (exact h))
+    (case [true]
+      (cases h3 (Nat.beq tag res-none))
+      (case [true] (simp only [link-realize-raw h1 h2 h3 accept]) (exact (h3-realize-link xm hx w l 0 false 0 hc hk h)))
+      (case [false]
+        (cases h4 (Nat.beq tag res-err))
+        (case [false] (simp only [link-realize-raw h1 h2 h3 h4 refuse]) (exact h))
+        (case [true] (simp only [link-realize-raw h1 h2 h3 h4 accept]) (exact (h3-realize-link xm hx w l v true 0 hc hk h)))))))
+(a/theorem h17-t-link-realize [xm :- (List Nat), hx :- (List Nat), w :- World, l :- Nat, tag :- Nat, v :- Nat, n :- Nat]
+  (=> (= (hmk hx w) true) (= (h3 xm w) true) (= (h3 xm (:world (t-link-realize w l tag v n))) true))
+  (intros hk h)
+  (cases hf (source-find w l)) (case' [some s]) (case' [none])
+  (simp only [t-link-realize hf refuse]) (exact h)
+  (have hc := (hk-src-not-comp w l (h3-sample xm w h) (tbl-find-has SourceRow source-id l s (:sources w) hf)))
+  (cases hg (link-idle w s))
+  (simp only [t-link-realize hf hg refuse]) (exact h)
+  (simp only [t-link-realize hf hg]) (exact (h17-link-realize-raw xm hx w l tag v n hc hk h)))
+(a/theorem h17-t-append [xm :- (List Nat), hx :- (List Nat), w :- World, x :- Nat, v :- Nat, t :- Nat]
+  (=> (= (hmk hx w) true) (= (h3 xm w) true) (= (h3 xm (:world (t-append w x v t))) true))
+  (intros hk h)
+  (cases hf (source-find w x)) (case' [some s]) (case' [none])
+  (simp only [t-append hf refuse]) (exact h)
+  (cases hg (Bool.and (open-kind sk-stream s) (Bool.and (Nat.beq t (:next-id w)) (link-pending w (:tail s)))))
+  (simp only [t-append hf hg refuse]) (exact h)
+  (have hp (= (link-pending w (:tail s)) true)) (simp only [Bool.and_eq_true] at hg) (exact (And.right (And.right hg)))
+  (have hc := (hk-src-not-comp w (:tail s) (h3-sample xm w h) (link-pending-has w (:tail s) hp)))
+  (simp only [t-append hf hg accept append-raw])
+  (exact (h3-realize-link xm hx (bump (source-ins (source-upd w x (stream-set-tail (:next-id w))) (new-link (:next-id w) root-scope-id x))) (:tail s) v false _ hc
+           (hmk-source-ins-fresh hx (source-upd w x (stream-set-tail (:next-id w))) (new-link (:next-id w) root-scope-id x) (rfl)
+             (hmk-source-upd hx w x (stream-set-tail (:next-id w)) (stream-set-tail-id _) hk))
+           (hm3-source-ins-fresh xm (source-upd w x (stream-set-tail (:next-id w))) (new-link (:next-id w) root-scope-id x) (rfl)
+             (hm3-source-upd xm w x (stream-set-tail (:next-id w)) (stream-set-tail-id _) h)))))
+(a/theorem h17-t-close [xm :- (List Nat), hx :- (List Nat), w :- World, x :- Nat, tag :- Nat, v :- Nat]
+  (=> (= (hmk hx w) true) (= (h3 xm w) true) (= (h3 xm (:world (t-close w x tag v))) true))
+  (intros hk h)
+  (cases hf (source-find w x)) (case' [some s]) (case' [none])
+  (simp only [t-close hf refuse]) (exact h)
+  (have hc := (hk-src-not-comp w x (h3-sample xm w h) (tbl-find-has SourceRow source-id x s (:sources w) hf)))
+  (cases hg (Bool.and (open-kind sk-stream s) (close-tag-ok tag)))
+  (simp only [t-close hf hg refuse]) (exact h)
+  (simp only [t-close hf hg accept close-raw])
+  (exact (h3-close-source xm hx (end-link w (:tail s) (Nat.beq tag res-err) v) x (Eq.trans (hk-has-end-link w (:tail s) _ v x) hc)
+           (hmk-end-link hx w (:tail s) _ v hk) (h3-end-link xm hx w (:tail s) _ v hk h))))
 
 (a/theorem h17-raw0-h3 [xm :- (List Nat), w :- World, it :- Item]
   (=> (= (p3la w) true) (= (h3 xm w) true) (= (h3 xm (:world (raw0 w it))) true))
@@ -143,14 +203,16 @@
   (have hg10 := (p3la-g10r w hp)) (simp only [g10r] at hg10)
   (cases it)
   (case [create-source st kind v fresh] (simp only [raw0]) (cases hc (body-shut w st))
-    (case [false] (simp only [hc]) (exact (t1-full-h3 xm w _ _ _ _ h)))
+    (case [false] (simp only [hc]) (exact (c0-gate-h3 xm w _ _ h (t1-body-h3 xm w st kind v fresh h))))
     (case [true] (simp only [hc refuse]) (exact h)))
-  (case [create-source-top scope kind v fresh] (simp only [raw0]) (exact (t1-top-h3 xm w _ _ _ _ h)))
+  (case [create-source-top scope kind v fresh] (simp only [raw0]) (exact (c0-gate-h3 xm w _ _ h (t1-top-full-h3 xm w scope kind v fresh h))))
   (case [write x v] (simp only [raw0]) (exact (t2-h3 xm w _ _ h)))
   (case [track st x k fresh] (simp only [raw0]) (cases hc (in-cleanup w st))
     (case [false] (simp only [hc]) (exact (t7-h3 xm w _ _ _ _ hc hg7 hga har hk h)))
     (case [true] (simp only [hc refuse]) (exact h)))
-  (case [observe d cb fresh] (simp only [raw0]) (exact (h15-t8-full-h3 xm w _ _ _ hp h)))
+  (case [observe d cb fresh] (simp only [raw0 t8-obs]) (cases hs (src-kind-at w sk-stream d))
+    (case [false] (simp only [hs]) (exact (h15-t8-full-h3 xm w _ _ _ hp h)))
+    (case [true] (simp only [hs refuse]) (exact h)))
   (case [unobserve e] (simp only [raw0]) (exact (t8-unobserve-hm3 xm w _ hg7 h)))
   (case [fire e tag val] (simp only [raw0]) (exact (t9-h3 xm w _ _ _ h)))
   (case [resource-ack z] (simp only [raw0]) (exact (t15-full-h3 xm (List.nil Nat) (List.nil Nat) (List.nil Nat) w _ hk hg10 hke h)))
@@ -192,7 +254,15 @@
   (case [detach k s] (simp only [raw0]) (exact (t-detach-h3 xm w _ _ h)))
   (case [finally-enter st] (simp only [raw0]) (exact (t-finally-enter-h3 xm w _ h)))
   (case [finally-exit st] (simp only [raw0]) (exact (t-finally-exit-h3 xm w _ h)))
-  (case [slice-exit r] (simp only [raw0]) (exact (t-slice-exit-h3 xm (List.nil Nat) (List.nil Nat) (List.nil Nat) w _ hk hg10 hke h))))
+  (case [slice-exit r] (simp only [raw0]) (exact (t-slice-exit-h3 xm (List.nil Nat) (List.nil Nat) (List.nil Nat) w _ hk hg10 hke h)))
+  (case [create-link st l] (simp only [raw0]) (cases hc (in-cleanup w st))
+    (case [false] (simp only [hc]) (exact (c0-gate-h3 xm w _ _ h (t-create-link-h3 xm w st l h))))
+    (case [true] (simp only [hc refuse]) (exact h)))
+  (case [create-link-top sc l] (simp only [raw0]) (exact (c0-gate-h3 xm w _ _ h (t-create-link-top-h3 xm w sc l h))))
+  (case [link-demand l k] (simp only [raw0]) (exact (t-link-demand-h3 xm w _ _ h)))
+  (case [link-realize l tag v n] (simp only [raw0]) (exact (c0-gate-h3 xm w _ _ h (h17-t-link-realize xm (List.nil Nat) w l tag v n hk h))))
+  (case [append x v t] (simp only [raw0]) (exact (c0-gate-h3 xm w _ _ h (h17-t-append xm (List.nil Nat) w x v t hk h))))
+  (case [close x tag v] (simp only [raw0]) (exact (h17-t-close xm (List.nil Nat) w _ _ _ hk h))))
 
 (a/theorem h17-raw-h3 [xm :- (List Nat), w :- World, it :- Item]
   (=> (= (p3la w) true) (= (h3 xm w) true) (= (h3 xm (:world (raw w it))) true))

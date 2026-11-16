@@ -414,3 +414,67 @@
         (is (= [[:resource-fire 22 1] [:resource-ack 22] [:resource-fire 15 2] [:resource-ack 15]] (map (comp vec (partial take 3) :item) (subvec l 0 4)))
             "activate: the pending savepoint fires ok, the other one err ::forked")
         (is (= [13 0 0] ((juxt :checked :n-divergences :resyncs) r)) (str "instance " n))))))
+
+;; C0 async sequences (engine 567b3d8, notes: spec §4.3 rows link/stream, §8.1 "Links and forks").
+;; A realized link's `:state` is the engine's interned [v next-handle] (pending deviation
+;; :link-state; the model keeps v in state and compares `:next`).
+(defn- c0-family [p c]
+  (let [pl (log p)
+        cl (vec (filter :proj (log c)))
+        pr (o/replay pl :family? true :worlds? true)
+        at (first (keep-indexed (fn [i x] (when (= :fork-host (first (:item x))) i)) pl))]
+    {:pl pl :cl cl :pr pr :at at :cr (o/replay cl :family? true :init (nth (:worlds pr) at) :worlds? true)}))
+(defn- src [w x] (first (s/source-find w x)))
+
+;; sample 18: a pull sequence of two elements read by a task: each `await` on an unrealized link is
+;; followed by `[:link-demand L K]` (realizer task K in the root scope, handles 0), the realizer's
+;; T12 by `[:link-realize L tag v N]` (tag 1: the next pull link N; tag 0: the end); a second task
+;; reads the realized chain at once (no demand).
+(deftest sample-18-pull-sequence
+  (let [l (log 18) res (o/replay l :worlds? true) ws (:worlds res)]
+    (is (= [30 0 0] ((juxt :checked :n-divergences :resyncs) res)))
+    (is (= [[:link-demand 3 9] [:link-realize 3 1 6 12] [:link-realize 18 0 0 0]] (map (comp :item (partial nth l)) [4 7 19])))
+    (let [w (nth ws 4)]
+      (is (= 9 (:rtask (src w 3))) "the demand sets the realizer")
+      (is (= [s/root-scope-id 0] ((juxt :owner :handles) (first (s/task-find w 9)))) "a root task without handles"))
+    (let [w (nth ws 7)]
+      (is (= [1 6 12 0] ((juxt :version :state :next :rtask) (src w 3))) "realized with [6 12]")
+      (is (= [s/sk-link 0 0] ((juxt :kind :version :tail) (src w 12))) "the next pull link"))
+    (is (= [1 0 0 false] ((juxt :version :state :next :fail) (src (nth ws 19) 18))) "the end")))
+
+;; sample 19: a host fork while the realizer is parked on an offload. The parent's offload completes
+;; and realizes the link; in the child the inherited offload fails with ::forked, the realizer
+;; completes with that error (no link-realize) and the child's next demand restarts it.
+(deftest sample-19-realizer-across-fork
+  (let [{:keys [cl pr cr at]} (c0-family "19-parent" "19-child")]
+    (is (= [:fork-host 16] (:item (nth (log "19-parent") at))))
+    (is (= [18 0 0] ((juxt :checked :n-divergences :resyncs) pr)) "the parent, across the fork")
+    (is (= [[:complete 10 2 8] [:link-demand 3 18]] (map :item (subvec cl 4 6))) "::forked, then a restart")
+    (is (= [17 0 0] ((juxt :checked :n-divergences :resyncs) cr)) "the child, from the parent's world at the fork")
+    (is (= 26 (:next (src (peek (:worlds cr)) 3))) "the child realizes its own next link")))
+
+;; sample 20: a push stream (its first tail = the stream's id + 1, no item of its own), appended to
+;; before and after a host fork, then closed in both worlds (the tail realizes the end).
+(deftest sample-20-stream-across-fork
+  (let [{:keys [pl cl pr cr at]} (c0-family "20-parent" "20-child")
+        w0 (first (:worlds pr))]
+    (is (= [:create-source-top 2 :stream 0 3] (:item (first pl))))
+    (is (= [s/sk-stream 4] ((juxt :kind :tail) (src w0 3))) "the stream and its first tail")
+    (is (= [s/sk-link 3 0] ((juxt :kind :tail :version) (src w0 4))) "a push link of stream 3")
+    (is (= [14 0 0] ((juxt :checked :n-divergences :resyncs) pr)))
+    (is (= [:append 3 13 16] (:item (first cl))))
+    (is (= [9 0 0] ((juxt :checked :n-divergences :resyncs) cr)))
+    (let [w (nth (:worlds cr) 3)]
+      (is (= [false 1 0] [(:open (src w 3)) (:version (src w 16)) (:next (src w 16))]) "closed: the tail is the end"))))
+
+;; sample 21: the reader of a pull link is cancelled while the realizer awaits a deferred: the
+;; realizer is not cancelled (it belongs to the root scope), completes, and the link is realized;
+;; a later reader gets the element at once.
+(deftest sample-21-reader-cancel
+  (let [l (log 21) res (o/replay l)]
+    (is (= [:cancel 6] (:item (nth l 9))))
+    (is (= [:link-realize 4 1 8 16] (:item (nth l 13))))
+    (is (= [19 0 0] ((juxt :checked :n-divergences :resyncs) res)))))
+
+(deftest projection-roundtrip-c0
+  (doseq [n ["18" "19-parent" "19-child" "20-parent" "20-child" "21"]] (is (= [] (o/roundtrip (log n))) (str "sample " n))))

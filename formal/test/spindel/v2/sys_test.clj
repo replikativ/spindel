@@ -117,3 +117,24 @@
     (is (= (o/world->proj after) (o/world->proj (sys/merge-world before child basis)))
         "the model's merge is the engine's world after the merge")
     (is (false? (sys/merge-ok after child basis)) "a second merge conflicts: the parent's s and t moved")))
+
+;; C0 (spec §4.3 Links and forks, L12): links are not part of a mergeable fork's basis; a stream the
+;; fork appended to is, so that merge is refused
+(deftest c0-merge-links-out-streams-in
+  (let [it (fn [tag & fs] (into [(o/ctor-idx tag)] fs))
+        step (fn [w i] (let [o (en/world-step w i)] (is (:accepted o) (pr-str i)) (:world o)))
+        root s/root-scope-id
+        l (:next-id s/empty-world)
+        b1 (step s/empty-world (it :create-link-top root l))
+        sx (:next-id b1)
+        basis (step b1 (it :create-source-top root s/sk-stream 0 sx))
+        tail (:tail (first (s/source-find basis sx)))
+        child (step basis (it :link-realize l 0 0 0))
+        child2 (step basis (it :append sx 5 (:next-id basis)))]
+    (is (pos? (:version (first (s/source-find child l)))) "the child realized the link")
+    (is (empty? (sys/diff child basis)) "a realized link is not in the diff")
+    (is (true? (sys/merge-ok basis child basis)))
+    (is (= basis (sys/merge-world basis child basis)) "nothing to adopt")
+    (is (= [sx] (sys/diff child2 basis)) "an appended stream is")
+    (is (pos? tail))
+    (is (false? (sys/merge-ok basis child2 basis)) "so that merge is refused (stream merge: C2)")))

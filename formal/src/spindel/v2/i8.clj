@@ -571,16 +571,50 @@
 ;; ---- closing a source and a scope, on the keys
 (a/defn sk-shut [k :- S8K] S8K (S8K.mk (:id k) false))
 (a/theorem sok-close [s :- ScopeRow] (= (s8k (scope-close s)) (sk-shut (s8k s))) (rfl))
-(a/theorem kw8-close-source [w :- World, x :- Nat]
-  (= (kw8 (close-source w x))
+;; C0: realizing a link keeps every key (deliver-res writes the value, the link stays open)
+(a/theorem kw8-source-upd-k [w :- World, x :- Nat, f :- (=> SourceRow SourceRow), hk :- (forall [s :- SourceRow] (= (x8k (f s)) (x8k s)))]
+  (= (kw8 (source-upd w x f)) (kw8 w))
+  (simp only [kw8 source-upd set-sources (xoks-upd x f hk (:sources w))]))
+(a/theorem kw8-deliver-res [w :- World, x :- Nat, v :- Nat, rr :- RunResult] (= (kw8 (deliver-res w x v rr)) (kw8 w))
+  (simp only [deliver-res finalize-debtor])
+  (exact (Eq.trans (kw8-fin-loop _ _ _)
+           (Eq.trans (kw8-fold (fire-edge rr) (kw8-fire-edge rr) _ _)
+             (Eq.trans (kw8-fold (fire-edge rr) (kw8-fire-edge rr) _ _)
+               (kw8-source-upd-k w x (source-write v) (fn [s :- SourceRow] (Eq.refl (x8k s)))))))))
+(a/theorem kw8-end-link [w :- World, x :- Nat, fl :- Bool, v :- Nat] (= (kw8 (end-link w x fl v)) (kw8 w))
+  (cases hp (link-pending w x))
+  (simp only [end-link hp])
+  (simp only [end-link hp realize-link])
+  (exact (Eq.trans (kw8-deliver-res _ x _ _) (kw8-source-upd-k w x (link-done-row fl 0) (fn [s :- SourceRow] (Eq.refl (x8k s)))))))
+(a/theorem kw8-end-stream [w :- World, x :- Nat] (= (kw8 (end-stream w x)) (kw8 w))
+  (cases hf (source-find w x)) (case' [some s]) (case' [none])
+  (simp only [end-stream hf])
+  (cases hk (Nat.beq (:kind s) sk-stream))
+  (simp only [end-stream hf hk])
+  (simp only [end-stream hf hk]) (exact (kw8-end-link w _ false 0)))
+(a/theorem kw8-clear-rtasks [w :- World, k :- Nat] (= (kw8 (clear-rtasks w k)) (kw8 w))
+  (simp only [clear-rtasks])
+  (exact (kw8-fold clear-rtask (fn [w2 :- World, y :- Nat] (kw8-source-upd-k w2 y (link-set-rtask 0) (fn [s :- SourceRow] (Eq.refl (x8k s))))) _ w)))
+(a/theorem kw8-close-source0 [w :- World, x :- Nat]
+  (= (kw8 (close-source0 w x))
      (KW8.mk (rkeys (:runs w)) (t8ks (:tasks w)) (s8ks (:scopes w)) (tbl-upd x8k-id x xk-shut (x8ks (:sources w)))))
-  (simp only [close-source finalize-debtor])
+  (simp only [close-source0 finalize-debtor])
   (have e1 := (kw8-fin-loop (fin-fuel (wake-closed (source-upd w x source-close-row) x)) (wake-closed (source-upd w x source-close-row) x) (List.cons Nat x (List.nil Nat))))
   (have e2 := (kw8-wake-closed (source-upd w x source-close-row) x))
   (have e3 (= (kw8 (source-upd w x source-close-row))
               (KW8.mk (rkeys (:runs w)) (t8ks (:tasks w)) (s8ks (:scopes w)) (tbl-upd x8k-id x xk-shut (x8ks (:sources w))))))
   (simp only [kw8 source-upd set-sources (xoks-upd-g x source-close-row xk-shut xok-close (:sources w))])
   (exact (Eq.trans e1 (Eq.trans e2 e3))))
+(a/theorem kw8-close-source [w :- World, x :- Nat]
+  (= (kw8 (close-source w x))
+     (KW8.mk (rkeys (:runs w)) (t8ks (:tasks w)) (s8ks (:scopes w)) (tbl-upd x8k-id x xk-shut (x8ks (:sources w)))))
+  (simp only [close-source])
+  (have e := (kw8-end-stream w x))
+  (have e1 (= (rkeys (:runs (end-stream w x))) (rkeys (:runs w)))) (exact (congrArg (fn [k :- KW8] (:rks k)) e))
+  (have e2 (= (t8ks (:tasks (end-stream w x))) (t8ks (:tasks w)))) (exact (congrArg (fn [k :- KW8] (:tks k)) e))
+  (have e3 (= (s8ks (:scopes (end-stream w x))) (s8ks (:scopes w)))) (exact (congrArg (fn [k :- KW8] (:sks k)) e))
+  (have e4 (= (x8ks (:sources (end-stream w x))) (x8ks (:sources w)))) (exact (congrArg (fn [k :- KW8] (:xks k)) e))
+  (rw [(kw8-close-source0 (end-stream w x) x) e1 e2 e3 e4]))
 (a/theorem kw8-close-scope-id [w :- World, x :- Nat]
   (= (kw8 (close-scope-id w x))
      (KW8.mk (rkeys (:runs w)) (t8ks (:tasks w)) (tbl-upd s8k-id x sk-shut (s8ks (:scopes w))) (x8ks (:sources w))))
@@ -939,7 +973,9 @@
 (a/theorem kw8-debtor-side [w :- World, r :- RunRow] (= (kw8 (debtor-side w r)) (kw8 w))
   (cases hc (comp-find w (:of r)))
   (case [none]
-    (simp only [debtor-side hc fire-task-cancelled finalize-debtor])
+    (simp only [debtor-side hc fire-task-cancelled])
+    (rw [(kw8-clear-rtasks _ (:of r))])
+    (simp only [finalize-debtor])
     (have e1 := (kw8-fin-loop (fin-fuel (nat-fold (fire-edge res-cancelled) (task-upd w (:of r) task-cancel-result)
                                            (tbl-scan edge-id (on-task (:of r)) (:edges (task-upd w (:of r) task-cancel-result)))))
                               (nat-fold (fire-edge res-cancelled) (task-upd w (:of r) task-cancel-result)
@@ -1552,6 +1588,204 @@
      (simp only [t5-start hc hg refuse]) (exact h)
      (simp only [t5-start hc hg accept]) (exact (g8-start-raw x8s w c (comp-has-find8 w cid c hc) h))))
 
+;; ===========================================================================
+;; C0: a link owned by the root scope (a stream's first tail, a pull link in a run, the next pull link
+;; of a realization, an appended tail) is created only while the root scope is open: raw0's `c0-gate`
+;; (engine.clj) refuses the item otherwise; the transitions below take the gate's fact
+;; ===========================================================================
+(a/theorem root-ok-any [b :- Bool, w :- World] (=> (= (root-ok-if true w) true) (= (root-ok-if b w) true))
+  (intro h) (simp only [root-ok-if Bool.not_true Bool.false_or] at h) (simp only [root-ok-if h Bool.or_true]))
+(a/theorem root-ok-true [w :- World] (=> (= (root-ok-if true w) true) (= (scope-open-at w root-scope-id) true))
+  (intro h) (simp only [root-ok-if Bool.not_true Bool.false_or] at h) (exact h))
+
+(a/theorem x8-root-link [w :- World, id :- Nat, t :- Nat]
+  (=> (= (inv-sample w) true) (= (scope-open-at w root-scope-id) true) (= (x8 (s8ks (:scopes w)) (x8k (new-link id root-scope-id t))) true))
+  (intros h ho)
+  (simp only [x8 x8k new-link (open-not-closed w root-scope-id h ho) Bool.not_false Bool.or_true]))
+
+(override! G8 'inv-create-link-cur '[inv-record-basis]
+  '(a/theorem g8-create-link-cur [x8s :- (List Nat), w :- World, r :- RunRow]
+     (=> (= (scope-open-at w root-scope-id) true) (= (g8 x8s w) true) (= (g8 x8s (create-link-cur w r)) true))
+     (intros ho h)
+     (simp only [create-link-cur])
+     (exact (g8-run-upd x8s _ (:id r) run-tick run-tick-run-id (fn [q :- RunRow] (Eq.refl (rkey q)))
+              (g8-record-basis x8s _ r (:next-id w)
+                (g8-source-ins x8s w (new-link (:next-id w) root-scope-id 0) (rfl) (x8-root-link w _ _ (g8-sample x8s w h) ho) h))))))
+(override! G8 't-create-link-inv '[inv-create-link-cur]
+  '(a/theorem t-create-link-g8 [x8s :- (List Nat), w :- World, st :- Nat, l :- Nat]
+     (=> (= (root-ok-if true w) true) (= (g8 x8s w) true) (= (g8 x8s (:world (t-create-link w st l))) true))
+     (intros hc0 h)
+     (have ho := (root-ok-true w hc0))
+     (cases ht (tok-run w st))
+     (case [none] (simp only [t-create-link ht refuse]) (exact h))
+     (case [some r]
+       (cases hr (readopt-source w r l))
+       (case [none]
+         (cases hg (Nat.beq l (:next-id w)))
+         (case [false] (simp only [t-create-link ht hr hg refuse]) (exact h))
+         (case [true] (simp only [t-create-link ht hr hg accept]) (exact (g8-create-link-cur x8s w r ho h))))
+       (case [some x]
+         (cases hk (Nat.beq (:kind x) sk-link))
+         (case [false] (simp only [t-create-link ht hr hk refuse]) (exact h))
+         (case [true]
+           (simp only [t-create-link ht hr hk accept respawn-raw])
+           (exact (g8-run-upd x8s _ (:id r) run-tick run-tick-run-id (fn [q :- RunRow] (Eq.refl (rkey q)))
+                    (g8-comp-upd x8s w (:of r) _ (comp-rebasis-id _) (comp-rebasis-pending _) h))))))))
+(override! G8 't-create-link-top-inv '[]
+  '(a/theorem t-create-link-top-g8 [x8s :- (List Nat), w :- World, scope :- Nat, l :- Nat]
+     (=> (= (g8 x8s w) true) (= (g8 x8s (:world (t-create-link-top w scope l))) true))
+     (intro h)
+     (cases hg (Bool.and (Nat.beq l (:next-id w)) (scope-open-at w scope)))
+     (simp only [t-create-link-top hg refuse]) (exact h)
+     (have hso (= (scope-open-at w scope) true)) (simp only [Bool.and_eq_true] at hg) (exact (And.right hg))
+     (have hx (= (x8 (s8ks (:scopes w)) (x8k (new-link (:next-id w) scope 0))) true))
+     (simp only [x8 x8k new-link (open-not-closed w scope (g8-sample x8s w h) hso) Bool.not_false Bool.or_true])
+     (simp only [t-create-link-top hg accept])
+     (exact (g8-source-ins x8s w (new-link (:next-id w) scope 0) (rfl) hx h))))
+(override! G8 'inv-stream-rows '[]
+  '(a/theorem g8-stream-rows [x8s :- (List Nat), w :- World, owner :- Nat, v :- Nat]
+     (=> (= (sclosed (s8ks (:scopes w)) owner) false) (= (scope-open-at w root-scope-id) true) (= (g8 x8s w) true)
+         (= (g8 x8s (stream-rows w owner v)) true))
+     (intros hc ho h)
+     (have hx (= (x8 (s8ks (:scopes w)) (x8k (new-stream (:next-id w) owner v))) true))
+     (simp only [x8 x8k new-stream hc Bool.not_false Bool.or_true])
+     (have h1 := (g8-source-ins x8s w (new-stream (:next-id w) owner v) (rfl) hx h))
+     (simp only [stream-rows])
+     (exact (g8-source-ins x8s (bump (source-ins w (new-stream (:next-id w) owner v))) (new-link (+ (:next-id w) 1) root-scope-id (:next-id w)) (rfl)
+              (x8-root-link w _ _ (g8-sample x8s w h) ho) h1))))
+(override! G8 'inv-create-stream-cur '[inv-record-basis inv-stream-rows]
+  '(a/theorem g8-create-stream-cur [x8s :- (List Nat), w :- World, r :- RunRow, v :- Nat]
+     (=> (= (run-cur-closed w r) false) (= (scope-open-at w root-scope-id) true) (= (g8 x8s w) true)
+         (= (g8 x8s (create-stream-cur w r v)) true))
+     (intros hc ho h)
+     (simp only [create-stream-cur])
+     (exact (g8-run-upd x8s _ (:id r) run-tick run-tick-run-id (fn [q :- RunRow] (Eq.refl (rkey q)))
+              (g8-record-basis x8s _ r (:next-id w)
+                (g8-stream-rows x8s w (src-owner-cur w r) v (src-owner-ok8 w r (g8-sample x8s w h) hc) ho h))))))
+(override! G8 't1-stream-inv '[inv-create-stream-cur]
+  '(a/theorem t1-stream-g8 [x8s :- (List Nat), w :- World, st :- Nat, v :- Nat, fresh :- Nat]
+     (=> (= (cur-closed w st) false) (= (scope-open-at w root-scope-id) true) (= (g8 x8s w) true)
+         (= (g8 x8s (:world (t1-stream w st v fresh))) true))
+     (intros hcc ho h)
+     (cases ht (tok-run w st))
+     (case [none] (simp only [t1-stream ht refuse]) (exact h))
+     (case [some r]
+       (cases hr (readopt-source w r fresh))
+       (case [none]
+         (cases hg (Nat.beq fresh (:next-id w)))
+         (case [false] (simp only [t1-stream ht hr hg refuse]) (exact h))
+         (case [true] (simp only [t1-stream ht hr hg accept]) (exact (g8-create-stream-cur x8s w r v (cur-of-tok w st r hcc ht) ho h))))
+       (case [some x]
+         (cases hk (Nat.beq (:kind x) sk-stream))
+         (case [false] (simp only [t1-stream ht hr hk refuse]) (exact h))
+         (case [true]
+           (simp only [t1-stream ht hr hk accept respawn-raw])
+           (exact (g8-run-upd x8s _ (:id r) run-tick run-tick-run-id (fn [q :- RunRow] (Eq.refl (rkey q)))
+                    (g8-comp-upd x8s w (:of r) _ (comp-rebasis-id _) (comp-rebasis-pending _) h))))))))
+(override! G8 't1-body-inv '[t1-full-inv t1-stream-inv]
+  '(a/theorem t1-body-g8 [x8s :- (List Nat), w :- World, st :- Nat, kind :- Nat, v :- Nat, fresh :- Nat]
+     (=> (= (cur-closed w st) false) (= (root-ok-if (Nat.beq kind sk-stream) w) true) (= (g8 x8s w) true)
+         (= (g8 x8s (:world (t1-body w st kind v fresh))) true))
+     (intros hcc hc0 h)
+     (cases hk (Nat.beq kind sk-stream))
+     (simp only [t1-body hk]) (exact (t1-full-g8 x8s w st kind v fresh hcc h))
+     (simp only [root-ok-if hk Bool.not_true Bool.false_or] at hc0)
+     (simp only [t1-body hk]) (exact (t1-stream-g8 x8s w st v fresh hcc hc0 h))))
+(override! G8 't1-top-full-inv '[t1-top-inv inv-stream-rows]
+  '(a/theorem t1-top-full-g8 [x8s :- (List Nat), w :- World, scope :- Nat, kind :- Nat, v :- Nat, fresh :- Nat]
+     (=> (= (root-ok-if (Nat.beq kind sk-stream) w) true) (= (g8 x8s w) true)
+         (= (g8 x8s (:world (t1-top-full w scope kind v fresh))) true))
+     (intros hc0 h)
+     (cases hk (Nat.beq kind sk-stream))
+     (simp only [t1-top-full hk]) (exact (t1-top-g8 x8s w scope kind v fresh h))
+     (simp only [root-ok-if hk Bool.not_true Bool.false_or] at hc0)
+     (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (scope-open-at w scope)))
+     (simp only [t1-top-full hk hg refuse]) (exact h)
+     (have hso (= (scope-open-at w scope) true)) (simp only [Bool.and_eq_true] at hg) (exact (And.right hg))
+     (simp only [t1-top-full hk hg accept])
+     (exact (g8-stream-rows x8s w scope v (open-not-closed w scope (g8-sample x8s w h) hso) hc0 h))))
+(override! G8 'inv-link-demand-raw '[inv-spawn-rows]
+  '(a/theorem g8-link-demand-raw [x8s :- (List Nat), w :- World, l :- Nat]
+     (=> (= (scope-open-at w root-scope-id) true) (= (g8 x8s w) true) (= (g8 x8s (link-demand-raw w l)) true))
+     (intros ho h)
+     (simp only [link-demand-raw])
+     (exact (g8-source-upd x8s _ l _ (link-set-rtask-id _) (fn [s :- SourceRow] (Eq.refl (x8k s)))
+              (g8-task-upd x8s _ (:next-id w) task-h0 task-h0-id (fn [t :- TaskRow] (Eq.refl (t8k t)))
+                (g8-spawn-rows x8s w root-scope-id (List.nil Nat) (open-not-closed w root-scope-id (g8-sample x8s w h) ho) h))))))
+(override! G8 't-link-demand-inv '[inv-link-demand-raw]
+  '(a/theorem t-link-demand-g8 [x8s :- (List Nat), w :- World, l :- Nat, k :- Nat]
+     (=> (= (g8 x8s w) true) (= (g8 x8s (:world (t-link-demand w l k))) true))
+     (intro h)
+     (cases hf (source-find w l)) (case' [some s]) (case' [none])
+     (simp only [t-link-demand hf refuse]) (exact h)
+     (cases hg (Bool.and (link-idle w s) (Bool.and (Nat.beq k (:next-id w)) (scope-open-at w root-scope-id))))
+     (simp only [t-link-demand hf hg refuse]) (exact h)
+     (have ho (= (scope-open-at w root-scope-id) true)) (simp only [Bool.and_eq_true] at hg) (exact (And.right (And.right hg)))
+     (simp only [t-link-demand hf hg accept]) (exact (g8-link-demand-raw x8s w l ho h))))
+(override! G8 'inv-link-next-raw '[inv-realize-link]
+  '(a/theorem g8-link-next-raw [x8s :- (List Nat), w :- World, l :- Nat, v :- Nat]
+     (=> (= (scope-open-at w root-scope-id) true) (= (g8 x8s w) true) (= (g8 x8s (link-next-raw w l v)) true))
+     (intros ho h)
+     (simp only [link-next-raw])
+     (exact (g8-realize-link x8s _ l v false _
+              (g8-source-ins x8s w (new-link (:next-id w) root-scope-id 0) (rfl) (x8-root-link w _ _ (g8-sample x8s w h) ho) h)))))
+(override! G8 'link-realize-raw-inv '[inv-link-next-raw inv-realize-link]
+  '(a/theorem link-realize-raw-g8 [x8s :- (List Nat), w :- World, l :- Nat, tag :- Nat, v :- Nat, n :- Nat]
+     (=> (= (root-ok-if (Nat.beq tag res-ok) w) true) (= (g8 x8s w) true) (= (g8 x8s (:world (link-realize-raw w l tag v n))) true))
+     (intros hc0 h)
+     (cases h1 (Nat.beq tag res-ok))
+     (case [true]
+       (have ho := (root-ok-true w (Eq.trans (congrArg (fn [b :- Bool] (root-ok-if b w)) (Eq.symm h1)) hc0)))
+       (cases h2 (Nat.beq n (:next-id w)))
+       (case [false] (simp only [link-realize-raw h1 h2 refuse]) (exact h))
+       (case [true] (simp only [link-realize-raw h1 h2 accept]) (exact (g8-link-next-raw x8s w l v ho h))))
+     (case [false]
+       (cases h2 (Nat.beq n 0))
+       (case [false] (simp only [link-realize-raw h1 h2 refuse]) (exact h))
+       (case [true]
+         (cases h3 (Nat.beq tag res-none))
+         (case [true] (simp only [link-realize-raw h1 h2 h3 accept]) (exact (g8-realize-link x8s w l 0 false 0 h)))
+         (case [false]
+           (cases h4 (Nat.beq tag res-err))
+           (case [false] (simp only [link-realize-raw h1 h2 h3 h4 refuse]) (exact h))
+           (case [true] (simp only [link-realize-raw h1 h2 h3 h4 accept]) (exact (g8-realize-link x8s w l v true 0 h))))))))
+(override! G8 't-link-realize-inv '[link-realize-raw-inv]
+  '(a/theorem t-link-realize-g8 [x8s :- (List Nat), w :- World, l :- Nat, tag :- Nat, v :- Nat, n :- Nat]
+     (=> (= (root-ok-if (Nat.beq tag res-ok) w) true) (= (g8 x8s w) true) (= (g8 x8s (:world (t-link-realize w l tag v n))) true))
+     (intros hc1 h)
+     (cases hf (source-find w l)) (case' [some s]) (case' [none])
+     (simp only [t-link-realize hf refuse]) (exact h)
+     (cases hg (link-idle w s))
+     (simp only [t-link-realize hf hg refuse]) (exact h)
+     (simp only [t-link-realize hf hg]) (exact (link-realize-raw-g8 x8s w l tag v n hc1 h))))
+(override! G8 'inv-append-raw '[inv-realize-link]
+  '(a/theorem g8-append-raw [x8s :- (List Nat), w :- World, x :- Nat, v :- Nat, old :- Nat]
+     (=> (= (scope-open-at w root-scope-id) true) (= (g8 x8s w) true) (= (g8 x8s (append-raw w x v old)) true))
+     (intros ho h)
+     (simp only [append-raw])
+     (exact (g8-realize-link x8s _ old v false _
+              (g8-source-ins x8s (source-upd w x (stream-set-tail (:next-id w))) (new-link (:next-id w) root-scope-id x) (rfl)
+                (x8-root-link w _ _ (g8-sample x8s w h) ho)
+                (g8-source-upd x8s w x (stream-set-tail (:next-id w)) (stream-set-tail-id _) (fn [q :- SourceRow] (Eq.refl (x8k q))) h))))))
+(override! G8 't-append-inv '[inv-append-raw]
+  '(a/theorem t-append-g8 [x8s :- (List Nat), w :- World, x :- Nat, v :- Nat, t :- Nat]
+     (=> (= (root-ok-if true w) true) (= (g8 x8s w) true) (= (g8 x8s (:world (t-append w x v t))) true))
+     (intros hc0 h)
+     (have ho := (root-ok-true w hc0))
+     (cases hf (source-find w x)) (case' [some s]) (case' [none])
+     (simp only [t-append hf refuse]) (exact h)
+     (cases hg (Bool.and (open-kind sk-stream s) (Bool.and (Nat.beq t (:next-id w)) (link-pending w (:tail s)))))
+     (simp only [t-append hf hg refuse]) (exact h)
+     (simp only [t-append hf hg accept]) (exact (g8-append-raw x8s w x v _ ho h))))
+
+(override! G8 'c0-gate-inv '[]
+  '(a/theorem c0-gate-g8 [x8s :- (List Nat), w :- World, b :- Bool, o :- Outcome]
+     (=> (= (g8 x8s w) true) (=> (= (root-ok-if b w) true) (= (g8 x8s (:world o)) true)) (= (g8 x8s (:world (c0-gate w b o))) true))
+     (intros h ho)
+     (cases hg (root-ok-if b w))
+     (simp only [c0-gate hg refuse]) (exact h)
+     (simp only [c0-gate hg]) (exact (ho hg))))
+
 ;; ---- the copy's patches: keys kept by lemma (wake, consume), shut sources, orphaned tasks
 (a/theorem x8k-consume [s :- SourceRow] (= (x8k (source-consume s)) (x8k s))
   (cases ha (src-available s)) (all_goals (cases h (Nat.beq (:kind s) sk-mailbox)))
@@ -1940,7 +2174,18 @@
     (t-release-world-inv w h) (t-release-world-inv w hga h)
     (t11-inv w _ _ h) (t11-inv w _ _ hga h)
     (t12-inv w _ _ _ h) (t12-inv w _ _ _ hga h)
-    (t1-full-inv w _ _ _ _ h) (t1-full-inv w st kind v fresh (bshut-cur w st hc) h)
+    (c0-gate-inv w _ _ h (t1-body-inv w st kind v fresh h))
+    (c0-gate-inv w _ _ h (fn [hc0 :- (= (root-ok-if (Nat.beq kind sk-stream) w) true)] (t1-body-inv w st kind v fresh (bshut-cur w st hc) hc0 h)))
+    (c0-gate-inv w _ _ h (t1-top-full-inv w scope kind v fresh h))
+    (c0-gate-inv w _ _ h (fn [hc0 :- (= (root-ok-if (Nat.beq kind sk-stream) w) true)] (t1-top-full-inv w scope kind v fresh hc0 h)))
+    (c0-gate-inv w _ _ h (t-create-link-inv w st l h))
+    (c0-gate-inv w _ _ h (fn [hc0 :- (= (root-ok-if true w) true)] (t-create-link-inv w st l hc0 h)))
+    (c0-gate-inv w _ _ h (t-create-link-top-inv w sc l h))
+    (c0-gate-inv w _ _ h (fn [hc0 :- (= (root-ok-if true w) true)] (t-create-link-top-inv w sc l h)))
+    (c0-gate-inv w _ _ h (t-link-realize-inv w l tag v n h))
+    (c0-gate-inv w _ _ h (fn [hc0 :- (= (root-ok-if true w) true)] (t-link-realize-inv w l tag v n (root-ok-any (Nat.beq tag res-ok) w hc0) h)))
+    (c0-gate-inv w _ _ h (t-append-inv w x v t h))
+    (c0-gate-inv w _ _ h (fn [hc0 :- (= (root-ok-if true w) true)] (t-append-inv w x v t hc0 h)))
     (t4-inv w _ _ _ _ h) (t4-inv w st b fresh ins (bshut-cur w st hc) h)})
 (defn- g8-add-ga [form calls]
   (let [[hd nm binders stmt & proof] form
@@ -1967,6 +2212,7 @@
 (lcopy! G8 'inv-detach)
 (lcopy! G8 'inv-demote-epoch)
 (lcopy! G8 'inv-demote-finish)
+(lcopy! G8 'inv-end-basis)
 
 (a/theorem g8-demote-aa [x8s :- (List Nat), w :- World, cid :- Nat]
   (=> (= (acts-alive w) true) (= (g8 x8s w) true) (= (g8 x8s (demote w cid)) true))
@@ -1978,8 +2224,8 @@
     (case [true] (simp only [demote hf hi]) (exact h))
     (case [false]
       (simp only [demote hf hi demote-edges])
-      (exact (g8-demote-finish x8s _ cid _ (g8-drop-edges x8s _ (not-dep-of cid)
-               (g8-demote-epoch x8s _ cid _ (g8-run-cascade-aa x8s w _ ha h))))))))
+      (exact (g8-demote-finish x8s _ cid _ (g8-end-basis x8s _ cid (g8-drop-edges x8s _ (not-dep-of cid)
+               (g8-demote-epoch x8s _ cid _ (g8-run-cascade-aa x8s w _ ha h)))))))))
 (a/theorem g8-demote-fold [x8s :- (List Nat), a :- Nat, k :- Nat, L :- (List Nat)]
   (forall [W :- World] (=> (= (bn a k W) true) (= (g8 x8s W) true) (= (g8 x8s (nat-fold demote W L)) true)))
   (induction L)

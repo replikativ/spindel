@@ -428,7 +428,11 @@
          [(cons x t) (if (Nat.beq (version-of c x) (version-of b x)) (diff-ids c b t)
                          (List.cons Nat x (diff-ids c b t)))]))
 
-(a/defn diff [c :- World, b :- World] (List Nat) (diff-ids c b (tbl-ids source-id (:sources b))))
+;; C0 (spec §4.3 Links and forks): links are not part of a mergeable fork's basis (each world
+;; realizes its own elements); a stream the fork appended to is (its version changed: the write is
+;; refused, so the merge is: stream merge is C2)
+(a/defn not-link [s :- SourceRow] Bool (Bool.not (Nat.beq (:kind s) sk-link)))
+(a/defn diff [c :- World, b :- World] (List Nat) (diff-ids c b (tbl-ids source-id (tbl-filter not-link (:sources b)))))
 
 (a/defn no-conflict [p :- World, b :- World, ds :- (List Nat)] Bool
   (match ds [nil true]

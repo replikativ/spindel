@@ -44,7 +44,9 @@
 (def edge-phases [:armed :fired])
 (def act-modes [:one :all :any])
 (def res-phases [:armed :fired :cancelling])
-(def source-kinds [:signal :cell :deferred :mailbox :semaphore :rerun])
+;; model codes (state.clj): 5 = rerun (never created), C0's link/stream are 6/7 (the engine's
+;; SRC-LINK 5 / SRC-STREAM 6 are mapped through their keywords)
+(def source-kinds [:signal :cell :deferred :mailbox :semaphore :rerun :link :stream])
 (def res-kinds [:timer :external :offload :native])
 
 (defn- index-of [v x] (let [i (.indexOf ^java.util.List v x)] (when (neg? i) (throw (ex-info "unknown code" {:v v :x x}))) i))
@@ -97,8 +99,23 @@
                          :effect-index (:effect-index x) :finalizers (vec (repeat (count (:finalizers x)) 0))
                          :resources (vec (:resources x))}))
      :sources (tbl (:sources w)
-                   (fn [x] {:owner (opt0 (:owner x)) :kind (kw-of source-kinds (:kind x)) :state (:state x)
-                            :version (:version x) :open (:open x) :handles (:handles x)}))
+                   (fn [x] (let [k (kw-of source-kinds (:kind x))]
+                             (cond-> {:owner (opt0 (:owner x)) :kind k
+                                      ;; a stream's state is its tail (projected as :tail; engine nil)
+                                      :state (when-not (= k :stream) (:state x))
+                                      :version (:version x) :open (:open x) :handles (:handles x)}
+                               ;; C0 links: the realizer (T14/T21 clear it at the realizer's cancel, as the
+                               ;; engine's link-cancelled!; link-realize clears it), pull = a pull link
+                               ;; still unrealized (or a computation's head, which the engine keeps for
+                               ;; adoption), the next link
+                               (= k :link)
+                               (assoc :rtask (opt0 (:rtask x))
+                                      :pull (and (zero? (:tail x))
+                                                 (or (zero? (:version x))
+                                                     (boolean (some (fn [c] (some #(= (:id x) (:id %)) (concat (:basis c) (:adopt-basis c))))
+                                                                    (:comps w)))))
+                                      :next (opt0 (:next x)))
+                               (= k :stream) (assoc :tail (opt0 (:tail x)))))))
      :edges (tbl (:edges w)
                  (fn [e] (let [k (edge-kinds (:kind e))]
                            {:kind k :creditor (:creditor e) :debtor (:debtor e)
@@ -190,7 +207,16 @@
                                                 {:id id :owner (nil0 (:owner x)) :kind (code-of source-kinds (:kind x))
                                                  :state (nil0 (:state x)) :version (:version x) :open (boolean (:open x))
                                                  :handles (:handles x)}
-                                                {:queue (vec (:queue x))})))
+                                                {:queue (vec (:queue x))
+                                                 ;; C0: a push link's `tail` is its stream (the stream whose tail it is,
+                                                 ;; when unrealized; 0 otherwise: nothing reads it then); `fail` is not
+                                                 ;; projected (the engine interns the failure box as the state)
+                                                 :rtask (nil0 (:rtask x)) :next (nil0 (:next x))
+                                                 :tail (or (:tail x)
+                                                           (when (= :link (:kind x))
+                                                             (some (fn [[sid y]] (when (= id (:tail y)) sid)) (:sources p)))
+                                                           0)
+                                                 :fail false})))
             :edges (rows :edges
                          (fn [id e]
                            (let [[bv _] (:baseline e)
@@ -280,8 +306,11 @@
                   queue object; the model keeps the creation value in `state` and the queue
                   in `SourceRow.queue` (not projected by the engine)
   :wait-at        `:edges :at` of non-dep edges: spec §2 gives `at` a meaning for dep edges
-                  only (re-entry point); the engine leaves 0, the model stores the site index"
-  {:mailbox-state true :wait-at true})
+                  only (re-entry point); the engine leaves 0, the model stores the site index
+  :link-state     `:sources :state` of a realized link (C0): the engine interns its value
+                  [v next-handle] (or the failure box) as one opaque value; the model keeps v
+                  in `state` and next in `:next` (compared), the error in `state` with `fail`"
+  {:mailbox-state true :wait-at true :link-state true})
 
 (def ^:dynamic *deviations* pending-deviations)
 
@@ -304,6 +333,9 @@
                             (update :act (partial kw-of run-acts)) (update :mode (partial kw-of run-modes))))
      :sources (rows :sources #(cond-> (update % :kind (partial kw-of source-kinds))
                                 (and (:mailbox-state *deviations*) (= :mailbox (kw-of source-kinds (:kind %))))
+                                (dissoc :state)
+                                (and (:link-state *deviations*) (= :link (kw-of source-kinds (:kind %)))
+                                     (pos? (:version %)))
                                 (dissoc :state)))
      :edges (rows :edges #(cond-> % (and (:wait-at *deviations*) (not= :dep (:kind %))) (dissoc :at)))
      :acts (rows :acts #(-> % (update :mode (partial kw-of act-modes)) (update :members (comp vec (partial sort-by second)))))
@@ -358,7 +390,7 @@
 
 (def ^:private stamp-ctors
   "Items whose first field is the acting run's stamp (body effects and completion)."
-  #{:create-source :track :arm :create-comp :spawn :await :complete :take :open-scope})
+  #{:create-source :track :arm :create-comp :spawn :await :complete :take :open-scope :create-link})
 
 (defn- item [tag & fields] (into [(ctor-idx tag)] fields))
 (defn- payload

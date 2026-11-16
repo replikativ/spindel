@@ -1437,12 +1437,15 @@
   '{(t6-inv w _ _ _ _ _ _ h) (t6-inv w _ _ _ _ _ _ hg7 h)
     (t22-inv w _ _ h) (t22-inv w _ _ hg7 h)
     (t8-full-inv w _ _ _ h) (t8-full-inv w _ _ _ hg7 h)
+    (t8-obs-inv w _ _ _ h) (t8-obs-inv w _ _ _ hg7 hg10 h)
     (t12-inv w _ _ _ h) (t12-inv w _ _ _ hg10 h)})
 (defn- gd-add-hyps [form calls]
   (let [[hd nm binders stmt & proof] form
         stmt2 (apply list '=> '(= (g7 w) true) '(= (g10r w) true) (rest stmt))
         proof2 (map (fn [t] (if (= t '(intro h)) '(intros hg7 hg10 h) t)) proof)]
     (subst-forms #(contains? calls %) calls (apply list hd nm binders stmt2 proof2))))
+;; C0: T8 goes through t8-obs (a stream is refused)
+(patch! GD 't8-obs-inv (fn [form] (gd-add-hyps (gd-patch form) '{(t8-full-inv w d cb fresh h) (t8-full-inv w d cb fresh hg7 h)})))
 (patch! GD 'raw0-inv (fn [form] (gd-add-hyps (gd-patch form) gd-calls)))
 (patch! GD 'raw0g-inv (fn [form] (gd-add-hyps (gd-patch form) '{(raw0-inv w it h) (raw0-inv w it hg7 hg10 h)})))
 (patch! GD 'raw-inv (fn [form] (gd-add-hyps (gd-patch form) '{(raw0g-inv w it h) (raw0g-inv w it hg7 hg10 h)})))

@@ -1960,6 +1960,119 @@
 (a/theorem comp-find-has [w :- World, x :- Nat, c :- CompRow] (=> (= (comp-find w x) (Option.some CompRow c)) (= (tbl-has comp-id x (:comps w)) true))
   (intro hf) (exact (tbl-find-has CompRow comp-id x c (:comps w) hf)))
 
+;; ---- C0: demote ends the streams of C's basis (`end-basis`) after C's runs are dead and C's dep
+;; edges are dropped; end-basis keeps both: KDB with empty lists (no run of C revives) and EDB (no dep
+;; edge of C appears: every edge edit keeps kind and creditor, the rest remove edges)
+
+(lcopy! KDB 'inv-end-basis)
+
+(a/theorem kd-nil-of [c :- Nat, q :- RunRow] (=> (= (not-alive-of c q) true) (= (kd-one c (List.nil Nat) (List.nil Nat) q) true))
+  (intro h)
+  (cases hl (run-alive q))
+  (case [false] (simp only [kd-one hl reach-mem Bool.not_false Bool.true_or Bool.and_self]))
+  (case [true]
+    (simp only [not-alive-of hl Bool.not_true Bool.false_or] at h)
+    (simp only [kd-one hl h reach-mem Bool.not_false Bool.not_true Bool.false_or Bool.true_or Bool.or_false Bool.and_self])))
+(a/theorem kd-nil-to [c :- Nat, q :- RunRow] (=> (= (kd-one c (List.nil Nat) (List.nil Nat) q) true) (= (not-alive-of c q) true))
+  (intro h)
+  (cases hl (run-alive q))
+  (case [false] (simp only [not-alive-of hl Bool.not_false Bool.true_or]))
+  (case [true]
+    (simp only [kd-one hl reach-mem Bool.not_true Bool.not_false Bool.false_or Bool.or_false Bool.or_true Bool.and_true] at h)
+    (simp only [not-alive-of hl h Bool.not_true Bool.false_or])))
+
+(a/theorem end-basis-dead [w :- World, c :- Nat, cid :- Nat]
+  (=> (= (inv-sample w) true) (= (tbl-all (not-alive-of c) (:runs w)) true)
+      (= (tbl-all (not-alive-of c) (:runs (end-basis w cid))) true))
+  (intros h hn)
+  (have k0 := (kdb-intro c (List.nil Nat) (List.nil Nat) w h
+                (tbl-all-mono RunRow (not-alive-of c) (kd-one c (List.nil Nat) (List.nil Nat)) (kd-nil-of c) (:runs w) hn)))
+  (have k1 := (kdb-rest-of _ _ _ _ (kdb-end-basis c (List.nil Nat) (List.nil Nat) w cid k0)))
+  (simp only [kdb-rest] at k1)
+  (exact (tbl-all-mono RunRow (kd-one c (List.nil Nat) (List.nil Nat)) (not-alive-of c) (kd-nil-to c) _ k1)))
+
+(a/defn edb-rest [kc0 :- Nat, w :- World] Bool (tbl-all (not-dep-of kc0) (:edges w)))
+(a/defn edb [kc0 :- Nat, w :- World] Bool (Bool.and (inv-sample w) (edb-rest kc0 w)))
+(a/theorem edb-sample [kc0 :- Nat, w :- World] (=> (= (edb kc0 w) true) (= (inv-sample w) true))
+  (intro h) (simp only [edb Bool.and_eq_true] at h) (exact (And.left h)))
+(a/theorem edb-rest-of [kc0 :- Nat, w :- World] (=> (= (edb kc0 w) true) (= (edb-rest kc0 w) true))
+  (intro h) (simp only [edb Bool.and_eq_true] at h) (exact (And.right h)))
+(a/theorem edb-intro [kc0 :- Nat, w :- World] (=> (= (inv-sample w) true) (= (edb-rest kc0 w) true) (= (edb kc0 w) true))
+  (intros h1 h2) (simp only [edb h1 h2 Bool.and_self]))
+(a/theorem edb-parts [kc0 :- Nat, w :- World]
+  (=> (= (edb kc0 w) true) (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
+  (intro h) (exact (inv-parts w (edb-sample kc0 w h))))
+
+(a/theorem edb-rest-edge-upd [kc0 :- Nat, w :- World, x :- Nat, f :- (=> EdgeRow EdgeRow),
+                              hk :- (forall [e :- EdgeRow] (= (:kind (f e)) (:kind e))),
+                              hc :- (forall [e :- EdgeRow] (= (:creditor (f e)) (:creditor e)))]
+  (=> (= (edb-rest kc0 w) true) (= (edb-rest kc0 (edge-upd w x f)) true))
+  (intro h)
+  (simp only [edb-rest edge-upd set-edges])
+  (apply (tbl-all-upd EdgeRow edge-id x f (not-dep-of kc0) (not-dep-of kc0) _ _ (:edges w) h))
+  (intros e he hx) (simp only [not-dep-of dep-of (hk e) (hc e)]) (exact he)
+  (intros e he hx) (exact he))
+(a/theorem edb-rest-filter [kc0 :- Nat, w2 :- World, w :- World, q :- (=> EdgeRow Bool)]
+  (=> (= (:edges w2) (tbl-filter q (:edges w))) (= (edb-rest kc0 w) true) (= (edb-rest kc0 w2) true))
+  (intros e h) (simp only [edb-rest e]) (exact (tbl-all-filter EdgeRow (not-dep-of kc0) q (:edges w) h)))
+(a/theorem edb-rest-edges [kc0 :- Nat, w2 :- World, w :- World]
+  (=> (= (:edges w2) (:edges w)) (= (edb-rest kc0 w2) (edb-rest kc0 w)))
+  (intro e) (simp only [edb-rest e]))
+(a/theorem edb-rest-edge-del [kc0 :- Nat, w :- World, x :- Nat]
+  (=> (= (edb-rest kc0 w) true) (= (edb-rest kc0 (edge-del w x)) true))
+  (intro h) (simp only [edb-rest edge-del set-edges])
+  (exact (tbl-all-del EdgeRow edge-id x (not-dep-of kc0) (not-dep-of kc0)
+           (fn [e :- EdgeRow, he :- (= (not-dep-of kc0 e) true), hx :- (= (Nat.beq (edge-id e) x) false)] he) (:edges w) h)))
+(a/theorem edb-rest-remove-edge [kc0 :- Nat, w :- World, x :- Nat]
+  (=> (= (edb-rest kc0 w) true) (= (edb-rest kc0 (remove-edge w x)) true))
+  (intro h)
+  (cases hf (edge-find w x)) (case' [some e]) (case' [none])
+  (simp only [remove-edge hf]) (exact h)
+  (cases hm (:marked e))
+  (all_goals (simp only [remove-edge hf hm]))
+  (exact (edb-rest-edge-del kc0 w x h))
+  (exact (edb-rest-edge-del kc0 w x h)))
+(a/theorem edb-rest-mark [kc0 :- Nat, w :- World, x :- Nat]
+  (=> (= (edb-rest kc0 w) true) (= (edb-rest kc0 (mark-edge w x)) true))
+  (intro h)
+  (cases hf (edge-find w x)) (case' [some e]) (case' [none])
+  (simp only [mark-edge hf]) (exact h)
+  (cases hm (:marked e))
+  (all_goals (simp only [mark-edge hf hm]))
+  (exact (edb-rest-edge-upd kc0 w x (edge-set-marked true) (fn [e2 :- EdgeRow] (Eq.refl (:kind e2))) (fn [e2 :- EdgeRow] (Eq.refl (:creditor e2))) h))
+  (exact h))
+(a/theorem edb-rest-unmark [kc0 :- Nat, w :- World, x :- Nat]
+  (=> (= (edb-rest kc0 w) true) (= (edb-rest kc0 (unmark-edge w x)) true))
+  (intro h)
+  (cases hf (edge-find w x)) (case' [some e]) (case' [none])
+  (simp only [unmark-edge hf]) (exact h)
+  (cases hm (:marked e))
+  (all_goals (simp only [unmark-edge hf hm]))
+  (exact h)
+  (exact (edb-rest-edge-upd kc0 w x (edge-set-marked false) (fn [e2 :- EdgeRow] (Eq.refl (:kind e2))) (fn [e2 :- EdgeRow] (Eq.refl (:creditor e2))) h)))
+
+(def EDB (mk-bundle 'edb '[kc0 :- Nat] "edb-" {}))
+(swap! (:renames EDB) assoc 'inv-parts 'edb-parts)
+(doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del
+            inv-set-pins inv-resource-del inv-scope-del inv-cleanup-ins inv-act-upd inv-task-upd inv-run-upd inv-run-del
+            inv-source-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-act-ins-fresh inv-task-ins-fresh inv-bump
+            inv-comp-upd inv-comp-ins-fresh]]
+  (prim! EDB o nil))
+(prim! EDB 'inv-edge-upd '(edb-rest-edge-upd kc0 w x f hk hc R))
+(prim! EDB 'inv-remove-edge '(edb-rest-remove-edge kc0 w x R))
+(prim! EDB 'mark-edge-inv-sample '(edb-rest-mark kc0 w x R))
+(prim! EDB 'unmark-edge-inv-sample '(edb-rest-unmark kc0 w x R))
+(prim! EDB 'inv-drop-cred '(edb-rest-filter kc0 (drop-cred-edges w a) w (cred-ne a) (rfl) R))
+(prim! EDB 'inv-drop-act '(edb-rest-filter kc0 (drop-act w a) w (cred-ne a) (rfl) R))
+(prim! EDB 'inv-drop-edges '(edb-rest-filter kc0 (drop-edges w p) w p (rfl) R))
+(lcopy! EDB 'inv-end-basis)
+
+(a/theorem end-basis-no-dep [w :- World, c :- Nat, cid :- Nat]
+  (=> (= (inv-sample w) true) (= (tbl-all (not-dep-of c) (:edges w)) true)
+      (= (tbl-all (not-dep-of c) (:edges (end-basis w cid))) true))
+  (intros h hn)
+  (exact (edb-rest-of c _ (edb-end-basis c w cid (edb-intro c w h hn)))))
+
 (override! G7 'inv-demote-finish '[inv-drop-edges inv-comp-del-unref]
   '(a/theorem g7-demote-finish [w :- World, cid :- Nat, vs :- (List Valid)]
      (=> (= (tbl-all (not-alive-of cid) (:runs w)) true) (= (tbl-all (not-dep-of cid) (:edges w)) true)
@@ -1979,7 +2092,7 @@
 (a/theorem runs-demote-epoch [w :- World, cid :- Nat, b :- Bool] (= (:runs (demote-epoch w cid b)) (:runs w))
   (cases b) (all_goals (simp only [demote-epoch comp-upd set-comps])))
 
-(override! G7 'inv-demote '[inv-run-cascade inv-demote-epoch inv-drop-edges inv-demote-finish]
+(override! G7 'inv-demote '[inv-run-cascade inv-demote-epoch inv-drop-edges inv-end-basis inv-demote-finish]
   '(a/theorem g7-demote [w :- World, cid :- Nat]
      (=> (= (acts-alive w) true) (= (g7 w) true) (= (g7 (demote w cid)) true))
      (intros ha h)
@@ -1997,7 +2110,10 @@
      (simp only [drop-edges set-comps set-edges runs-demote-epoch]) (exact na)
      (have nd3 (= (tbl-all (not-dep-of cid) (:edges (drop-edges (demote-epoch (run-cascade w (cancel-jobs (demote-cancels w c))) cid (demote-cur w c)) (not-dep-of cid)))) true))
      (simp only [drop-edges set-comps set-edges]) (exact (tbl-all-filter-self EdgeRow (not-dep-of cid) _))
-     (exact (g7-demote-finish _ cid _ na3 nd3 g3))
+     (have g4 := (g7-end-basis _ cid g3))
+     (have na4 := (end-basis-dead _ cid cid (g7-sample _ g3) na3))
+     (have nd4 := (end-basis-no-dep _ cid cid (g7-sample _ g3) nd3))
+     (exact (g7-demote-finish _ cid _ na4 nd4 g4))
      (simp only [demote hf hi]) (exact h)))
 
 

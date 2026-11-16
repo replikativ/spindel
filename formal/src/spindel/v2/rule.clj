@@ -241,9 +241,11 @@
               (:pending c) (:rank c) (:version c) (:result c) true vs (List.nil Created)
               (List.nil Created) (List.nil AdoptBase) (:handles c)))
 (a/defn source-close-row [s :- SourceRow] SourceRow
-  (SourceRow.mk (:id s) (:owner s) (:kind s) (:state s) (:version s) false (:handles s) (:queue s)))
+  (SourceRow.mk (:id s) (:owner s) (:kind s) (:state s) (:version s) false (:handles s) (:queue s)
+                (:rtask s) (:next s) (:tail s) (:fail s)))
 (a/defn source-detach-row [s :- SourceRow] SourceRow
-  (SourceRow.mk (:id s) 0 (:kind s) (:state s) (:version s) false (:handles s) (:queue s)))
+  (SourceRow.mk (:id s) 0 (:kind s) (:state s) (:version s) false (:handles s) (:queue s)
+                (:rtask s) (:next s) (:tail s) (:fail s)))
 (a/defn task-detach-row [t :- TaskRow] TaskRow (TaskRow.mk (:id t) 0 (:run t) (:result t) (:handles t) (:inputs t)))
 ;; a cancelled task that has no result completes with err ::cancelled (reading 4)
 (a/defn task-cancel-result [t :- TaskRow] TaskRow
@@ -329,8 +331,31 @@
                      (Bool.and (Nat.beq (:kind e) ek-dep) (tbl-any (act-has-member (:id e)) as)))))
 (a/defn wake-closed [w :- World, d :- Nat] World
   (nat-fold (fire-edge (deb-result w d)) w (tbl-scan edge-id (close-wakes (:acts w) d) (:edges w))))
+;; C0 (§4.3 link): realizing a link is a deliver (engine `deliver-raw`: version 1, its dep and
+;; observe edges fire, every wait edge on it fires, then T10) whose wait edges get `res` (an error
+;; link gives err e, `src-result` with `fail`); `deliver-raw` x v = `deliver-res` x v (ok v)
+(a/defn deliver-res [w :- World, x :- Nat, v :- Nat, res :- RunResult] World
+  (finalize-debtor (nat-fold (fire-edge res) (nat-fold (fire-edge res) (source-upd w x (source-write v)) (edges-onto x (:edges w)))
+                             (waits-on x (:edges w))) x))
+;; realize link x with value v (and next link n), or with the error v (fl): no realizer any more
+(a/defn link-res [fl :- Bool, v :- Nat] RunResult (if fl (RunResult.mk res-err v) (RunResult.mk res-ok v)))
+(a/defn realize-link [w :- World, x :- Nat, v :- Nat, fl :- Bool, n :- Nat] World
+  (deliver-res (source-upd w x (link-done-row fl n)) x v (link-res fl v)))
+;; an unrealized open link (a stream's tail, an unrealized pull link)
+(a/defn link-open [s :- SourceRow] Bool
+  (Bool.and (Nat.beq (:kind s) sk-link) (Bool.and (Nat.beq (:version s) 0) (:open s))))
+(a/defn link-pending [w :- World, x :- Nat] Bool (opt-test link-open (source-find w x)))
+;; ends link x, if it is still unrealized: the end (fl false), or the error v (fl true)
+(a/defn end-link [w :- World, x :- Nat, fl :- Bool, v :- Nat] World
+  (if (link-pending w x) (realize-link w x (if fl v 0) fl 0) w))
+;; a stream ends its tail first (C0: T16 and every other close of a stream, close item, demotion)
+(a/defn end-stream [w :- World, x :- Nat] World
+  (match (source-find w x)
+    [none w]
+    [(some s) (if (Nat.beq (:kind s) sk-stream) (end-link w (:tail s) false 0) w)]))
 ;; closing a source makes it final (D1): wake (Z#53), then T10
-(a/defn close-source [w :- World, x :- Nat] World (finalize-debtor (wake-closed (source-upd w x source-close-row) x) x))
+(a/defn close-source0 [w :- World, x :- Nat] World (finalize-debtor (wake-closed (source-upd w x source-close-row) x) x))
+(a/defn close-source [w :- World, x :- Nat] World (close-source0 (end-stream w x) x))
 (a/defn close-scope-id [w :- World, x :- Nat] World (scope-upd w x scope-close))
 
 ;; T16's local part on a subtree: every scope in it is closed, every source it owns is closed
@@ -382,9 +407,15 @@
   (Bool.and (Nat.beq (:debtor e) k) (Bool.or (Nat.beq (:kind e) ek-wait) (Nat.beq (:kind e) ek-dep))))
 (a/defn fire-task-cancelled [w :- World, d :- Nat] World
   (finalize-debtor (nat-fold (fire-edge res-cancelled) w (tbl-scan edge-id (on-task d) (:edges w))) d))
+;; C0 (engine cancel! -> finish-task! -> link-cancelled!): a cancelled task that is a link's
+;; realizer leaves that link without a realizer (rtask := 0) inside T14/T21
+(a/defn rtask-is [k :- Nat, s :- SourceRow] Bool (Bool.and (Nat.beq (:kind s) sk-link) (Nat.beq (:rtask s) k)))
+(a/defn clear-rtask [w :- World, x :- Nat] World (source-upd w x (link-set-rtask 0)))
+(a/defn clear-rtasks [w :- World, k :- Nat] World
+  (nat-fold clear-rtask w (tbl-scan source-id (rtask-is k) (:sources w))))
 (a/defn debtor-side [w :- World, r :- RunRow] World
   (match (comp-find w (:of r))
-    [none (fire-task-cancelled (task-upd w (:of r) task-cancel-result) (:of r))]
+    [none (clear-rtasks (fire-task-cancelled (task-upd w (:of r) task-cancel-result) (:of r)) (:of r))]
     [(some c) (if (Nat.beq (:epoch r) (:epoch c))
                   (invalidate-dependents (fire-waits-cancelled w (:of r)) (:of r))
                   w)]))
@@ -474,10 +505,46 @@
   (simp only [wake-closed])
   (exact (nat-fold-inv (fire-edge (deb-result w d)) (inv-fire-edge (deb-result w d)) _ w h)))
 
+(a/theorem inv-deliver-res [w :- World, x :- Nat, v :- Nat, res :- RunResult]
+  (=> (= (inv-sample w) true) (= (inv-sample (deliver-res w x v res)) true))
+  (intro h)
+  (simp only [deliver-res])
+  (exact (inv-finalize-debtor _ x
+           (nat-fold-inv (fire-edge res) (inv-fire-edge res) (waits-on x (:edges w)) _
+             (nat-fold-inv (fire-edge res) (inv-fire-edge res) (edges-onto x (:edges w)) _
+               (inv-source-upd w x (source-write v) (source-write-source-id v) h))))))
+
+(a/theorem inv-realize-link [w :- World, x :- Nat, v :- Nat, fl :- Bool, n :- Nat]
+  (=> (= (inv-sample w) true) (= (inv-sample (realize-link w x v fl n)) true))
+  (intro h)
+  (simp only [realize-link])
+  (exact (inv-deliver-res _ x v _ (inv-source-upd w x (link-done-row fl n) (link-done-row-id fl n) h))))
+
+(a/theorem inv-end-link [w :- World, x :- Nat, fl :- Bool, v :- Nat]
+  (=> (= (inv-sample w) true) (= (inv-sample (end-link w x fl v)) true))
+  (intro h)
+  (cases hp (link-pending w x))
+  (simp only [end-link hp]) (exact h)
+  (simp only [end-link hp]) (exact (inv-realize-link w x _ fl 0 h)))
+
+(a/theorem inv-end-stream [w :- World, x :- Nat]
+  (=> (= (inv-sample w) true) (= (inv-sample (end-stream w x)) true))
+  (intro h)
+  (cases hf (source-find w x)) (case' [some s]) (case' [none])
+  (simp only [end-stream hf]) (exact h)
+  (cases hk (Nat.beq (:kind s) sk-stream))
+  (simp only [end-stream hf hk]) (exact h)
+  (simp only [end-stream hf hk]) (exact (inv-end-link w _ false 0 h)))
+
+(a/theorem inv-close-source0 [w :- World, x :- Nat]
+  (=> (= (inv-sample w) true) (= (inv-sample (close-source0 w x)) true))
+  (intro h)
+  (exact (inv-finalize-debtor _ x (inv-wake-closed _ x (inv-source-upd w x source-close-row source-close-row-id h)))))
+
 (a/theorem inv-close-source [w :- World, x :- Nat]
   (=> (= (inv-sample w) true) (= (inv-sample (close-source w x)) true))
   (intro h)
-  (exact (inv-finalize-debtor _ x (inv-wake-closed _ x (inv-source-upd w x source-close-row source-close-row-id h)))))
+  (exact (inv-close-source0 _ x (inv-end-stream w x h))))
 
 (a/theorem inv-close-scope-id [w :- World, x :- Nat]
   (=> (= (inv-sample w) true) (= (inv-sample (close-scope-id w x)) true))
@@ -521,12 +588,24 @@
   (intro h)
   (exact (nat-fold-inv invalidate-id inv-invalidate-id (tbl-scan edge-id (armed-dep-on d) (:edges w)) w h)))
 
+(a/theorem inv-clear-rtask [w :- World, x :- Nat]
+  (=> (= (inv-sample w) true) (= (inv-sample (clear-rtask w x)) true))
+  (intro h)
+  (simp only [clear-rtask])
+  (exact (inv-source-upd w x (link-set-rtask 0) (link-set-rtask-id 0) h)))
+
+(a/theorem inv-clear-rtasks [w :- World, k :- Nat]
+  (=> (= (inv-sample w) true) (= (inv-sample (clear-rtasks w k)) true))
+  (intro h)
+  (simp only [clear-rtasks])
+  (exact (nat-fold-inv clear-rtask inv-clear-rtask _ w h)))
+
 (a/theorem inv-debtor-side [w :- World, r :- RunRow]
   (=> (= (inv-sample w) true) (= (inv-sample (debtor-side w r)) true))
   (intro h)
   (cases hc (comp-find w (:of r))) (case' [some c]) (case' [none])
   (simp only [debtor-side hc])
-  (exact (inv-fire-task-cancelled _ (:of r) (inv-task-upd w (:of r) task-cancel-result task-cancel-result-id h)))
+  (exact (inv-clear-rtasks _ (:of r) (inv-fire-task-cancelled _ (:of r) (inv-task-upd w (:of r) task-cancel-result task-cancel-result-id h))))
   (cases he (Nat.beq (:epoch r) (:epoch c)))
   (simp only [debtor-side hc he]) (exact h)
   (simp only [debtor-side hc he])
@@ -835,8 +914,15 @@
     [(some c) (if (demote-keep w c)
                   (comp-upd w cid (comp-make-idle vs))
                   (comp-del (drop-edges w (edge-avoids cid)) cid))]))
+;; C0: the streams in C's basis end with the demotion (close-source realizes the tail as the end),
+;; after C's dep edges are gone, as the engine's demote! (like its basis tasks, cancelled above)
+(a/defn src-kind-at [w :- World, k :- Nat, x :- Nat] Bool
+  (match (source-find w x) [none false] [(some s) (Nat.beq (:kind s) k)]))
+(a/defn basis-streams [w :- World, c :- CompRow] (List Nat) (tbl-filter (src-kind-at w sk-stream) (created-ids (:basis c))))
+(a/defn end-basis [w :- World, cid :- Nat] World
+  (match (comp-find w cid) [none w] [(some c) (nat-fold close-source w (basis-streams w c))]))
 (a/defn demote-edges [w :- World, cid :- Nat] World
-  (demote-finish (drop-edges w (not-dep-of cid)) cid (validity-of w cid)))
+  (demote-finish (end-basis (drop-edges w (not-dep-of cid)) cid) cid (validity-of w cid)))
 ;; Z#42: demotion steps the epoch when C.run is current (R.epoch = C.epoch; normalization may
 ;; have cancelled it earlier in the round, as the engine's demote! checks after its cancel), so
 ;; a run kept in cleanup is stale (I10)
@@ -868,6 +954,13 @@
   (simp only [demote-epoch]) (exact h)
   (simp only [demote-epoch]) (exact (inv-comp-upd w cid comp-inc-epoch comp-inc-epoch-comp-id comp-inc-epoch-pending h)))
 
+(a/theorem inv-end-basis [w :- World, cid :- Nat]
+  (=> (= (inv-sample w) true) (= (inv-sample (end-basis w cid)) true))
+  (intro h)
+  (cases hf (comp-find w cid)) (case' [some c]) (case' [none])
+  (simp only [end-basis hf]) (exact h)
+  (simp only [end-basis hf]) (exact (nat-fold-inv close-source inv-close-source _ w h)))
+
 (a/theorem inv-demote [w :- World, cid :- Nat]
   (=> (= (inv-sample w) true) (= (inv-sample (demote w cid)) true))
   (intro h)
@@ -875,7 +968,7 @@
   (simp only [demote hf]) (exact h)
   (cases hi (:idle c))
   (simp only [demote hf hi demote-edges])
-  (exact (inv-demote-finish _ cid _ (inv-drop-edges _ (not-dep-of cid) (inv-demote-epoch _ cid _ (inv-run-cascade w _ h)))))
+  (exact (inv-demote-finish _ cid _ (inv-end-basis _ cid (inv-drop-edges _ (not-dep-of cid) (inv-demote-epoch _ cid _ (inv-run-cascade w _ h))))))
   (simp only [demote hf hi]) (exact h))
 
 ;; ---- detach (§3.3 step 2): sources and tasks whose owner row is gone

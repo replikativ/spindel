@@ -355,6 +355,20 @@
       (have hcc (= (tbl-has comp-id (:creditor e) (:comps W)) true)) (rw [(Nat.eq_of_beq_eq_true hc)]) (exact hcx)
       (exact (h18-free-wait-comp (List.append Nat S (List.nil Nat)) W e hs hr me kd hcc)))))
 
+;; C0: demote closes C's basis streams (end-basis); each is a source, not a computation
+(a/theorem h3-end-basis [xm :- (List Nat), hx :- (List Nat), w :- World, cid :- Nat]
+  (=> (= (hmk hx w) true) (= (h3 xm w) true) (= (h3 xm (end-basis w cid)) true))
+  (intros hk h)
+  (cases hf (comp-find w cid)) (case' [some c]) (case' [none])
+  (simp only [end-basis hf]) (exact h)
+  (have n0 (= (tbl-all (hk-noc (:comps w)) (basis-streams w c)) true))
+  (simp only [basis-streams])
+  (exact (tbl-all-mono Nat (src-kind-at w sk-stream) (hk-noc (:comps w))
+           (fn [y :- Nat, hy :- (= (src-kind-at w sk-stream y) true)] (hk-noc-src w sk-stream y (h3-sample xm w h) hy))
+           _ (tbl-all-filter-self Nat _ _)))
+  (simp only [end-basis hf])
+  (exact (h3-fold-noc2 xm hx close-source (h3-close-source xm hx) (hmk-close-source hx) hk-has-close-source (basis-streams w c) w n0 hk h)))
+
 (a/theorem h18-demote-x [S :- (List Nat), R :- (List Nat), gx :- (List Nat), gk :- (List Nat), F :- (List Nat), D :- (List Nat), W :- World, x :- Nat]
   (=> (= (reach-mem x S) true) (= (tbl-all (rm-in S) R) true) (= (inv-rank W) true) (= (vr S (List.cons Nat x R) W) true)
       (= (hmk (List.append Nat S (List.nil Nat)) W) true) (= (g10 gx gk W) true) (= (ekb W) true) (= (fb (List.nil Nat) F D S W) true)
@@ -387,22 +401,28 @@
       (have m3 := (hmk-drop-edges (List.append Nat S (List.nil Nat)) (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x) dk m2))
       (have v3 := (vr-drop-r S R (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) x (ncd-drop (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) x) (vr-drop-edges S (List.cons Nat x R) (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x) v2)))
       (have f3 := (fb-drop-edges (List.nil Nat) F D S (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x) f2))
-      (have nc := (ncd-drop (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) x))
-      (cases hf3 (comp-find (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) x))
-      (case [none] (simp only [demote-finish hf3]) (exact h3x))
+      (have nc0 := (ncd-drop (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) x))
+      (have wd := (wdom-end-basis (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) x))
+      (have nc := ((And.left (And.right wd)) (ncd14 x) (ecl-ncd14 x) nc0))
+      (have h3y := (h3-end-basis (List.append Nat S (List.nil Nat)) (List.append Nat S (List.nil Nat)) (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) x m3 h3x))
+      (have m3y := (hmk-end-basis (List.append Nat S (List.nil Nat)) (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) x m3))
+      (have v3y := (vr-end-basis S R (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) x v3))
+      (have f3y := (fb-end-basis (List.nil Nat) F D S (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) x f3))
+      (cases hf3 (comp-find (end-basis (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) x) x))
+      (case [none] (simp only [demote-finish hf3]) (exact h3y))
       (case [some c3]
-        (cases hkp (demote-keep (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) c3))
+        (cases hkp (demote-keep (end-basis (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) x) c3))
         (case [true]
           (simp only [demote-finish hf3 hkp])
-          (exact (h18-comp-upd-in (List.append Nat S (List.nil Nat)) (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) x _ (comp-make-idle-id _) (comp-make-idle-pending _) (fn [q :- CompRow] (Nat.le_refl (:epoch q))) hX h3x)))
+          (exact (h18-comp-upd-in (List.append Nat S (List.nil Nat)) (end-basis (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) x) x _ (comp-make-idle-id _) (comp-make-idle-pending _) (fn [q :- CompRow] (Nat.le_refl (:epoch q))) hX h3y)))
         (case [false]
           (simp only [demote-finish hf3 hkp])
-          (have hcx := (tbl-find-has CompRow comp-id x c3 (:comps (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x))) hf3))
-          (have h4 := (h3-drop-edges (List.append Nat S (List.nil Nat)) (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) (edge-avoids x) (hk-dok-avoid S R (List.nil Nat) (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) x hx hR v3 nc m3)
-                        (h18-fr-avoid S R F D (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) x hx hR v3 h3x f3 hcx) h3x))
+          (have hcx := (tbl-find-has CompRow comp-id x c3 (:comps (end-basis (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) x)) hf3))
+          (have h4 := (h3-drop-edges (List.append Nat S (List.nil Nat)) (end-basis (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) x) (edge-avoids x) (hk-dok-avoid S R (List.nil Nat) (end-basis (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) x) x hx hR v3y nc m3y)
+                        (h18-fr-avoid S R F D (end-basis (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) x) x hx hR v3y h3y f3y hcx) h3y))
           (have s4 := (h3-sample _ _ h4))
-          (exact (h3-intro (List.append Nat S (List.nil Nat)) _ (inv-comp-del-unref (drop-edges (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) (edge-avoids x)) x (drop-edges-avoids (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) x) s4)
-                   (h3r-comp-del (List.append Nat S (List.nil Nat)) (drop-edges (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) (edge-avoids x)) x (h3-db-of (drop-edges (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) (edge-avoids x)) s4) (h3-rest-of _ _ h4)))))))))
+          (exact (h3-intro (List.append Nat S (List.nil Nat)) _ (inv-comp-del-unref (drop-edges (end-basis (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) x) (edge-avoids x)) x (drop-edges-avoids (end-basis (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) x) x) s4)
+                   (h3r-comp-del (List.append Nat S (List.nil Nat)) (drop-edges (end-basis (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) x) (edge-avoids x)) x (h3-db-of (drop-edges (end-basis (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) x) (edge-avoids x)) s4) (h3-rest-of _ _ h4)))))))))
 
 ;; ---- after its demote, no activation holds a current run of x
 (a/theorem h18-nh-dead [w :- World, d :- Nat]
@@ -467,7 +487,8 @@
       (simp only [demote hf hi demote-edges] at aa2)
       (simp only [demote hf hi demote-edges])
       (apply (h18-nh-dead _ x aa2))
-      (rw [(h18-runs-finish (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) x (validity-of (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) x))])
+      (rw [(h18-runs-finish (end-basis (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) x) x (validity-of (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) x))])
+      (apply (end-basis-dead (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) x x (inv-drop-edges _ (not-dep-of x) (inv-demote-epoch _ x (demote-cur W c) (inv-run-cascade W _ hs)))))
       (show (= (tbl-all (not-alive-of x) (:runs (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)))) true))
       (rw [(runs-demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c))])
       (have nd := (demote-dead W c hs haa))
