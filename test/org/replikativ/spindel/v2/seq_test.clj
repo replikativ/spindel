@@ -172,7 +172,11 @@
            (is (= [1 2] (v2/value r1 2000 ::timeout)))
            (is (= [1 2] (v2/value r2 2000 ::timeout)) "every reader sees every element")
            (is (= [1 2] (v2/value (drain p) 2000 ::timeout)) "a position is a value: read again")
-           (is (thrown-with-msg? Exception #"read through its positions" (v2/value s 2000 ::timeout))))))
+           (is (thrown-with-msg? Exception #"read through its positions" (v2/value s 2000 ::timeout)))
+           (let [got (promise)]
+             (v2/observe! s (fn [v err?] (deliver got [err? (ex-message v)])))
+             (is (= [true "a stream is read through its positions: (position s)"] (deref got 2000 ::timeout))
+                 "observe! on a stream is refused like value")))))
      (v2/release-world! w))))
 
 (deftest a-computation-stream-ends-when-it-leaves-the-basis

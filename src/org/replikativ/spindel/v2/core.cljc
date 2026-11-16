@@ -2317,8 +2317,10 @@
         (when (and (needs-run? w d) (eligible? w d))
           (dispatch! w d)))
     (task? d) nil
+    ;; a released world's root scope is closed: no realizer starts there
     (link? d) (when (and (zero? (gl d rw/VERSION)) (g d rw/X-OPEN) (nil? (g d rw/X-RTASK))
-                         (some? (nth (g d rw/X-REALIZE) 0)))
+                         (some? (nth (g d rw/X-REALIZE) 0))
+                         (g (rv w (g w rw/W-ROOT)) rw/S-OPEN))
                 (start-realizer! w d))))
 
 ;; ---------------------------------------------------------------------------
@@ -3127,13 +3129,16 @@
         ev (volatile! nil)]
     (when (g w rw/W-UNBORN) (throw (unborn-ex)))
     (gated w
-           (let [d (row-of h)
-                 e (link! w rw/EK-OBSERVE cb d 0)]
-             (vreset! ev e)
-             (when (and (comp? d) (g d rw/C-IDLE)) (validate! w d))
-             (deliver-observe! w e)
-             (commit! w [:observe (g d rw/ID) [:opaque cb] (g e rw/ID)])
-             (demand! w d)))
+           (let [d (row-of h)]
+             (if (stream? d)
+               ;; a stream is read through its positions (as value-async, C0)
+               (aadd! (g w rw/W-CALLBACKS) [cb [(stream-ex) true]])
+               (let [e (link! w rw/EK-OBSERVE cb d 0)]
+                 (vreset! ev e)
+                 (when (and (comp? d) (g d rw/C-IDLE)) (validate! w d))
+                 (deliver-observe! w e)
+                 (commit! w [:observe (g d rw/ID) [:opaque cb] (g e rw/ID)])
+                 (demand! w d)))))
     (fn []
       (withdraw!
        (fn []
