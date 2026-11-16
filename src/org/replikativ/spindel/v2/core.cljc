@@ -1122,7 +1122,7 @@
   (hs/mpsc-add! (g child rw/W-INGRESS) #(release-world* child))
   (aadd! (g w rw/W-AFTER) child))
 
-(declare accept-child! kid-collected!)
+(declare accept-child! kid-collected! kid-collector)
 
 (defn- own-child!
   "F2: the fork marker of `child` in `w`, owned by `scope`, held strongly or
@@ -4047,6 +4047,14 @@
   [kc]
   (when-let [t (hs/kid-finish! kc)] (kid-done! t)))
 
+(defn- kid-collector
+  "The collection action's owner acknowledgement for a world's kid cell,
+   built in its own function: a JS closure shares its enclosing function's
+   context, so one made in fork-world* would also hold the child world and
+   keep it alive (the FinalizationRegistry holds the action strongly)."
+  [kc]
+  (fn [] (kid-collected! kc)))
+
 (defn- accept-child!
   "R2: owner `w` takes an obligation for `child` until its completion or its
    collection. A complete owner takes none. A child that is already done
@@ -4336,7 +4344,7 @@
       (s! c rw/W-LOG (alist)))
     (lt/register-world! (g c rw/W-FAMILY) c (g c rw/ID) (g c rw/W-WATCHES)
                         (gl c rw/W-SWEEP-GEN) request-atom-sweep!
-                        (let [kc (g c rw/W-KID-TOKEN)] #(kid-collected! kc)))
+                        (kid-collector (g c rw/W-KID-TOKEN)))
     c))
 
 (defn- instance-world*
@@ -4384,7 +4392,7 @@
       (s! c rw/W-LOG (alist)))
     (lt/register-world! (g c rw/W-FAMILY) c (g c rw/ID) (g c rw/W-WATCHES)
                         (gl c rw/W-SWEEP-GEN) request-atom-sweep!
-                        (let [kc (g c rw/W-KID-TOKEN)] #(kid-collected! kc)))
+                        (kid-collector (g c rw/W-KID-TOKEN)))
     c))
 
 (defn- host-fork-call!
