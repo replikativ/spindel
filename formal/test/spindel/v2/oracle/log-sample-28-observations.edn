@@ -8,7 +8,7 @@
     :kids nil,
     :token nil}}}
  {:step :released,
-  :log-length {:w 16},
+  :log-length {:w 15},
   :obs
   {:w
    {:complete? true, :released? true, :runs 0, :kids nil, :token nil}}}]
