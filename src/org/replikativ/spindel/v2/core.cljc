@@ -536,7 +536,8 @@
                       (when-let [l (aget c i)] (aset c i (hs/lcopy l)))))
       rw/T-SOURCE (do (when (== rw/SRC-MAILBOX (long (aget c rw/X-KIND)))
                         (aset c rw/X-VALUE (hs/dcopy (aget c rw/X-VALUE))))
-                      (when-let [q (aget c rw/X-WAITERS)] (aset c rw/X-WAITERS (hs/dcopy q))))
+                      (when (<= rw/SRC-MAILBOX (long (aget c rw/X-KIND)) rw/SRC-SEMAPHORE)
+                        (when-let [q (aget c rw/X-WAITERS)] (aset c rw/X-WAITERS (hs/dcopy q)))))
       rw/T-RUN (do (doseq [i [rw/R-RES rw/R-SCOPES]]
                      (when-let [l (aget c i)] (aset c i (hs/lcopy l))))
                    (when-let [m (aget c rw/R-ORD)] (aset c rw/R-ORD (hs/mcopy m))))
@@ -569,6 +570,7 @@
     ;; the fork
     (when-let [mb (aget ^objects w rw/W-MBASE)]
       (when (and (== rw/T-SOURCE (long (aget c rw/TYPE)))
+                 (not= rw/SRC-LINK (long (aget c rw/X-KIND)))   ; a fork realizes its own (C0)
                  (< (long (aget c rw/ID)) (long (aget ^objects w rw/ID)))
                  (nil? (get mb (aget c rw/ID))))
         (aset ^objects w rw/W-MBASE (assoc mb (aget c rw/ID) [r (gl v rw/VERSION)]))))
@@ -676,7 +678,16 @@
                  (== (gl c rw/C-DONE-EPOCH) (gl c rw/C-EPOCH))))
        (not (current? c (rv w (g c rw/C-RUN))))))
 
-(defn- deferred? [d] (and (source? d) (== rw/SRC-DEFERRED (gl d rw/X-KIND))))
+(defn- deferred?
+  "A source delivered once: a deferred or a link (C0)."
+  [d]
+  (and (source? d) (let [k (gl d rw/X-KIND)] (or (== k rw/SRC-DEFERRED) (== k rw/SRC-LINK)))))
+(defn- link? [d] (and (source? d) (== rw/SRC-LINK (gl d rw/X-KIND))))
+(defn- stream? [d] (and (source? d) (== rw/SRC-STREAM (gl d rw/X-KIND))))
+
+;; A link's memoized error (C0 Q1): every reader of the position gets it.
+(deftype Failure [err])
+(defn- failure-err [^Failure f] (.-err f))
 (defn- closed? [d] (and (source? d) (not (g d rw/X-OPEN))))
 
 (defn- final?
@@ -901,13 +912,14 @@
   (cond (comp? d) [(g d rw/C-RESULT) (boolean (g d rw/C-ERR))]
         (task? d) [(g d rw/K-RESULT) (boolean (g d rw/K-ERR))]
         (res? d) [(g d rw/Z-RESULT) (boolean (g d rw/Z-ERR))]
+        (instance? Failure (g d rw/X-VALUE)) [(failure-err (g d rw/X-VALUE)) true]
         (g d rw/X-OPEN) [(g d rw/X-VALUE) false]
         ;; Z#53: a closed source keeps a signal's or cell's value and a
         ;; delivered deferred's; a mailbox, a semaphore or an undelivered
         ;; deferred has none, so its waiters get an error
         (let [kind (gl d rw/X-KIND)]
           (or (== kind rw/SRC-MAILBOX) (== kind rw/SRC-SEMAPHORE)
-              (and (== kind rw/SRC-DEFERRED) (zero? (gl d rw/VERSION)))))
+              (and (or (== kind rw/SRC-DEFERRED) (== kind rw/SRC-LINK)) (zero? (gl d rw/VERSION)))))
         [(closed-ex) true]
         :else [(g d rw/X-VALUE) false]))
 
@@ -1302,6 +1314,8 @@
         (ref-dec! w k))
       (remove-scope-if-empty! w owner))))
 
+(declare link-done!)
+
 (defn- finish-task!
   "Sets a task's result and fires its creditors; ownership retention ends
    with its run (release-ownership!)."
@@ -1313,7 +1327,8 @@
     (s! k rw/VERSION (inc (gl k rw/VERSION)))
     (settle! w k)
     (when-not (rv w (g k rw/K-RUN))
-      (release-ownership! w k))))
+      (release-ownership! w k))
+    (when-let [l (g k rw/K-LINK)] (link-done! w (rv w l) v err?))))
 
 (defn- complete!
   "T12."
@@ -1813,20 +1828,26 @@
   (and (source? x)
        (let [kind (gl x rw/X-KIND)] (or (== kind rw/SRC-MAILBOX) (== kind rw/SRC-SEMAPHORE)))))
 
+(defn- stream-ex [] (invalid-op :await "a stream is read through its positions: (position s)"))
+
 (defn await-effect!
   "T6 with mode `one`; on a mailbox it is `take` (Z#54)."
   [d k ek]
-  (if (consuming? d)
+  (cond
+    (stream? d) (ek (stream-ex))
+    (consuming? d)
     (if (== rw/SRC-MAILBOX (gl d rw/X-KIND))
       (consume-effect! d k ek)
       (ek (invalid-op :await "await on a semaphore: use acquire!")))
-    (await-group! [d] :one k ek)))
+    :else (await-group! [d] :one k ek)))
 
 (defn- group-effect! [ds mode k ek]
   (let [ds (vec ds)]
-    (if (some #(consuming? (row-of %)) ds)
+    (cond
+      (some #(consuming? (row-of %)) ds)
       (ek (invalid-op mode "a group await cannot take from a mailbox or semaphore"))
-      (await-group! ds mode k ek))))
+      (some #(stream? (row-of %)) ds) (ek (stream-ex))
+      :else (await-group! ds mode k ek))))
 
 (defn await-all-effect! [ds k ek] (group-effect! ds :all k ek))
 (defn await-any-effect! [ds k ek] (group-effect! ds :any k ek))
@@ -2277,15 +2298,21 @@
 ;; ---------------------------------------------------------------------------
 ;; Demand
 
+(declare start-realizer! empty-inputs)
+
 (defn- demand!
-  "Runs a demanded debtor that needs a run and is eligible (T6 demand)."
+  "Runs a demanded debtor that needs a run and is eligible (T6 demand). An
+   unrealized pull link starts its realizer (C0)."
   [w d]
   (cond
     (comp? d)
     (do (when (g d rw/C-IDLE) (validate! w d))
         (when (and (needs-run? w d) (eligible? w d))
           (dispatch! w d)))
-    (task? d) nil))
+    (task? d) nil
+    (link? d) (when (and (zero? (gl d rw/VERSION)) (g d rw/X-OPEN) (nil? (g d rw/X-RTASK))
+                         (some? (nth (g d rw/X-REALIZE) 0)))
+                (start-realizer! w d))))
 
 ;; ---------------------------------------------------------------------------
 ;; Rule R (§3.3) by retention counts
@@ -2591,11 +2618,15 @@
         (s! sc rw/S-SOURCES live)
         (s! sc rw/S-PRUNE (max 8 (* 2 (acount live))))))))
 
+(declare end-stream!)
+
 (defn- close-source!
   "A closed source is final and read-only (T16, R#15): its dep edges are
-   removed after their current delivery (T10)."
+   removed after their current delivery (T10). A stream ends its tail first:
+   its readers get the end (C0)."
   [w x]
   (when (g x rw/X-OPEN)
+    (when (stream? x) (end-stream! w x nil))
     (s! x rw/X-OPEN false)
     (settle! w x)))
 
@@ -2613,7 +2644,7 @@
         (if (and old (source? old))
           (do (s! old rw/AT at)
               (let [h (handle! w old)]
-                (commit! w [:create-source (g r rw/ID) ([:signal :cell :deferred :mailbox :semaphore] kind)
+                (commit! w [:create-source (g r rw/ID) (rw/kind-names kind)
                             [:opaque (when-not (== kind rw/SRC-MAILBOX) v)] (g old rw/ID)])
                 h))
           (let [s (new-source! w kind v x key at)]
@@ -2622,7 +2653,7 @@
             (aadd! (gm x rw/C-BASIS) s)
             (ref-inc! s)
             (let [h (handle! w s)]
-              (commit! w [:create-source (g r rw/ID) ([:signal :cell :deferred :mailbox :semaphore] kind)
+              (commit! w [:create-source (g r rw/ID) (rw/kind-names kind)
                           [:opaque (when-not (== kind rw/SRC-MAILBOX) v)] (g s rw/ID)])
               h))))
       (let [sc (current-scope! w r)
@@ -2632,7 +2663,7 @@
         (when init (init s))
         (aadd! (g w rw/W-RQ) s)
         (let [h (handle! w s)]
-          (commit! w [:create-source (g r rw/ID) ([:signal :cell :deferred :mailbox :semaphore] kind)
+          (commit! w [:create-source (g r rw/ID) (rw/kind-names kind)
                       [:opaque (when-not (== kind rw/SRC-MAILBOX) v)] (g s rw/ID)])
           h)))))
 
@@ -2648,7 +2679,7 @@
              (when init (init x))
              (bind-handle! h x)
              (commit! w [:create-source-top (g (rv w (g w rw/W-ROOT)) rw/ID)
-                         ([:signal :cell :deferred :mailbox :semaphore] kind)
+                         (rw/kind-names kind)
                          [:opaque (when-not (== kind rw/SRC-MAILBOX) v)] (g x rw/ID)])))
     h))
 
@@ -2786,13 +2817,200 @@
   [h v]
   (gated (world-of h)
          (let [x (row-of h) w (cw)]
-           (if (final? x)
+           (if (or (final? x) (link? x))
              (refuse! w [:deliver (g x rw/ID) [:opaque v]])
              (do (s! x rw/X-VALUE v)
                  (s! x rw/VERSION 1)
                  (settle! w x)
                  (commit! w [:deliver (g x rw/ID) [:opaque v]])))))
   v)
+
+;; ---------------------------------------------------------------------------
+;; Async sequences (C0, .internal/c-async-seq-design.md): a sequence is a
+;; chain of links, once-cells delivered with [v next-position], nil (the end)
+;; or a memoized error. A position is a link's handle. Links are owned by the
+;; root scope (never closed by a run's retirement); a pull link is realized
+;; by a root task started when it is first demanded, at most once per world.
+
+(defn- new-link!
+  "A link in `w`'s root scope, returned as its handle (a position): the top
+   handle `top` when given, else a new one. `spec` is [f s frame stream-id
+   index] (f nil for a push link; stream-id nil: the link's own ID). It is
+   retained by its positions, the chain that reaches it and its realizer.
+   A stream's first tail is part of the stream's creation item (no item)."
+  ([w spec top] (new-link! w spec top true))
+  ([w spec top item?]
+  (let [x (new-source! w rw/SRC-LINK nil (rv w (g w rw/W-ROOT)) 0 0)
+        spec (if (nil? (nth spec 3)) (assoc spec 3 (g x rw/ID)) spec)]
+    (s! x rw/X-REALIZE spec)
+    (let [h (if top (do (bind-handle! top x) top) (do (s! x rw/HANDLES 0) (handle! w x)))]
+      (when item? (commit! w [:create-link (g x rw/ID) [:opaque spec]]))
+      h))))
+
+(defn- start-realizer!
+  "Demand on an unrealized pull link (C0 V1): a task owned by the root scope
+   runs `(f s)` with the creation bindings (B10); its end realizes the link
+   (link-done!). A reader's cancellation does not cancel it."
+  [w x]
+  (let [[f s frame] (g x rw/X-REALIZE)
+        root (rv w (g w rw/W-ROOT))
+        body (fn [ok err] ((f s) ok err))
+        k (new-task! w root 0 0 empty-inputs body 0)]
+    (s! k rw/K-LINK x)
+    (hs/oset-add! (gm root rw/S-TASKS) (id-of k) k)
+    (ref-inc! k)
+    (s! x rw/X-RTASK k)
+    (start-task! w k frame)
+    (commit! w [:link-demand (g x rw/ID) (g k rw/ID)])
+    k))
+
+(defn- realize!
+  "Delivers link `x` once with `value` ([v next-handle], nil or a Failure)
+   and fires its readers."
+  [w x value]
+  (s! x rw/X-VALUE value)
+  (s! x rw/VERSION 1)
+  (settle! w x)
+  (commit! w [:link-realize (g x rw/ID) [:opaque value]]))
+
+(defn- link-done!
+  "The realizer of `x` ended with `res`: [v s'] → the next link; nil → the
+   end; an error → memoized, except ::forked (V2), which leaves the link
+   unrealized and restarts it when it is demanded, and cancellation (world
+   release), which leaves it alone."
+  [w x res err?]
+  (s! x rw/X-RTASK nil)
+  (when (and (zero? (gl x rw/VERSION)) (g x rw/X-OPEN))
+    (cond
+      (and err? (:spindel/forked (ex-data res)))
+      (when (hot? x) (start-realizer! w x))
+      (and err? (cancelled? res)) nil
+      err? (realize! w x (Failure. res))
+      (nil? res) (realize! w x nil)
+      (and (vector? res) (== 2 (count res)))
+      (let [[f _ frame sid i] (g x rw/X-REALIZE)]
+        (realize! w x [(nth res 0) (new-link! w [f (nth res 1) frame sid (inc (long i))] nil)]))
+      :else
+      (realize! w x (Failure. (ex-info "an aseq step returns [value next-state] or nil"
+                                        {:spindel/invalid :aseq :result res}))))))
+
+(defn new-aseq
+  "A pull sequence from state `init`: `(f s)` returns a body whose value is
+   `[v s']` or nil (the end). Returns its head position. Use the `aseq`
+   macro."
+  ([f init] (new-aseq f init nil))
+  ([f init id]
+   (if-let [r (active-run)]
+     (when (valid-run)
+       (next-at! r)
+       (new-link! (cw) [f init (thread-frame) id 0] nil))
+     (let [w (or *world* (throw (ex-info "no world: bind v2/*world*" {})))
+           h (top-handle w)
+           fr (thread-frame)]
+       (gated w (new-link! w [f init fr id 0] h))
+       h))))
+
+(defn new-aseq-at
+  "`new-aseq` at creation site `site` with the captured `inputs` (the `aseq`
+   macro). In a computation run the sequence is a creation in its basis: a
+   re-entry with the same captures and initial state adopts it (V4), so its
+   readers keep the realized elements; otherwise it is a new sequence."
+  [site inputs f init]
+  (let [r (active-run)
+        x (when r (rv (cw) (g r rw/R-OF)))]
+    (if-not (and x (comp? x))
+      (new-aseq f init)
+      (when (valid-run)
+        (let [w (cw)
+              at (next-at! r)
+              key (creation-key! r site)
+              old (adopt! w x key)
+              spec (when (and old (link? old)) (g old rw/X-REALIZE))]
+          (if (and spec (same-inputs? inputs (nth spec 5)) (same-capture? init (nth spec 1)))
+            (do (s! old rw/AT at) (handle! w old))
+            (do (when old
+                  (let [basis (gm x rw/C-BASIS)]
+                    (hs/remove-at! basis (idx-of basis old))
+                    (ref-dec! w old)))
+                (let [h (new-link! w [f init (thread-frame) nil 0 inputs] nil)
+                      nx (row-of h)]
+                  (s! nx rw/KEY key)
+                  (s! nx rw/AT at)
+                  (aadd! (gm x rw/C-BASIS) nx)
+                  (ref-inc! nx)
+                  h))))))))
+
+(defn stream
+  "A push stream (C0): `append!` adds elements, `close!` ends it, and it ends
+   when the scope that created it closes (Z#18: a task's stream at the task's
+   retirement). Readers hold positions: `(position s)` is the current tail.
+   `:id` names it for portable positions (C3); default its row ID."
+  ([] (stream *world* nil))
+  ([w-or-opts] (if (map? w-or-opts) (stream *world* w-or-opts) (stream w-or-opts nil)))
+  ([w {:keys [id]}]
+   (create-source-top! w rw/SRC-STREAM nil
+                       (fn [x] (s! x rw/X-VALUE (new-link! (cw) [nil nil nil (or id (g x rw/ID)) 0] nil false))))))
+
+(defn- end-stream!
+  "Realizes the stream's tail as the end, or with the error `err`."
+  [w x err]
+  (let [t (row-of (g x rw/X-VALUE))]
+    (when (zero? (gl t rw/VERSION))
+      (realize! w t (when err (Failure. err))))))
+
+(defn append!
+  "Appends `v` to stream `h`: its tail is realized with [v new-tail] in one
+   commit and its readers fire. Refused on a closed stream."
+  [h v]
+  (gated (world-of h)
+         (let [x (row-of h) w (cw)]
+           (cond
+             (not (stream? x)) (throw (invalid-op :append "append! is for streams"))
+             (closed? x) (refuse! w [:append (g x rw/ID) [:opaque v]])
+             :else
+             (let [t (row-of (g x rw/X-VALUE))
+                   [_ _ _ sid i] (g t rw/X-REALIZE)
+                   nh (new-link! w [nil nil nil sid (inc (long i))] nil)]
+               (s! x rw/X-VALUE nh)
+               (s! x rw/VERSION (inc (gl x rw/VERSION)))
+               (realize! w t [v nh])
+               (commit! w [:append (g x rw/ID) [:opaque v]])))))
+  nil)
+
+(defn close!
+  "Ends stream `h`: its readers reach the end, or the error `err`."
+  ([h] (close! h nil))
+  ([h err]
+   (gated (world-of h)
+          (let [x (row-of h) w (cw)]
+            (when-not (stream? x) (throw (invalid-op :close "close! is for streams")))
+            (when (g x rw/X-OPEN)
+              (end-stream! w x err)
+              (close-source! w x)
+              (commit! w [:close (g x rw/ID)]))))
+   nil))
+
+(defn position
+  "The current tail of stream `h`: a reader there sees what is appended
+   after (and, once the stream ends, the end)."
+  [h]
+  (host-call! (world-of h) #(let [x (row-of h)]
+                              (when-not (stream? x) (throw (invalid-op :position "position is for streams")))
+                              (g x rw/X-VALUE))))
+
+(defn ready?
+  "Whether position `h` is realized, so awaiting it returns at once. Never
+   demands it."
+  [h]
+  (host-call! (world-of h) #(let [x (row-of h)]
+                              (when-not (link? x) (throw (invalid-op :ready? "ready? is for positions")))
+                              (pos? (gl x rw/VERSION)))))
+
+(defn position-id
+  "The portable name [stream-id index] of position `h` (C3)."
+  [h]
+  (host-call! (world-of h) #(let [[_ _ _ sid i] (g (row-of h) rw/X-REALIZE)] [sid i])))
+
 
 (defn- notify-watches!
   "Snapshot under the world gate; callbacks run without metadata locks."
@@ -3094,7 +3312,8 @@
   (let [w (world-of h)]
     (host-call! w #(let [x (row-of h)]
                      (cond
-                       (deferred? x) (if (final? x) (do (deliver! h v) false) (do (deliver! h v) true))
+                       (and (deferred? x) (not (link? x)))
+                       (if (final? x) (do (deliver! h v) false) (do (deliver! h v) true))
                        (mailbox? x) (do (post! h v) nil)
                        :else (throw (invalid-op :invoke "only deferreds and mailboxes are invokable")))))))
 
@@ -3232,6 +3451,8 @@
                (aadd! (g w rw/W-CALLBACKS) [cb [(unborn-ex) true]])
                (consuming? d)
                (aadd! (g w rw/W-CALLBACKS) [cb [(invalid-op :value "a host read of a mailbox or semaphore (Z#54)") true]])
+               (stream? d)
+               (aadd! (g w rw/W-CALLBACKS) [cb [(stream-ex) true]])
                (and (source? d) (not (deferred? d)))
                (aadd! (g w rw/W-CALLBACKS) [cb (debtor-result d)])
                :else
@@ -4351,4 +4572,17 @@
        "A task (T4): started at once; structured child of the creating run."
        [& body]
        (let [frees (vec (sort-by str (filter symbol? (free-vars/free-variables-or-all &env (cons 'do body)))))]
-         `(spawn! ~(site-of &form) ~(inputs-form frees) ~(body-fn &env body))))))
+         `(spawn! ~(site-of &form) ~(inputs-form frees) ~(body-fn &env body))))
+     (defmacro body*
+       "A body (fn [ok err]) compiled like a spin's, in the enclosing scope."
+       [& body]
+       (body-fn &env body))
+     (defmacro aseq
+       "A pull sequence (C0): `(aseq [s init] body...)`. For state `s` the body
+        returns `[v s']` (the element and the next state) or nil (the end); it
+        may await. Elements are realized on first read, once per world, and
+        shared by every reader. Returns the head position."
+       [[s init] & body]
+       (let [frees (vec (sort-by str (filter symbol? (free-vars/free-variables-or-all
+                                                      &env (list 'fn [s] (cons 'do body))))))]
+         `(new-aseq-at ~(site-of &form) ~(inputs-form frees) (fn [~s] (body* ~@body)) ~init)))))

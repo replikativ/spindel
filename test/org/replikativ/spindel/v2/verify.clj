@@ -209,7 +209,7 @@
                          :resources (mapv id (f r rw/R-RES))}))
      :sources (tbl rw/T-SOURCE
                    (fn [x] {:owner (owner-id w (f x rw/OWNER))
-                            :kind ([:signal :cell :deferred :mailbox :semaphore] (f x rw/X-KIND))
+                            :kind (rw/kind-names (f x rw/X-KIND))
                             :state (intern! w (f x rw/X-VALUE)) :version (f x rw/VERSION)
                             :open (f x rw/X-OPEN) :handles (f x rw/HANDLES)}))
      :edges (tbl rw/T-EDGE
