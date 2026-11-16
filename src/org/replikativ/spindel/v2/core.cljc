@@ -25,7 +25,7 @@
 #?(:clj (set! *warn-on-reflection* true))
 
 (declare create-source-top-host! row-of world-of cancel-resource! resource-ack! demand! settle! pending-zero! rule-r! complete! validate!
-         deliver-observe! value cancel! finish-task! request-atom-sweep! finish-metadata!)
+         deliver-observe! value cancel! finish-task! request-atom-sweep! finish-metadata! maybe-finish-token!)
 
 ;; ---------------------------------------------------------------------------
 ;; Execution context: the world being processed and the run holding the slice
@@ -172,12 +172,10 @@
    (test only); `:hook` runs after every commit in verify mode."
   ([] (world {}))
   ([{:keys [verify? hook inline? budget executor] :or {inline? true budget 4096}}]
-   (let [ep #?(:clj (Object.) :cljs (js-obj))
-         w (rw/new-row ep nil rw/W-SIZE)
+   (let [w (rw/new-row nil nil rw/W-SIZE)
          next #?(:clj (java.util.concurrent.atomic.AtomicLong. 1)
                  :cljs (doto (long-array 1) (aset 0 1)))]
      (s! w rw/TYPE rw/T-WORLD)
-     (s! w rw/W-EPOCH ep)
      (s! w rw/W-LOCK (hs/lock))
      (s! w rw/W-NEXT next)
      (s! w rw/W-READY (alist))
@@ -212,6 +210,7 @@
                             :cljs nil))
        (s! w rw/W-HOOK hook))
      (s! w rw/ID (alloc-id! w))
+     (s! w rw/W-EPOCH (rw/epoch (g w rw/ID) 0))
      (s! w rw/W-ROOT (new-scope w (alloc-id! w) :root nil))
      (lt/register-world! (g w rw/W-FAMILY) w (g w rw/ID) (g w rw/W-WATCHES) 0 request-atom-sweep!)
      w)))
@@ -309,7 +308,7 @@
               (let [~r ~o ~ww ~w]
                 (if (identical? (aget ~r (unchecked-dec-int (alength ~r))) (aget ~ww rw/W-EPOCH))
                   ~r
-                  (let [c# (resolve-row ~ww ~r)] (aput! l# ~i c#) c#)))
+                  (let [c# (resolve-row ~ww ~r)] (when-not (identical? c# ~r) (aput! l# ~i c#)) c#)))
               ~o))
          :else
          `(let [~o ~x]
@@ -322,27 +321,206 @@
 
 (declare own-copy!)
 
-(defn resolve-row
-  "M5: this world's copy of row `r`, made on first access (copy on access).
-   The forward map is keyed by the stable row ID, so repeated forks never
-   chain (design v3)."
-  [w r]
-  (let [^objects r r
-        fwd (aget ^objects w rw/W-FWD)
-        c (get fwd (aget r rw/ID))]
-    (if (and c (identical? (aget ^objects c (unchecked-dec-int (alength ^objects c))) (aget ^objects w rw/W-EPOCH)))
-      c
-      (own-copy! w (or c r)))))
+(declare lineage-ex copy-containers!)
 
-(defn- peek-row
-  "Read-only view of row `r` in `w`, without copying it: `r` when `w` owns
-   it, else the newest copy `w` can see (its own or an inherited one) or the
-   basis. Never written through; a write needs `rv`."
+;; --- MVCC fork tokens (v2-fork-memory-design §2.1, §2.6, §7) ----------------
+;; A fork's token holds a cell `[ordinal state rows owner]`, also listed (in
+;; ordinal order) by the owner: state :live, :shared or :dead; `rows` are
+;; the owner's rows that saved a version this fork reads (newest live fork in
+;; the version's range); `owner` is the owner world, weakly. A cell dies when
+;; its token is collected (Cleaner) or its fork finishes unshared; then the
+;; owner prunes exactly those rows, re-listing versions other forks still read.
+
+(declare internal!)
+
+(defn- cell-ordinal ^long [^objects c] (long (aget c 0)))
+(defn- cell-live? [^objects c] (not (identical? :dead (aget c 1))))
+
+(defn- first-at-least
+  "Index of the first cell in `l` with ordinal >= a."
+  ^long [l ^long a]
+  (loop [lo 0 hi (acount l)]
+    (if (< lo hi)
+      (let [mid (quot (+ lo hi) 2)]
+        (if (< (cell-ordinal (anth l mid)) a) (recur (inc mid) hi) (recur lo mid)))
+      lo)))
+
+(defn- live-token-in?
+  "Whether a fork of `w` with an ordinal in [a, b] is still alive."
+  [w ^long a ^long b]
+  (when-let [l (g w rw/W-TOKENS)]
+    (when (<= a b)
+      (loop [i (first-at-least l a)]
+        (when (< i (acount l))
+          (let [c (anth l i)]
+            (when (<= (cell-ordinal c) b)
+              (if (cell-live? c) true (recur (inc i))))))))))
+
+(defn- newest-live-cell
+  "The cell of the newest live fork of `w` with an ordinal in [a, b]."
+  [w ^long a ^long b]
+  (when-let [l (g w rw/W-TOKENS)]
+    (when (<= a b)
+      (loop [i (dec (first-at-least l (inc b)))]
+        (when (>= i 0)
+          (let [c (anth l i)]
+            (when (>= (cell-ordinal c) a)
+              (if (cell-live? c) c (recur (dec i))))))))))
+
+(defn- list-row! [^objects c r]
+  (aadd! (or (aget c 2) (let [l (alist)] (aset c 2 l) l)) r))
+
+(defn- prune-versions
+  "The entries of version vector `vs` some live fork of `w` can still read."
+  [w vs]
+  (when vs
+    (not-empty (filterv (fn [[k m]] (live-token-in? w k m)) vs))))
+
+(defn- prune-cell!
+  "A fork of `w` ended: prune the versions of the rows it listed; a version
+   another live fork still reads is listed on that fork's cell. Dead cells
+   leave the owner's list."
+  [w ^objects c]
+  (let [rows (aget c 2)]
+    (aset c 2 nil)
+    (when rows
+      (dotimes [i (acount rows)]
+        (let [^objects r (anth rows i)
+              keep (rw/locking-row r
+                                   (let [vs (prune-versions w (rw/versions r))]
+                                     (rw/set-versions! r vs)
+                                     vs))]
+          (doseq [[k m] keep]
+            (when-let [c2 (newest-live-cell w k m)] (list-row! c2 r)))))))
+  (when-let [l (g w rw/W-TOKENS)]
+    (loop [i (dec (acount l))]
+      (when-not (neg? i)
+        (when-not (cell-live? (anth l i)) (hs/remove-at! l i))
+        (recur (dec i))))))
+
+(defn- cell-ended!
+  "Cell `c` is dead: its owner prunes, as a completion item scheduled off the
+   calling thread (a Cleaner thread, or the finishing fork's)."
+  [^objects c]
+  (when-let [w (hs/deref-weak (aget c 3))]
+    (hs/metadata-later! #(internal! w (fn [] (prune-cell! w c))))))
+
+(defn- register-token!
+  "A fork of `w` at ordinal `o`: its token and cell."
+  [w ^long o]
+  (let [c (doto (object-array 4) (aset 0 #?(:clj (Long/valueOf o) :cljs o)) (aset 1 :live) (aset 3 (hs/weak w)))
+        t (rw/token o c)
+        l (or (g w rw/W-TOKENS) (let [l (alist)] (s! w rw/W-TOKENS l) l))]
+    (aadd! l c)
+    ;; the action holds the cell weakly: as a GC root it must not keep the
+    ;; owner's rows (and through them the owner and its forks) reachable; while
+    ;; the owner lives, its list keeps the cell
+    (let [wc (hs/weak c)]
+      (hs/on-collect! t (fn [] (when-let [^objects c (hs/deref-weak wc)] (aset c 1 :dead) (cell-ended! c)))))
+    t))
+
+(defn- own-token
+  "The token world `w` got when it was forked (nil for a root)."
+  [w]
+  (nth (first (g w rw/W-LINEAGE)) 3 nil))
+
+(defn- share-token!
+  "Something is derived from `w` (a fork, an instance): its token is shared
+   with the derived world's lineage and ends only when unreachable."
+  [w]
+  (when-let [t (own-token w)] (rw/token-share! t)))
+
+(defn- finish-token!
+  "`w` has finished: released, with no work, cleanup or armed resource left.
+   Its token ends now unless shared, and the owner prunes its versions."
+  [w]
+  (when-let [t (own-token w)]
+    (when (rw/token-finish! t) (cell-ended! (rw/token-cell t)))))
+
+;; --- owner side -------------------------------------------------------------
+
+(defn- image
+  "An immutable version of row `r`: a clone with its own containers, no
+   versions, no handle reference."
+  [^objects r]
+  (let [c (aclone r)]
+    (copy-containers! c)
+    (rw/set-versions! c nil)
+    c))
+
+;; A clone made for one reader only (`version-of` of an unchanged row): marked
+;; by an identity sentinel in its versions slot, so `own-copy!` can take it
+;; over instead of cloning it again.
+(def ^:private fresh-mark (object-array 0))
+
+(defn- fresh-image [^objects r]
+  (let [c (image r)] (rw/set-versions! c fresh-mark) c))
+
+(defn- preserve!
+  "§2.3: `w` owns `r`, stamped with an older epoch of `w`. If a fork that may
+   read `r` is alive, the row's current state becomes a version for the forks
+   since its stamp, listed on the newest such fork's cell; then `r` is
+   restamped and returned, mutable in place."
+  [w ^objects r]
+  (let [cur (g w rw/W-EPOCH)
+        s (rw/epoch-ordinal (rw/stamp r))
+        m (dec (rw/epoch-ordinal cur))
+        c (newest-live-cell w s m)]
+    (rw/locking-row r
+                    (let [before (rw/versions r)
+                          kept (when before (prune-versions w before))]
+                      (rw/set-versions! r (if c (conj (or kept []) [s m (image r)]) kept)))
+                    (aset r (unchecked-dec-int (alength r)) cur))
+    (when c (list-row! c r))
+    r))
+
+;; --- fork side --------------------------------------------------------------
+
+(defn- version-of
+  "Row `x`'s state as seen by forks of its owner at ordinal `f`: a clone of
+   the live row if it has not changed since, else its saved version. Never
+   the live row itself."
+  [^objects x ^long f]
+  (rw/locking-row x
+                  (if (<= (rw/epoch-ordinal (rw/stamp x)) f)
+                    (fresh-image x)
+                    (or (some (fn [[k m v]] (when (<= (long k) f (long m)) v)) (rw/versions x))
+                        (throw (ex-info "MVCC: no version for a live fork" {:id (aget x rw/ID) :ordinal f}))))))
+
+(defn- view
+  "§2.4: the version of `r` this world sees, through its lineage (nearest
+   first): an ancestor's copy as it was at the fork, or the ancestor's own row."
+  [w ^objects r]
+  (let [id (aget r rw/ID)
+        owner (rw/epoch-world (rw/stamp r))]
+    (loop [l (g w rw/W-LINEAGE)]
+      (if-let [[a _cut f _tok m] (first l)]
+        (if-let [x (get m id)]
+          (version-of x f)
+          (if (= owner a) (version-of r f) (recur (rest l))))
+        (throw (lineage-ex r))))))
+
+(defn resolve-row
+  "This world's own row for reference `r` (the `rv` slow path): an owned row
+   stamped by an older epoch is preserved and restamped (MVCC, §2.3); an
+   inherited row is copied into this world from the version it sees (§2.4)."
   [w r]
   (let [^objects r r]
-    (if (identical? (aget r (unchecked-dec-int (alength r))) (aget ^objects w rw/W-EPOCH))
+    (if (= (rw/epoch-world (rw/stamp r)) (g w rw/ID))
+      (preserve! w r)
+      (if-let [c (get (g w rw/W-FWD) (aget r rw/ID))]
+        (if (identical? (rw/stamp c) (g w rw/W-EPOCH)) c (preserve! w c))
+        (own-copy! w r (view w r))))))
+
+(defn- peek-row
+  "Read-only view of row `r` in `w`, without copying it: `r` when `w` owns it,
+   its own copy, else the version it sees. Never written through; a write
+   needs `rv`."
+  [w r]
+  (let [^objects r r]
+    (if (= (rw/epoch-world (rw/stamp r)) (g w rw/ID))
       r
-      (or (get (aget ^objects w rw/W-FWD) (aget r rw/ID)) r))))
+      (or (get (g w rw/W-FWD) (aget r rw/ID)) (view w r)))))
 
 (defn- copy-containers!
   "The mutable containers of a copied row are copied too, so neither world
@@ -371,25 +549,29 @@
     c))
 
 (defn- own-copy!
-  "M5: copies a basis row into world `w`: stamps the epoch, copies its
-   containers, records it in the forward map (and the verify registry)."
-  [w ^objects r]
-  (let [c (aclone r)]
+  "Copies version `v` of the inherited row `r` into world `w`: stamps the
+   epoch, copies its containers, records it in the copy map (and the verify
+   registry)."
+  [w ^objects r ^objects v]
+  (let [fresh? (identical? fresh-mark (rw/versions v))
+        c (if fresh? v (aclone v))]
     (aset c (unchecked-dec-int (alength c)) (aget ^objects w rw/W-EPOCH))
-    (copy-containers! c)
+    (rw/set-versions! c nil)
+    (when-not fresh? (copy-containers! c))
     ;; F1: a resource's physical controller (timer, thread, external
     ;; callbacks) belongs to the world that set it; a copy elsewhere drops it
     (when (and (== rw/T-RES (long (aget c rw/TYPE)))
                (not= (aget c rw/Z-ORIGIN) (aget ^objects w rw/ID)))
       (aset c rw/Z-CTL nil))
     (aset ^objects w rw/W-FWD (assoc (aget ^objects w rw/W-FWD) (aget c rw/ID) c))
-    ;; L12: a mergeable fork keeps the basis row of every source it inherited
-    ;; and touches: the version at the fork, and the row its parent resolves
+    ;; L12: a mergeable fork keeps, for every source it inherited and
+    ;; touches, the identity its parent resolves and its version number at
+    ;; the fork
     (when-let [mb (aget ^objects w rw/W-MBASE)]
       (when (and (== rw/T-SOURCE (long (aget c rw/TYPE)))
                  (< (long (aget c rw/ID)) (long (aget ^objects w rw/ID)))
                  (nil? (get mb (aget c rw/ID))))
-        (aset ^objects w rw/W-MBASE (assoc mb (aget c rw/ID) r))))
+        (aset ^objects w rw/W-MBASE (assoc mb (aget c rw/ID) [r (gl v rw/VERSION)]))))
     (when-let [reg (aget ^objects w rw/W-REG)]
       (when (some? (hs/mget reg (aget c rw/ID))) (hs/mput! reg (aget c rw/ID) c)))
     c))
@@ -1504,16 +1686,19 @@
     (let [w (cw)
           outs (g x rw/OUTS)]
       (dotimes [i (acount outs)]
-        ;; read only: an observe edge a fork inherited is not copied to learn its kind
-        (let [e (peek-row w (anth outs i))
-              k (gl e rw/E-KIND)]
+        ;; an edge's kind never changes after link!: read it from the reference,
+        ;; so an observe edge a fork inherited is neither viewed nor copied
+        (let [e0 (anth outs i)
+              k (gl e0 rw/E-KIND)]
           (cond
             (== k rw/EK-DEP)
-            (let [c (rv w (g e rw/E-CRED))]
+            (let [e (peek-row w e0)
+                  c (rv w (g e rw/E-CRED))]
               (when (g e rw/E-MARKED) (maybe-schedule! w c))
               (when (g e rw/E-ACT) (notify-blocked! c (inc (long depth)))))
             (== k rw/EK-WAIT)
-            (let [a (rv w (g e rw/E-CRED))]
+            (let [e (peek-row w e0)
+                  a (rv w (g e rw/E-CRED))]
               (when (and (some? a) (not (fn? a)) (act? a))
                 (notify-blocked! (rv w (g (rv w (g a rw/A-RUN)) rw/R-OF)) (inc (long depth)))))))))))
 
@@ -2205,10 +2390,11 @@
         cleanup (g w rw/W-CLEANUP)]
     (cond
       (pos? (acount cleanup))
-      (let [[r ek ex :as entry] (pop-first! w cleanup)]
+      (let [[r0 ek ex] (pop-first! w cleanup)
+            r (rv w r0)]                     ; an entry a fork inherited names a basis row
         (if (nil? ek)
           ;; T15 for a resource that joined at its cancel (Z#55): [z]
-          (resource-ack! w (rv w r))
+          (resource-ack! w r)
           (do (s! r rw/R-SLICE true)
               (commit! w [:finalize (g r rw/ID)])
               (slice! r #(ek ex))))
@@ -2258,7 +2444,7 @@
             (cond (and (not unborn?) (drain-step! w)) (recur (dec n) false)
                   (run-callbacks! w) (recur n unborn?)
                   :else false))))
-      (finally (finish-metadata! w) (s! w rw/W-DRAINING false)))))
+      (finally (finish-metadata! w) (maybe-finish-token! w) (s! w rw/W-DRAINING false)))))
 
 (declare handoff! activate-dormant!)
 
@@ -3329,7 +3515,7 @@
     (if (g w rw/W-UNBORN)
       ;; E4: an instance that never ran is discarded as if dropped: nothing
       ;; in it runs, its copied finalizers included
-      (do (commit! w [:release-world]) (s! w rw/W-RELEASED true) (finish-metadata! w))
+      (do (commit! w [:release-world]) (s! w rw/W-RELEASED true) (finish-metadata! w) (maybe-finish-token! w))
       (let [ex (released-ex)
             roots (g w rw/W-ROOTS)]
         (doseq [e (map #(rv w %) (hs/mvals roots))]
@@ -3353,6 +3539,18 @@
                 (when (zero? (gl x rw/REFS)) (aadd! (g w rw/W-RQ) x))))))
         (commit! w [:release-world])
         (s! w rw/W-RELEASED true)))))
+
+(declare work-pending?)
+
+(defn- maybe-finish-token!
+  "MVCC: a released world whose cleanup has completed (metadata closed) and
+   that has no work, queued cleanup or armed resource left ends its token
+   (unless shared): nothing in it can read an inherited row any more."
+  [w]
+  (when (and (g w rw/W-RELEASED) (g w rw/W-META-CLOSED)
+             (not (work-pending? w))
+             (let [a (g w rw/W-ARMED)] (or (nil? a) (zero? (hs/oset-count a)))))
+    (finish-token! w)))
 
 (defn- finish-metadata! [w]
   (when (and (g w rw/W-RELEASED) (not (g w rw/W-META-CLOSED))
@@ -3427,20 +3625,29 @@
     (new-handle w x)))
 
 (defn- fork-world*
-  "D3: the frozen copy-on-write fork of `w`, at the current commit. O(1) in
-   the world's rows: both worlds get fresh epochs, so every existing row is a
-   shared basis that each world copies on first access; the forward map (row
-   ID -> copy) is shared persistently. The child gets fresh administration
-   and copies of the queues, pins and roots (work in flight, design v3 §6);
-   its inherited armed resources are dormant until its first turn (§8.1)."
+  "D3: the copy-on-write fork of `w` at the current commit (MVCC, §2.7). O(1)
+   in the world's rows: `w` keeps owning them and advances its ordinal, so it
+   saves a row's state as a version before its first change (for this fork,
+   while its token lives); the child reads `w`'s rows at the fork's ordinal
+   through its lineage and copies what it touches. The child gets fresh
+   administration and copies of the queues, pins and roots (work in flight,
+   design v3 §6); its inherited armed resources are dormant until its first
+   turn (§8.1)."
   [w]
   (let [c (aclone ^objects w)
-        armed (g w rw/W-ARMED)]
-    (s! w rw/W-EPOCH #?(:clj (Object.) :cljs (js-obj)))
-    (s! c rw/W-EPOCH #?(:clj (Object.) :cljs (js-obj)))
-    (s! c rw/ID (alloc-id! w))
-    ;; lineage: w's rows below the child's id are its basis (§8.1)
-    (s! c rw/W-LINEAGE (cons [(g w rw/ID) (g c rw/ID)] (g w rw/W-LINEAGE)))
+        armed (g w rw/W-ARMED)
+        o (rw/epoch-ordinal (g w rw/W-EPOCH))
+        _ (share-token! w)
+        tok (register-token! w o)
+        id (alloc-id! w)]
+    (s! w rw/W-EPOCH (rw/epoch (g w rw/ID) (inc o)))
+    (s! c rw/ID id)
+    (s! c rw/W-EPOCH (rw/epoch id 0))
+    ;; lineage: w's rows below the child's id are its basis (§8.1), read at
+    ;; ordinal o (the token keeps those versions); w's copy map as it is now
+    (s! c rw/W-LINEAGE (cons [(g w rw/ID) id o tok (g w rw/W-FWD)] (g w rw/W-LINEAGE)))
+    (s! c rw/W-FWD {})
+    (s! c rw/W-TOKENS nil)
     (s! c rw/W-LOCK (hs/lock))
     (s! c rw/W-INGRESS (hs/mpsc))
     (s! c rw/W-SCHEDULED (hs/flag false))
@@ -3467,6 +3674,54 @@
     (s! c rw/W-MBASE nil)
     (s! c rw/W-MPARENT nil)
     (when-let [reg (g w rw/W-REG)]
+      ;; verify mode: the child's registry holds the rows as they are at the
+      ;; fork (the parent keeps changing its own in place)
+      (s! c rw/W-REG (let [m (hs/mcopy reg)]
+                       #?(:clj (doseq [^java.util.Map$Entry e (vec (.entrySet ^java.util.Map m))]
+                                 (.put ^java.util.Map m (.getKey e) (image (.getValue e))))
+                          :cljs (doseq [[k v] (vec (es6-iterator-seq (.entries m)))]
+                                  (.set m k (image v))))
+                       m))
+      (s! c rw/W-LOG (alist)))
+    (lt/register-world! (g c rw/W-FAMILY) c (g c rw/ID) (g c rw/W-WATCHES)
+                        (gl c rw/W-SWEEP-GEN) request-atom-sweep!)
+    c))
+
+(defn- instance-world*
+  "S3: a fork of the savepoint basis `b` (never run, owns no rows): the basis
+   is not changed (no ordinal, no token); the instance reads through the
+   basis's lineage, whose tokens keep the versions it needs."
+  [b]
+  (share-token! b)
+  (let [c (aclone ^objects b)
+        id (alloc-id! b)]
+    (s! c rw/ID id)
+    (s! c rw/W-EPOCH (rw/epoch id 0))
+    (s! c rw/W-FWD {})
+    (s! c rw/W-TOKENS nil)
+    (s! c rw/W-LOCK (hs/lock))
+    (s! c rw/W-INGRESS (hs/mpsc))
+    (s! c rw/W-SCHEDULED (hs/flag false))
+    (s! c rw/W-DRAINING false)
+    (s! c rw/W-CALLBACKS (alist))
+    (s! c rw/W-OWNED nil)
+    (s! c rw/W-HOLDER nil)
+    (s! c rw/W-AFTER (alist))
+    (s! c rw/W-UNBORN false)
+    (s! c rw/W-PUB-WORLD nil)
+    (s! c rw/W-WATCHES (lt/index))
+    (s! c rw/W-SWEEP-PENDING (hs/flag false))
+    (s! c rw/W-META-CLOSED false)
+    (doseq [i [rw/W-READY rw/W-RESUME rw/W-START rw/W-CLEANUP rw/W-RQ]]
+      (s! c i (hs/lcopy (g b i))))
+    (s! c rw/W-PINS (hs/mcopy (g b rw/W-PINS)))
+    (s! c rw/W-ROOTS (hs/mcopy (g b rw/W-ROOTS)))
+    (s! c rw/W-ARMED nil)
+    (s! c rw/W-DORMANT (g b rw/W-DORMANT))
+    (s! c rw/W-PENDING-ACT nil)
+    (s! c rw/W-MBASE nil)
+    (s! c rw/W-MPARENT nil)
+    (when-let [reg (g b rw/W-REG)]
       (s! c rw/W-REG (hs/mcopy reg))
       (s! c rw/W-LOG (alist)))
     (lt/register-world! (g c rw/W-FAMILY) c (g c rw/ID) (g c rw/W-WATCHES)
@@ -3537,22 +3792,21 @@
              (== (long (g parent rw/ID)) (long (g child rw/W-MPARENT)))
              (not (g child rw/W-RELEASED)) (not (g child rw/W-UNBORN)) (not (g child rw/W-DRAINING))
              (not (work-pending? child)))
-    (let [pfwd (g parent rw/W-FWD)
-          cfwd (g child rw/W-FWD)
+    (let [cfwd (g child rw/W-FWD)
           reg (g parent rw/W-REG)]
       (reduce-kv
-       (fn [acc id basis]
-         (let [cx (get cfwd id)
-               base (gl basis rw/VERSION)]
+       (fn [acc id [ident ^long base]]
+         (let [cx (get cfwd id)]
            (if (or (nil? cx) (== base (gl cx rw/VERSION)))
              acc
-             ;; the parent's view without copying: its copy, or the shared basis
-             (let [px (or (get pfwd id) basis)]
+             ;; the parent's current state, without copying (it owns the row,
+             ;; or reads it through its own lineage)
+             (let [px (peek-row parent ident)]
                (if (and (== base (gl px rw/VERSION))
                         (== rw/SRC-SIGNAL (gl px rw/X-KIND)) (== rw/SRC-SIGNAL (gl cx rw/X-KIND))
                         (g px rw/X-OPEN)
                         (if reg (some? (hs/mget reg id)) (or (pos? (gl px rw/REFS)) (pos? (gl px rw/HANDLES)))))
-                 (conj acc [basis (g cx rw/X-VALUE)])
+                 (conj acc [ident (g cx rw/X-VALUE)])
                  (reduced nil))))))
        ;; in id order: the writes are items, and their order is part of the log
        [] (into (sorted-map) (g child rw/W-MBASE))))))
@@ -3775,7 +4029,7 @@
                                    {:spindel/invalid :owner})))]
      (when-not (identical? (g owner rw/W-FAMILY) (g b rw/W-FAMILY))
        (throw (ex-info "instantiate: the owner belongs to an unrelated world" {:spindel/invalid :lineage})))
-     (let [c (fork-world* b)]
+     (let [c (instance-world* b)]
        (s! c rw/W-PENDING-ACT (:act pub))
        ;; E4: unborn until activate!: host items commit, but its inherited work
        ;; and dormant resources wait; dropped unactivated, it is collected
