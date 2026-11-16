@@ -783,12 +783,17 @@
   (cases hp (Nat.beq (:phase e) ph-armed))
   (all_goals (simp only [invalidate-id hf hp sl-invalidate])))
 
+(a/theorem sl-clear-rtasks [x :- Nat, w :- World, k :- Nat]
+  (=> (= (i10-slice-at x w) true) (= (i10-slice-at x (clear-rtasks w k)) true))
+  (intro h) (simp only [clear-rtasks])
+  (exact (sl-fold-frame x clear-rtask (fn [w2 :- World, y :- Nat] (sl-source-upd x w2 y (link-set-rtask 0))) w _ h)))
+
 (a/theorem sl-debtor-side [x :- Nat, w :- World, r :- RunRow]
   (=> (= (i10-slice-at x w) true) (= (i10-slice-at x (debtor-side w r)) true))
   (intro h)
   (cases hc (comp-find w (:of r))) (case' [some c]) (case' [none])
   (simp only [debtor-side hc fire-task-cancelled])
-  (exact (sl-finalize-debtor x _ _ (sl-fold-fire x _ _ _ (Eq.trans (sl-task-upd x w _ _) h))))
+  (exact (sl-clear-rtasks x _ _ (sl-finalize-debtor x _ _ (sl-fold-fire x _ _ _ (Eq.trans (sl-task-upd x w _ _) h)))))
   (cases he (Nat.beq (:epoch r) (:epoch c)))
   (simp only [debtor-side hc he]) (exact h)
   (simp only [debtor-side hc he invalidate-dependents fire-waits-cancelled])
@@ -1359,6 +1364,13 @@
   (simp only [observe-raw hr]) (exact h1)
   (simp only [observe-raw hr]) (exact (sl-fire-edge x _ _ _ h1)))
 
+(a/theorem sl-t8-obs [x :- Nat, w :- World, d :- Nat, cb :- Nat, fresh :- Nat]
+  (=> (= (i10-slice-at x w) true) (= (i10-slice-at x (:world (t8-obs w d cb fresh))) true))
+  (intro h)
+  (cases hs (src-kind-at w sk-stream d))
+  (simp only [t8-obs hs]) (exact (sl-t8-full x w d cb fresh h))
+  (simp only [t8-obs hs refuse]) (exact h))
+
 (a/theorem sl-new-pub-handle [x :- Nat, w :- World, y :- Nat]
   (=> (= (i10-slice-at x w) true) (= (i10-slice-at x (:world (new-pub-handle w y))) true))
   (intro h)
@@ -1752,7 +1764,7 @@
   (rename_i st s k fresh) (cases hc (in-cleanup w st))
   (simp only [hc]) (exact (i10-slice-intro _ _ (sl-t7 _ w _ _ _ _ hx)))
   (simp only [hc refuse]) (exact h)
-  (exact (i10-slice-intro _ _ (sl-t8-full _ w _ _ _ hx)))
+  (exact (i10-slice-intro _ _ (sl-t8-obs _ w _ _ _ hx)))
   (exact (i10-slice-intro _ _ (sl-t8-unobserve _ w _ hx)))
   (exact (i10-slice-intro _ _ (sl-t9 _ w _ _ _ hx)))
   (exact (i10-slice-intro _ _ (sl-t15 _ w _ hx)))
@@ -2619,12 +2631,17 @@
   (cases hp (Nat.beq (:phase e) ph-armed))
   (all_goals (simp only [invalidate-id hf hp s9-invalidate])))
 
+(a/theorem s9-clear-rtasks [w :- World, k :- Nat]
+  (=> (= (inv-i9 w) true) (= (inv-i9 (clear-rtasks w k)) true))
+  (intro h) (simp only [clear-rtasks])
+  (exact (s9-fold-frame clear-rtask (fn [w2 :- World, y :- Nat] (s9-source-upd w2 y (link-set-rtask 0))) w _ h)))
+
 (a/theorem s9-debtor-side [w :- World, r :- RunRow]
   (=> (= (inv-i9 w) true) (= (inv-i9 (debtor-side w r)) true))
   (intro h)
   (cases hc (comp-find w (:of r))) (case' [some c]) (case' [none])
   (simp only [debtor-side hc fire-task-cancelled])
-  (exact (s9-finalize-debtor _ _ (s9-fold-fire _ _ _ (Eq.trans (s9-task-upd w _ _) h))))
+  (exact (s9-clear-rtasks _ _ (s9-finalize-debtor _ _ (s9-fold-fire _ _ _ (Eq.trans (s9-task-upd w _ _) h)))))
   (cases he (Nat.beq (:epoch r) (:epoch c)))
   (simp only [debtor-side hc he]) (exact h)
   (simp only [debtor-side hc he invalidate-dependents fire-waits-cancelled])
@@ -3200,6 +3217,13 @@
   (simp only [observe-raw hr]) (exact h1)
   (simp only [observe-raw hr]) (exact (s9-fire-edge _ _ _ h1)))
 
+
+(a/theorem s9-t8-obs [w :- World, d :- Nat, cb :- Nat, fresh :- Nat]
+  (=> (= (inv-i9 w) true) (= (inv-i9 (:world (t8-obs w d cb fresh))) true))
+  (intro h)
+  (cases hs (src-kind-at w sk-stream d))
+  (simp only [t8-obs hs]) (exact (s9-t8-full w d cb fresh h))
+  (simp only [t8-obs hs refuse]) (exact h))
 (a/theorem s9-new-pub-handle [w :- World, y :- Nat]
   (=> (= (inv-i9 w) true) (= (inv-i9 (:world (new-pub-handle w y))) true))
   (intro h)
@@ -3583,7 +3607,7 @@
   (rename_i st s k fresh) (cases hc (in-cleanup w st))
   (simp only [hc]) (exact (s9-t7 w _ _ _ _ h))
   (simp only [hc refuse]) (exact h)
-  (exact (s9-t8-full w _ _ _ h))
+  (exact (s9-t8-obs w _ _ _ h))
   (exact (s9-t8-unobserve w _ h))
   (exact (s9-t9 w _ _ _ h))
   (exact (s9-t15 w _ h))

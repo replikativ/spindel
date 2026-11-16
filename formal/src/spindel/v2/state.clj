@@ -17,8 +17,9 @@
   - C0 async sequences (§4.3 link/stream, §8.1): a link (`sk-link`) is a once-cell owned by the
     root scope, realized iff version > 0 (like a deferred): with `state` = v and `next` = the
     next link (a value), `next` = 0 (the end, state 0), or `fail` = true (a memoized error,
-    `state` = the opaque error). `rtask` is its realizer task (0 none; stale-tolerant: the
-    realizer is live only while that task exists without a result). `tail` is 0 on a pull link
+    `state` = the opaque error). `rtask` is its realizer task (0 none; T14/T21 clear it when
+    they cancel the realizer, link-realize when it realizes; `realizer-live` still checks that the
+    task exists without a result). `tail` is 0 on a pull link
     and the stream on a push link; a stream (`sk-stream`) keeps its tail link in `tail`. The
     other kinds keep rtask = next = tail = 0, fail = false.
   - Edge `cont`: `cont-restart` (0) is the reserved restart code; any other Nat is a k.

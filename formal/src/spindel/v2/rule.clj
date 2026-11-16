@@ -407,9 +407,15 @@
   (Bool.and (Nat.beq (:debtor e) k) (Bool.or (Nat.beq (:kind e) ek-wait) (Nat.beq (:kind e) ek-dep))))
 (a/defn fire-task-cancelled [w :- World, d :- Nat] World
   (finalize-debtor (nat-fold (fire-edge res-cancelled) w (tbl-scan edge-id (on-task d) (:edges w))) d))
+;; C0 (engine cancel! -> finish-task! -> link-cancelled!): a cancelled task that is a link's
+;; realizer leaves that link without a realizer (rtask := 0) inside T14/T21
+(a/defn rtask-is [k :- Nat, s :- SourceRow] Bool (Bool.and (Nat.beq (:kind s) sk-link) (Nat.beq (:rtask s) k)))
+(a/defn clear-rtask [w :- World, x :- Nat] World (source-upd w x (link-set-rtask 0)))
+(a/defn clear-rtasks [w :- World, k :- Nat] World
+  (nat-fold clear-rtask w (tbl-scan source-id (rtask-is k) (:sources w))))
 (a/defn debtor-side [w :- World, r :- RunRow] World
   (match (comp-find w (:of r))
-    [none (fire-task-cancelled (task-upd w (:of r) task-cancel-result) (:of r))]
+    [none (clear-rtasks (fire-task-cancelled (task-upd w (:of r) task-cancel-result) (:of r)) (:of r))]
     [(some c) (if (Nat.beq (:epoch r) (:epoch c))
                   (invalidate-dependents (fire-waits-cancelled w (:of r)) (:of r))
                   w)]))
@@ -582,12 +588,24 @@
   (intro h)
   (exact (nat-fold-inv invalidate-id inv-invalidate-id (tbl-scan edge-id (armed-dep-on d) (:edges w)) w h)))
 
+(a/theorem inv-clear-rtask [w :- World, x :- Nat]
+  (=> (= (inv-sample w) true) (= (inv-sample (clear-rtask w x)) true))
+  (intro h)
+  (simp only [clear-rtask])
+  (exact (inv-source-upd w x (link-set-rtask 0) (link-set-rtask-id 0) h)))
+
+(a/theorem inv-clear-rtasks [w :- World, k :- Nat]
+  (=> (= (inv-sample w) true) (= (inv-sample (clear-rtasks w k)) true))
+  (intro h)
+  (simp only [clear-rtasks])
+  (exact (nat-fold-inv clear-rtask inv-clear-rtask _ w h)))
+
 (a/theorem inv-debtor-side [w :- World, r :- RunRow]
   (=> (= (inv-sample w) true) (= (inv-sample (debtor-side w r)) true))
   (intro h)
   (cases hc (comp-find w (:of r))) (case' [some c]) (case' [none])
   (simp only [debtor-side hc])
-  (exact (inv-fire-task-cancelled _ (:of r) (inv-task-upd w (:of r) task-cancel-result task-cancel-result-id h)))
+  (exact (inv-clear-rtasks _ (:of r) (inv-fire-task-cancelled _ (:of r) (inv-task-upd w (:of r) task-cancel-result task-cancel-result-id h))))
   (cases he (Nat.beq (:epoch r) (:epoch c)))
   (simp only [debtor-side hc he]) (exact h)
   (simp only [debtor-side hc he])

@@ -34,7 +34,8 @@
     F3 C0 async sequences (§4.3 link/stream, §8.1): create-link (a pull head, owned by the root
        scope; in a computation a basis creation, adopted like a re-spawn), streams as a T1 kind
        (`t1-body`/`t1-top-full`: the stream and its first tail link S + 1), link-demand (the
-       realizer task in the root scope, handles 0; `rtask` stale-tolerant: `realizer-live`),
+       realizer task in the root scope, handles 0; T14/T21 clear `rtask` at the realizer's cancel;
+       `realizer-live` also checks it), T8 observe on a stream refused (`t8-obs`),
        link-realize (tag 1 next pull link, 0 end, 2 memoized error), append, close; built from
        source-ins, source-upd and rule.clj's `realize-link` (= deliver with a result,
        `deliver-raw-res`). T16's close-source ends a stream's tail first (`end-stream`), a
@@ -2698,8 +2699,8 @@
   (simp [t1-top-full hk hg accept] at ha))
 
 ;; ---- link-demand (`[:link-demand L K]`, after the T6/T22 commit that demanded L): an unrealized
-;; open pull link without a live realizer (rtask is stale-tolerant: the realizer is live while its
-;; task exists without a result) starts its realizer: task K owned by the root scope (handles 0),
+;; open pull link without a live realizer (T14/T21 clear rtask at the realizer's cancel, rule.clj
+;; `clear-rtasks`; the realizer is live while its task exists without a result) starts its realizer: task K owned by the root scope (handles 0),
 ;; its run and run scope (T4's rows, started: its first slice is a scheduling choice); L.rtask := K
 (a/defn task-live [w :- World, k :- Nat] Bool
   (match (task-find w k) [none false] [(some t) (Nat.beq (:tag (:result t)) res-none)]))
@@ -2902,6 +2903,24 @@
   (Bool.or (Nat.beq (:kind s) sk-mailbox) (Bool.or (Nat.beq (:kind s) sk-semaphore) (Nat.beq (:kind s) sk-stream))))
 (a/defn deb-consuming [w :- World, d :- Nat] Bool (opt-test src-consuming (source-find w d)))
 (a/defn await-kind-bad [w :- World, ds :- (List Nat)] Bool (tbl-any (deb-consuming w) ds))
+;; C0 (engine session, 2026-11-16): T8 observe on a stream is refused as await/T22 (the engine
+;; delivers an error to the callback, creates no edge and logs no item)
+(a/defn t8-obs [w :- World, d :- Nat, cb :- Nat, fresh :- Nat] Outcome
+  (if (src-kind-at w sk-stream d) (refuse w) (t8-full w d cb fresh)))
+
+(a/theorem t8-obs-inv [w :- World, d :- Nat, cb :- Nat, fresh :- Nat]
+  (=> (= (inv-sample w) true) (= (inv-sample (:world (t8-obs w d cb fresh))) true))
+  (intro h)
+  (cases hs (src-kind-at w sk-stream d))
+  (simp only [t8-obs hs]) (exact (t8-full-inv w d cb fresh h))
+  (simp only [t8-obs hs refuse]) (exact h))
+
+(a/theorem t8-obs-refuse [w :- World, d :- Nat, cb :- Nat, fresh :- Nat]
+  (=> (= (:accepted (t8-obs w d cb fresh)) false) (= (:world (t8-obs w d cb fresh)) w))
+  (intro ha)
+  (cases hs (src-kind-at w sk-stream d))
+  (simp only [t8-obs hs] at ha) (simp only [t8-obs hs]) (exact (t8-full-refuse w d cb fresh ha))
+  (simp only [t8-obs hs refuse]))
 
 ;; ===========================================================================
 ;; Part G. The step: raw transition (every item), then Rule R
@@ -2913,7 +2932,7 @@
     [(create-source-top scope kind v fresh) (t1-top-full w scope kind v fresh)]
     [(write x v) (t2-write w x v)]
     [(track st x k fresh) (if (in-cleanup w st) (refuse w) (t7-track w st x k fresh))]
-    [(observe d cb fresh) (t8-full w d cb fresh)]
+    [(observe d cb fresh) (t8-obs w d cb fresh)]
     [(unobserve e) (t8-unobserve w e)]
     [(fire e tag val) (t9-fire w e tag val)]
     [(resource-ack z) (t15-full w z)]
@@ -3034,7 +3053,7 @@
   (rename_i st x k fresh) (cases hc (in-cleanup w st))
   (simp only [hc]) (exact (t7-inv w _ _ _ _ h))
   (simp only [hc refuse]) (exact h)
-  (exact (t8-full-inv w _ _ _ h))
+  (exact (t8-obs-inv w _ _ _ h))
   (exact (t8-unobserve-inv w _ h))
   (exact (t9-inv w _ _ _ h))
   (exact (t15-full-inv w _ h))
@@ -3103,7 +3122,7 @@
   (rename_i st x k fresh) (cases hc (in-cleanup w st))
   (simp only [hc] at ha) (simp only [hc]) (exact (t7-refuse w _ _ _ _ ha))
   (simp only [hc refuse])
-  (exact (t8-full-refuse w _ _ _ ha))
+  (exact (t8-obs-refuse w _ _ _ ha))
   (exact (t8-unobserve-refuse w _ ha))
   (exact (t9-refuse w _ _ _ ha))
   (exact (t15-full-refuse w _ ha))

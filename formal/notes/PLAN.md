@@ -1114,3 +1114,12 @@ No counterexample. Tripwire: i10_test random drivers (g10r and lit-i10-current o
   per-step tripwires).
 - Stage B (not loaded on this branch): lit fails first (`kw-close-source`, close-source's new shape); every namespace
   above lit is blocked by it (rank, rank-step, z59, cow, mvcc load).
+
+### Stage B (2026-11-16): model changes settled with the engine session
+
+- **rtask at cancel** (T14/T21): `debtor-side` of a task run ends with `clear-rtasks w k` (rule.clj: every link whose
+  `rtask` is k gets `link-set-rtask 0`), the engine's cancel! -> finish-task! -> link-cancelled!. The oracle's
+  `:rtask` projection is now the raw field (the "none once the task has a result" case is gone; samples 1-21 at 0
+  divergences). `realizer-live` keeps its task check (harmless).
+- **T8 observe on a stream** is refused (`t8-obs` in engine.clj, raw0's observe arm), as await/T22 (`src-consuming`).
+- engine_test `c0-realizer-cancel-and-stream-observe` checks both.

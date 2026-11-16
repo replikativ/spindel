@@ -881,3 +881,22 @@
     (testing "the C0 items were accepted"
       (is (every? #(pos? (get @accepted % 0)) [38 39 40 41 42 43])
           (pr-str (into (sorted-map) @accepted))))))
+
+;; C0 (engine session 2026-11-16): T14 on a link's realizer clears the link's rtask (engine
+;; link-cancelled!); T8 observe on a stream is refused (no edge, no item), as await/T22
+(deftest c0-realizer-cancel-and-stream-observe
+  (let [step (fn [w it] (let [o (en/world-step w it)] [(:accepted o) (:world o)]))
+        w0 s/empty-world
+        l (:next-id w0)
+        [a1 w1] (step w0 (create-link-top root l))
+        k (:next-id w1)
+        [a2 w2] (step w1 (link-demand l k))
+        r (:run (find-row w2 :tasks k))
+        [a3 w3] (step w2 (cancel r))
+        sx (:next-id w3)
+        [a4 w4] (step w3 (create-source-top root s/sk-stream 0 sx))
+        [a5 w5] (step w4 (observe sx 1 (:next-id w4)))]
+    (is (= [true true true true false] [a1 a2 a3 a4 a5]))
+    (is (= k (:rtask (find-row w2 :sources l))) "demand sets the realizer")
+    (is (= 0 (:rtask (find-row w3 :sources l))) "the realizer's cancel clears rtask")
+    (is (= w4 w5) "observe on a stream is refused")))

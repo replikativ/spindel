@@ -104,17 +104,12 @@
                                       ;; a stream's state is its tail (projected as :tail; engine nil)
                                       :state (when-not (= k :stream) (:state x))
                                       :version (:version x) :open (:open x) :handles (:handles x)}
-                               ;; C0 links: the realizer (rtask is stale-tolerant: the engine clears it when
-                               ;; the realizer is cancelled, T14/T21, with no item; the model's stays until
-                               ;; link-realize/link-demand, so a task that exists with a result is none),
-                               ;; pull = a pull link still unrealized (or a computation's head, which the
-                               ;; engine keeps for adoption), the next link
+                               ;; C0 links: the realizer (T14/T21 clear it at the realizer's cancel, as the
+                               ;; engine's link-cancelled!; link-realize clears it), pull = a pull link
+                               ;; still unrealized (or a computation's head, which the engine keeps for
+                               ;; adoption), the next link
                                (= k :link)
-                               (assoc :rtask (let [t (:rtask x)]
-                                               (when-not (or (zero? t)
-                                                             (when-let [kr (first (s/task-find w t))]
-                                                               (pos? (:tag (:result kr)))))
-                                                 t))
+                               (assoc :rtask (opt0 (:rtask x))
                                       :pull (and (zero? (:tail x))
                                                  (or (zero? (:version x))
                                                      (boolean (some (fn [c] (some #(= (:id x) (:id %)) (concat (:basis c) (:adopt-basis c))))
