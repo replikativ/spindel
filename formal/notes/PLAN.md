@@ -1159,32 +1159,5 @@ statement again.
 
 #### Former temporary hypothesis `c0-root w it` (first pass, superseded)
 
-`c0-root w it = (not (c0-root-item it)) || scope-open-at w root-scope-id`: an item that creates a link owned by the
-root scope (a stream's creation (T1 kind `sk-stream`: its first tail), `create-link` in a run, `link-realize` with tag 1
-(the next pull link), `append`) runs while the root scope is open. True of every C0-free item. Needed by g8 (literal I8:
-an open source's owner is not a closed scope); `link-demand` carries its own guard (root scope open). Uses:
-
-| theorem | file:line |
-|---|---|
-| `t-create-link-g8`, `t1-body-g8`, `t1-top-full-g8`, `t-link-realize-g8`, `t-append-g8` (overrides) | i8.clj:1664, 1735, 1744, 1802, 1821 |
-| `raw0-g8`, `raw0g-g8` (patched copies), `raw-g8` | i8.clj:2230, 2231, 2232 |
-| `step-g8`, `step-p3i`, `step-lit-i8-total` | i8.clj:2326, 2436, 2444 |
-| `step-p3j`, `step-gd-facts-total` | hm.clj:1507, 1537 |
-| `step-p3k`, `step-i14-total` | i14.clj:2336, 2515 |
-| `step-p3l`, `step-h-mark-total` | hmk2.clj:1614, 1627 |
-| `step-p3la` | hm6_base.clj:50 |
-| `step-p3m`, `step-h3-total`, `step-h-mem2-total` | hm18.clj:914, 921, 936 |
-| `sinv-step` (the fixed items of sys pass `rfl`) | sys.clj:100 |
-
-`l5-safety-total` and every bundle step theorem other than g8's have no c0 hypothesis.
-
-B2 (open): the root scope closes only at T21 (`close-scope` refuses the root: not explicit). After T21 the C0 root
-items are refused in every state reached in tests (a random probe over 18 000 C0 steps found no accepted one with the
-root closed; a hand scenario: a computation created in the cancelled run's scope does not survive T21's Rule R): after
-T21 every run is cancelled (cleanup mode refuses `create-link` and T1 in a body), every scope and every source owned in
-the root subtree is closed, computations are reclaimed (their sources detached, closed), so no open stream or
-unrealized open link is left for `append`/`link-realize`, and `create-source-top` needs an open scope. Discharging it
-needs an invariant "released => no computation, no alive normal-mode run, no open link or stream, every scope closed"
-through the step. Spec question for the engine session: should root-owned link creations be refused once the root
-scope is closed (as `link-demand`'s guard already does), or should I8 exempt root-owned links?
-
+`c0-root w it = !(c0-root-item it) || scope-open-at w root-scope-id` was defined in i8.clj and threaded through the
+theorems listed above (commits ad4a953 .. f0ee12c on `formal/c0-model`); the root gate removed it and its definition.
