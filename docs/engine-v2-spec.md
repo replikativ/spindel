@@ -723,12 +723,22 @@ They are never dependencies. All operations are atomic commits (D0).
 | deferred | `deliver(X, v)` once: fires all `wait` edges and finalizes the deferred; `await` in a computation is a dep edge that is consumed at once if the deferred is final |
 | mailbox | `post(X, v)` appends to the queue; `take(X)` is a wait edge; FIFO, each message is delivered to exactly one waiter atomically; cancelling a waiter removes it from the queue order; on a closed, empty mailbox `take` fails at once with `err ::closed` (Z#57) |
 | semaphore | `acquire(X)` is a wait edge, and a permit is consumed atomically on fire; `release(X)` fires the first armed waiter or increments the permit count, up to the maximum (Z#62); cancelling a waiter removes it; on a closed semaphore without permits `acquire` fails at once with `err ::closed` (Z#57) |
+| link | A once-cell of an async sequence (C0), owned by the root scope. Final once realized: with `[v next]` (`next` the next link's handle), `end` (nil) or a memoized error. Awaited like a deferred, never tracked. A pull link carries a realizer `[f s]`: demand on it while unrealized and without a realizer (T6, T22) creates its realizer task in the root scope (`link-demand`), at most one per link per world; that task's end realizes the link (`link-realize`): `[v s']` creates the next link with `[f s']`, nil is the end, an error is memoized, except `::forked` (§8.1), after which the link stays unrealized and a demanded link starts a new realizer at once; a cancelled realizer (T21) realizes nothing. A push link has no realizer and is realized by its stream. |
+| stream | A producer whose state is its tail link, owned per §5.2. `append(X, v)` creates a new tail and realizes the old one with `[v new-tail]` in one commit; on a closed stream it is refused. `close(X)` and T16 (the owner's scope closes, Z#18) realize the tail as `end` (or `close(X, err)` with `err`), then close `X`. Not awaitable: readers hold positions (links). |
 
 **Operation by kind (Z#54).** `track` applies to signals and cells only.
 `await` on a mailbox is `take`. `await` on a semaphore, `await-all` or
 `await-any` with a mailbox or semaphore member, and `track` on any other
 kind fail the effect with `err` (no commit). The host read of a mailbox or
 semaphore (T22) is refused.
+
+**Links and forks (C0).** A link is a row: a fork copies it with the
+world, so an element is realized at most once per world. A realizer that
+was running at the fork continues in both worlds, and in the fork it gets
+`::forked` where its run waited on a physical resource (then it restarts
+as above). Links are not part of a mergeable fork's basis (L12); a stream
+the fork appended to is, so such a merge is refused (stream merge: C2). A
+link carries `[stream-id index]` for portable positions (C3).
 
 **Offload.** `offload(f)` arms a resource `Z` that runs the plain function
 `f` on a host executor, outside every world, and parks the run on a `wait`
@@ -1399,6 +1409,11 @@ cases.
     host-visible handle. The callback only enqueues T19 (H1).
 13. **Logging and direct compilation:** trace and debug logging is elided at
     compile time; bodies that cannot park are compiled direct.
+14. **Task captures:** a task runs its body once, so its row drops the body
+    once the first slice starts, and keeps its captured inputs only where a
+    computation may adopt it (§5.2) or in verify mode, where the projection
+    reads them. A long-running task therefore does not retain what it
+    captured, e.g. the head of a sequence it walks (C0).
 
 ---
 

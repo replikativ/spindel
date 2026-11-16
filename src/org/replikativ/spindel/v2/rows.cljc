@@ -239,7 +239,8 @@
 (def ^:const K-DONE 17)
 (def ^:const K-FRAME 18)     ; as C-FRAME
 (def ^:const K-PATH 19)      ; as C-PATH
-(def ^:const K-SIZE 20)
+(def ^:const K-LINK 20)      ; a realizer task: the link it realizes (C0)
+(def ^:const K-SIZE 21)
 
 ;; Source
 (def ^:const X-KIND 12)
@@ -249,6 +250,10 @@
 (def ^:const X-MAX 16)       ; semaphore: its maximum permit count (Z#62)
 (def ^:const X-DLOG 17)      ; signal/cell: [from deltas] covering versions (from, version], or nil (§4.4)
 (def ^:const X-SIZE 18)
+;; Link (an async-sequence position, C0): X-VALUE is [v next-handle], nil (the
+;; end) or a failure box once VERSION is 1. Reuses the mailbox/semaphore slots.
+(def ^:const X-RTASK 15)     ; link: the running realizer task, or nil
+(def ^:const X-REALIZE 16)   ; link: [f s frame stream-id index]; f nil for a push link
 
 ;; Resource (§1, T15-T18)
 (def ^:const Z-KIND 12)      ; :offload :timer :external
@@ -329,3 +334,7 @@
 (def ^:const SRC-DEFERRED 2)
 (def ^:const SRC-MAILBOX 3)
 (def ^:const SRC-SEMAPHORE 4)
+(def ^:const SRC-LINK 5)     ; once-cell of an async sequence (C0)
+(def ^:const SRC-STREAM 6)   ; push-stream producer: X-VALUE is its tail link (C0)
+
+(def kind-names [:signal :cell :deferred :mailbox :semaphore :link :stream])
