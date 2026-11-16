@@ -507,6 +507,32 @@
    "26a" {:w {:log (log "26a-w") :kind :root}} "26b" {:w {:log (log "26b-w") :kind :root}}
    "26c" {:w {:log (log "26c-w") :kind :root}} "27" {:w {:log (log "27-w") :kind :root}}})
 
+;; Sample 28 (spindel #269, Q5): computation 5's run 7 parks inside a finally region; T21 cancels
+;; it; its cleanup slice writes signal 3 and ends; c2 (4) never starts and the world is complete
+;; after the slice exit (the sidecar matches at every checkpoint). Two open questions (engine
+;; session), so the replay is triaged, not divergence-free:
+;;   (q-28a) commits 10-14: the engine keeps computation 5 not idle with run 7 (cancelled,
+;;           unwinding, its cleanup pending); the model's Rule R idles it (validity :invalid, run
+;;           cleared): a non-idle computation outside live (normalized), its run held only by
+;;           the cleanup entry.
+;;   (q-28b) commit 13 `[:write 3 12]` from the cleanup slice: signal 3 was collected at T21
+;;           (both sides), the engine logs the write accepted, the model refuses it (no row).
+(def ^:private c1-28-known
+  {:cells #{[:comps 5 :run] [:comps 5 :validity] [:comps 5 :idle]}
+   :commits [10 11 12 13 14] :accepted-differs [13]})
+
+(deftest c1-sample-28-triaged
+  (let [spec {:w {:log (log "28-w") :kind :root}}
+        fam (o/replay-family spec)
+        res (:res (:w fam))
+        divs (:divergences res)
+        obs (o/read-observations "test/spindel/v2/oracle/log-sample-28-observations.edn")]
+    (is (= [] (o/check-observations spec fam obs)) "sample 28: host observations (complete, c2 never started)")
+    (is (= (:commits c1-28-known) (mapv :commit divs)))
+    (is (= (:cells c1-28-known) (set (mapcat (fn [d] (map (juxt :table :id :field) (:diffs-all d))) divs))))
+    (is (= (:accepted-differs c1-28-known)
+           (mapv :commit (filter #(not= (:engine (:accepted %)) (:model (:accepted %))) divs))))))
+
 (deftest c1-samples
   (doseq [[n spec] c1-specs]
     (let [fam (o/replay-family spec)
@@ -520,4 +546,8 @@
   (is (= [[:cancel 4] [:finalize 4]] (map :item (subvec (log "22-parent") 17 19))) "22: one cancel item for the subtree")
   (is (= [[:release-world]] (map :item (log "24-instance"))) "24: the unborn instance's release")
   (is (not-any? #(= :await (first (:item %))) (drop 6 (log "25-w"))) "25: the refused finalizer await is no item")
-  (is (= [:arm 4 :op] (take 3 (:item (first (filter #(= :arm (first (:item %))) (log "26a-w")))))) "26: await-op arms an :op resource"))
+  (is (= [:arm 4 :op] (take 3 (:item (first (filter #(= :arm (first (:item %))) (log "26a-w")))))) "26: await-op arms an :op resource")
+  (let [l (map :item (log "28-w"))]
+    (is (= [[:finally-leave 7] [:slice-exit 7]] (take-last 2 l)) "28: the clause ends, the slice returns")
+    (is (not-any? #(#{:observe :pin :host-await} (first %)) (drop-while #(not= [:release-world] %) l))
+        "28: no root after the release (the cleanup slice's observe/pin are refused, no item)")))

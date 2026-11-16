@@ -563,8 +563,7 @@
         _ (step! w (spawn-top root 1 (:next-id w)) :refused)
         _ (step! w (create-source-top root s/sk-signal 0 (:next-id w)) :refused)
         w (step! w (finalize rk))
-        w (step! w (pin d))                                           ; the cleanup slice's own effect (Z#44)
-        w (step! w (unpin d))
+        _ (step! w (pin d) :refused)                                  ; C1 Q5 (#269): no new root after T21, also from the cleanup slice
         w (step! w (finally-exit (stamp w rk)))
         w (step! w (finally-leave (stamp w rk)))
         w (step! w (slice-exit rk))
@@ -1039,6 +1038,30 @@
         _ (is (empty? (:finalizers (find-row w :runs rk))))
         w (step! w (await* st [d] s/am-one 1 (:next-id w) []))]
     (is (= s/act-parked (:act (find-row w :runs rk))) "outside the clause the await parks")))
+
+;; C1 Q5 (spindel #269): after T21 a cancelled run's cleanup slice still holds the slice, but a
+;; released world takes no new root: observe, pin and host waits are refused there, so the world
+;; is quiet once the slice exits and the computation cannot start (the former counterexample to
+;; completion stability)
+(deftest c1-no-roots-after-release
+  (let [w0 s/empty-world
+        c (:next-id w0)
+        w (step! w0 (create-comp-top root c 1 1))
+        w (step! w (observe c 1 (:next-id w)))
+        w (step! w (start c (:next-id w)))
+        r (:run (find-row w :comps c))
+        w (step! w (schedule r))
+        w (step! w (release-world))
+        _ (is (true? (:slice (find-row w :runs r))) "the cancelled run still holds the slice")
+        _ (is (= s/mode-unwinding (:mode (find-row w :runs r))))
+        _ (step! w (observe c 1 (:next-id w)) :refused)
+        _ (step! w (pin c) :refused)
+        _ (step! w (host-await c (:next-id w)) :refused)
+        w (step! w (slice-exit r))]
+    (is (true? (en/world-quiet w)) "released, no run")
+    (is (empty? (:pins w)))
+    (is (nil? (find-row w :comps c)) "nothing retains the computation")
+    (is (false? (:accepted (en/world-step w (start c (:next-id w))))) "it cannot start")))
 
 ;; E4 (C1): an unborn instance released before its activation only sets the flag: nothing in it
 ;; runs (sample 24); a done task run that holds no slice is still cancellable, with no row change

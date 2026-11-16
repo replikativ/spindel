@@ -3166,8 +3166,59 @@
     [(close x tag v) true]
     [(finally-leave st) false]))
 (a/defn slice-held [w :- World] Bool (tbl-any run-slice (:runs w)))
+;; C1 (Q5, spindel #269): a released world takes no new root, also from a held slice (a cleanup
+;; slice's own host operations, Z#40): observe, pin and host waits are refused (the engine throws
+;; released-ex / delivers it to a value-async callback; no item). Write, deliver, post, release and
+;; close stay as Z#40.
+(a/defn root-item [it :- Item] Bool
+  (match it
+    [(create-source st kind v fresh) false]
+    [(create-source-top scope kind v fresh) false]
+    [(write x v) false]
+    [(track st x k fresh) false]
+    [(observe d cb fresh) true]
+    [(unobserve e) false]
+    [(fire e tag val) false]
+    [(resource-ack z) false]
+    [(arm st kind k fresh) false]
+    [(resource-fire z tag val) false]
+    [(handle-drop x) false]
+    [(pin x) true]
+    [(unpin x) false]
+    [(create-comp st c i b) false]
+    [(create-comp-top sc c i b) false]
+    [(spawn st b fresh ins) false]
+    [(spawn-top sc b fresh ins) false]
+    [(start c fresh) false]
+    [(await st ds m k fresh mine) false]
+    [(dispatch-comp c fresh) false]
+    [(complete st tag val) false]
+    [(schedule r) false]
+    [(host-await d fresh) true]
+    [(host-unawait e) false]
+    [(handle-new x) false]
+    [(deliver x v) false]
+    [(post x v) false]
+    [(take st x k fresh) false]
+    [(release x) false]
+    [(finalize r) false]
+    [(cancel r) false]
+    [(release-world) false]
+    [(open-scope st s) false]
+    [(close-scope s) false]
+    [(detach k s) false]
+    [(finally-enter st) false]
+    [(finally-exit st) false]
+    [(slice-exit r) false]
+    [(create-link st l) false]
+    [(create-link-top sc l) false]
+    [(link-demand l k) false]
+    [(link-realize l tag v n) false]
+    [(append x v t) false]
+    [(close x tag v) false]
+    [(finally-leave st) false]))
 (a/defn host-shut [w :- World, it :- Item] Bool
-  (Bool.and (:released w) (Bool.and (host-item it) (Bool.not (slice-held w)))))
+  (Bool.and (:released w) (Bool.and (host-item it) (Bool.or (Bool.not (slice-held w)) (root-item it)))))
 (a/defn raw0g [w :- World, it :- Item] Outcome (if (host-shut w it) (refuse w) (raw0 w it)))
 
 ;; after an accepted transition, the `any` losers are cancelled
