@@ -273,3 +273,29 @@
       (Thread/sleep 50)
       (v2/release-world! owner)
       (is (true? (v2/await-complete owner 2000 ::timeout))))))
+
+(deftest a-cleanup-slice-after-release-adds-no-root
+  ;; ansatz C1 stage B: a finalizer running after T21 may write, deliver,
+  ;; post, release and close (Z#40), but an observe, pin or host wait from
+  ;; there would be a new root, and the computation it demands could start
+  ;; after the world completed
+  (checked
+   (let [w (vworld) seen (atom []) runs (atom 0)]
+     (binding [v2/*world* w]
+       (let [s (v2/signal 0)
+             c2 (spin (swap! runs inc) (* 10 (iv/get-new (track s))))
+             attempt (fn [label f] (try (f) [label :accepted]
+                                        (catch Exception e [label (if (:spindel/released (ex-data e)) :released e)])))
+             c (spin (try (await (v2/deferred))
+                          (finally
+                            (swap! seen conj (attempt :observe #(v2/observe! c2 (fn [_ _]))))
+                            (swap! seen conj (attempt :pin #(v2/pin! c2)))
+                            (v2/value-async c2 (fn [v err?] (swap! seen conj [:value-async (if err? (:spindel/released (ex-data v)) v)])))
+                            (swap! seen conj (attempt :write #(v2/write! s 5))))))
+             _ (v2/observe! c (fn [_ _]))]
+         (v2/value (v2/signal 0) 200 nil)
+         (v2/release-world! w)
+         (is (true? (v2/await-complete w 2000 ::timeout)))
+         (is (wait-until #(= 4 (count @seen))))
+         (is (= #{[:observe :released] [:pin :released] [:value-async true] [:write :accepted]} (set @seen)))
+         (is (zero? @runs) "the computation never ran"))))))
