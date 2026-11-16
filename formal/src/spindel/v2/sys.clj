@@ -26,6 +26,14 @@
     merge   sinv-merge, merge-frame, merge-refused (a refused merge changes nothing), merge-unchanged
             (a child that wrote no inherited source merges to the same parent)
     release sinv-idle-release, drop-step-comm (dropping a world commutes with every step elsewhere)
+    C1      sinv-accept, sinv-complete, sinv-release-unborn (p3l-release-unborn: p3l reads no
+            `released`), complete-latch. Completion soundness `cinv` (a live complete cell is
+            ready: released and: unborn, or no run and every accepted child complete or
+            collected): cinv-none, and kept by accept, complete, release-unborn, activate, drop,
+            idle-release unconditionally; by fork, fork-effect, instantiate for an id no cell has
+            accepted; by step, wake, resume, merge, publish, abandon under the premise `hq` (a
+            layer-1 step keeps a released world released and a quiet world quiet). `hq` is NOT a
+            layer-1 theorem: its quiet half is false today (notes/PLAN.md C1, Stage B finding).
 
   Not here: following mode (not in the engine either), sealing, sources created in the child (not merged)."
   (:require [ansatz.core :as a]
@@ -235,8 +243,7 @@
   (if (complete-ready cells k) (fupd cells k (complete-cell (cells k))) cells))
 
 ;; E4: an unborn instance released before its activation only sets the flag (engine.clj
-;; `release-unborn`); `sys-complete` then completes it. Its invariant (`p3l` through `set-released`)
-;; is a Stage B obligation (notes/PLAN.md C1).
+;; `release-unborn`); `sys-complete` then completes it. Its invariant: `sinv-release-unborn`.
 (a/defn release-unborn-cell [c :- Cell] Cell
   (Cell.mk (release-unborn (:world c)) (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c)
            (:kids c) (:complete c)))
@@ -645,3 +652,368 @@
   (simp only [sinv])
   (intros k hl)
   (rw [(h0 k hl)]))
+
+;; ---------------------------------------------------------------------------
+;; C1 completion soundness (W1): a live complete cell is ready (released and: unborn, or no run left
+;; and every accepted child complete or collected), through every system operation. The layer-1
+;; part a step needs is `wq`: a step keeps a released world released and a quiet world quiet
+;; (`HQ`, the premise named in notes/PLAN.md C1).
+
+(a/defn wq [w :- World, w2 :- World] Prop
+  (And (=> (= (:released w) true) (= (:released w2) true))
+       (=> (= (world-quiet w) true) (= (world-quiet w2) true))))
+
+(a/theorem wq-refl [w :- World] (wq w w)
+  (simp only [wq]) (apply And.intro) (intro h) (exact h) (intro h) (exact h))
+(a/theorem wq-trans [w :- World, w2 :- World, w3 :- World] (=> (wq w w2) (wq w2 w3) (wq w w3))
+  (intros h1 h2)
+  (simp only [wq] at h1) (simp only [wq] at h2) (simp only [wq])
+  (apply And.intro)
+  (intro h) (exact ((And.left h2) ((And.left h1) h)))
+  (intro h) (exact ((And.right h2) ((And.right h1) h))))
+
+(a/theorem wq-fire-ack [hq :- (forall [w :- World, it :- Item] (=> (= (p3l w) true) (wq w (:world (world-step w it))))),
+                        w :- World, z :- Nat, tag :- Nat, v :- Nat]
+  (=> (= (p3l w) true) (wq w (fire-ack w z tag v)))
+  (intro h)
+  (simp only [fire-ack])
+  (exact (wq-trans _ _ _ (hq w (Item.resource-fire z tag v) h)
+           (hq _ (Item.resource-ack z) (step-p3l w (Item.resource-fire z tag v) h)))))
+
+(a/theorem wq-wake-one [hq :- (forall [w :- World, it :- Item] (=> (= (p3l w) true) (wq w (:world (world-step w it))))),
+                        w :- World, z :- Nat]
+  (=> (= (p3l w) true) (wq w (wake-one w z)))
+  (intro h)
+  (cases hf (resource-find w z))
+  (case [none] (simp only [wake-one hf]) (exact (wq-refl w)))
+  (case [some r]
+    (cases hk (timer-kept r))
+    (case [true] (simp only [wake-one hf hk]) (exact (wq-refl w)))
+    (case [false] (simp only [wake-one hf hk]) (exact (wq-fire-ack hq w z res-err err-forked h)))))
+
+(a/theorem wq-wake-all [hq :- (forall [w :- World, it :- Item] (=> (= (p3l w) true) (wq w (:world (world-step w it))))),
+                        zs :- (List Nat)]
+  (forall [w :- World] (=> (= (p3l w) true) (wq w (wake-all w zs))))
+  (induction zs)
+  (case [nil] (intros w h) (simp only [wake-all]) (exact (wq-refl w)))
+  (case [cons z t ih]
+    (intros w h) (simp only [wake-all])
+    (exact (wq-trans _ _ _ (wq-wake-one hq w z h) (ih (wake-one w z) (p3l-wake-one w z h))))))
+
+(a/theorem wq-apply-diff [hq :- (forall [w :- World, it :- Item] (=> (= (p3l w) true) (wq w (:world (world-step w it))))),
+                          c :- World, ds :- (List Nat)]
+  (forall [p :- World] (=> (= (p3l p) true) (wq p (:world (apply-diff p c ds)))))
+  (induction ds)
+  (case [nil] (intros p h) (simp only [apply-diff]) (exact (wq-refl p)))
+  (case [cons x t ih]
+    (intros p h)
+    (cases ha (:accepted (world-step p (Item.write x (state-of c x)))))
+    (case [false] (simp only [apply-diff ha]) (exact (wq-refl p)))
+    (case [true]
+      (simp only [apply-diff ha])
+      (exact (wq-trans _ _ _ (hq p (Item.write x (state-of c x)) h)
+               (ih _ (step-p3l p (Item.write x (state-of c x)) h)))))))
+
+(a/theorem wq-merge-world [hq :- (forall [w :- World, it :- Item] (=> (= (p3l w) true) (wq w (:world (world-step w it))))),
+                           p :- World, c :- World, b :- World]
+  (=> (= (p3l p) true) (wq p (merge-world p c b)))
+  (intro h)
+  (cases hm (merge-ok p c b))
+  (case [false] (simp only [merge-world hm]) (exact (wq-refl p)))
+  (case [true] (simp only [merge-world hm]) (exact (wq-apply-diff hq c (diff c b) p h))))
+
+;; ---- the invariant
+(a/defn cinv [cells :- (=> Nat Cell)] Prop
+  (forall [k :- Nat] (=> (= (:live (cells k)) true) (= (:complete (cells k)) true) (= (complete-ready cells k) true))))
+(a/defn kid-done-c [c :- Cell] Bool (Bool.or (Bool.not (:live c)) (:complete c)))
+(a/defn nat-ne [m :- Nat, x :- Nat] Bool (Bool.not (Nat.beq x m)))
+
+(a/theorem kids-mono [cells :- (=> Nat Cell), cells2 :- (=> Nat Cell),
+                      hm :- (forall [x :- Nat] (=> (= (kid-done cells x) true) (= (kid-done cells2 x) true))), xs :- (List Nat)]
+  (=> (= (tbl-all (kid-done cells) xs) true) (= (tbl-all (kid-done cells2) xs) true))
+  (induction xs)
+  (case [nil] (intro h) (simp only [tbl-all]))
+  (case [cons x t ih]
+    (intro h) (simp only [tbl-all Bool.and_eq_true] at h)
+    (simp only [tbl-all (hm x (And.left h)) (ih (And.right h)) Bool.and_self])))
+
+;; one cell k is replaced by c2: kid-done can only become true (it does not undo a child's
+;; completion or collection), and a live complete c2 is ready in the new system
+(a/theorem cinv-put [cells :- (=> Nat Cell), k :- Nat, c2 :- Cell]
+  (=> (cinv cells)
+      (=> (= (kid-done-c (cells k)) true) (= (kid-done-c c2) true))
+      (=> (= (:live c2) true) (= (:complete c2) true) (= (complete-ready (fupd cells k c2) k) true))
+      (cinv (fupd cells k c2)))
+  (intros hc hd hr)
+  (have hm (forall [x :- Nat] (=> (= (kid-done cells x) true) (= (kid-done (fupd cells k c2) x) true))))
+  (intros x hx)
+  (cases hxk (Nat.beq x k))
+  (case [false] (simp only [kid-done fupd hxk]) (simp only [kid-done] at hx) (exact hx))
+  (case [true]
+    (have e (= x k)) (exact (Nat.eq_of_beq_eq_true hxk))
+    (rw [e] at hx) (rw [e])
+    (simp only [kid-done fupd-same]) (simp only [kid-done] at hx)
+    (exact (hd hx)))
+  (simp only [cinv] at hc) (simp only [cinv])
+  (intros j hl hj)
+  (cases hjk (Nat.beq j k))
+  (case [true]
+    (have e (= j k)) (exact (Nat.eq_of_beq_eq_true hjk))
+    (rw [e] at hl hj) (rw [e])
+    (simp only [fupd-same] at hl hj)
+    (exact (hr hl hj)))
+  (case [false]
+    (simp only [fupd hjk] at hl hj)
+    (have r0 := (hc j hl hj))
+    (simp only [complete-ready fupd hjk])
+    (simp only [complete-ready Bool.and_eq_true Bool.or_eq_true] at r0)
+    (have r1 := (And.right r0))
+    (cases r1)
+    (case [inl u] (simp only [(And.left r0) u Bool.true_or Bool.and_self]))
+    (case [inr q]
+      (have k2 := (kids-mono cells (fupd cells k c2) hm (:kids (cells j)) (And.right q)))
+      (simp only [(And.left r0) (And.left q) k2 Bool.and_self Bool.or_true]))))
+
+(a/theorem kd-put-mono [cells :- (=> Nat Cell), k :- Nat, c2 :- Cell]
+  (=> (=> (= (kid-done-c (cells k)) true) (= (kid-done-c c2) true))
+      (forall [x :- Nat] (=> (= (kid-done cells x) true) (= (kid-done (fupd cells k c2) x) true))))
+  (intros hd x hx)
+  (cases hxk (Nat.beq x k))
+  (case [false] (simp only [kid-done fupd hxk]) (simp only [kid-done] at hx) (exact hx))
+  (case [true]
+    (have e (= x k)) (exact (Nat.eq_of_beq_eq_true hxk))
+    (rw [e] at hx) (rw [e])
+    (simp only [kid-done fupd-same]) (simp only [kid-done] at hx)
+    (exact (hd hx))))
+
+;; a ready cell stays ready when it is replaced by c2 with the same unborn flag and kids, a world
+;; that `wq` relates to its own, and a kid-done that does not regress
+(a/theorem ready-put [cells :- (=> Nat Cell), k :- Nat, c2 :- Cell]
+  (=> (= (complete-ready cells k) true) (wq (:world (cells k)) (:world c2))
+      (= (:unborn c2) (:unborn (cells k))) (= (:kids c2) (:kids (cells k)))
+      (=> (= (kid-done-c (cells k)) true) (= (kid-done-c c2) true))
+      (= (complete-ready (fupd cells k c2) k) true))
+  (intros r0 hw hu hk hd)
+  (simp only [wq] at hw)
+  (simp only [complete-ready Bool.and_eq_true Bool.or_eq_true] at r0)
+  (have rel := ((And.left hw) (And.left r0)))
+  (simp only [complete-ready fupd-same hu hk rel Bool.true_and])
+  (have r1 := (And.right r0))
+  (cases r1)
+  (case [inl u] (simp only [u Bool.true_or]))
+  (case [inr q]
+    (have hq0 (= (world-quiet (:world (cells k))) true)) (simp only [world-quiet (And.left r0) (And.left q) Bool.and_self])
+    (have hq2 := ((And.right hw) hq0))
+    (simp only [world-quiet Bool.and_eq_true] at hq2)
+    (have k2 := (kids-mono cells (fupd cells k c2) (kd-put-mono cells k c2 hd) (:kids (cells k)) (And.right q)))
+    (simp only [(And.right hq2) k2 Bool.and_self Bool.or_true])))
+
+;; a world change of a cell that keeps its other fields
+(a/theorem cinv-world [cells :- (=> Nat Cell), k :- Nat, c2 :- Cell]
+  (=> (cinv cells) (= (:live c2) (:live (cells k))) (= (:complete c2) (:complete (cells k)))
+      (= (:unborn c2) (:unborn (cells k))) (= (:kids c2) (:kids (cells k)))
+      (=> (= (:live (cells k)) true) (wq (:world (cells k)) (:world c2)))
+      (cinv (fupd cells k c2)))
+  (intros hc hl hcp hu hk hw)
+  (have hd (=> (= (kid-done-c (cells k)) true) (= (kid-done-c c2) true)))
+  (intro h) (simp only [kid-done-c hl hcp]) (simp only [kid-done-c] at h) (exact h)
+  (apply (cinv-put cells k c2 hc hd))
+  (intros l2 c2t)
+  (have l1 (= (:live (cells k)) true)) (rw [← hl]) (exact l2)
+  (have c1 (= (:complete (cells k)) true)) (rw [← hcp]) (exact c2t)
+  (have hc2 := hc) (simp only [cinv] at hc2)
+  (exact (ready-put cells k c2 (hc2 k l1 c1) (hw l1) hu hk hd)))
+
+(a/theorem kids-fresh [cells :- (=> Nat Cell), m :- Nat, c2 :- Cell, xs :- (List Nat)]
+  (=> (= (tbl-all (nat-ne m) xs) true) (= (tbl-all (kid-done cells) xs) true) (= (tbl-all (kid-done (fupd cells m c2)) xs) true))
+  (induction xs)
+  (case [nil] (intros h1 h2) (simp only [tbl-all]))
+  (case [cons x t ih]
+    (intros h1 h2)
+    (simp only [tbl-all Bool.and_eq_true] at h1 h2)
+    (have ne (= (Nat.beq x m) false)) (have z := (And.left h1)) (simp only [nat-ne] at z) (exact (bnot-true _ z))
+    (simp only [tbl-all kid-done fupd ne])
+    (have z2 := (And.left h2)) (simp only [kid-done] at z2)
+    (simp only [z2 (ih (And.right h1) (And.right h2)) Bool.and_self])))
+
+;; a new cell at an id no cell has accepted, not complete
+(a/theorem cinv-fresh [cells :- (=> Nat Cell), m :- Nat, c2 :- Cell]
+  (=> (cinv cells) (forall [j :- Nat] (= (tbl-all (nat-ne m) (:kids (cells j))) true)) (= (:complete c2) false)
+      (cinv (fupd cells m c2)))
+  (intros hc hf hn)
+  (simp only [cinv] at hc) (simp only [cinv])
+  (intros j hl hj)
+  (cases hjm (Nat.beq j m))
+  (case [true]
+    (have e (= j m)) (exact (Nat.eq_of_beq_eq_true hjm))
+    (rw [e] at hj) (simp only [fupd-same hn] at hj) (cases hj))
+  (case [false]
+    (simp only [fupd hjm] at hl hj)
+    (have r0 := (hc j hl hj))
+    (simp only [complete-ready fupd hjm])
+    (simp only [complete-ready Bool.and_eq_true Bool.or_eq_true] at r0)
+    (have r1 := (And.right r0))
+    (cases r1)
+    (case [inl u] (simp only [(And.left r0) u Bool.true_or Bool.and_self]))
+    (case [inr q]
+      (have k2 := (kids-fresh cells m c2 (:kids (cells j)) (hf j) (And.right q)))
+      (simp only [(And.left r0) (And.left q) k2 Bool.and_self Bool.or_true]))))
+
+;; ---- every system operation keeps cinv (HQ: a layer-1 step keeps a released world released and a
+;; quiet one quiet; fork, fork effect and instance take an id no cell has accepted)
+(a/theorem cinv-step [hq :- (forall [w :- World, it :- Item] (=> (= (p3l w) true) (wq w (:world (world-step w it))))), cells :- (=> Nat Cell), k :- Nat, it :- Item]
+  (=> (sinv cells) (cinv cells) (cinv (sys-step cells k it)))
+  (intros hs hc)
+  (simp only [sys-step])
+  (exact (cinv-world cells k (cell-step (cells k) it) hc (rfl) (rfl) (rfl) (rfl)
+           (fn [hl :- (= (:live (cells k)) true)] (hq (:world (cells k)) it (sinv-live cells k hs hl))))))
+
+(a/theorem cinv-wake [hq :- (forall [w :- World, it :- Item] (=> (= (p3l w) true) (wq w (:world (world-step w it))))), cells :- (=> Nat Cell), k :- Nat]
+  (=> (sinv cells) (cinv cells) (cinv (sys-wake cells k)))
+  (intros hs hc)
+  (cases hu (:unborn (cells k)))
+  (case [true] (simp only [sys-wake hu]) (exact hc))
+  (case [false]
+    (simp only [sys-wake hu])
+    (exact (cinv-world cells k (wake-cell (cells k)) hc (rfl) (rfl) (rfl) (rfl)
+             (fn [hl :- (= (:live (cells k)) true)] (wq-wake-all hq (:dormant (cells k)) (:world (cells k)) (sinv-live cells k hs hl)))))))
+
+(a/theorem cinv-resume [hq :- (forall [w :- World, it :- Item] (=> (= (p3l w) true) (wq w (:world (world-step w it))))), cells :- (=> Nat Cell), pubs :- (=> Nat Pub), p :- Nat, v :- Nat]
+  (=> (sinv cells) (cinv cells) (cinv (sys-resume cells pubs p v)))
+  (intros hs hc)
+  (simp only [sys-resume])
+  (exact (cinv-world cells (:cell (pubs p)) (resume-cell (cells (:cell (pubs p))) (:res (pubs p)) v) hc (rfl) (rfl) (rfl) (rfl)
+           (fn [hl :- (= (:live (cells (:cell (pubs p)))) true)]
+             (wq-fire-ack hq (:world (cells (:cell (pubs p)))) (:res (pubs p)) res-ok v (sinv-live cells (:cell (pubs p)) hs hl))))))
+
+(a/theorem cinv-merge [hq :- (forall [w :- World, it :- Item] (=> (= (p3l w) true) (wq w (:world (world-step w it))))), cells :- (=> Nat Cell), k :- Nat, m :- Nat, b :- World]
+  (=> (sinv cells) (cinv cells) (cinv (sys-merge cells k m b)))
+  (intros hs hc)
+  (simp only [sys-merge])
+  (exact (cinv-world cells k (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b)) hc (rfl) (rfl) (rfl) (rfl)
+           (fn [hl :- (= (:live (cells k)) true)] (wq-merge-world hq (:world (cells k)) (:world (cells m)) b (sinv-live cells k hs hl))))))
+
+(a/theorem cinv-publish [hq :- (forall [w :- World, it :- Item] (=> (= (p3l w) true) (wq w (:world (world-step w it))))), cells :- (=> Nat Cell), k :- Nat, st :- Nat, kont :- Nat, fresh :- Nat]
+  (=> (sinv cells) (cinv cells) (cinv (sys-publish cells k st kont fresh)))
+  (intros hs hc) (simp only [sys-publish]) (exact (cinv-step hq cells k _ hs hc)))
+
+(a/theorem cinv-abandon [hq :- (forall [w :- World, it :- Item] (=> (= (p3l w) true) (wq w (:world (world-step w it))))), cells :- (=> Nat Cell), pubs :- (=> Nat Pub), p :- Nat]
+  (=> (sinv cells) (cinv cells) (cinv (sys-abandon cells pubs p)))
+  (intros hs hc) (simp only [sys-abandon]) (exact (cinv-step hq cells _ _ hs hc)))
+
+(a/theorem cinv-drop [cells :- (=> Nat Cell), k :- Nat]
+  (=> (cinv cells) (cinv (sys-drop cells k)))
+  (intro hc)
+  (simp only [sys-drop])
+  (apply (cinv-put cells k (drop-cell (cells k)) hc))
+  (intro h) (simp only [kid-done-c drop-cell Bool.not_false Bool.true_or])
+  (intros hl hj) (simp only [drop-cell] at hl) (cases hl))
+
+(a/theorem cinv-idle-release [cells :- (=> Nat Cell), m :- Nat]
+  (=> (cinv cells) (cinv (sys-idle-release cells m)))
+  (intro hc)
+  (cases hi (idle-cell (cells m)))
+  (case [false] (simp only [sys-idle-release hi]) (exact hc))
+  (case [true] (simp only [sys-idle-release hi]) (exact (cinv-drop cells m hc))))
+
+(a/theorem cinv-accept [cells :- (=> Nat Cell), k :- Nat, m :- Nat]
+  (=> (cinv cells) (cinv (sys-accept cells k m)))
+  (intro hc)
+  (cases hk (:complete (cells k)))
+  (case [true] (simp only [sys-accept hk]) (exact hc))
+  (case [false]
+    (simp only [sys-accept hk])
+    (apply (cinv-put cells k (accept-cell (cells k) m) hc))
+    (intro h) (simp only [kid-done-c accept-cell]) (simp only [kid-done-c] at h) (exact h)
+    (intros hl hj) (simp only [accept-cell hk] at hj) (cases hj)))
+
+(a/theorem cinv-complete [cells :- (=> Nat Cell), k :- Nat]
+  (=> (cinv cells) (cinv (sys-complete cells k)))
+  (intro hc)
+  (cases hr (complete-ready cells k))
+  (case [false] (simp only [sys-complete hr]) (exact hc))
+  (case [true]
+    (simp only [sys-complete hr])
+    (have hd (=> (= (kid-done-c (cells k)) true) (= (kid-done-c (complete-cell (cells k))) true)))
+    (intro h) (simp only [kid-done-c complete-cell Bool.or_true])
+    (apply (cinv-put cells k (complete-cell (cells k)) hc hd))
+    (intros hl hj)
+    (exact (ready-put cells k (complete-cell (cells k)) hr (wq-refl (:world (cells k))) (rfl) (rfl) hd))))
+
+;; a complete cell is released (cinv), so the E4 release and an activation never touch one
+(a/theorem complete-released [cells :- (=> Nat Cell), k :- Nat]
+  (=> (cinv cells) (= (:live (cells k)) true) (= (:complete (cells k)) true) (= (:released (:world (cells k))) true))
+  (intros hc hl hk)
+  (simp only [cinv] at hc)
+  (have r := (hc k hl hk))
+  (simp only [complete-ready Bool.and_eq_true] at r)
+  (exact (And.left r)))
+
+(a/theorem cinv-release-unborn [cells :- (=> Nat Cell), k :- Nat]
+  (=> (cinv cells) (cinv (sys-release-unborn cells k)))
+  (intro hc)
+  (cases hg (Bool.and (:unborn (cells k)) (Bool.not (:released (:world (cells k))))))
+  (case [false] (simp only [sys-release-unborn hg]) (exact hc))
+  (case [true]
+    (simp only [sys-release-unborn hg])
+    (simp only [Bool.and_eq_true] at hg)
+    (have nr := (bnot-true _ (And.right hg)))
+    (apply (cinv-put cells k (release-unborn-cell (cells k)) hc))
+    (intro h) (simp only [kid-done-c release-unborn-cell]) (simp only [kid-done-c] at h) (exact h)
+    (intros hl hj)
+    (simp only [release-unborn-cell] at hl hj)
+    (have z := (complete-released cells k hc hl hj))
+    (rw [nr] at z) (cases z)))
+
+(a/theorem cinv-activate [cells :- (=> Nat Cell), m :- Nat, v :- Nat]
+  (=> (cinv cells) (cinv (sys-activate cells m v)))
+  (intro hc)
+  (cases hg (act-ok (cells m)))
+  (case [false] (simp only [sys-activate hg]) (exact hc))
+  (case [true]
+    (simp only [sys-activate hg])
+    (simp only [act-ok Bool.and_eq_true] at hg)
+    (have nr := (bnot-true _ (And.right (And.right hg))))
+    (apply (cinv-put cells m (act-cell (cells m) v) hc))
+    (intro h) (simp only [kid-done-c act-cell]) (simp only [kid-done-c] at h) (exact h)
+    (intros hl hj)
+    (simp only [act-cell] at hl hj)
+    (have z := (complete-released cells m hc hl hj))
+    (rw [nr] at z) (cases z)))
+
+(a/theorem cinv-fork [cells :- (=> Nat Cell), k :- Nat, m :- Nat, owner :- Nat]
+  (=> (cinv cells) (forall [j :- Nat] (= (tbl-all (nat-ne m) (:kids (cells j))) true)) (cinv (sys-fork cells k m owner)))
+  (intros hc hf) (simp only [sys-fork]) (exact (cinv-fresh cells m (fork-cell (cells k) k owner) hc hf (rfl))))
+
+(a/theorem cinv-fork-effect [cells :- (=> Nat Cell), k :- Nat, m :- Nat, owner :- Nat, st :- Nat, kont :- Nat, v :- Nat]
+  (=> (cinv cells) (forall [j :- Nat] (= (tbl-all (nat-ne m) (:kids (cells j))) true))
+      (cinv (sys-fork-effect cells k m owner st kont v)))
+  (intros hc hf) (simp only [sys-fork-effect]) (exact (cinv-fresh cells m (fork-effect-cell (cells k) k owner st kont v) hc hf (rfl))))
+
+(a/theorem cinv-instantiate [cells :- (=> Nat Cell), pubs :- (=> Nat Pub), p :- Nat, m :- Nat, owner :- Nat]
+  (=> (cinv cells) (forall [j :- Nat] (= (tbl-all (nat-ne m) (:kids (cells j))) true))
+      (cinv (sys-instantiate cells pubs p m owner)))
+  (intros hc hf) (simp only [sys-instantiate]) (exact (cinv-fresh cells m (inst-cell (pubs p) owner) hc hf (rfl))))
+
+;; a system whose cells are all not complete satisfies cinv (e.g. a fresh system)
+(a/theorem cinv-none [cells :- (=> Nat Cell)]
+  (=> (forall [k :- Nat] (= (:complete (cells k)) false)) (cinv cells))
+  (intro h) (simp only [cinv]) (intros k hl hk) (rw [(h k)] at hk) (cases hk))
+
+;; ---- E4: the release of an unborn instance keeps the system invariant. `p3l` reads no `released`
+;; flag (it is checked definitionally: every bundle of p3l is a function of the other tables).
+(a/theorem p3l-release-unborn [w :- World] (= (p3l (release-unborn w)) (p3l w)) (rfl))
+
+(a/theorem sinv-release-unborn [cells :- (=> Nat Cell), k :- Nat]
+  (=> (sinv cells) (sinv (sys-release-unborn cells k)))
+  (intro hs)
+  (cases hg (Bool.and (:unborn (cells k)) (Bool.not (:released (:world (cells k))))))
+  (case [false] (simp only [sys-release-unborn hg]) (exact hs))
+  (case [true]
+    (simp only [sys-release-unborn hg])
+    (have hc (=> (= (:live (release-unborn-cell (cells k))) true) (= (p3l (:world (release-unborn-cell (cells k)))) true)))
+    (intro hl)
+    (simp only [release-unborn-cell] at hl)
+    (simp only [release-unborn-cell p3l-release-unborn])
+    (exact (sinv-live cells k hs hl))
+    (exact (sinv-put cells k (release-unborn-cell (cells k)) hs hc))))
