@@ -25,7 +25,7 @@
 #?(:clj (set! *warn-on-reflection* true))
 
 (declare create-source-top-host! row-of world-of cancel-resource! resource-ack! demand! settle! pending-zero! rule-r! complete! validate!
-         deliver-observe! value cancel! finish-task! request-atom-sweep! finish-metadata!)
+         deliver-observe! value cancel! finish-task! request-atom-sweep! finish-metadata! maybe-finish-token!)
 
 ;; ---------------------------------------------------------------------------
 ;; Execution context: the world being processed and the run holding the slice
@@ -323,42 +323,100 @@
 
 (declare lineage-ex copy-containers!)
 
-;; --- MVCC fork tokens (v2-fork-memory-design §2.1, §2.6) -------------------
+;; --- MVCC fork tokens (v2-fork-memory-design §2.1, §2.6, §7) ----------------
+;; A fork's token holds a cell `[ordinal state rows owner]`, also listed (in
+;; ordinal order) by the owner: state :live, :shared or :dead; `rows` are
+;; the owner's rows that saved a version this fork reads (newest live fork in
+;; the version's range); `owner` is the owner world, weakly. A cell dies when
+;; its token is collected (Cleaner) or its fork finishes unshared; then the
+;; owner prunes exactly those rows, re-listing versions other forks still read.
+
+(declare internal!)
+
+(defn- cell-ordinal ^long [^objects c] (long (aget c 0)))
+(defn- cell-live? [^objects c] (not (identical? :dead (aget c 1))))
+
+(defn- first-at-least
+  "Index of the first cell in `l` with ordinal >= a."
+  ^long [l ^long a]
+  (loop [lo 0 hi (acount l)]
+    (if (< lo hi)
+      (let [mid (quot (+ lo hi) 2)]
+        (if (< (cell-ordinal (anth l mid)) a) (recur (inc mid) hi) (recur lo mid)))
+      lo)))
 
 (defn- live-token-in?
-  "Whether a fork of `w` with an ordinal in [a, b] is still alive (its token
-   reachable). Dead entries met on the way are dropped."
+  "Whether a fork of `w` with an ordinal in [a, b] is still alive."
   [w ^long a ^long b]
   (when-let [l (g w rw/W-TOKENS)]
-    (let [n (acount l)]
-      (when (and (pos? n) (<= a b))
-        ;; ordinals ascend: binary search for the first >= a
-        (let [lo (loop [lo 0 hi n]
-                   (if (< lo hi)
-                     (let [mid (quot (+ lo hi) 2)]
-                       (if (< (long (let [^objects e (anth l mid)] (aget e 0))) a) (recur (inc mid) hi) (recur lo mid)))
-                     lo))]
-          (loop [i lo]
-            (when (< i (acount l))
-              (let [^objects e (anth l i)]
-                (when (<= (long (aget e 0)) b)
-                  (let [t (hs/deref-weak (aget e 1))]
-                    (if (and t (not (rw/token-dead? t)))
-                      true
-                      (do (hs/remove-at! l i) (recur i)))))))))))))
+    (when (<= a b)
+      (loop [i (first-at-least l a)]
+        (when (< i (acount l))
+          (let [c (anth l i)]
+            (when (<= (cell-ordinal c) b)
+              (if (cell-live? c) true (recur (inc i))))))))))
+
+(defn- newest-live-cell
+  "The cell of the newest live fork of `w` with an ordinal in [a, b]."
+  [w ^long a ^long b]
+  (when-let [l (g w rw/W-TOKENS)]
+    (when (<= a b)
+      (loop [i (dec (first-at-least l (inc b)))]
+        (when (>= i 0)
+          (let [c (anth l i)]
+            (when (>= (cell-ordinal c) a)
+              (if (cell-live? c) c (recur (dec i))))))))))
+
+(defn- list-row! [^objects c r]
+  (aadd! (or (aget c 2) (let [l (alist)] (aset c 2 l) l)) r))
+
+(defn- prune-versions
+  "The entries of version vector `vs` some live fork of `w` can still read."
+  [w vs]
+  (when vs
+    (not-empty (filterv (fn [[k m]] (live-token-in? w k m)) vs))))
+
+(defn- prune-cell!
+  "A fork of `w` ended: prune the versions of the rows it listed; a version
+   another live fork still reads is listed on that fork's cell. Dead cells
+   leave the owner's list."
+  [w ^objects c]
+  (let [rows (aget c 2)]
+    (aset c 2 nil)
+    (when rows
+      (dotimes [i (acount rows)]
+        (let [^objects r (anth rows i)
+              keep (rw/locking-row r
+                                   (let [vs (prune-versions w (rw/versions r))]
+                                     (rw/set-versions! r vs)
+                                     vs))]
+          (doseq [[k m] keep]
+            (when-let [c2 (newest-live-cell w k m)] (list-row! c2 r)))))))
+  (when-let [l (g w rw/W-TOKENS)]
+    (loop [i (dec (acount l))]
+      (when-not (neg? i)
+        (when-not (cell-live? (anth l i)) (hs/remove-at! l i))
+        (recur (dec i))))))
+
+(defn- cell-ended!
+  "Cell `c` is dead: its owner prunes, as a completion item scheduled off the
+   calling thread (a Cleaner thread, or the finishing fork's)."
+  [^objects c]
+  (when-let [w (hs/deref-weak (aget c 3))]
+    (hs/metadata-later! #(internal! w (fn [] (prune-cell! w c))))))
 
 (defn- register-token!
-  "A fork of `w` at ordinal `o`: its token, weakly listed by `w`. The list is
-   compacted when it doubles."
+  "A fork of `w` at ordinal `o`: its token and cell."
   [w ^long o]
-  (let [t (rw/token o)
+  (let [c (doto (object-array 4) (aset 0 #?(:clj (Long/valueOf o) :cljs o)) (aset 1 :live) (aset 3 (hs/weak w)))
+        t (rw/token o c)
         l (or (g w rw/W-TOKENS) (let [l (alist)] (s! w rw/W-TOKENS l) l))]
-    (aadd! l (let [e (object-array 2)] (aset e 0 #?(:clj (Long/valueOf o) :cljs o)) (aset e 1 (hs/weak t)) e))
-    (when (and (> (acount l) 64) (zero? (bit-and (acount l) (dec (acount l)))))
-      (loop [i (dec (acount l))]
-        (when-not (neg? i)
-          (when-not (hs/deref-weak (let [^objects e (anth l i)] (aget e 1))) (hs/remove-at! l i))
-          (recur (dec i)))))
+    (aadd! l c)
+    ;; the action holds the cell weakly: as a GC root it must not keep the
+    ;; owner's rows (and through them the owner and its forks) reachable; while
+    ;; the owner lives, its list keeps the cell
+    (let [wc (hs/weak c)]
+      (hs/on-collect! t (fn [] (when-let [^objects c (hs/deref-weak wc)] (aset c 1 :dead) (cell-ended! c)))))
     t))
 
 (defn- own-token
@@ -373,34 +431,11 @@
   (when-let [t (own-token w)] (rw/token-share! t)))
 
 (defn- finish-token!
-  "`w` has finished (released, cleanup done): its token ends now unless it
-   was shared, so its owner stops saving versions for it."
+  "`w` has finished: released, with no work, cleanup or armed resource left.
+   Its token ends now unless shared, and the owner prunes its versions."
   [w]
-  (when-let [t (own-token w)] (rw/token-finish! t)))
-
-(defn- prune-versions
-  "The entries of version vector `vs` some live fork of `w` can still read."
-  [w vs]
-  (when vs
-    (not-empty (filterv (fn [[k m]] (live-token-in? w k m)) vs))))
-
-(defn- note-vrow!
-  "Row `r` now holds versions: listed weakly for sweeping; the list is swept
-   (each row's versions pruned under its monitor) when it doubles."
-  [w r]
-  (let [l (or (g w rw/W-VROWS) (let [l (alist)] (s! w rw/W-VROWS l) l))]
-    (aadd! l (hs/weak r))
-    (when (and (> (acount l) 64) (zero? (bit-and (acount l) (dec (acount l)))))
-      (loop [i (dec (acount l))]
-        (when-not (neg? i)
-          (let [x (hs/deref-weak (anth l i))]
-            (if (and x (rw/locking-row x
-                                       (let [vs (prune-versions w (rw/versions x))]
-                                         (rw/set-versions! x vs)
-                                         (some? vs))))
-              nil
-              (hs/remove-at! l i)))
-          (recur (dec i)))))))
+  (when-let [t (own-token w)]
+    (when (rw/token-finish! t) (cell-ended! (rw/token-cell t)))))
 
 ;; --- owner side -------------------------------------------------------------
 
@@ -424,25 +459,19 @@
 (defn- preserve!
   "§2.3: `w` owns `r`, stamped with an older epoch of `w`. If a fork that may
    read `r` is alive, the row's current state becomes a version for the forks
-   since its stamp; then `r` is restamped and returned, mutable in place."
+   since its stamp, listed on the newest such fork's cell; then `r` is
+   restamped and returned, mutable in place."
   [w ^objects r]
   (let [cur (g w rw/W-EPOCH)
-        listed? (rw/locking-row r
-                                (let [s (rw/epoch-ordinal (rw/stamp r))
-                                      m (dec (rw/epoch-ordinal cur))
-                                      before (rw/versions r)
-                                      listed? (and (live-token-in? w s m)
-                                                   (let [vs (conj (or (prune-versions w before) []) [s m (image r)])]
-                                                     (rw/set-versions! r vs)
-                                       ;; a row versioned once dies with its
-                                       ;; version or prunes it when saved again;
-                                       ;; one kept across forks is swept
-                                                     (== 2 (count vs))))]
-                                  (aset r (unchecked-dec-int (alength r)) cur)
-                                  listed?))]
-    ;; a row's first versions list it for sweeping; outside the monitor: the
-    ;; sweep takes other rows' monitors
-    (when listed? (note-vrow! w r))
+        s (rw/epoch-ordinal (rw/stamp r))
+        m (dec (rw/epoch-ordinal cur))
+        c (newest-live-cell w s m)]
+    (rw/locking-row r
+                    (let [before (rw/versions r)
+                          kept (when before (prune-versions w before))]
+                      (rw/set-versions! r (if c (conj (or kept []) [s m (image r)]) kept)))
+                    (aset r (unchecked-dec-int (alength r)) cur))
+    (when c (list-row! c r))
     r))
 
 ;; --- fork side --------------------------------------------------------------
@@ -2361,10 +2390,11 @@
         cleanup (g w rw/W-CLEANUP)]
     (cond
       (pos? (acount cleanup))
-      (let [[r ek ex :as entry] (pop-first! w cleanup)]
+      (let [[r0 ek ex] (pop-first! w cleanup)
+            r (rv w r0)]                     ; an entry a fork inherited names a basis row
         (if (nil? ek)
           ;; T15 for a resource that joined at its cancel (Z#55): [z]
-          (resource-ack! w (rv w r))
+          (resource-ack! w r)
           (do (s! r rw/R-SLICE true)
               (commit! w [:finalize (g r rw/ID)])
               (slice! r #(ek ex))))
@@ -2414,7 +2444,7 @@
             (cond (and (not unborn?) (drain-step! w)) (recur (dec n) false)
                   (run-callbacks! w) (recur n unborn?)
                   :else false))))
-      (finally (finish-metadata! w) (s! w rw/W-DRAINING false)))))
+      (finally (finish-metadata! w) (maybe-finish-token! w) (s! w rw/W-DRAINING false)))))
 
 (declare handoff! activate-dormant!)
 
@@ -3485,7 +3515,7 @@
     (if (g w rw/W-UNBORN)
       ;; E4: an instance that never ran is discarded as if dropped: nothing
       ;; in it runs, its copied finalizers included
-      (do (commit! w [:release-world]) (s! w rw/W-RELEASED true) (finish-metadata! w))
+      (do (commit! w [:release-world]) (s! w rw/W-RELEASED true) (finish-metadata! w) (maybe-finish-token! w))
       (let [ex (released-ex)
             roots (g w rw/W-ROOTS)]
         (doseq [e (map #(rv w %) (hs/mvals roots))]
@@ -3510,6 +3540,18 @@
         (commit! w [:release-world])
         (s! w rw/W-RELEASED true)))))
 
+(declare work-pending?)
+
+(defn- maybe-finish-token!
+  "MVCC: a released world whose cleanup has completed (metadata closed) and
+   that has no work, queued cleanup or armed resource left ends its token
+   (unless shared): nothing in it can read an inherited row any more."
+  [w]
+  (when (and (g w rw/W-RELEASED) (g w rw/W-META-CLOSED)
+             (not (work-pending? w))
+             (let [a (g w rw/W-ARMED)] (or (nil? a) (zero? (hs/oset-count a)))))
+    (finish-token! w)))
+
 (defn- finish-metadata! [w]
   (when (and (g w rw/W-RELEASED) (not (g w rw/W-META-CLOSED))
              (or (g w rw/W-UNBORN)
@@ -3517,7 +3559,6 @@
                    (and (zero? (hs/oset-count (g root rw/S-TASKS)))
                         (zero? (acount (g root rw/S-CHILDREN)))))))
     (s! w rw/W-META-CLOSED true)
-    (finish-token! w)
     (s! w rw/W-ATOMS {})
     (lt/clear-index! (g w rw/W-WATCHES) (g w rw/ID))
     (lt/unregister-world! (g w rw/W-FAMILY) (g w rw/ID))))
@@ -3607,7 +3648,6 @@
     (s! c rw/W-LINEAGE (cons [(g w rw/ID) id o tok (g w rw/W-FWD)] (g w rw/W-LINEAGE)))
     (s! c rw/W-FWD {})
     (s! c rw/W-TOKENS nil)
-    (s! c rw/W-VROWS nil)
     (s! c rw/W-LOCK (hs/lock))
     (s! c rw/W-INGRESS (hs/mpsc))
     (s! c rw/W-SCHEDULED (hs/flag false))
@@ -3659,7 +3699,6 @@
     (s! c rw/W-EPOCH (rw/epoch id 0))
     (s! c rw/W-FWD {})
     (s! c rw/W-TOKENS nil)
-    (s! c rw/W-VROWS nil)
     (s! c rw/W-LOCK (hs/lock))
     (s! c rw/W-INGRESS (hs/mpsc))
     (s! c rw/W-SCHEDULED (hs/flag false))

@@ -31,29 +31,24 @@
         (run! v2/release-world! forks)))
     (v2/release-world! w)))
 
-(defn- fork-write-release
-  "Forks w, writes x (saving its old state for the fork), releases the fork;
-   returns a weak reference to it."
-  [w x v]
-  (let [c (v2/fork! w)]
-    (v2/write! x v)
-    (v2/release-world! c)
-    (hs/weak c)))
-
 (deftest versions-are-kept-only-while-a-fork-can-read-them
   (let [w (v2/world)]
     (binding [v2/*world* w]
       (let [x (v2/signal 0)
             r (row x)
-            wc (fork-write-release w x 1)]
-        (is (= 1 (count (rw/versions r))) "a fork that can read x: its old state is saved")
-        (is (eventually #(nil? (hs/deref-weak wc))) "the released fork is collected")
-        (System/gc)
+            wc (let [c (v2/fork! w)]
+                 (v2/write! x 1)
+                 (is (= 1 (count (rw/versions r))) "a fork that can read x: its old state is saved")
+                 (is (zero? (v2/value (v2/in-world c x))))
+                 (v2/release-world! c)
+                 (hs/weak c))]
+        (is (eventually #(empty? (rw/versions r))) "the fork ended: its version is pruned")
         (let [d (v2/fork! w)]
           (v2/write! x 2)
-          (is (= 1 (count (rw/versions r))) "the collected fork's version is pruned, d's is saved")
+          (is (= 1 (count (rw/versions r))) "d's version is saved")
           (is (= 1 (v2/value (v2/in-world d x))))
-          (v2/release-world! d))))
+          (v2/release-world! d))
+        (is (eventually #(nil? (hs/deref-weak wc))) "the released fork can be collected")))
     (v2/release-world! w)))
 
 (deftest a-grandchild-reads-through-a-released-intermediate-fork
@@ -110,4 +105,77 @@
           (is (= 1 (count (rw/versions r))) "a shared token lives as long as its descendants")
           (is (= 1 (v2/value (v2/in-world e x))))
           (v2/release-world! e))))
+    (v2/release-world! w)))
+
+(deftest cancelling-and-forking-in-one-item-resolves-the-cleanup-run
+  (let [w (v2/world) cleaned (atom [])]
+    (binding [v2/*world* w]
+      (let [d (v2/deferred)
+            t (task (try (await d) (finally (swap! cleaned conj :fin))))]
+        (Thread/sleep 20)
+        ;; the cleanup entry is queued, then the world forks before it runs:
+        ;; its run is a basis row the parent must resolve before writing it
+        (let [c (v2/call-in! w #(do (v2/cancel-task! t) (v2/fork! w)))]
+          (is (:spindel/cancelled (ex-data (try (v2/value t 1000 ::timeout) (catch Exception e e)))))
+          (is (some #{:fin} @cleaned))
+          (v2/release-world! c))))
+    (v2/release-world! w)))
+
+(deftest a-finished-fork-drops-its-versions-on-every-row
+  (let [w (v2/world)]
+    (binding [v2/*world* w]
+      (let [xs (vec (repeatedly 80 #(v2/signal 0)))
+            c (v2/fork! w)]
+        (doseq [x xs] (v2/write! x 1))
+        (is (every? #(= 1 (count (rw/versions (row %)))) xs) "the live fork's versions are saved")
+        (v2/release-world! c)
+        (is (eventually #(every? (fn [x] (empty? (rw/versions (row x)))) xs))
+            "once the fork has finished, its owner prunes them")))
+    (v2/release-world! w)))
+
+(deftest a-released-fork-keeps-its-versions-until-its-cleanup-ran
+  ;; budget 1: release queues the finalizers of two cancelled runs, one per
+  ;; turn; the parent's write in between must not end the fork's versions
+  (let [w (v2/world {:budget 1}) fins (atom []) errs (atom [])]
+    (binding [v2/*world* w]
+      (let [x (v2/signal :before)
+            d (v2/deferred)
+            ts (vec (for [i (range 2)]
+                      (task (try (await d)
+                                 (finally
+                                   (try (v2/write! x [:fin i]) (swap! fins conj i)
+                                        (catch Exception e (swap! errs conj e))))))))]
+        (Thread/sleep 20)
+        (let [c (v2/fork! w)]
+          (v2/release-world! c)
+          (v2/write! x :parent)                 ; the parent moves on meanwhile
+          (Thread/sleep 100)
+          (is (empty? @errs) (str (mapv ex-message @errs)))
+          (is (= #{0 1} (set @fins)) "both of the fork's finalizers ran")
+          (is (= :parent (v2/value x))))
+        (run! v2/cancel-task! ts)))
+    (v2/release-world! w)))
+
+(deftest a-released-fork-keeps-versions-for-computation-cleanup
+  ;; computations are not in the root scope: two cancelled computations' finalizers
+  ;; are queued (budget 1) after release; the token must outlive them
+  (let [w (v2/world {:budget 1}) fins (atom []) errs (atom [])]
+    (binding [v2/*world* w]
+      (let [x (v2/signal :before)
+            d (v2/deferred)
+            cs (vec (for [i (range 2)]
+                      (v2/spin (try (await d)
+                                    (finally
+                                      (try (v2/write! x [:fin i]) (swap! fins conj i)
+                                           (catch Exception e (swap! errs conj e))))))))
+            unobs (mapv #(v2/observe! % (fn [_ _])) cs)]
+        (Thread/sleep 20)
+        (let [c (v2/fork! w)]
+          (doseq [cc cs] (v2/observe! (v2/in-world c cc) (fn [_ _])))
+          (v2/release-world! c)
+          (v2/write! x :parent)
+          (Thread/sleep 100)
+          (is (empty? @errs) (str (mapv ex-message @errs)))
+          (is (= :parent (v2/value x))))
+        (run! #(%) unobs)))
     (v2/release-world! w)))

@@ -58,27 +58,22 @@
 (defn epoch-ordinal ^long [^Epoch e] (.-ordinal e))
 
 ;; A fork's claim on its owner's versions at ordinal `ordinal`: held strongly
-;; by the lineage of the fork and its descendants, weakly by the owner. It ends
-;; when unreachable, or earlier when its fork has finished (released, cleanup
-;; done) and nothing was ever derived from it (`shared`, sticky).
-(defprotocol PToken
-  (-state [t])
-  (-set-state! [t v]))
-
-;; state: 0 live, 1 shared (sticky), 2 dead
-(deftype Token [^long ordinal #?(:clj ^:volatile-mutable state :cljs ^:mutable state)]
-  PToken
-  (-state [_] state)
-  (-set-state! [_ v] (set! state v)))
-
-(defn token [o] (Token. o 0))
-(defn token-dead? [t] (== 2 (long (-state t))))
-(defn token-share! [t] (-set-state! t 1) nil)
+;; by the lineage of the fork and its descendants; the owner lists its cell
+;; `[ordinal state rows owner]` (state :live, :shared or :dead). It ends when
+;; collected, or earlier when its fork has finished and nothing was derived
+;; from it (`shared` is sticky).
+(deftype Token [^long ordinal cell])
+(defn token [o cell] (Token. o cell))
+(defn token-cell [^Token t] (.-cell t))
+(defn token-dead? [^Token t] (identical? :dead (aget ^objects (.-cell t) 1)))
+(defn token-share! [^Token t]
+  (let [^objects c (.-cell t)] (when (identical? :live (aget c 1)) (aset c 1 :shared))) nil)
 (defn token-finish!
   "Ends the token unless it was shared (called by its own world, serially
-   with token-share!)."
-  [t]
-  (when (== 0 (long (-state t))) (-set-state! t 2)) nil)
+   with token-share!). True when it ended now."
+  [^Token t]
+  (let [^objects c (.-cell t)]
+    (when (identical? :live (aget c 1)) (aset c 1 :dead) true)))
 
 #?(:clj
    (defmacro locking-row
@@ -185,9 +180,8 @@
 (def ^:const W-LINEAGE 44)    ; ([ancestor-id cut ordinal token map] ...) nearest first: rows of an ancestor
                               ; below cut are inherited; that ancestor's rows are read at its `ordinal`
                               ; (`token` keeps those versions); `map` is its copy map at the fork
-(def ^:const W-TOKENS 45)     ; MVCC: [ordinal weak-token] of this world's forks, ascending (weakly held)
-(def ^:const W-VROWS 46)      ; MVCC: weak refs to rows of this world holding versions (swept)
-(def ^:const W-SIZE 47)
+(def ^:const W-TOKENS 45)     ; MVCC: the cells of this world's forks' tokens, by ascending ordinal
+(def ^:const W-SIZE 46)
 
 ;; Scope
 (def ^:const S-PARENT 2)
