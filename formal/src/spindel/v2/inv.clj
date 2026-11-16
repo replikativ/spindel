@@ -1695,7 +1695,7 @@
   (cases hg (Bool.and (open-kind sk-stream sr) (Bool.and (Nat.beq t (:next-id w)) (link-pending w (:tail sr)))))
   (simp only [t-append hf hg refuse]) (exact h)
   (simp only [t-append hf hg accept append-raw])
-  (exact (sl-realize-link x _ _ v false _ (Eq.trans (sl-source-upd x _ s _) (Eq.trans (sl-bump x _) (Eq.trans (sl-source-ins x w _) h))))))
+  (exact (sl-realize-link x _ _ v false _ (Eq.trans (sl-bump x _) (Eq.trans (sl-source-ins x _ _) (Eq.trans (sl-source-upd x w s _) h))))))
 
 (a/theorem sl-t-close [x :- Nat, w :- World, s :- Nat, tag :- Nat, v :- Nat]
   (=> (= (i10-slice-at x w) true) (= (i10-slice-at x (:world (t-close w s tag v))) true))
@@ -3563,7 +3563,7 @@
   (cases hg (Bool.and (open-kind sk-stream sr) (Bool.and (Nat.beq t (:next-id w)) (link-pending w (:tail sr)))))
   (simp only [t-append hf hg refuse]) (exact h)
   (simp only [t-append hf hg accept append-raw])
-  (exact (s9-realize-link _ _ v false _ (Eq.trans (s9-source-upd _ s _) (Eq.trans (s9-bump _) (Eq.trans (s9-source-ins w _) h))))))
+  (exact (s9-realize-link _ _ v false _ (Eq.trans (s9-bump _) (Eq.trans (s9-source-ins _ _) (Eq.trans (s9-source-upd w s _) h))))))
 
 (a/theorem s9-t-close [w :- World, s :- Nat, tag :- Nat, v :- Nat]
   (=> (= (inv-i9 w) true) (= (inv-i9 (:world (t-close w s tag v))) true))

@@ -2825,7 +2825,7 @@
 ;; next-id (a push link), S.tail := T (version + 1), the old tail realized with [v T]; refused on a
 ;; closed stream
 (a/defn append-raw [w :- World, x :- Nat, v :- Nat, old :- Nat] World
-  (realize-link (source-upd (bump (source-ins w (new-link (:next-id w) root-scope-id x))) x (stream-set-tail (:next-id w)))
+  (realize-link (bump (source-ins (source-upd w x (stream-set-tail (:next-id w))) (new-link (:next-id w) root-scope-id x)))
                 old v false (:next-id w)))
 (a/defn t-append [w :- World, x :- Nat, v :- Nat, t :- Nat] Outcome
   (match (source-find w x)
@@ -2838,8 +2838,8 @@
   (intro h)
   (simp only [append-raw])
   (exact (inv-realize-link _ old v false _
-           (inv-source-upd _ x _ (stream-set-tail-id _)
-             (inv-source-ins-fresh w (new-link (:next-id w) root-scope-id x) (rfl) h)))))
+           (inv-source-ins-fresh (source-upd w x (stream-set-tail (:next-id w))) (new-link (:next-id w) root-scope-id x) (rfl)
+             (inv-source-upd w x (stream-set-tail (:next-id w)) (stream-set-tail-id _) h)))))
 
 (a/theorem t-append-inv [w :- World, x :- Nat, v :- Nat, t :- Nat]
   (=> (= (inv-sample w) true) (= (inv-sample (:world (t-append w x v t))) true))

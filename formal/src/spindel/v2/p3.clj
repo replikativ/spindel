@@ -2687,8 +2687,8 @@
      (intro h)
      (simp only [append-raw])
      (exact (svb-realize-link _ old v false _
-              (svb-source-upd _ x (stream-set-tail (:next-id w)) (stream-set-tail-id _) (stream-set-tail-hv (:next-id w))
-                (svb-source-ins w (new-link (:next-id w) root-scope-id x) (rfl) h))))))
+              (svb-source-ins (source-upd w x (stream-set-tail (:next-id w))) (new-link (:next-id w) root-scope-id x) (rfl)
+                (svb-source-upd w x (stream-set-tail (:next-id w)) (stream-set-tail-id _) (stream-set-tail-hv (:next-id w)) h))))))
 
 (override! SVB 'inv-insert-edge-checked '[]
   '(a/theorem svb-insert-edge-checked [w :- World, e :- EdgeRow, hs :- (= (seen-ok w (edge-set-marked false (edge-set-id (:next-id w) e))) true)]
