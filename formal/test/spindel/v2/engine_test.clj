@@ -1039,8 +1039,8 @@
         w (step! w (await* st [d] s/am-one 1 (:next-id w) []))]
     (is (= s/act-parked (:act (find-row w :runs rk))) "outside the clause the await parks")))
 
-;; C1 Q5 (spindel #269): after T21 a cancelled run's cleanup slice still holds the slice, but a
-;; released world takes no new root: observe, pin and host waits are refused there, so the world
+;; C1 Q5/Q8 (spindel #269): after T21 a cancelled run's cleanup slice still holds the slice, but a
+;; released world takes no new root, handle or creation: observe, pin and host waits are refused there, so the world
 ;; is quiet once the slice exits and the computation cannot start (the former counterexample to
 ;; completion stability)
 (deftest c1-no-roots-after-release
@@ -1057,6 +1057,9 @@
         _ (step! w (observe c 1 (:next-id w)) :refused)
         _ (step! w (pin c) :refused)
         _ (step! w (host-await c (:next-id w)) :refused)
+        _ (step! w (handle-new c) :refused)                             ; Q8: no new handle (admission) either
+        _ (step! w (create-comp-top root (:next-id w) 1 1) :refused)
+        _ (step! w (spawn-top root 1 (:next-id w)) :refused)
         w (step! w (slice-exit r))]
     (is (true? (en/world-quiet w)) "released, no run")
     (is (empty? (:pins w)))

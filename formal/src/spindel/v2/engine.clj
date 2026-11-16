@@ -2581,7 +2581,10 @@
 (a/defn run-cur-closed [w :- World, r :- RunRow] Bool
   (Bool.and (Bool.not (in-comp w r)) (Bool.not (scope-open-at w (cur-scope w r)))))
 (a/defn cur-closed [w :- World, st :- Nat] Bool (opt-test (run-cur-closed w) (tok-run w st)))
-(a/defn body-shut [w :- World, st :- Nat] Bool (Bool.or (in-cleanup w st) (cur-closed w st)))
+;; C1 (Q5, Q8): a released world takes no new root, handle or creation (root-shut, below)
+(a/defn root-shut [w :- World] Bool (:released w))
+(a/defn body-shut [w :- World, st :- Nat] Bool (Bool.or (Bool.or (in-cleanup w st) (root-shut w)) (cur-closed w st)))
+(a/defn cc-shut [w :- World, st :- Nat] Bool (Bool.or (in-cleanup w st) (root-shut w)))
 ;; Z#43: completion with open finally regions is refused (the CPS body cannot produce it)
 (a/defn run-fins-open [r :- RunRow] Bool (Bool.not (fins-empty (:finalizers r))))
 (a/defn fins-open [w :- World, st :- Nat] Bool (opt-test run-fins-open (tok-run w st)))
@@ -2987,7 +2990,6 @@
 ;; slice's own host operations, Z#40): observe, pin and host waits are refused (the engine throws
 ;; released-ex / delivers it to a value-async callback; no item). Write, deliver, post, release and
 ;; close stay as Z#40. (`host-shut` refuses the host's items only while no slice is held.)
-(a/defn root-shut [w :- World] Bool (:released w))
 (a/defn host-await-bad [w :- World, d :- Nat] Bool (Bool.or (root-shut w) (deb-consuming w d)))
 ;; C1, B8 reduced (finalizers are synchronous): in a cancelled run's finally clause (its cleanup
 ;; slice, `in-cleanup`) every await and take is refused, settled debtor or not (engine
@@ -3074,7 +3076,7 @@
 (a/defn raw0 [w :- World, it :- Item] Outcome
   (match it
     [(create-source st kind v fresh) (if (body-shut w st) (refuse w) (c0-gate w (Nat.beq kind sk-stream) (t1-body w st kind v fresh)))]
-    [(create-source-top scope kind v fresh) (c0-gate w (Nat.beq kind sk-stream) (t1-top-full w scope kind v fresh))]
+    [(create-source-top scope kind v fresh) (if (root-shut w) (refuse w) (c0-gate w (Nat.beq kind sk-stream) (t1-top-full w scope kind v fresh)))]
     [(write x v) (t2-write w x v)]
     [(track st x k fresh) (if (in-cleanup w st) (refuse w) (t7-track w st x k fresh))]
     [(observe d cb fresh) (if (root-shut w) (refuse w) (t8-obs w d cb fresh))]
@@ -3086,10 +3088,10 @@
     [(handle-drop x) (t19-handle-drop w x)]
     [(pin x) (if (root-shut w) (refuse w) (t20-pin w x))]
     [(unpin x) (t20-unpin w x)]
-    [(create-comp st c i b) (if (in-cleanup w st) (refuse w) (t3-create w st c i b))]
-    [(create-comp-top sc c i b) (t3-create-top w sc c i b)]
+    [(create-comp st c i b) (if (cc-shut w st) (refuse w) (t3-create w st c i b))]
+    [(create-comp-top sc c i b) (if (root-shut w) (refuse w) (t3-create-top w sc c i b))]
     [(spawn st b fresh ins) (if (body-shut w st) (refuse w) (t4-spawn w st b fresh ins))]
-    [(spawn-top sc b fresh ins) (t4-spawn-top w sc b fresh ins)]
+    [(spawn-top sc b fresh ins) (if (root-shut w) (refuse w) (t4-spawn-top w sc b fresh ins))]
     [(start c fresh) (t5-start w c fresh)]
     [(await st ds m k fresh mine) (if (await-bad w st ds m) (refuse w) (t6-await w st ds m k fresh mine))]
     [(dispatch-comp c fresh) (t11-dispatch w c fresh)]
@@ -3097,7 +3099,7 @@
     [(schedule r) (t-schedule w r)]
     [(host-await d fresh) (if (host-await-bad w d) (refuse w) (t22-host-await w d fresh))]
     [(host-unawait e) (t22-host-unawait w e)]
-    [(handle-new x) (t-handle-new w x)]
+    [(handle-new x) (if (root-shut w) (refuse w) (t-handle-new w x))]
     [(deliver x v) (t-deliver w x v)]
     [(post x v) (t-post w x v)]
     [(take st x k fresh) (if (take-bad w st x) (refuse w) (t-take w st x k fresh))]
@@ -3111,11 +3113,11 @@
     [(finally-enter st) (t-finally-enter w st)]
     [(finally-exit st) (t-finally-exit w st)]
     [(slice-exit r) (t-slice-exit w r)]
-    [(create-link st l) (if (in-cleanup w st) (refuse w) (c0-gate w true (t-create-link w st l)))]
-    [(create-link-top sc l) (c0-gate w true (t-create-link-top w sc l))]
-    [(link-demand l k) (t-link-demand w l k)]
-    [(link-realize l tag v n) (c0-gate w true (t-link-realize w l tag v n))]
-    [(append x v t) (c0-gate w true (t-append w x v t))]
+    [(create-link st l) (if (cc-shut w st) (refuse w) (c0-gate w true (t-create-link w st l)))]
+    [(create-link-top sc l) (if (root-shut w) (refuse w) (c0-gate w true (t-create-link-top w sc l)))]
+    [(link-demand l k) (if (root-shut w) (refuse w) (t-link-demand w l k))]
+    [(link-realize l tag v n) (if (root-shut w) (refuse w) (c0-gate w true (t-link-realize w l tag v n)))]
+    [(append x v t) (if (root-shut w) (refuse w) (c0-gate w true (t-append w x v t)))]
     [(close x tag v) (t-close w x tag v)]
     [(finally-leave st) (t-finally-leave w st)]))
 
@@ -3195,7 +3197,9 @@
   (rename_i st kind v fresh) (cases hc (body-shut w st))
   (simp only [hc]) (exact (c0-gate-inv w _ _ h (t1-body-inv w st kind v fresh h)))
   (simp only [hc refuse]) (exact h)
-  (rename_i scope kind v fresh) (exact (c0-gate-inv w _ _ h (t1-top-full-inv w scope kind v fresh h)))
+  (rename_i scope kind v fresh) (cases hc (root-shut w))
+  (simp only [hc]) (exact (c0-gate-inv w _ _ h (t1-top-full-inv w scope kind v fresh h)))
+  (simp only [hc refuse]) (exact h)
   (exact (t2-inv w _ _ h))
   (rename_i st x k fresh) (cases hc (in-cleanup w st))
   (simp only [hc]) (exact (t7-inv w _ _ _ _ h))
@@ -3215,14 +3219,18 @@
   (simp only [hc]) (exact (t20-pin-inv w _ h))
   (simp only [hc refuse]) (exact h)
   (exact (t20-unpin-inv w _ h))
-  (rename_i st c i b) (cases hc (in-cleanup w st))
+  (rename_i st c i b) (cases hc (cc-shut w st))
   (simp only [hc]) (exact (t3-inv w _ _ _ _ h))
   (simp only [hc refuse]) (exact h)
-  (exact (t3-top-inv w _ _ _ _ h))
+  (cases hc (root-shut w))
+  (simp only [hc]) (exact (t3-top-inv w _ _ _ _ h))
+  (simp only [hc refuse]) (exact h)
   (rename_i st b fresh ins) (cases hc (body-shut w st))
   (simp only [hc]) (exact (t4-inv w _ _ _ _ h))
   (simp only [hc refuse]) (exact h)
-  (exact (t4-top-inv w _ _ _ _ h))
+  (cases hc (root-shut w))
+  (simp only [hc]) (exact (t4-top-inv w _ _ _ _ h))
+  (simp only [hc refuse]) (exact h)
   (exact (t5-inv w _ _ h))
   (rename_i st ds m k fresh mine) (cases hc (await-bad w st ds m))
   (simp only [hc]) (exact (t6-inv w _ _ _ _ _ _ h))
@@ -3236,7 +3244,9 @@
   (simp only [hc]) (exact (t22-inv w _ _ h))
   (simp only [hc refuse]) (exact h)
   (exact (t22-un-inv w _ h))
-  (exact (t-handle-new-inv w _ h))
+  (cases hc (root-shut w))
+  (simp only [hc]) (exact (t-handle-new-inv w _ h))
+  (simp only [hc refuse]) (exact h)
   (exact (t-deliver-inv w _ _ h))
   (exact (t-post-inv w _ _ h))
   (rename_i st x k fresh) (cases hc (take-bad w st x))
@@ -3252,13 +3262,21 @@
   (exact (t-finally-enter-inv w _ h))
   (exact (t-finally-exit-inv w _ h))
   (exact (t-slice-exit-inv w _ h))
-  (rename_i st l) (cases hc (in-cleanup w st))
+  (rename_i st l) (cases hc (cc-shut w st))
   (simp only [hc]) (exact (c0-gate-inv w _ _ h (t-create-link-inv w st l h)))
   (simp only [hc refuse]) (exact h)
-  (rename_i sc l) (exact (c0-gate-inv w _ _ h (t-create-link-top-inv w sc l h)))
-  (exact (t-link-demand-inv w _ _ h))
-  (rename_i l tag v n) (exact (c0-gate-inv w _ _ h (t-link-realize-inv w l tag v n h)))
-  (rename_i x v t) (exact (c0-gate-inv w _ _ h (t-append-inv w x v t h)))
+  (rename_i sc l) (cases hc (root-shut w))
+  (simp only [hc]) (exact (c0-gate-inv w _ _ h (t-create-link-top-inv w sc l h)))
+  (simp only [hc refuse]) (exact h)
+  (cases hc (root-shut w))
+  (simp only [hc]) (exact (t-link-demand-inv w _ _ h))
+  (simp only [hc refuse]) (exact h)
+  (rename_i l tag v n) (cases hc (root-shut w))
+  (simp only [hc]) (exact (c0-gate-inv w _ _ h (t-link-realize-inv w l tag v n h)))
+  (simp only [hc refuse]) (exact h)
+  (rename_i x v t) (cases hc (root-shut w))
+  (simp only [hc]) (exact (c0-gate-inv w _ _ h (t-append-inv w x v t h)))
+  (simp only [hc refuse]) (exact h)
   (exact (t-close-inv w _ _ _ h))
   (exact (t-finally-leave-inv w _ h)))
 
@@ -3271,7 +3289,9 @@
   (rename_i st kind v fresh) (cases hc (body-shut w st))
   (simp only [hc] at ha) (simp only [hc]) (exact (c0-gate-refuse w _ _ ha (t1-body-refuse w st kind v fresh)))
   (simp only [hc refuse])
-  (rename_i scope kind v fresh) (exact (c0-gate-refuse w _ _ ha (t1-top-full-refuse w scope kind v fresh)))
+  (rename_i scope kind v fresh) (cases hc (root-shut w))
+  (simp only [hc] at ha) (simp only [hc]) (exact (c0-gate-refuse w _ _ ha (t1-top-full-refuse w scope kind v fresh)))
+  (simp only [hc refuse])
   (exact (t2-refuse w _ _ ha))
   (rename_i st x k fresh) (cases hc (in-cleanup w st))
   (simp only [hc] at ha) (simp only [hc]) (exact (t7-refuse w _ _ _ _ ha))
@@ -3291,14 +3311,18 @@
   (simp only [hc] at ha) (simp only [hc]) (exact (t20-pin-refuse w _ ha))
   (simp only [hc refuse])
   (exact (t20-unpin-refuse w _ ha))
-  (rename_i st c i b) (cases hc (in-cleanup w st))
+  (rename_i st c i b) (cases hc (cc-shut w st))
   (simp only [hc] at ha) (simp only [hc]) (exact (t3-refuse w _ _ _ _ ha))
   (simp only [hc refuse])
-  (exact (t3-top-refuse w _ _ _ _ ha))
+  (cases hc (root-shut w))
+  (simp only [hc] at ha) (simp only [hc]) (exact (t3-top-refuse w _ _ _ _ ha))
+  (simp only [hc refuse])
   (rename_i st b fresh ins) (cases hc (body-shut w st))
   (simp only [hc] at ha) (simp only [hc]) (exact (t4-refuse w _ _ _ _ ha))
   (simp only [hc refuse])
-  (exact (t4-top-refuse w _ _ _ _ ha))
+  (cases hc (root-shut w))
+  (simp only [hc] at ha) (simp only [hc]) (exact (t4-top-refuse w _ _ _ _ ha))
+  (simp only [hc refuse])
   (exact (t5-refuse w _ _ ha))
   (rename_i st ds m k fresh mine) (cases hc (await-bad w st ds m))
   (simp only [hc] at ha) (simp only [hc]) (exact (t6-refuse w _ _ _ _ _ _ ha))
@@ -3312,7 +3336,9 @@
   (simp only [hc] at ha) (simp only [hc]) (exact (t22-refuse w _ _ ha))
   (simp only [hc refuse])
   (exact (t22-un-refuse w _ ha))
-  (exact (t-handle-new-refuse w _ ha))
+  (cases hc (root-shut w))
+  (simp only [hc] at ha) (simp only [hc]) (exact (t-handle-new-refuse w _ ha))
+  (simp only [hc refuse])
   (exact (t-deliver-refuse w _ _ ha))
   (exact (t-post-refuse w _ _ ha))
   (rename_i st x k fresh) (cases hc (take-bad w st x))
@@ -3328,13 +3354,21 @@
   (exact (t-finally-enter-refuse w _ ha))
   (exact (t-finally-exit-refuse w _ ha))
   (exact (t-slice-exit-refuse w _ ha))
-  (rename_i st l) (cases hc (in-cleanup w st))
+  (rename_i st l) (cases hc (cc-shut w st))
   (simp only [hc] at ha) (simp only [hc]) (exact (c0-gate-refuse w _ _ ha (t-create-link-refuse w st l)))
   (simp only [hc refuse])
-  (rename_i sc l) (exact (c0-gate-refuse w _ _ ha (t-create-link-top-refuse w sc l)))
-  (exact (t-link-demand-refuse w _ _ ha))
-  (rename_i l tag v n) (exact (c0-gate-refuse w _ _ ha (t-link-realize-refuse w l tag v n)))
-  (rename_i x v t) (exact (c0-gate-refuse w _ _ ha (t-append-refuse w x v t)))
+  (rename_i sc l) (cases hc (root-shut w))
+  (simp only [hc] at ha) (simp only [hc]) (exact (c0-gate-refuse w _ _ ha (t-create-link-top-refuse w sc l)))
+  (simp only [hc refuse])
+  (cases hc (root-shut w))
+  (simp only [hc] at ha) (simp only [hc]) (exact (t-link-demand-refuse w _ _ ha))
+  (simp only [hc refuse])
+  (rename_i l tag v n) (cases hc (root-shut w))
+  (simp only [hc] at ha) (simp only [hc]) (exact (c0-gate-refuse w _ _ ha (t-link-realize-refuse w l tag v n)))
+  (simp only [hc refuse])
+  (rename_i x v t) (cases hc (root-shut w))
+  (simp only [hc] at ha) (simp only [hc]) (exact (c0-gate-refuse w _ _ ha (t-append-refuse w x v t)))
+  (simp only [hc refuse])
   (exact (t-close-refuse w _ _ _ ha))
   (exact (t-finally-leave-refuse w _ ha)))
 
@@ -3401,9 +3435,13 @@
   (simp [item-token-ok] at hg)
   (simp [item-token-ok] at hg)
   (simp [item-token-ok] at hg)
-  (simp only [raw0 in-cleanup opt-test t3-create (run-tok-none w _ hg) refuse])
+  (cases hrs (root-shut w))
+  (simp only [raw0 cc-shut in-cleanup hrs opt-test t3-create (run-tok-none w _ hg) refuse Bool.or_false Bool.or_true Bool.false_or ite_self])
+  (simp only [raw0 cc-shut in-cleanup hrs opt-test t3-create (run-tok-none w _ hg) refuse Bool.or_false Bool.or_true Bool.false_or ite_self])
   (simp [item-token-ok] at hg)
-  (simp only [raw0 body-shut in-cleanup cur-closed opt-test t4-spawn (run-tok-none w _ hg) refuse Bool.or_false])
+  (cases hrs (root-shut w))
+  (simp only [raw0 body-shut in-cleanup cur-closed hrs opt-test t4-spawn (run-tok-none w _ hg) refuse Bool.or_false Bool.or_true Bool.false_or ite_self])
+  (simp only [raw0 body-shut in-cleanup cur-closed hrs opt-test t4-spawn (run-tok-none w _ hg) refuse Bool.or_false Bool.or_true Bool.false_or ite_self])
   (simp [item-token-ok] at hg)
   (simp [item-token-ok] at hg)
   (rename_i st ds m k fresh mine) (cases hc (await-bad w st ds m))
@@ -3428,7 +3466,7 @@
   (simp only [raw0 t-finally-enter (run-tok-none w _ hg) refuse])
   (simp only [raw0 t-finally-exit (run-tok-none w _ hg) refuse])
   (simp [item-token-ok] at hg)
-  (rename_i st l) (cases hc (in-cleanup w st))
+  (rename_i st l) (cases hc (cc-shut w st))
   (simp only [raw0 hc]) (apply c0-gate-l4)
   (simp only [t-create-link (run-tok-none w _ hg) refuse])
   (simp only [raw0 hc refuse])
