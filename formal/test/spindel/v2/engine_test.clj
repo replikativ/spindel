@@ -900,3 +900,26 @@
     (is (= k (:rtask (find-row w2 :sources l))) "demand sets the realizer")
     (is (= 0 (:rtask (find-row w3 :sources l))) "the realizer's cancel clears rtask")
     (is (= w4 w5) "observe on a stream is refused")))
+
+;; C0 (engine session, feat/v2-world-completion): a link owned by the root scope is created only
+;; while the root scope is open (raw0's `c0-gate`): with the root scope closed (T21) an append is
+;; refused (the engine logs [:append s v 0] accepted false), so are link-realize with tag 1 and
+;; create-link-top; the end of a link (tag 0) creates nothing and stays accepted
+(deftest c0-root-gate
+  (let [step (fn [w i] (en/world-step w i))
+        sx (:next-id s/empty-world)
+        w1 (:world (step s/empty-world (create-source-top root s/sk-stream 0 sx)))
+        l (:next-id w1)
+        w2 (:world (step w1 (create-link-top root l)))
+        shut (fn [w] (update w :scopes (fn [ss] (map #(if (= (:id %) root) (st/scope-close %) %) ss))))
+        w3 (shut w2)
+        acc (fn [w it] (:accepted (en/raw0 w it)))]
+    (is (true? (st/scope-open-at w2 root)))
+    (is (false? (st/scope-open-at w3 root)))
+    (is (= [true true true] [(acc w2 (append* sx 5 (:next-id w2))) (acc w2 (link-realize l 1 5 (:next-id w2)))
+                             (acc w2 (create-link-top root (:next-id w2)))]) "root scope open: accepted")
+    (is (false? (acc w3 (append* sx 5 (:next-id w3)))) "append refused under a closed root scope")
+    (is (= w3 (:world (en/raw0 w3 (append* sx 5 (:next-id w3))))) "and changes nothing")
+    (is (false? (acc w3 (link-realize l 1 5 (:next-id w3)))) "no next link under a closed root scope")
+    (is (false? (acc w3 (create-link-top root (:next-id w3)))))
+    (is (true? (acc w3 (link-realize l 0 0 0))) "the end creates no link")))

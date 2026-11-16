@@ -2922,14 +2922,43 @@
   (simp only [t8-obs hs] at ha) (simp only [t8-obs hs]) (exact (t8-full-refuse w d cb fresh ha))
   (simp only [t8-obs hs refuse]))
 
+;; C0 (engine session, feat/v2-world-completion): a link owned by the root scope is created only
+;; while the root scope is open (create-link, create-link-top, link-realize with tag 1, append, a
+;; stream's first tail); once it is closed (T21) the item is refused, as the engine (append logs
+;; accepted false; link-realize logs nothing; the others are refused for a cancelled run or a
+;; released host). `b` says whether the item creates such a link.
+(a/defn root-ok-if [b :- Bool, w :- World] Bool (Bool.or (Bool.not b) (scope-open-at w root-scope-id)))
+(a/defn c0-gate [w :- World, b :- Bool, o :- Outcome] Outcome (if (root-ok-if b w) o (refuse w)))
+
+(a/theorem c0-gate-inv [w :- World, b :- Bool, o :- Outcome]
+  (=> (= (inv-sample w) true) (= (inv-sample (:world o)) true) (= (inv-sample (:world (c0-gate w b o))) true))
+  (intros h ho)
+  (cases hg (root-ok-if b w))
+  (simp only [c0-gate hg refuse]) (exact h)
+  (simp only [c0-gate hg]) (exact ho))
+
+(a/theorem c0-gate-refuse [w :- World, b :- Bool, o :- Outcome]
+  (=> (= (:accepted (c0-gate w b o)) false) (=> (= (:accepted o) false) (= (:world o) w)) (= (:world (c0-gate w b o)) w))
+  (intros ha ho)
+  (cases hg (root-ok-if b w))
+  (simp only [c0-gate hg refuse])
+  (simp only [c0-gate hg] at ha) (simp only [c0-gate hg]) (exact (ho ha)))
+
+(a/theorem c0-gate-l4 [w :- World, b :- Bool, o :- Outcome]
+  (=> (= (:accepted o) false) (= (:accepted (c0-gate w b o)) false))
+  (intro ho)
+  (cases hg (root-ok-if b w))
+  (simp only [c0-gate hg refuse])
+  (simp only [c0-gate hg]) (exact ho))
+
 ;; ===========================================================================
 ;; Part G. The step: raw transition (every item), then Rule R
 ;; ===========================================================================
 
 (a/defn raw0 [w :- World, it :- Item] Outcome
   (match it
-    [(create-source st kind v fresh) (if (body-shut w st) (refuse w) (t1-body w st kind v fresh))]
-    [(create-source-top scope kind v fresh) (t1-top-full w scope kind v fresh)]
+    [(create-source st kind v fresh) (if (body-shut w st) (refuse w) (c0-gate w (Nat.beq kind sk-stream) (t1-body w st kind v fresh)))]
+    [(create-source-top scope kind v fresh) (c0-gate w (Nat.beq kind sk-stream) (t1-top-full w scope kind v fresh))]
     [(write x v) (t2-write w x v)]
     [(track st x k fresh) (if (in-cleanup w st) (refuse w) (t7-track w st x k fresh))]
     [(observe d cb fresh) (t8-obs w d cb fresh)]
@@ -2966,11 +2995,11 @@
     [(finally-enter st) (t-finally-enter w st)]
     [(finally-exit st) (t-finally-exit w st)]
     [(slice-exit r) (t-slice-exit w r)]
-    [(create-link st l) (if (in-cleanup w st) (refuse w) (t-create-link w st l))]
-    [(create-link-top sc l) (t-create-link-top w sc l)]
+    [(create-link st l) (if (in-cleanup w st) (refuse w) (c0-gate w true (t-create-link w st l)))]
+    [(create-link-top sc l) (c0-gate w true (t-create-link-top w sc l))]
     [(link-demand l k) (t-link-demand w l k)]
-    [(link-realize l tag v n) (t-link-realize w l tag v n)]
-    [(append x v t) (t-append w x v t)]
+    [(link-realize l tag v n) (c0-gate w (Nat.beq tag res-ok) (t-link-realize w l tag v n))]
+    [(append x v t) (c0-gate w true (t-append w x v t))]
     [(close x tag v) (t-close w x tag v)]))
 
 ;; Z#56 (T21): a released world refuses the HOST's admissions (top-level creations, writes, observe,
@@ -3046,9 +3075,9 @@
   (cases it)
   (all_goals (simp only [raw0]))
   (rename_i st kind v fresh) (cases hc (body-shut w st))
-  (simp only [hc]) (exact (t1-body-inv w _ _ _ _ h))
+  (simp only [hc]) (exact (c0-gate-inv w _ _ h (t1-body-inv w st kind v fresh h)))
   (simp only [hc refuse]) (exact h)
-  (exact (t1-top-full-inv w _ _ _ _ h))
+  (rename_i scope kind v fresh) (exact (c0-gate-inv w _ _ h (t1-top-full-inv w scope kind v fresh h)))
   (exact (t2-inv w _ _ h))
   (rename_i st x k fresh) (cases hc (in-cleanup w st))
   (simp only [hc]) (exact (t7-inv w _ _ _ _ h))
@@ -3100,12 +3129,12 @@
   (exact (t-finally-exit-inv w _ h))
   (exact (t-slice-exit-inv w _ h))
   (rename_i st l) (cases hc (in-cleanup w st))
-  (simp only [hc]) (exact (t-create-link-inv w _ _ h))
+  (simp only [hc]) (exact (c0-gate-inv w _ _ h (t-create-link-inv w st l h)))
   (simp only [hc refuse]) (exact h)
-  (exact (t-create-link-top-inv w _ _ h))
+  (rename_i sc l) (exact (c0-gate-inv w _ _ h (t-create-link-top-inv w sc l h)))
   (exact (t-link-demand-inv w _ _ h))
-  (exact (t-link-realize-inv w _ _ _ _ h))
-  (exact (t-append-inv w _ _ _ h))
+  (rename_i l tag v n) (exact (c0-gate-inv w _ _ h (t-link-realize-inv w l tag v n h)))
+  (rename_i x v t) (exact (c0-gate-inv w _ _ h (t-append-inv w x v t h)))
   (exact (t-close-inv w _ _ _ h)))
 
 (a/theorem raw0-refuse [w :- World, it :- Item]
@@ -3115,9 +3144,9 @@
   (all_goals (simp only [raw0] at ha))
   (all_goals (simp only [raw0]))
   (rename_i st kind v fresh) (cases hc (body-shut w st))
-  (simp only [hc] at ha) (simp only [hc]) (exact (t1-body-refuse w _ _ _ _ ha))
+  (simp only [hc] at ha) (simp only [hc]) (exact (c0-gate-refuse w _ _ ha (t1-body-refuse w st kind v fresh)))
   (simp only [hc refuse])
-  (exact (t1-top-full-refuse w _ _ _ _ ha))
+  (rename_i scope kind v fresh) (exact (c0-gate-refuse w _ _ ha (t1-top-full-refuse w scope kind v fresh)))
   (exact (t2-refuse w _ _ ha))
   (rename_i st x k fresh) (cases hc (in-cleanup w st))
   (simp only [hc] at ha) (simp only [hc]) (exact (t7-refuse w _ _ _ _ ha))
@@ -3169,12 +3198,12 @@
   (exact (t-finally-exit-refuse w _ ha))
   (exact (t-slice-exit-refuse w _ ha))
   (rename_i st l) (cases hc (in-cleanup w st))
-  (simp only [hc] at ha) (simp only [hc]) (exact (t-create-link-refuse w _ _ ha))
+  (simp only [hc] at ha) (simp only [hc]) (exact (c0-gate-refuse w _ _ ha (t-create-link-refuse w st l)))
   (simp only [hc refuse])
-  (exact (t-create-link-top-refuse w _ _ ha))
+  (rename_i sc l) (exact (c0-gate-refuse w _ _ ha (t-create-link-top-refuse w sc l)))
   (exact (t-link-demand-refuse w _ _ ha))
-  (exact (t-link-realize-refuse w _ _ _ _ ha))
-  (exact (t-append-refuse w _ _ _ ha))
+  (rename_i l tag v n) (exact (c0-gate-refuse w _ _ ha (t-link-realize-refuse w l tag v n)))
+  (rename_i x v t) (exact (c0-gate-refuse w _ _ ha (t-append-refuse w x v t)))
   (exact (t-close-refuse w _ _ _ ha)))
 
 (a/theorem inv-cancel-losers [w0 :- World, w1 :- World]
@@ -3224,7 +3253,10 @@
   (intro hg)
   (simp only [raw-token-ok] at hg)
   (cases it)
-  (simp only [raw0 body-shut in-cleanup cur-closed opt-test t1-body t1-stream t1-full (run-tok-none w _ hg) refuse Bool.or_false ite_self])
+  (rename_i st kind v fresh) (cases hc (body-shut w st))
+  (simp only [raw0 hc]) (apply c0-gate-l4)
+  (simp only [t1-body t1-stream t1-full (run-tok-none w _ hg) refuse ite_self])
+  (simp only [raw0 hc refuse])
   (simp [item-token-ok] at hg)
   (simp [item-token-ok] at hg)
   (simp only [raw0 in-cleanup opt-test t7-track (run-tok-none w _ hg) refuse])
@@ -3264,7 +3296,10 @@
   (simp only [raw0 t-finally-enter (run-tok-none w _ hg) refuse])
   (simp only [raw0 t-finally-exit (run-tok-none w _ hg) refuse])
   (simp [item-token-ok] at hg)
-  (simp only [raw0 in-cleanup opt-test t-create-link (run-tok-none w _ hg) refuse])
+  (rename_i st l) (cases hc (in-cleanup w st))
+  (simp only [raw0 hc]) (apply c0-gate-l4)
+  (simp only [t-create-link (run-tok-none w _ hg) refuse])
+  (simp only [raw0 hc refuse])
   (all_goals (simp [item-token-ok] at hg)))
 
 (a/theorem raw-l4 [w :- World, it :- Item]

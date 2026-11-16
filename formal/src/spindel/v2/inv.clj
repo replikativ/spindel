@@ -1750,6 +1750,14 @@
 
 ;; ---- every item, then the loser cancel, then Rule R
 
+;; C0: the root-scope gate of the link-creating items (engine.clj `c0-gate`)
+(a/theorem i10-gate [w :- World, b :- Bool, o :- Outcome]
+  (=> (= (inv-i10-slice w) true) (= (inv-i10-slice (:world o)) true) (= (inv-i10-slice (:world (c0-gate w b o))) true))
+  (intros h ho)
+  (cases hg (root-ok-if b w))
+  (simp only [c0-gate hg refuse]) (exact h)
+  (simp only [c0-gate hg]) (exact ho))
+
 (a/theorem i10-raw0 [w :- World, it :- Item]
   (=> (= (inv-i10-slice w) true) (= (inv-i10-slice (:world (raw0 w it))) true))
   (intro h)
@@ -1757,9 +1765,9 @@
   (cases it)
   (all_goals (simp only [raw0]))
   (rename_i st kind v fresh) (cases hc (body-shut w st))
-  (simp only [hc]) (exact (i10-slice-intro _ _ (sl-t1-body _ w _ _ _ _ hx)))
+  (simp only [hc]) (exact (i10-gate w _ _ h (i10-slice-intro _ _ (sl-t1-body _ w st kind v fresh hx))))
   (simp only [hc refuse]) (exact h)
-  (exact (i10-slice-intro _ _ (sl-t1-top-full _ w _ _ _ _ hx)))
+  (rename_i sc kind v fresh) (exact (i10-gate w _ _ h (i10-slice-intro _ _ (sl-t1-top-full _ w sc kind v fresh hx))))
   (exact (i10-slice-intro _ _ (sl-t2 _ w _ _ hx)))
   (rename_i st s k fresh) (cases hc (in-cleanup w st))
   (simp only [hc]) (exact (i10-slice-intro _ _ (sl-t7 _ w _ _ _ _ hx)))
@@ -1811,12 +1819,12 @@
   (exact (i10-slice-intro _ _ (sl-t-finally-exit _ w _ hx)))
   (exact (i10-slice-intro _ _ (sl-t-slice-exit _ w _ hx)))
   (rename_i st l) (cases hc (in-cleanup w st))
-  (simp only [hc]) (exact (i10-slice-intro _ _ (sl-t-create-link _ w _ _ hx)))
+  (simp only [hc]) (exact (i10-gate w _ _ h (i10-slice-intro _ _ (sl-t-create-link _ w st l hx))))
   (simp only [hc refuse]) (exact h)
-  (exact (i10-slice-intro _ _ (sl-t-create-link-top _ w _ _ hx)))
+  (rename_i sc l) (exact (i10-gate w _ _ h (i10-slice-intro _ _ (sl-t-create-link-top _ w sc l hx))))
   (exact (i10-slice-intro _ _ (sl-t-link-demand _ w _ _ hx)))
-  (exact (i10-slice-intro _ _ (sl-t-link-realize _ w _ _ _ _ hx)))
-  (exact (i10-slice-intro _ _ (sl-t-append _ w _ _ _ hx)))
+  (rename_i l tag v n) (exact (i10-gate w _ _ h (i10-slice-intro _ _ (sl-t-link-realize _ w l tag v n hx))))
+  (rename_i x v t) (exact (i10-gate w _ _ h (i10-slice-intro _ _ (sl-t-append _ w x v t hx))))
   (exact (i10-slice-intro _ _ (sl-t-close _ w _ _ _ hx))))
 
 (a/theorem i10-raw [w :- World, it :- Item]
@@ -3594,15 +3602,22 @@
   (simp only [t-finalize hf hg refuse]) (exact h)
   (simp only [t-finalize hf hg accept]) (exact (s9-run-upd w rid run-enter-row keeps9-run-enter-row h)))
 
+(a/theorem s9-gate [w :- World, b :- Bool, o :- Outcome]
+  (=> (= (inv-i9 w) true) (= (inv-i9 (:world o)) true) (= (inv-i9 (:world (c0-gate w b o))) true))
+  (intros h ho)
+  (cases hg (root-ok-if b w))
+  (simp only [c0-gate hg refuse]) (exact h)
+  (simp only [c0-gate hg]) (exact ho))
+
 (a/theorem i9-raw0 [w :- World, it :- Item]
   (=> (= (inv-sample w) true) (= (inv-i9 w) true) (= (inv-i9 (:world (raw0 w it))) true))
   (intros hs h)
   (cases it)
   (all_goals (simp only [raw0]))
   (rename_i st kind v fresh) (cases hc (body-shut w st))
-  (simp only [hc]) (exact (s9-t1-body w _ _ _ _ h))
+  (simp only [hc]) (exact (s9-gate w _ _ h (s9-t1-body w st kind v fresh h)))
   (simp only [hc refuse]) (exact h)
-  (exact (s9-t1-top-full w _ _ _ _ h))
+  (rename_i sc kind v fresh) (exact (s9-gate w _ _ h (s9-t1-top-full w sc kind v fresh h)))
   (exact (s9-t2 w _ _ h))
   (rename_i st s k fresh) (cases hc (in-cleanup w st))
   (simp only [hc]) (exact (s9-t7 w _ _ _ _ h))
@@ -3654,12 +3669,12 @@
   (exact (s9-t-finally-exit w _ h))
   (exact (s9-t-slice-exit w _ h))
   (rename_i st l) (cases hc (in-cleanup w st))
-  (simp only [hc]) (exact (s9-t-create-link w _ _ h))
+  (simp only [hc]) (exact (s9-gate w _ _ h (s9-t-create-link w st l h)))
   (simp only [hc refuse]) (exact h)
-  (exact (s9-t-create-link-top w _ _ h))
+  (rename_i sc l) (exact (s9-gate w _ _ h (s9-t-create-link-top w sc l h)))
   (exact (s9-t-link-demand w _ _ h))
-  (exact (s9-t-link-realize w _ _ _ _ h))
-  (exact (s9-t-append w _ _ _ h))
+  (rename_i l tag v n) (exact (s9-gate w _ _ h (s9-t-link-realize w l tag v n h)))
+  (rename_i x v t) (exact (s9-gate w _ _ h (s9-t-append w x v t h)))
   (exact (s9-t-close w _ _ _ h)))
 
 (a/theorem i9-raw [w :- World, it :- Item]
