@@ -1274,6 +1274,25 @@ guard and the take arm's cleanup refusal), hm18 (blocked by hm17).
   the fresh activation id > 0; take likewise) and an override for `revoke-roots`. Layer 2 then carries K and I3
   for every live born cell (an unborn instance released by E4 needs only R).
 
+### hq (step 3), state
+- Released half: DONE (0c2a49e). spindel.v2.quiet `grel` bundle; `step-released` (p3b w, released w -> released after
+  any step).
+- K: DONE (0d8d35c). `gk-rest` = pending-act = 0, no publication row, and once released no pin and no host-creditor
+  edge; `step-k` (p3b w, K w -> K after any step), `k-empty`. Edge insertions are patched (track/reactivation: dep;
+  await/take: wait edge whose creditor is the fresh activation id, > 0 by ids-below; T8/T22 only while not released,
+  raw0's root-shut / host-await-bad), pin needs root-shut, unpin deletes from no pins, revoke-roots resets all. No
+  counterexample to K.
+- Quiet half: BLOCKED (question 8). The planned argument (a quiet world's rows are scopes and forks only, so every
+  item is refused) fails on §3.4 admissions: `keep-fn` keeps a row with handles > 0 (`admitted`) without a root.
+  T21 zeroes every handle, but `handle-new` is a host item that a held slice may still issue after T21 (it is not
+  one of #269's roots). Trace (engine_test helpers, from the empty world): create-comp-top c, observe c, start c
+  (run r), schedule r, release-world, `handle-new c` ACCEPTED (r's cleanup slice), slice-exit r: released, no run
+  (quiet), c kept (idle, handles 1, done-epoch 0); `start c` ACCEPTED. In this trace Rule R cancels and retires the
+  stray run in the same step, so the world stays quiet, but completion stability then rests on Rule R's stray-run
+  handling plus facts the invariants do not give (an admitted link source with `link-demand` would need the root
+  scope's closure after T21, also not an invariant yet). With `handle-new` refused once released (as observe/pin),
+  K extends by "released -> every handle count is 0" and the planned proof goes through.
+
 ### Questions (engine session)
 Answered: 1 (A4: the projection is fixed in PR #268; drop `:released-proj` then), 2 (A1), 4 (A2); 3 is A5 (after #268).
 New (Stage B finding):
@@ -1290,6 +1309,9 @@ New (Stage B finding):
 7. Sample 28, commit 13: `[:write 3 12]` from the cleanup slice is logged accepted although signal 3 was collected at
    T21 (both projections lack it); the model refuses a write to a missing source. Is an accepted no-op write the
    log contract here?
+8. After T21, may a cleanup slice create a handle (`[:handle-new x]`, re-admitting a row by §3.4 handles > 0)?
+   If not (a released world takes no new admission, as no new root), the model refuses it and completion
+   stability follows from K; if yes, a computation admitted that way can be started (T5) after completion.
 
 1. `:released` in the verify projection is `false` after the release commit (verify.clj `projection`); keep the
    deviation or fix the projection?
