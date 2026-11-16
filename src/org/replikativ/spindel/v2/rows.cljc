@@ -181,7 +181,15 @@
                               ; below cut are inherited; that ancestor's rows are read at its `ordinal`
                               ; (`token` keeps those versions); `map` is its copy map at the fork
 (def ^:const W-TOKENS 45)     ; MVCC: the cells of this world's forks' tokens, by ascending ordinal
-(def ^:const W-SIZE 46)
+;; C1 world completion (c1-cancellation-joins-design.md W1-W2, R1-R2)
+(def ^:const W-RUNS 46)       ; unretired runs (every task and computation run, cleanup included)
+(def ^:const W-KIDS 47)       ; child-world obligations: host/kids [count released-flag], never inherited
+(def ^:const W-KID-TOKEN 48)  ; host/kid-cell: the owner's token [owner-weak done-flag] and a completed flag
+(def ^:const W-COMPLETE 49)   ; released, no run left, every owned child complete or collected
+(def ^:const W-COMPLETE-SUBS 50) ; host terminal subscriptions [live-flag cb], never inherited
+(def ^:const W-OUTSTANDING 51)   ; every resource until its acknowledgement (all phases), by ID
+(def ^:const W-DISCHARGE 52)  ; a fork's inherited non-armed outstanding resources, acknowledged at its first turn
+(def ^:const W-SIZE 53)
 
 ;; Scope
 (def ^:const S-PARENT 2)
@@ -287,7 +295,8 @@
 (def ^:const R-SCOPES 16)    ; open explicit scopes of the run, innermost last
 (def ^:const R-PATH 17)      ; the run's path, nil if empty (§8.2 P1-P3)
 (def ^:const R-BIND 18)      ; JVM: the run's dynamic binding frame between slices
-(def ^:const R-SIZE 19)
+(def ^:const R-INFIN 19)     ; C1 W4: depth of finally clauses executing (suspension refused)
+(def ^:const R-SIZE 20)
 
 (def ^:const ACT-ACTIVE 0)
 (def ^:const ACT-PARKED 1)

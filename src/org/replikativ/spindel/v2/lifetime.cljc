@@ -95,14 +95,18 @@
 (defn register-world!
   "O(1) insertion, after independent world metadata fields are initialized.
    Compare the copied sweep generation AFTER publishing registry membership."
-  [family w id idx copied-generation request!]
-  (let [ww (hs/weak w) worlds (:worlds family)]
-    (locked #(hs/mput! worlds id ww))
-    ;; Exactly one world collection action. Detached index/world registry
-    ;; hold only ids and weak refs, and this action does not reference w.
-    (hs/on-collect! w #(do (clear-index! idx id)
-                           (locked (fn [] (remove-exact! worlds id ww)))))
-    (when (< copied-generation (generation family)) (request! w))))
+  ([family w id idx copied-generation request!]
+   (register-world! family w id idx copied-generation request! nil))
+  ([family w id idx copied-generation request! collected!]
+   (let [ww (hs/weak w) worlds (:worlds family)]
+     (locked #(hs/mput! worlds id ww))
+     ;; Exactly one world collection action. Detached index/world registry
+     ;; hold only ids and weak refs, and this action does not reference w.
+     ;; `collected!` (C1: the world's owner acknowledgement) must not either.
+     (hs/on-collect! w #(do (clear-index! idx id)
+                            (locked (fn [] (remove-exact! worlds id ww)))
+                            (when collected! (collected!))))
+     (when (< copied-generation (generation family)) (request! w)))))
 
 (defn atom-collected!
   "Increment before snapshot, release the metadata lock before dereferencing
