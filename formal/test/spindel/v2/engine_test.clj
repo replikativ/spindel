@@ -1110,3 +1110,47 @@
         "unobserved, no handle, no result, its run cancelled in its cleanup slice: a tombstone")
     (is (true? (:slice (find-row w :runs r))))
     (step! w (handle-new c) :refused)))
+
+;; Z#69 (engine PR #272, task_test `detach-into-own-subtree-is-refused`): detach is refused into a
+;; scope of the task's own run-scope subtree (re-parenting the run scope under it would close a cycle
+;; of parents, and neither scope could ever be removed); into an outer open scope it is accepted.
+;; `scope-cycle?` walks the parent fields directly (independent of the model's `scope-ancestors`).
+(defn scope-cycle? [w]
+  (let [par (into {} (map (juxt :id :parent) (:scopes w)))]
+    (boolean (some (fn [s] (loop [x (par s) n 0]
+                             (cond (or (nil? x) (zero? x)) false
+                                   (= x s) true
+                                   (> n (count par)) true
+                                   :else (recur (par x) (inc n)))))
+                   (keys par)))))
+
+(deftest z69-detach-into-own-subtree-refused
+  (let [w s/empty-world
+        [k0 rk0 w] (task-with-slice w)                                      ; K0 holds the slice
+        o (:next-id w)
+        w (step! w (open-scope (stamp w rk0) o))                            ; K0 opens O
+        j (:next-id w)
+        rj (inc j)
+        sj (+ j 2)
+        w (step! w (spawn (stamp w rk0) 5 j))                               ; J, owned by O
+        _ (is (= [o o] [(:owner (find-row w :tasks j)) (:parent (find-row w :scopes sj))]))
+        y (:next-id w)
+        w (step! w (create-source (stamp w rk0) s/sk-deferred 0 y))
+        w (step! w (await* (stamp w rk0) [y] s/am-one 1 (:next-id w) []))  ; K0 parks
+        w (step! w (schedule rj))
+        s (:next-id w)
+        w (step! w (open-scope (stamp w rj) s))                             ; J opens S below its run scope
+        _ (is (= sj (:parent (find-row w :scopes s))))
+        _ (is (false? (scope-cycle? w)))]
+    (testing "refused into J's own subtree (S, or J's run scope itself); the world is unchanged"
+      (step! w (detach j s) :refused)
+      (step! w (detach j sj) :refused)
+      (is (true? (en/scope-within w s sj)) "J's run scope is on S's parent chain")
+      (is (true? (scope-cycle? (en/detach-move w j s sj)))
+          "without the guard the move makes S and J's run scope each other's ancestor"))
+    (testing "accepted into an outer open scope (the root scope): J and its run scope move there"
+      (let [w2 (step! w (detach j root))]
+        (is (= [root root] [(:owner (find-row w2 :tasks j)) (:parent (find-row w2 :scopes sj))]))
+        (is (= sj (:parent (find-row w2 :scopes s))))
+        (is (false? (scope-cycle? w2)))
+        (is (true? (:open (find-row w2 :scopes o))) "O stays K0's open scope")))))
