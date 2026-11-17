@@ -1479,5 +1479,7 @@ New (Stage B finding):
 - sys_test: no existing case forked an unborn cell (`c1-fork-discharge` forks a born, released world). New
   `c1-fork-of-unborn-refused`: both forms are refused from an unborn and from an E4-released instance (system
   unchanged at the source and the target id), and both are taken from the same world as a born cell.
+- Fresh-JVM `clojure -M:test` (2026-11-16, after question 9): 245 tests, 207,430 assertions, 0 failures, 0 errors.
+  No sorry.
 - Fresh-JVM `clojure -M:test` (2026-11-16, after step 4): 244 tests, 207,419 assertions, 0 failures, 0 errors. No sorry.
 
