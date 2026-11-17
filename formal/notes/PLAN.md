@@ -1386,3 +1386,19 @@ New (Stage B finding):
   before `zero-handles`, so GK needs an override of `release-world-raw` (not of `revoke-roots`); `comp-h1`/`task-h1`/
   `source-h1` need handle-new's `root-shut` premise, `comp-dec-handles`/`*-h0` keep 0. `release-unborn` (E4) sets the
   flag only (unborn cells need `step-released` only).
+
+### Quiet half, step (1): K's handle clause (2026-11-16)
+- Follow-up A first (543bd4e): handle-new refuses a tombstone (engine session); `comp-h1` copies the flag.
+- `gk-rest` = `gk0-rest` (the former K) and `gh-rest`: once released, every computation, task and source has handle
+  count 0 (`hz-all`). `step-k`, `k-empty`: statement text unchanged, K is stronger (the definition of `gk-rest`
+  changed). Helper lemmas about the former K were renamed `gk0-*` (`gk0-rest-mono`, `gk0-rest-edge-upd`, ...,
+  `gk0-set-pins-*`, `gk0-rest-revoke`); the `gk-rest-*` names are now the combined lemmas. `gk-revoke-roots` is gone
+  (revoke-roots alone breaks the handle clause: T21 sets `released` before zeroing): T21 is overridden whole
+  (`t-release-world-gk`: `gk-zero-revoke`, `zero-handles-hz`, then the cascade copy).
+- The copy: computation/task/source row edits take `hz` (a zero count stays zero; default by rfl, per-case lemmas
+  `task-cancel-result-hk`/`source-consume-hk`, decrements `-z` with `sub1-zero`, serve-or overridden with its `keep`'s
+  hz); handle-new's h1 (`-open`) and the three creations with handles 1 take `hr0 : root-shut w = false`, threaded
+  (`add-premise`) through the 27 theorems between raw0's arms and the creations (`gk-threaded`); raw0's arms supply it
+  from their guards (`body-root`, `cc-root`, or the root-shut case). No counterexample: every creation and h1 is
+  under a released guard.
+
