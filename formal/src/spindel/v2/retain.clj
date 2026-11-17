@@ -264,8 +264,17 @@
 ;; storage (X#7, Z#3): the finalizer refs of the runs in live
 (a/defn stored-run [lv :- (List Nat), r :- RunRow] Bool (reach-mem (:id r) lv))
 (a/defn run-refs [r :- RunRow] (List Nat) (fin-refs (:finalizers r)))
-(a/defn storage-gather [w :- World, lv :- (List Nat)] (List Nat)
+(a/defn storage-gather0 [w :- World, lv :- (List Nat)] (List Nat)
   (tbl-gather (stored-run lv) run-refs (:runs w)))
+;; C1c stage B (Z#71): a fork marker keeps itself and its owner scope (with the owner's ancestors, by the
+;; closure below). A marker is a counted owned fork (engine W-OWNED-N) or, in a world that has not normalized
+;; yet, an inherited one (W-NORMALIZE). Both are keep reasons of the engine's remove-scope-if-empty!; the engine
+;; has no filter over scope rows (question 17), so in the model they are storage, not reachability.
+(a/defn fork-keep [fs :- (List ForkRow)] (List Nat)
+  (match fs [nil (List.nil Nat)]
+         [(cons h t) (List.cons Nat (:id h) (List.cons Nat (:owner h) (fork-keep t)))]))
+(a/defn storage-gather [w :- World, lv :- (List Nat)] (List Nat)
+  (List.append Nat (storage-gather0 w lv) (fork-keep (:forks w))))
 ;; closed upward like the cleanup rows (refs are sources by Z#3 and layer 1 registers none, so
 ;; this adds nothing in practice; it keeps every retained scope's parent, I1)
 (a/defn storage-with [w :- World, lv :- (List Nat)] (List Nat) (anc-close w (storage-gather w lv)))
@@ -964,19 +973,37 @@
   (simp only [cleanup-rows fw-cleanup])
   (exact (cleanup-in-filter w K (:cleanup w) hk)))
 
+(a/theorem fork-keep-filter [K :- (=> Nat Bool), fs :- (List ForkRow)]
+  (=> (forall [a :- Nat] (=> (= (reach-mem a (fork-keep fs)) true) (= (K a) true)))
+      (= (tbl-keep K fork-id fs) fs))
+  (induction fs)
+  (case [nil] (intro h) (simp only [tbl-keep]))
+  (case [cons h t ih]
+    (intro hk)
+    (have k1 (= (K (fork-id h)) true))
+    (apply hk) (simp [fork-id fork-keep reach-mem])
+    (have ht (forall [a :- Nat] (=> (= (reach-mem a (fork-keep t)) true) (= (K a) true))))
+    (intro a ha) (apply hk) (simp [fork-keep reach-mem ha])
+    (simp only [tbl-keep k1 (ih ht)])))
+
 (a/theorem storage-filter [w :- World, K :- (=> Nat Bool), lv :- (List Nat), lv2 :- (List Nat)]
   (=> (forall [a :- Nat] (= (reach-mem a lv2) (reach-mem a lv)))
       (forall [a :- Nat] (=> (= (reach-mem a lv) true) (= (K a) true)))
       (forall [a :- Nat] (=> (= (reach-mem a (storage-with w lv)) true) (= (K a) true)))
       (= (storage-with (filter-world K w) lv2) (storage-with w lv)))
   (intro he hk hk2)
-  (have eg (= (storage-gather (filter-world K w) lv2) (storage-gather w lv)))
-  (simp only [storage-gather fw-runs])
+  (have ef (= (tbl-keep K fork-id (:forks w)) (:forks w)))
+  (apply fork-keep-filter) (intro a ha) (apply hk2)
+  (simp only [storage-with anc-close storage-gather reach-mem-append ha Bool.or_true Bool.true_or])
+  (have eg0 (= (storage-gather0 (filter-world K w) lv2) (storage-gather0 w lv)))
+  (simp only [storage-gather0 fw-runs])
   (apply gather-keep)
   (intro r hr hp) (apply hk)
   (exact hp)
   (intro r hr hk3) (simp [stored-run he])
   (intro r hr hp) (rfl)
+  (have eg (= (storage-gather (filter-world K w) lv2) (storage-gather w lv)))
+  (simp only [storage-gather eg0 fw-forks ef])
   (simp only [storage-with eg])
   (exact (anc-close-filter w K (storage-gather w lv) hk2)))
 

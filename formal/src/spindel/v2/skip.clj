@@ -23,7 +23,7 @@
 (a/theorem esb-rest-skip [w :- World] (=> (= (esb-rest w) true) (= (esb-rest (bump w)) true))
   (intro h)
   (have hs (edges-sub (:next-id w) (:edges w) (:edges w))) (intros y hy hh) (exact hh)
-  (exact (esk-mono (:edges w) (:edges w) (:next-id w) (+ (:next-id w) 1) (:cleanup w) (:runs w) (:scopes w) hs (Nat.le_succ (:next-id w)) h)))
+  (exact (esk-mono (:edges w) (:edges w) (:next-id w) (+ (:next-id w) 1) (:cleanup w) (:runs w) (:scopes w) (:forks w) hs (Nat.le_succ (:next-id w)) h)))
 (a/theorem inv-rank-skip [w :- World] (=> (= (inv-rank w) true) (= (inv-rank (bump w)) true))
   (intro h) (simp only [inv-rank Bool.and_eq_true] at h) (simp only [inv-rank Bool.and_eq_true])
   (exact (And.intro (inv-bump w (And.left h)) (Eq.trans (sk-ranks w) (And.right h)))))
