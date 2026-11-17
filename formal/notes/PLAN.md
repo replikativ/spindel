@@ -1458,4 +1458,5 @@ New (Stage B finding):
    The model's `sys-fork`/`sys-fork-effect` have no guard; the completion invariant for the child assumes the parent
    is not an E4-released instance (a released world with handles > 0 copied into a born cell could, after its runs
    retire and it completes, start a computation admitted by a handle).
+- Fresh-JVM `clojure -M:test` (2026-11-16, after step 4): 244 tests, 207,419 assertions, 0 failures, 0 errors. No sorry.
 
