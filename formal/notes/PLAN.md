@@ -32,6 +32,7 @@ Feasibility notes: `../ansatz/.internal/design/spindel-v2-feasibility.md`.
 | `spindel.v2.inv` | predicates for I1/I5/I7/I9/I10/I11a (tripwire `inv-all`), counterexamples to literal I1/I5/I7/I8/I9/I10, I13 guards, L1, I10 D0 (`step-i10-slice`), I9 (`step-i9`), I5 wait half (`step-i5-wait`) | in progress |
 | `spindel.v2.lit` | literal invariants through `world-step`: I10 task part (`step-lit-i10-task`, bundle `gl`), I9 resources (`step-lit-i9-res`, bundle `g9`); P3 core `filter-safe-of-refs`; copier `lcopy!` with source patches (`patch!`) | in progress |
 | `spindel.v2.idle` | I7 (idle shape) through the step: bundle `g7` (a7, dep/marked creditor awake, idle clean, slice-normal alive, observe host), companion `awo` (T6/T11/reactivation chains), cascade completeness for demote (`kdb`, `casc-kill`); `step-g7`, `step-lit-i7` | done (honest hyps ga, rule-r-safe) |
+| `spindel.v2.qworld` | C1 quiet half: bundle `gc` (every cleanup entry's run is a run row; `step-gc-rest`), `qinv` = p3l && K && gc && I3 (`step-qinv`, `qinv-empty`), the closure lemma `quiet-rows` (a quiet world with qinv holds only scopes), the refusal lemma | in progress |
 | `spindel.v2.tomb` | C1 Q6: tombstones are dormant. Bundle `gy y` (copy of the raw step and of normalization): every alive run's computation and every dep edge's creditor is no tombstone (`ta-one`, `dep-untomb`), nor is computation y; `gy 0` is in P3's round invariant `ri` (`refs-untomb`, the new premise of `filter-safe-of-refs`); `trc` (acts-alive && gy 0) is the round context the i10/i14/hmk2/hm18 normalization chains take; `step-gy`, `gy-empty` | done |
 | `spindel.v2.p3` | P3 complete: bundles `mdb` (marked edges are dep), `esb` (edge-sep: references are non-edge ids), `aha` (activation runs exist and are alive), round invariant `ri` -> every round filter-safe (`rule-r-safe-ri`); combined bundle `p3b` (ga, inv-rank, gl, g9, g7, mdb, esb, aha) with `step-p3b` and the step theorems with no honest hypothesis (`step-rule-r-safe`, `step-inv-total`, `step-acts-total`, `step-rank-total`, ...) | done |
 | `spindel.v2.i10` | literal I10, computation part (one current run per computation) through the step: bundle `g10 gxz gkz` (E1 run epoch <= C.epoch, E2 a current run is C.run of an awake C and alive or C.done-epoch = C.epoch, run pointers name runs of their entity; computations gxz / runs gkz exempt), job condition for cascades (`job-ok`, transport bundle `nq`), bundle `g10r` = g10 [] [] for the raw transition (T5); `step-g10`, `step-lit-i10-current`, `p3c` = p3b && g10r with `step-p3c`, `p3c-empty`, `step-lit-i10-current-total` (no honest hypothesis) | done |
@@ -1409,4 +1410,20 @@ New (Stage B finding):
   (`sample-2-legacy`, `sample-3-table-format`, `sample-3-strict`, `sample-3-known` removed); they stay as adapter
   fixtures in `projection-roundtrip` (roundtrip + `log-format`). The strict deviations stay covered by sample 4's
   strict test. Every sample of the replay set replays with 0 divergences and no triage list.
+
+### Quiet half, step (2): the closure lemma (spindel.v2.qworld)
+- New bundle `gc`: every cleanup entry's run is a run row. Cleanup entries are written at a run's cancel
+  (`cancel-run-local`, from `job-apply`'s run-find) and at T12's `retire-after` (run-find), and go with the run
+  (`retire-with`: run-del then cleanup-del); the filter keeps every cleanup entry's run (it is in `cleanup-rows`).
+  Overrides: `cleanup-set` (premise: the run exists), `retire-after`, `cancel-run-local`, `job-apply`, `retire-with`.
+  `step-gc-rest`, `gc-empty`. Checked: a cleanup entry always has its run (no counterexample).
+- `i3 w` = the filter keeps every id (`tbl-all (keep-fn w) (all-ids w)`); a state fact through every step
+  (`step-i3-inv`: accepted steps by `step-i3-total`, refused ones keep the world).
+- `qinv` = p3l && K (`gk-rest`) && gc && i3; `step-qinv`, `qinv-empty`. `qh` = qinv && released && no run.
+- `quiet-rows` (`qh w -> only-scopes w`): no computation (tombstones included), task, run, source, edge, activation,
+  resource, cleanup entry, publication or fork marker. Live is scopes only (`reach-scope`: roots are scopes since no
+  pin, host edge, pending activation or publication; a scope's successors are its parent, a scope by literal I1 and
+  gw's root-ok for the root scope; no running task (no run); no fork marker (gw)); keep is live (`keep-scope`: no
+  cleanup entry (gc), nothing admitted (K's handle clause), no storage (no run)); a scope id is no other row's id
+  (`scope-only`, unique ids); I3 keeps every row id, so every non-scope table is empty.
 
