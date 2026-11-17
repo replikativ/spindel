@@ -40,7 +40,8 @@
             [spindel.v2.hm14 :refer :all]
             [spindel.v2.hm15 :refer :all]
             [spindel.v2.hm16 :refer :all]
-            [spindel.v2.hm17 :refer :all]))
+            [spindel.v2.hm17 :refer :all]
+            [spindel.v2.tomb :refer :all]))
 
 
 ;; ---- detach: an orphan source is no computation (its finalize needs that); tasks and computations lose the owner
@@ -414,7 +415,7 @@
         (cases hkp (demote-keep (end-basis (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) x) c3))
         (case [true]
           (simp only [demote-finish hf3 hkp])
-          (exact (h18-comp-upd-in (List.append Nat S (List.nil Nat)) (end-basis (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) x) x _ (comp-make-idle-id _) (comp-make-idle-pending _) (fn [q :- CompRow] (Nat.le_refl (:epoch q))) hX h3y)))
+          (exact (h18-comp-upd-in (List.append Nat S (List.nil Nat)) (end-basis (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) x) x (comp-demote-row (validity-of (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) x)) (comp-demote-row-id _) (comp-demote-row-pending _) (fn [q :- CompRow] (Nat.le_refl (:epoch q))) hX h3y)))
         (case [false]
           (simp only [demote-finish hf3 hkp])
           (have hcx := (tbl-find-has CompRow comp-id x c3 (:comps (end-basis (drop-edges (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) (not-dep-of x)) x)) hf3))
@@ -635,9 +636,9 @@
   (exact (h3-rest-of _ W h)))
 
 (a/theorem h18-norm-round [w :- World]
-  (=> (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (hmk (List.nil Nat) w) true) (= (g10 (List.nil Nat) (List.nil Nat) w) true) (= (ekb w) true)
+  (=> (= (trc w) true) (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (hmk (List.nil Nat) w) true) (= (g10 (List.nil Nat) (List.nil Nat) w) true) (= (ekb w) true)
       (= (acts-alive w) true) (= (g7 w) true) (= (h3 (List.nil Nat) w) true) (= (h3 (List.nil Nat) (norm-round w)) true))
-  (intros hk hv hm hg he haa h7 h)
+  (intros htc hk hv hm hg he haa h7 h)
   (have hs := (h3-sample _ w h))
   (have hS (forall [d :- Nat] (=> (= (reach-mem d (tbl-scan comp-id (comp-stray (live-list w)) (:comps w))) true) (= (tbl-has comp-id d (:comps w)) true))))
   (intros d hd)
@@ -649,13 +650,13 @@
   (have hj (= (tbl-all (job-ok (List.append Nat (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) (List.nil Nat)) (List.nil Nat) w) (cancel-jobs (tbl-scan run-id (run-stray (live-list w)) (:runs w)))) true))
   (rw [jl-cancel-jobs])
   (exact (scan-all RunRow run-id (run-stray (live-list w)) (fn [x :- Nat] (ncw (List.append Nat (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) (List.nil Nat)) (List.nil Nat) x w))
-           (:runs w) (fn [r :- RunRow, m :- (List.Mem r (:runs w)), q :- (= (run-stray (live-list w) r) true)] (stray-ncw (List.nil Nat) (List.nil Nat) w r hg m q))))
+           (:runs w) (fn [r :- RunRow, m :- (List.Mem r (:runs w)), q :- (= (run-stray (live-list w) r) true)] (stray-ncw (List.nil Nat) (List.nil Nat) w r (trc-ta w htc) hg m q))))
   (have g2 := (g10-run-cascade (List.append Nat (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) (List.nil Nat)) (List.nil Nat) w (cancel-jobs (tbl-scan run-id (run-stray (live-list w)) (:runs w))) hj g1))
   (have mL := (hmk-intro (List.append Nat (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) (List.nil Nat)) w (hmk-sample (List.nil Nat) w hm)
                 (hmk-rest-xm (List.nil Nat) (List.append Nat (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) (List.nil Nat)) w (fn [d :- Nat, hd :- (= (reach-mem d (List.nil Nat)) true)] (rm-app-r d (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) (List.nil Nat) hd)) (hmk-rest-of (List.nil Nat) w hm))))
   (have h1 := (h3-run-cascade-g (List.append Nat (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) (List.nil Nat)) (List.append Nat (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) (List.nil Nat)) (List.append Nat (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) (List.nil Nat)) (List.nil Nat) w (cancel-jobs (tbl-scan run-id (run-stray (live-list w)) (:runs w))) g1 mL he hL))
   (have m1 := (hmk-run-cascade (List.append Nat (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) (List.nil Nat)) w (cancel-jobs (tbl-scan run-id (run-stray (live-list w)) (:runs w))) mL))
-  (have v1 := (vr-run-cascade (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) w (cancel-jobs (tbl-scan run-id (run-stray (live-list w)) (:runs w))) (vr-pass-start w hv)))
+  (have v1 := (vr-run-cascade (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) w (cancel-jobs (tbl-scan run-id (run-stray (live-list w)) (:runs w))) (vr-pass-start w htc hv)))
   (have k1 := (rk-run-cascade w (cancel-jobs (tbl-scan run-id (run-stray (live-list w)) (:runs w))) hk))
   (have e1 := (ekb-run-cascade w (cancel-jobs (tbl-scan run-id (run-stray (live-list w)) (:runs w))) he))
   (have b1 := (bn-run-cascade (alive-cnt w) (act-cnt w) w (cancel-jobs (tbl-scan run-id (run-stray (live-list w)) (:runs w))) (bn-intro (alive-cnt w) (act-cnt w) w hs haa (Nat.le_refl _) (Nat.le_refl _))))
@@ -678,26 +679,26 @@
 
 (a/theorem h18-norm-loop [fuel :- (List Nat)]
   (forall [w :- World]
-    (=> (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (hmk (List.nil Nat) w) true) (= (g10 (List.nil Nat) (List.nil Nat) w) true) (= (ekb w) true)
+    (=> (= (trc w) true) (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (hmk (List.nil Nat) w) true) (= (g10 (List.nil Nat) (List.nil Nat) w) true) (= (ekb w) true)
       (= (acts-alive w) true) (= (g7 w) true) (= (h3 (List.nil Nat) w) true) (= (h3 (List.nil Nat) (norm-loop fuel w)) true)))
   (induction fuel)
-  (case [nil] (intros w hk hv hm hg he haa h7 h) (simp only [norm-loop]) (exact h))
+  (case [nil] (intros w htc hk hv hm hg he haa h7 h) (simp only [norm-loop]) (exact h))
   (case [cons u f ih]
-    (intros w hk hv hm hg he haa h7 h)
+    (intros w htc hk hv hm hg he haa h7 h)
     (cases hn (normalized w))
     (case [true] (simp only [norm-loop hn]) (exact h))
     (case [false]
       (simp only [norm-loop hn])
-      (exact (ih (norm-round w) (rk-norm-round w hk) (vr-norm-round w hk hv) (hmk-norm-round (List.nil Nat) w hk hv hm) (g10-norm-round (List.nil Nat) (List.nil Nat) w hg)
+      (exact (ih (norm-round w) (trc-norm-round w htc) (rk-norm-round w hk) (vr-norm-round w htc hk hv) (hmk-norm-round (List.nil Nat) w htc hk hv hm) (g10-norm-round (List.nil Nat) (List.nil Nat) w (trc-ta w htc) hg)
                (ekb-norm-round w he) (And.right (bn-round w (h3-sample _ w h) haa)) (g7-norm-round w haa h7)
-               (h18-norm-round w hk hv hm hg he haa h7 h))))))
+               (h18-norm-round w htc hk hv hm hg he haa h7 h))))))
 (a/theorem h18-normalize [w :- World]
-  (=> (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (hmk (List.nil Nat) w) true) (= (g10 (List.nil Nat) (List.nil Nat) w) true) (= (ekb w) true)
+  (=> (= (trc w) true) (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (hmk (List.nil Nat) w) true) (= (g10 (List.nil Nat) (List.nil Nat) w) true) (= (ekb w) true)
       (= (acts-alive w) true) (= (g7 w) true) (= (h3 (List.nil Nat) w) true) (= (h3 (List.nil Nat) (normalize w)) true))
-  (intros hk hv hm hg he haa h7 h)
+  (intros htc hk hv hm hg he haa h7 h)
   (have p := (bn-parts _ _ _ (bn-detach (alive-cnt w) (act-cnt w) w (bn-intro _ _ w (h3-sample _ w h) haa (Nat.le_refl _) (Nat.le_refl _)))))
   (simp only [normalize])
-  (exact (h18-norm-loop (norm-fuel (detach w)) (detach w) (rk-detach w hk) (vr-detach (List.nil Nat) (List.nil Nat) w hv) (hmk-detach (List.nil Nat) w hm)
+  (exact (h18-norm-loop (norm-fuel (detach w)) (detach w) (trc-detach w htc) (rk-detach w hk) (vr-detach (List.nil Nat) (List.nil Nat) w hv) (hmk-detach (List.nil Nat) w hm)
            (g10-detach (List.nil Nat) (List.nil Nat) w hg) (ekb-detach w he) (And.left (And.right p)) (g7-detach w h7) (h18-detach (List.nil Nat) (List.nil Nat) w hm h))))
 
 ;; ===========================================================================
@@ -849,36 +850,36 @@
 ;; Rule R
 ;; ===========================================================================
 (a/theorem h18-rule-r-round [w :- World]
-  (=> (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (hmk (List.nil Nat) w) true) (= (g10 (List.nil Nat) (List.nil Nat) w) true) (= (ekb w) true)
+  (=> (= (trc w) true) (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (hmk (List.nil Nat) w) true) (= (g10 (List.nil Nat) (List.nil Nat) w) true) (= (ekb w) true)
       (= (acts-alive w) true) (= (g7 w) true) (= (gr0 w) true) (= (h3 (List.nil Nat) w) true) (= (filter-safe (normalize w)) true) (= (h3 (List.nil Nat) (rule-r-round w)) true))
-  (intros hk hv hm hg he haa h7 h0 h hf)
+  (intros htc hk hv hm hg he haa h7 h0 h hf)
   (have hs := (h3-sample _ w h))
   (simp only [rule-r-round])
   (exact (h18-filter (List.nil Nat) (normalize w) (normalized-ok w hs haa) (gr0-normalize-aa w haa h0) (acts-alive-normalize w hs haa) hf
-           (h18-normalize w hk hv hm hg he haa h7 h))))
+           (h18-normalize w htc hk hv hm hg he haa h7 h))))
 (a/theorem h18-rr-loop [fuel :- (List Nat)]
   (forall [w :- World]
-    (=> (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (hmk (List.nil Nat) w) true) (= (g10 (List.nil Nat) (List.nil Nat) w) true) (= (ekb w) true)
+    (=> (= (trc w) true) (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (hmk (List.nil Nat) w) true) (= (g10 (List.nil Nat) (List.nil Nat) w) true) (= (ekb w) true)
       (= (acts-alive w) true) (= (g7 w) true) (= (gr0 w) true) (= (h3 (List.nil Nat) w) true) (= (rr-safe fuel w) true) (= (h3 (List.nil Nat) (rr-loop fuel (rule-r-round w))) true)))
   (induction fuel)
-  (case [nil] (intros w hk hv hm hg he haa h7 h0 h hs) (simp only [rr-safe] at hs) (simp only [rr-loop])
-    (exact (h18-rule-r-round w hk hv hm hg he haa h7 h0 h hs)))
+  (case [nil] (intros w htc hk hv hm hg he haa h7 h0 h hs) (simp only [rr-safe] at hs) (simp only [rr-loop])
+    (exact (h18-rule-r-round w htc hk hv hm hg he haa h7 h0 h hs)))
   (case [cons x f ih]
-    (intros w hk hv hm hg he haa h7 h0 h hs)
+    (intros w htc hk hv hm hg he haa h7 h0 h hs)
     (simp only [rr-safe Bool.and_eq_true] at hs)
-    (have h1 := (h18-rule-r-round w hk hv hm hg he haa h7 h0 h (And.left hs)))
+    (have h1 := (h18-rule-r-round w htc hk hv hm hg he haa h7 h0 h (And.left hs)))
     (cases ho (no-orphans (rule-r-round w)))
     (case [false] (simp only [ho] at hs) (simp only [rr-loop ho])
-      (exact (ih (rule-r-round w) (rk-rule-r-round w hk (And.left hs)) (vr-rule-r-round w hk hv (And.left hs))
-               (hmk-rule-r-round (List.nil Nat) w hk hv hm (And.left hs)) (g10-rule-r-round (List.nil Nat) (List.nil Nat) w hg (And.left hs))
+      (exact (ih (rule-r-round w) (trc-rule-r-round w htc (And.left hs)) (rk-rule-r-round w hk (And.left hs)) (vr-rule-r-round w htc hk hv (And.left hs))
+               (hmk-rule-r-round (List.nil Nat) w htc hk hv hm (And.left hs)) (g10-rule-r-round (List.nil Nat) (List.nil Nat) w haa (And.right (trc-parts w htc)) hg (And.left hs))
                (ekb-rule-r-round w he (And.left hs)) (acts-alive-round w (h3-sample _ w h) haa) (g7-rule-r-round w haa h7 (And.left hs))
                (gr0-rule-r-round w haa h0 (And.left hs)) h1 (And.right hs))))
     (case [true] (simp only [rr-loop ho]) (exact h1))))
 (a/theorem h18-rule-r [w :- World]
-  (=> (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (hmk (List.nil Nat) w) true) (= (g10 (List.nil Nat) (List.nil Nat) w) true) (= (ekb w) true)
+  (=> (= (trc w) true) (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (hmk (List.nil Nat) w) true) (= (g10 (List.nil Nat) (List.nil Nat) w) true) (= (ekb w) true)
       (= (acts-alive w) true) (= (g7 w) true) (= (gr0 w) true) (= (h3 (List.nil Nat) w) true) (= (rule-r-safe w) true) (= (h3 (List.nil Nat) (rule-r w)) true))
-  (intros hk hv hm hg he haa h7 h0 h hs) (simp only [rule-r-safe] at hs) (simp only [rule-r])
-  (exact (h18-rr-loop (rr-fuel w) w hk hv hm hg he haa h7 h0 h hs)))
+  (intros htc hk hv hm hg he haa h7 h0 h hs) (simp only [rule-r-safe] at hs) (simp only [rule-r])
+  (exact (h18-rr-loop (rr-fuel w) w htc hk hv hm hg he haa h7 h0 h hs)))
 
 ;; ===========================================================================
 ;; The step: p3m = p3la && h3 [] is a step invariant; L5 safety with no honest hypothesis
@@ -902,7 +903,8 @@
   (case [true]
     (have e2 := (step-accepted w it ha)) (rw [e2])
     (have r0 := (raw-vq (List.nil Nat) (List.nil Nat) false w it hv))
-    (exact (h18-rule-r (:world (raw w it)) (raw-rk w it hk)
+    (have rq := (ri-parts w (And.right (And.right (And.right (And.right pb))))))
+    (exact (h18-rule-r (:world (raw w it)) (trc-raw w it hga h7 (And.right (And.right (And.right (And.right rq))))) (raw-rk w it hk)
              (vr-of-vq (List.nil Nat) false _ r0 (dep-active-of-g7 _ (raw-g7 w it h7)))
              (raw-hmk _ w it (And.right pj) h7 hga (And.right pc) (And.right pl))
              (raw-g10r w it (And.right pc)) (raw-ekb w it (p3la-ekb w hp)) (raw-acts-alive w it hga) (raw-g7 w it h7)

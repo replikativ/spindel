@@ -64,7 +64,7 @@
 (defn add-row [w ins mk] (let [id (:next-id w)] [id (s/bump (ins w (mk id)))]))
 (defn add-scope [w parent kind] (add-row w s/scope-ins #(s/->ScopeRow % parent kind true)))
 (defn add-comp [w owner]
-  (add-row w s/comp-ins #(s/->CompRow % owner [] 0 0 1 1 0 0 0 no-result false [] [] [] [] 1)))
+  (add-row w s/comp-ins #(s/->CompRow % owner [] 0 0 1 1 0 0 0 no-result false [] [] [] [] 1 false)))
 (defn add-task [w owner] (add-row w s/task-ins #(s/->TaskRow % owner 0 no-result 1 [])))
 ;; stamp = 1000 + id, so stamps and ids differ
 (defn add-run [w of scope & {:keys [slice act epoch] :or {slice true act s/act-active epoch 1}}]

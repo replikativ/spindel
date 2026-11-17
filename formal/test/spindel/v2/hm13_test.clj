@@ -92,7 +92,8 @@
    [(link-demand l k) false]
    [(link-realize l tag v n) false]
    [(append x v t) true]
-   [(close x tag v) true])),
+   [(close x tag v) true]
+   [(finally-leave st) false])),
  loser-task
  (a/defn
   loser-task

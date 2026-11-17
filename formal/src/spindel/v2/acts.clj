@@ -950,9 +950,20 @@
      (cases ht (tok-run w st)) (case' [some r]) (case' [none])
      (simp only [t-finally-exit ht refuse]) (exact h)
      (have hn := (ga-free-of-tok w st r h ht))
-     (cases he (fins-empty (:finalizers r)))
+     (cases he (fin-exit-bad (:finalizers r)))
      (case [true] (simp only [t-finally-exit ht he refuse]) (exact h))
-     (case [false] (simp only [t-finally-exit ht he accept]) (exact (ga-run-upd-free w (:id r) run-fin-pop run-fin-pop-id hn h)))))
+     (case [false] (simp only [t-finally-exit ht he accept]) (exact (ga-run-upd-free w (:id r) run-fin-exit run-fin-exit-id hn h)))))
+
+(override! GA 't-finally-leave-inv '[]
+  '(a/theorem t-finally-leave-ga [w :- World, st :- Nat]
+     (=> (= (ga w) true) (= (ga (:world (t-finally-leave w st))) true))
+     (intro h)
+     (cases ht (tok-run w st)) (case' [some r]) (case' [none])
+     (simp only [t-finally-leave ht refuse]) (exact h)
+     (have hn := (ga-free-of-tok w st r h ht))
+     (cases he (fin-leave-bad (:finalizers r)))
+     (case [true] (simp only [t-finally-leave ht he refuse]) (exact h))
+     (case [false] (simp only [t-finally-leave ht he accept]) (exact (ga-run-upd-free w (:id r) run-fin-pop run-fin-pop-id hn h)))))
 
 (override! GA 't-slice-exit-inv '[inv-run-cascade]
   '(a/theorem t-slice-exit-ga [w :- World, rid :- Nat]

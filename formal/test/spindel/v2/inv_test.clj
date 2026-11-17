@@ -209,7 +209,7 @@
   (let [scopes (fn [w] (set (map :id (:scopes w))))
         w0 (reduce (fn [w it] (:world (en/world-step w it))) s/empty-world i1-reparent)
         w1 (:world (en/world-step w0 [29 15]))
-        w2 (:world (en/world-step w1 [36 15]))
+        w2 (:world (en/world-step (:world (en/world-step w1 [36 15])) [44 15]))   ; finally-exit, then the clause's end (C1)
         o3 (en/world-step w2 [37 15])
         w3 (:world o3)]
     (is (every? #(contains? (scopes %) 16) [w0 w1 w2]) "scope 16 is held while run 15 unwinds")

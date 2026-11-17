@@ -82,7 +82,9 @@
   ;; C0 async sequences (§4.3 rows link, stream; engine SRC-LINK 5 / SRC-STREAM 6)
   sk-link 6  sk-stream 7
   ;; ResRow.kind
-  rk-timer 0  rk-external 1  rk-offload 2  rk-native 3)
+  rk-timer 0  rk-external 1  rk-offload 2  rk-native 3
+  ;; C1 `await-op` (§4.3): a resource of kind op (engine `:op`)
+  rk-op 4)
 
 ;; ---------------------------------------------------------------------------
 ;; Rows (§2)
@@ -106,7 +108,10 @@
   (id Nat) (owner Nat) (inputs (List Nat)) (body Nat) (run Nat)
   (epoch Nat) (done-epoch Nat) (pending Nat) (rank Nat) (version Nat)
   (result RunResult) (idle Bool) (validity (List Valid)) (basis (List Created))
-  (adopt-basis (List Created)) (adopt-baselines (List AdoptBase)) (handles Nat))
+  (adopt-basis (List Created)) (adopt-baselines (List AdoptBase)) (handles Nat)
+  ;; model-only (C1 Q6): a tombstone, i.e. demoted without a result or a handle while its run is
+  ;; in cleanup (§3.2): non-idle, kept by the cleanup entry; normalization does not demote it again
+  (tomb Bool))
 (a/structure TaskRow [] (id Nat) (owner Nat) (run Nat) (result RunResult) (handles Nat) (inputs (List Nat)))
 (a/structure RunRow []
   (id Nat) (of Nat) (stamp Nat) (epoch Nat) (scope Nat) (act Nat) (mode Nat)

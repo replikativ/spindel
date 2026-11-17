@@ -1951,7 +1951,7 @@
      (simp only [t-detach hf refuse]) (exact h)
      (cases hg (detach-ok w t s))
      (simp only [t-detach hf hg refuse]) (exact h)
-     (have hso (= (scope-open-at w s) true)) (simp only [detach-ok Bool.and_eq_true] at hg) (exact (And.right (And.right hg)))
+     (have hso (= (scope-open-at w s) true)) (simp only [detach-ok Bool.and_eq_true] at hg) (exact (And.left (And.right (And.right hg))))
      (simp only [t-detach hf hg accept remove-empty-at detach-move])
      (exact (g8-remove-if-empty-x x8s _ _
               (g8-scope-upd x8s _ _ (scope-set-parent s) (scope-set-parent-id s) (fn [q :- ScopeRow] (Eq.refl (s8k q)))
@@ -1976,7 +1976,9 @@
      (cases hf (run-find w rid)) (case' [some r]) (case' [none])
      (simp only [t-cancel hf refuse]) (exact h)
      (cases hg (host-cancel-ok w r))
-     (simp only [t-cancel hf hg refuse]) (exact h)
+     (cases hd (host-cancel-done w r))
+     (simp only [t-cancel hf hg cancel-done hd refuse]) (exact h)
+     (simp only [t-cancel hf hg cancel-done hd accept]) (exact (g8-run-cascade-ga x8s w _ hga h))
      (simp only [t-cancel hf hg]) (exact (t14-g8 x8s w rid false hga h))))
 (override! G8 't16-inv '[]
   '(a/theorem t16-g8 [x8s :- (List Nat), w :- World, s :- Nat]

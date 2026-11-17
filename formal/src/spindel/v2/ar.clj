@@ -842,10 +842,10 @@
      (exact (ar-comp-del-unref _ cid (drop-edges-avoids w cid) (ar-drop-edges w (edge-avoids cid) h)))
      (simp only [demote-finish hf hk])
      (have r0 := (ar-rest-of w h)) (simp only [ar-rest] at r0)
-     (have r1 (= (ar-rest (comp-upd w cid (comp-make-idle vs))) true))
+     (have r1 (= (ar-rest (comp-upd w cid (comp-demote-row vs))) true))
      (simp only [ar-rest comp-upd set-comps])
-     (exact (ar-k-clear _ cid (comp-make-idle vs) (comp-make-idle-id vs) _ _ hna r0))
-     (exact (ar-intro _ (inv-comp-upd w cid (comp-make-idle vs) (comp-make-idle-id vs) (comp-make-idle-pending vs) (ar-sample w h)) r1))))
+     (exact (ar-k-clear _ cid (comp-demote-row vs) (comp-demote-row-id vs) _ _ hna r0))
+     (exact (ar-intro _ (inv-comp-upd w cid (comp-demote-row vs) (comp-demote-row-id vs) (comp-demote-row-pending vs) (ar-sample w h)) r1))))
 (override! AR 'inv-demote '[inv-run-cascade inv-demote-epoch inv-drop-edges inv-end-basis inv-demote-finish]
   '(a/theorem ar-demote [w :- World, cid :- Nat]
      (=> (= (acts-alive w) true) (= (ar w) true) (= (ar (demote w cid)) true))

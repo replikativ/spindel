@@ -4,6 +4,9 @@
 
   L2, the join measure. For a run row r:
     mu-f r = |r.finalizers| + pend r      pend r = 1 if r has a finalizer or holds the slice, else 0
+  where |fs| weighs a region 2 (its `finally-exit`, then its clause's `finally-leave`) and a
+  running clause 1 (C1: `finally-exit` turns the head region into a running clause, `finally-leave`
+  pops it)
     mu-z r = |r.resources|
   mu-f counts the remaining finalizers plus the cleanup slice that still has to return (Z#35: one
   cleanup slice runs the whole chain, each region's exit is a `finally-exit`, the slice's return is
@@ -21,6 +24,7 @@
                           existing cancelled run; runs that become done in the step are new to the
                           measure, their measure is whatever their cancel left)
     finally-exit-dec (a)  an accepted `finally-exit` of a done run drops its mu-f by one
+    finally-leave-dec (a) an accepted `finally-leave` of a done run drops its mu-f by one (C1)
     slice-exit-dec  (a)   an accepted `slice-exit r` drops mu-f (from 1 to 0)
     ack-dec         (a)   an accepted resource acknowledgement (T15) drops its owner's mu-z
     slice-exit-retires, ack-retires (c)
@@ -94,7 +98,13 @@
 ;; Part A. The measure and the bundle
 ;; ===========================================================================
 
-(a/defn fins-len [fs :- (List Finalizer)] Nat (match fs [nil 0] [(cons h t) (+ (fins-len t) 1)]))
+;; C1: a region weighs 2 (its `finally-exit`, then its clause's `finally-leave`), a running clause 1
+(a/defn fin-w [fz :- Finalizer] Nat (if (fin-region fz) 2 1))
+(a/theorem fin-w-pos [fz :- Finalizer] (<= 1 (fin-w fz))
+  (cases h (fin-region fz)) (all_goals (simp only [fin-w h])) (all_goals (omega)))
+(a/theorem fin-w-le [fz :- Finalizer] (<= (fin-w fz) 2)
+  (cases h (fin-region fz)) (all_goals (simp only [fin-w h])) (all_goals (omega)))
+(a/defn fins-len [fs :- (List Finalizer)] Nat (match fs [nil 0] [(cons h t) (+ (fins-len t) (fin-w h))]))
 (a/defn pend [r :- RunRow] Nat (if (Bool.or (Bool.not (fins-empty (:finalizers r))) (:slice r)) 1 0))
 (a/defn mu-f [r :- RunRow] Nat (+ (fins-len (:finalizers r)) (pend r)))
 (a/defn mu-z [r :- RunRow] Nat (nat-len (:resources r)))
@@ -224,6 +234,7 @@
     (have c := (hs (rfl))) (simp at c))
   (case [cons fh ft]
     (have b := (bite-le (Bool.or (Bool.not (fins-empty ft)) s2)))
+    (have b2 := (fin-w-pos fh))
     (simp only [mfv fins-tail fins-len fe-cons Bool.not_false Bool.true_or])
     (cases s) (all_goals (simp only [Bool.true_or Bool.or_true Bool.not_false])) (all_goals (omega))))
 
@@ -292,6 +303,25 @@
   (intro h)
   (exact (mb-row-mono mux mf mz mg r (run-fin-pop r) (rfl) (fn [hs :- (= (slice-ok r) true)] hs) (fn [hd :- (= (run-done r) true)] hd)
            (mu-f-pop r (run-fin-pop r) (rfl) (fn [q :- (= (:slice r) true)] q)) (Nat.le_refl _) h)))
+
+;; C1: `finally-exit` replaces the head region by a running clause (weight 2 -> 1)
+(a/theorem mfv-exit [ei :- Nat, fs :- (List Finalizer), s :- Bool]
+  (<= (mfv (fins-exit (Finalizer.mk 1 ei (List.nil Nat)) fs) s) (mfv fs s))
+  (cases fs)
+  (case [nil] (simp only [fins-exit]) (exact (Nat.le_refl _)))
+  (case [cons fh ft]
+    (have b2 := (fin-w-pos fh))
+    (have m1 (= (fin-w (Finalizer.mk 1 ei (List.nil Nat))) 1)) (rfl)
+    (simp only [mfv fins-exit fins-len fe-cons m1])
+    (omega)))
+(a/theorem run-fin-exit-mb [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, r :- RunRow]
+  (=> (= (mb-row mux mf mz mg r) true) (= (mb-row mux mf mz mg (run-fin-exit r)) true))
+  (intro h)
+  (have e1 (= (mu-f (run-fin-exit r)) (mfv (fins-exit (Finalizer.mk 1 (:effect-index r) (List.nil Nat)) (:finalizers r)) (:slice r)))) (rfl)
+  (have e2 (= (mu-f r) (mfv (:finalizers r) (:slice r)))) (rfl)
+  (have le (<= (mu-f (run-fin-exit r)) (mu-f r))) (rw [e1 e2]) (exact (mfv-exit (:effect-index r) (:finalizers r) (:slice r)))
+  (exact (mb-row-mono mux mf mz mg r (run-fin-exit r) (rfl) (fn [hs :- (= (slice-ok r) true)] hs) (fn [hd :- (= (run-done r) true)] hd)
+           le (Nat.le_refl _) h)))
 
 (a/theorem run-fin-pop-end-mb [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, r :- RunRow]
   (=> (= (mb-row mux mf mz mg r) true) (= (mb-row mux mf mz mg (run-fin-pop-end r)) true))
@@ -506,7 +536,7 @@
            'inv-run-ins-fresh ['(Eq.refl true) 2]}))
 ;; row-function lemmas (and the alias heads the patches emit) take the bundle parameters
 (def ^:private mb-fns '{run-wake run-wake-mb run-complete-row run-complete-row-mb run-cancel-row run-cancel-row-mb
-                        run-unres run-unres-mb run-fin-pop run-fin-pop-mb run-fin-pop-end run-fin-pop-end-mb})
+                        run-unres run-unres-mb run-fin-pop run-fin-pop-mb run-fin-exit run-fin-exit-mb run-fin-pop-end run-fin-pop-end-mb})
 (swap! (:renames MB) merge
        '{inv-parts mb-parts inv-run-upd mb-run-upd inv-run-ins-fresh mb-run-ins
          mb-run-upd-m mb-run-upd mb-run-upd-ne-src mb-run-upd-ne}
@@ -619,7 +649,7 @@
      (exact (mb-take-park mux mf mz mg _ (run-arm (:next-id w) r) (:next-id w) k hne h1))))
 (override! MB 't17-inv '[inv-arm-park]
   '(a/theorem t17-mb [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, st :- Nat, kind :- Nat, k :- Nat, fresh :- Nat]
-     (=> (= (in-cleanup w st) false) (= (mb mux mf mz mg w) true) (= (mb mux mf mz mg (:world (t17-arm w st kind k fresh))) true))
+     (=> (= (fin-shut w st) false) (= (mb mux mf mz mg w) true) (= (mb mux mf mz mg (:world (t17-arm w st kind k fresh))) true))
      (intros hc h)
      (cases ht (tok-run w st)) (case' [some r]) (case' [none])
      (simp only [t17-arm ht refuse]) (exact h)
@@ -812,36 +842,67 @@
 
 (a/theorem sub-one-lt [n :- Nat, a :- Nat] (=> (= (+ a 1) n) (< (- n 1) n)) (intro h) (omega))
 
-;; finalizer exit: the head region pops while the cleanup slice is held
-(a/theorem mfv-pop-held [fs :- (List Finalizer)]
-  (=> (= (fins-empty fs) false) (= (+ (mfv (fins-tail fs) true) 1) (mfv fs true)))
+;; finalizer exit: the head region becomes a running clause while the cleanup slice is held
+(a/theorem mfv-exit-held [ei :- Nat, fs :- (List Finalizer)]
+  (=> (= (fin-exit-bad fs) false) (= (+ (mfv (fins-exit (Finalizer.mk 1 ei (List.nil Nat)) fs) true) 1) (mfv fs true)))
   (intro he) (cases fs)
-  (case [nil] (simp [fins-empty] at he))
-  (case [cons fh ft] (simp only [mfv fins-tail fins-len fe-cons Bool.not_false Bool.or_true Bool.true_or])))
-(a/theorem pop-held [q :- RunRow]
-  (=> (= (:slice q) true) (= (fins-empty (:finalizers q)) false) (= (+ (mu-f (run-fin-pop q)) 1) (mu-f q)))
+  (case [nil] (simp [fin-exit-bad] at he))
+  (case [cons fh ft]
+    (have g (= (fin-region fh) true)) (simp only [fin-exit-bad fin-running] at he) (simp only [fin-region]) (exact (bnot-false _ he))
+    (have m1 (= (fin-w (Finalizer.mk 1 ei (List.nil Nat))) 1)) (rfl)
+    (have m2 (= (fin-w fh) 2)) (simp only [fin-w g])
+    (simp only [mfv fins-exit fins-len fe-cons m1 m2 Bool.not_false Bool.or_true Bool.true_or])))
+(a/theorem exit-held [q :- RunRow]
+  (=> (= (:slice q) true) (= (fin-exit-bad (:finalizers q)) false) (= (+ (mu-f (run-fin-exit q)) 1) (mu-f q)))
+  (intros hs he)
+  (have e1 (= (mu-f (run-fin-exit q)) (mfv (fins-exit (Finalizer.mk 1 (:effect-index q) (List.nil Nat)) (:finalizers q)) (:slice q)))) (rfl)
+  (have e2 (= (mu-f q) (mfv (:finalizers q) (:slice q)))) (rfl)
+  (rw [e1 e2 hs]) (exact (mfv-exit-held (:effect-index q) (:finalizers q) he)))
+;; clause end: the head running clause pops while the slice is held
+(a/theorem mfv-leave-held [fs :- (List Finalizer)]
+  (=> (= (fin-leave-bad fs) false) (= (+ (mfv (fins-tail fs) true) 1) (mfv fs true)))
+  (intro he) (cases fs)
+  (case [nil] (simp [fin-leave-bad] at he))
+  (case [cons fh ft]
+    (have m2 (= (fin-w fh) 1)) (simp only [fin-leave-bad] at he) (simp only [fin-w he])
+    (simp only [mfv fins-tail fins-len fe-cons m2 Bool.not_false Bool.or_true Bool.true_or])))
+(a/theorem leave-held [q :- RunRow]
+  (=> (= (:slice q) true) (= (fin-leave-bad (:finalizers q)) false) (= (+ (mu-f (run-fin-pop q)) 1) (mu-f q)))
   (intros hs he)
   (have e1 (= (mu-f (run-fin-pop q)) (mfv (fins-tail (:finalizers q)) (:slice q)))) (rfl)
   (have e2 (= (mu-f q) (mfv (:finalizers q) (:slice q)))) (rfl)
-  (rw [e1 e2 hs]) (exact (mfv-pop-held (:finalizers q) he)))
+  (rw [e1 e2 hs]) (exact (mfv-leave-held (:finalizers q) he)))
 
 (a/defn q-fx [mf :- Nat, mz :- Nat, q :- RunRow] Bool
-  (Bool.and (run-done q) (Bool.and (:slice q) (Bool.and (Bool.not (fins-empty (:finalizers q)))
+  (Bool.and (run-done q) (Bool.and (:slice q) (Bool.and (Bool.not (fin-exit-bad (:finalizers q)))
+   (Bool.and (Nat.beq (mu-f q) mf) (Nat.beq (mu-z q) mz))))))
+(a/defn q-fl [mf :- Nat, mz :- Nat, q :- RunRow] Bool
+  (Bool.and (run-done q) (Bool.and (:slice q) (Bool.and (Bool.not (fin-leave-bad (:finalizers q)))
    (Bool.and (Nat.beq (mu-f q) mf) (Nat.beq (mu-z q) mz))))))
 
 (a/theorem fx-row [x :- Nat, mf :- Nat, mz :- Nat]
-  (forall [q :- RunRow] (=> (= (q-fx mf mz q) true) (= (slice-ok q) true) (= (mb-row x (- mf 1) mz 0 (run-fin-pop q)) true)))
+  (forall [q :- RunRow] (=> (= (q-fx mf mz q) true) (= (slice-ok q) true) (= (mb-row x (- mf 1) mz 0 (run-fin-exit q)) true)))
   (intros q hq hs)
   (simp only [q-fx Bool.and_eq_true] at hq)
-  (have p := (pop-held q (And.left (And.right hq)) (bnot-true _ (And.left (And.right (And.right hq))))))
+  (have p := (exit-held q (And.left (And.right hq)) (bnot-true _ (And.left (And.right (And.right hq))))))
+  (have e1 := (Nat.eq_of_beq_eq_true (And.left (And.right (And.right (And.right hq))))))
+  (have e2 := (Nat.eq_of_beq_eq_true (And.right (And.right (And.right (And.right hq))))))
+  (have l1 (<= (mu-f (run-fin-exit q)) (- mf 1))) (omega)
+  (have l2 (<= (mu-z (run-fin-exit q)) mz)) (exact (Nat.le_of_eq e2))
+  (exact (row-bound x (- mf 1) mz (run-fin-exit q) hs (And.left hq) l1 l2)))
+(a/theorem fl-row [x :- Nat, mf :- Nat, mz :- Nat]
+  (forall [q :- RunRow] (=> (= (q-fl mf mz q) true) (= (slice-ok q) true) (= (mb-row x (- mf 1) mz 0 (run-fin-pop q)) true)))
+  (intros q hq hs)
+  (simp only [q-fl Bool.and_eq_true] at hq)
+  (have p := (leave-held q (And.left (And.right hq)) (bnot-true _ (And.left (And.right (And.right hq))))))
   (have e1 := (Nat.eq_of_beq_eq_true (And.left (And.right (And.right (And.right hq))))))
   (have e2 := (Nat.eq_of_beq_eq_true (And.right (And.right (And.right (And.right hq))))))
   (have l1 (<= (mu-f (run-fin-pop q)) (- mf 1))) (omega)
   (have l2 (<= (mu-z (run-fin-pop q)) mz)) (exact (Nat.le_of_eq e2))
   (exact (row-bound x (- mf 1) mz (run-fin-pop q) hs (And.left hq) l1 l2)))
 
-;; Theorem (L2 a): an accepted `finally-exit` of a done run (its cleanup slice runs the head
-;; finalizer) drops mu-f by one; mu-z does not grow
+;; Theorem (L2 a): an accepted `finally-exit` of a done run (its cleanup slice starts the head
+;; finalizer's block) drops mu-f by one; mu-z does not grow
 (a/theorem finally-exit-dec [w :- World, st :- Nat, r :- RunRow, r2 :- RunRow]
   (=> (= (p3b w) true) (= (sok w) true) (= (tok-run w st) (Option.some RunRow r)) (= (run-done r) true)
       (= (:accepted (raw0 w (Item.finally-exit st))) true)
@@ -850,21 +911,49 @@
   (intros h hs ht hd ha hm2 he)
   (have tf := (tok-facts w st r ht))
   (have hsam := (mb-sample 0 0 0 2 w hs))
-  (cases hfe (fins-empty (:finalizers r)))
+  (cases hfe (fin-exit-bad (:finalizers r)))
   (case [true] (simp [raw0 t-finally-exit ht hfe refuse] at ha))
   (case [false]
-    (have e0 (= (:world (raw0 w (Item.finally-exit st))) (run-upd w (:id r) run-fin-pop)))
+    (have e0 (= (:world (raw0 w (Item.finally-exit st))) (run-upd w (:id r) run-fin-exit)))
     (simp only [raw0 t-finally-exit ht hfe accept])
     (have hq (= (q-fx (mu-f r) (mu-z r) r) true))
     (simp [q-fx hd (And.right tf) hfe])
     (have u (= (tbl-all (same-id-then run-id (:id r) (q-fx (mu-f r) (mu-z r))) (:runs w)) true))
     (exact (uniq-all RunRow run-id (q-fx (mu-f r) (mu-z r)) r (:runs w) (lit-runs-nodup w hsam) (And.left tf) hq))
-    (have b0 := (mb-upd-tight (:id r) (- (mu-f r) 1) (mu-z r) w run-fin-pop run-fin-pop-id (q-fx (mu-f r) (mu-z r))
+    (have b0 := (mb-upd-tight (:id r) (- (mu-f r) 1) (mu-z r) w run-fin-exit run-fin-exit-id (q-fx (mu-f r) (mu-z r))
                   (fx-row (:id r) (mu-f r) (mu-z r)) hs (run-below w r hsam (And.left tf)) u))
     (have b1 (= (mb (:id r) (- (mu-f r) 1) (mu-z r) 0 (:world (raw0 w (Item.finally-exit st)))) true)) (rw [e0]) (exact b0)
     (have b2 := (mb-step-of-raw0 (:id r) (- (mu-f r) 1) (mu-z r) 0 w (Item.finally-exit st) (rfl) h ha b1))
     (have t := (mb-row-track (:id r) (- (mu-f r) 1) (mu-z r) r2 (mb-row-mem (:id r) (- (mu-f r) 1) (mu-z r) 0 _ r2 b2 hm2) he))
-    (have p := (pop-held r (And.right tf) hfe))
+    (have p := (exit-held r (And.right tf) hfe))
+    (exact (And.intro (Nat.lt_of_le_of_lt (And.left (And.right t)) (sub-one-lt (mu-f r) (mu-f (run-fin-exit r)) p))
+                      (And.right (And.right t))))))
+
+;; Theorem (L2 a, C1): an accepted `finally-leave` of a done run (its block ended) drops mu-f by
+;; one; mu-z does not grow
+(a/theorem finally-leave-dec [w :- World, st :- Nat, r :- RunRow, r2 :- RunRow]
+  (=> (= (p3b w) true) (= (sok w) true) (= (tok-run w st) (Option.some RunRow r)) (= (run-done r) true)
+      (= (:accepted (raw0 w (Item.finally-leave st))) true)
+      (List.Mem r2 (:runs (:world (world-step w (Item.finally-leave st))))) (= (:id r2) (:id r))
+      (And (< (mu-f r2) (mu-f r)) (<= (mu-z r2) (mu-z r))))
+  (intros h hs ht hd ha hm2 he)
+  (have tf := (tok-facts w st r ht))
+  (have hsam := (mb-sample 0 0 0 2 w hs))
+  (cases hfe (fin-leave-bad (:finalizers r)))
+  (case [true] (simp [raw0 t-finally-leave ht hfe refuse] at ha))
+  (case [false]
+    (have e0 (= (:world (raw0 w (Item.finally-leave st))) (run-upd w (:id r) run-fin-pop)))
+    (simp only [raw0 t-finally-leave ht hfe accept])
+    (have hq (= (q-fl (mu-f r) (mu-z r) r) true))
+    (simp [q-fl hd (And.right tf) hfe])
+    (have u (= (tbl-all (same-id-then run-id (:id r) (q-fl (mu-f r) (mu-z r))) (:runs w)) true))
+    (exact (uniq-all RunRow run-id (q-fl (mu-f r) (mu-z r)) r (:runs w) (lit-runs-nodup w hsam) (And.left tf) hq))
+    (have b0 := (mb-upd-tight (:id r) (- (mu-f r) 1) (mu-z r) w run-fin-pop run-fin-pop-id (q-fl (mu-f r) (mu-z r))
+                  (fl-row (:id r) (mu-f r) (mu-z r)) hs (run-below w r hsam (And.left tf)) u))
+    (have b1 (= (mb (:id r) (- (mu-f r) 1) (mu-z r) 0 (:world (raw0 w (Item.finally-leave st)))) true)) (rw [e0]) (exact b0)
+    (have b2 := (mb-step-of-raw0 (:id r) (- (mu-f r) 1) (mu-z r) 0 w (Item.finally-leave st) (rfl) h ha b1))
+    (have t := (mb-row-track (:id r) (- (mu-f r) 1) (mu-z r) r2 (mb-row-mem (:id r) (- (mu-f r) 1) (mu-z r) 0 _ r2 b2 hm2) he))
+    (have p := (leave-held r (And.right tf) hfe))
     (exact (And.intro (Nat.lt_of_le_of_lt (And.left (And.right t)) (sub-one-lt (mu-f r) (mu-f (run-fin-pop r)) p))
                       (And.right (And.right t))))))
 
@@ -876,7 +965,7 @@
   (have e (= (mu-f q) (mfv (:finalizers q) (:slice q)))) (rfl)
   (have a (= (:act q) act-done)) (exact (Nat.eq_of_beq_eq_true hd))
   (cases hl (:finalizers q))
-  (case [cons fh ft] (rw [e hl] at hf) (simp only [mfv fins-len] at hf) (omega))
+  (case [cons fh ft] (have b2 := (fin-w-pos fh)) (rw [e hl] at hf) (simp only [mfv fins-len] at hf) (omega))
   (case [nil]
     (cases hs (:slice q))
     (case [true] (rw [e hl hs] at hf) (simp only [mfv fins-len fe-nil Bool.not_true Bool.false_or] at hf) (simp at hf))

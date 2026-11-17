@@ -1523,7 +1523,7 @@
 (prim! HSW 'inv-drop-edges '(hswr-drop-edges hsc w p R))
 (prim! HSW 'inv-comp-del-unref '(hswr-comp-del hsc w x R))
 (prim! HSW 'inv-filter-world '(hswr-filter-world hsc w K R))
-(def ^:private hk-gd-cm '#{comp-inc-epoch comp-demand-row comp-replace-row comp-make-idle comp-clear-run})
+(def ^:private hk-gd-cm '#{comp-inc-epoch comp-demand-row comp-replace-row comp-make-idle comp-demote-row comp-clear-run})
 (defn hsw-patch [form]
   (->> (@#'spindel.v2.idle/fix-f form)
        (subst-forms (fn [y] (and (seq? y) (= 'inv-comp-upd (first y)) (>= (count y) 6)))

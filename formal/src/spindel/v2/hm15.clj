@@ -73,7 +73,7 @@
 (a/theorem h15-raw0-host-await-h3 [xm :- (List Nat), w :- World, d :- Nat, fresh :- Nat]
   (=> (= (p3la w) true) (= (h3 xm w) true) (= (h3 xm (:world (raw0 w (Item.host-await d fresh)))) true))
   (intros hp h)
-  (cases hc (deb-consuming w d))
+  (cases hc (host-await-bad w d))
   (case [true] (simp only [raw0 hc refuse]) (exact h))
   (case [false]
     (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (deb-exists w d)))

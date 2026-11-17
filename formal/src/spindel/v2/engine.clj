@@ -135,7 +135,9 @@
         kept); otherwise a `one` activation and its wait edge, the run parks. Z#57: a closed
         mailbox/semaphore still hands out what is left; with nothing left the take fails at once
         with err ::closed (ids allocated, effect index + 1, the run keeps its slice: `take-ready`).
-    B18. finally-enter/-exit are body items (engine `[:finally-enter st]`/`[:finally-exit st]`).
+    B18. finally-enter/-exit/-leave are body items (engine `[:finally-enter st]`/`[:finally-exit st]`,
+        C1 `[:finally-leave st]`: `finally-exit` turns the head region into a running clause, which
+        `finally-leave` pops; between them a normal run's suspending effects are refused, B8).
         Regions open only in normal runs (B8: no finalizer adds one); the engine holds the
         regions' refs implicitly (closures), so a region is (F 0, at = effect-index, refs []).
         Z#35: `finalize R` gives the cleanup slice to a done, unwinding run with a region, when
@@ -156,7 +158,8 @@
         normal run without an effect-index step (as the engine). close-scope s: T16 on an
         explicit scope, no token. detach k s: a task without result whose owner is a scope
         moves to the open scope s, and its run scope is re-parented under s (Z#41); the old
-        owner's subtree is then removed when empty.
+        owner's subtree is then removed when empty. Z#69: refused when s lies in the task's own
+        run-scope subtree (the run scope is s or on s's parent chain, `scope-within`).
     B21. release-world: refused when already released; removes every host-creditor edge
         (observe, host waits), drops pins, abandons pending-activation, sets every handle
         count to 0 (spec: released handles' rows are removed; the engine keeps handle counts),
@@ -414,7 +417,7 @@
 (a/defn comp-set-rank [n :- Nat, c :- CompRow] CompRow
   (CompRow.mk (:id c) (:owner c) (:inputs c) (:body c) (:run c) (:epoch c) (:done-epoch c)
               (:pending c) n (:version c) (:result c) (:idle c) (:validity c) (:basis c)
-              (:adopt-basis c) (:adopt-baselines c) (:handles c)))
+              (:adopt-basis c) (:adopt-baselines c) (:handles c) (:tomb c)))
 (a/theorem comp-set-rank-id [n :- Nat, c :- CompRow] (= (comp-id (comp-set-rank n c)) (comp-id c)) (rfl))
 (a/theorem comp-set-rank-pending [n :- Nat, c :- CompRow] (= (:pending (comp-set-rank n c)) (:pending c)) (rfl))
 (a/structure RJ [] (node Nat) (need Nat))
@@ -482,7 +485,7 @@
 (a/defn comp-react-row [c :- CompRow] CompRow
   (CompRow.mk (:id c) (:owner c) (:inputs c) (:body c) (:run c) (:epoch c) (:epoch c)
               (:pending c) (:rank c) (:version c) (:result c) false (List.nil Valid) (:basis c)
-              (:adopt-basis c) (:adopt-baselines c) (:handles c)))
+              (:adopt-basis c) (:adopt-baselines c) (:handles c) false))
 (a/defn valid-edge [w :- World, c :- Nat, v :- Valid] EdgeRow
   (EdgeRow.mk 0 ek-dep c (:debtor v) cont-restart 0 ph-armed false true (:version v)
               true (deb-value w (:debtor v)) (:version v)))
@@ -530,7 +533,7 @@
   (CompRow.mk (:id c) (:owner c) (:inputs c) (:body c) (:run c)
               (if (Nat.beq (:done-epoch c) 0) (:epoch c) (+ (:epoch c) 1)) (:done-epoch c)
               (:pending c) (:rank c) (:version c) (:result c) false (List.nil Valid) (:basis c)
-              (:adopt-basis c) (:adopt-baselines c) (:handles c)))
+              (:adopt-basis c) (:adopt-baselines c) (:handles c) false))
 (a/theorem comp-demand-row-id [c :- CompRow] (= (comp-id (comp-demand-row c)) (comp-id c)) (rfl))
 (a/theorem comp-demand-row-pending [c :- CompRow] (= (:pending (comp-demand-row c)) (:pending c)) (rfl))
 (a/defn demand-reactive [w :- World, d :- Nat] World
@@ -645,7 +648,7 @@
   (CompRow.mk (:id c) (:owner c) (:inputs c) (:body c) (:run c) (:epoch c) (:done-epoch c)
               (:pending c) (:rank c) (:version c) (:result c) (:idle c) (:validity c)
               (List.cons Created b (tbl-filter (created-other (:id b)) (:basis c)))
-              (tbl-filter (created-other (:id b)) (:adopt-basis c)) (:adopt-baselines c) (:handles c)))
+              (tbl-filter (created-other (:id b)) (:adopt-basis c)) (:adopt-baselines c) (:handles c) (:tomb c)))
 (a/theorem comp-rebasis-id [b :- Created, c :- CompRow] (= (comp-id (comp-rebasis b c)) (comp-id c)) (rfl))
 (a/theorem comp-rebasis-pending [b :- Created, c :- CompRow] (= (:pending (comp-rebasis b c)) (:pending c)) (rfl))
 (a/defn respawn-raw [w :- World, r :- RunRow, x :- Nat] World
@@ -723,7 +726,7 @@
 (a/defn comp-start-row [rid :- Nat, c :- CompRow] CompRow
   (CompRow.mk (:id c) (:owner c) (:inputs c) (:body c) rid (start-epoch c) (:done-epoch c)
               (:pending c) (:rank c) (:version c) (:result c) false (List.nil Valid) (:basis c)
-              (:adopt-basis c) (:adopt-baselines c) (:handles c)))
+              (:adopt-basis c) (:adopt-baselines c) (:handles c) false))
 (a/theorem comp-start-row-id [rid :- Nat, c :- CompRow] (= (comp-id (comp-start-row rid c)) (comp-id c)) (rfl))
 (a/theorem comp-start-row-pending [rid :- Nat, c :- CompRow] (= (:pending (comp-start-row rid c)) (:pending c)) (rfl))
 
@@ -781,12 +784,12 @@
 ;;     done-epoch := none, validity cleared)
 (a/defn new-comp-row [w :- World, id :- Nat, owner :- Nat, inputs :- (List Nat), body :- Nat] CompRow
   (CompRow.mk id owner inputs body 0 1 0 (marked-in id (:edges w)) 0 0 none-result false
-              (List.nil Valid) (List.nil Created) (List.nil Created) (List.nil AdoptBase) 1))
+              (List.nil Valid) (List.nil Created) (List.nil Created) (List.nil AdoptBase) 1 false))
 (a/defn comp-adopt-row [c :- CompRow] CompRow c)
 (a/defn comp-replace-row [inputs :- (List Nat), body :- Nat, c :- CompRow] CompRow
   (CompRow.mk (:id c) (:owner c) inputs body (:run c) (+ (:epoch c) 1) (if (:idle c) 0 (:done-epoch c))
               (:pending c) (:rank c) (:version c) (:result c) false (List.nil Valid) (:basis c)
-              (:adopt-basis c) (:adopt-baselines c) (:handles c)))
+              (:adopt-basis c) (:adopt-baselines c) (:handles c) false))
 (a/theorem comp-adopt-row-id [c :- CompRow] (= (comp-id (comp-adopt-row c)) (comp-id c)) (rfl))
 (a/theorem comp-adopt-row-pending [c :- CompRow] (= (:pending (comp-adopt-row c)) (:pending c)) (rfl))
 (a/theorem comp-replace-row-id [i :- (List Nat), b :- Nat, c :- CompRow] (= (comp-id (comp-replace-row i b c)) (comp-id c)) (rfl))
@@ -963,11 +966,11 @@
   (CompRow.mk (:id c) (:owner c) (:inputs c) (:body c) (:run c) (:epoch c) (:done-epoch c)
               (:pending c) (:rank c) (:version c) (:result c) (:idle c) (:validity c)
               (tbl-filter (created-upto has cut) (:basis c)) (tbl-filter (created-after has cut) (:basis c))
-              bs (:handles c)))
+              bs (:handles c) (:tomb c)))
 (a/defn comp-set-run [rid :- Nat, c :- CompRow] CompRow
   (CompRow.mk (:id c) (:owner c) (:inputs c) (:body c) rid (:epoch c) (:done-epoch c)
               (:pending c) (:rank c) (:version c) (:result c) (:idle c) (:validity c) (:basis c)
-              (:adopt-basis c) (:adopt-baselines c) (:handles c)))
+              (:adopt-basis c) (:adopt-baselines c) (:handles c) false))
 (a/theorem comp-cut-row-id [h :- Bool, k :- Nat, bs :- (List AdoptBase), c :- CompRow] (= (comp-id (comp-cut-row h k bs c)) (comp-id c)) (rfl))
 (a/theorem comp-cut-row-pending [h :- Bool, k :- Nat, bs :- (List AdoptBase), c :- CompRow] (= (:pending (comp-cut-row h k bs c)) (:pending c)) (rfl))
 (a/theorem comp-set-run-id [rid :- Nat, c :- CompRow] (= (comp-id (comp-set-run rid c)) (comp-id c)) (rfl))
@@ -1210,7 +1213,7 @@
 (a/defn comp-result-row [res :- RunResult, ep :- Nat, c :- CompRow] CompRow
   (CompRow.mk (:id c) (:owner c) (:inputs c) (:body c) (:run c) (:epoch c) ep
               (:pending c) (:rank c) (if (res-same res (:result c)) (:version c) (+ (:version c) 1)) res (:idle c)
-              (:validity c) (:basis c) (List.nil Created) (List.nil AdoptBase) (:handles c)))
+              (:validity c) (:basis c) (List.nil Created) (List.nil AdoptBase) (:handles c) (:tomb c)))
 (a/theorem comp-result-row-id [res :- RunResult, ep :- Nat, c :- CompRow] (= (comp-id (comp-result-row res ep c)) (comp-id c)) (rfl))
 (a/theorem comp-result-row-pending [res :- RunResult, ep :- Nat, c :- CompRow] (= (:pending (comp-result-row res ep c)) (:pending c)) (rfl))
 (a/defn task-result-row [res :- RunResult, t :- TaskRow] TaskRow (TaskRow.mk (:id t) (:owner t) (:run t) res (:handles t) (:inputs t)))
@@ -1350,8 +1353,11 @@
 
 ;; member edges: in a computation run a dep edge (creditor C) for C/K/X debtors, a wait edge
 ;; (creditor A) otherwise and for resources (Z#6); cont per §2's re-entrancy rule (Y#3)
+;; (C1: a running finally clause is no region, engine `reentrant-k` reads R-FINS only)
+(a/defn fin-region [fz :- Finalizer] Bool (Nat.beq (:f fz) 0))
+(a/defn regions-empty [fs :- (List Finalizer)] Bool (Bool.not (tbl-any fin-region fs)))
 (a/defn await-cont [r :- RunRow, mode :- Nat, k :- Nat] Nat
-  (if (Bool.and (Nat.beq mode am-one) (Bool.and (fins-empty (:finalizers r)) (nats-empty (:resources r)))) k cont-restart))
+  (if (Bool.and (Nat.beq mode am-one) (Bool.and (regions-empty (:finalizers r)) (nats-empty (:resources r)))) k cont-restart))
 (a/defn as-dep [w :- World, r :- RunRow, d :- Nat] Bool (Bool.and (in-comp w r) (Bool.not (resource-has w d))))
 (a/defn await-edge [w :- World, r :- RunRow, a :- Nat, mode :- Nat, k :- Nat, d :- Nat] EdgeRow
   (if (as-dep w r d)
@@ -1688,11 +1694,13 @@
   (simp [t-schedule hf hg accept] at ha))
 
 ;; ---- handle-new x (Z#29): a row's handle count goes from 0 to 1 (computation, task, source
-;; or publication, searched in that order); any other count, or no row, refuses
+;; or publication, searched in that order); any other count, or no row, refuses; so does a
+;; tombstone (engine: handle! on an existing row only runs through adoption, which finds the row
+;; through a reference, and a tombstone has none)
 (a/defn comp-h1 [c :- CompRow] CompRow
   (CompRow.mk (:id c) (:owner c) (:inputs c) (:body c) (:run c) (:epoch c) (:done-epoch c)
               (:pending c) (:rank c) (:version c) (:result c) (:idle c) (:validity c) (:basis c)
-              (:adopt-basis c) (:adopt-baselines c) 1))
+              (:adopt-basis c) (:adopt-baselines c) 1 (:tomb c)))
 (a/defn task-h1 [t :- TaskRow] TaskRow (TaskRow.mk (:id t) (:owner t) (:run t) (:result t) 1 (:inputs t)))
 (a/defn source-h1 [s :- SourceRow] SourceRow
   (SourceRow.mk (:id s) (:owner s) (:kind s) (:state s) (:version s) (:open s) 1 (:queue s) (:rtask s) (:next s) (:tail s) (:fail s)))
@@ -1714,10 +1722,10 @@
          [(some t) (if (Nat.beq (:handles t) 0) (accept (task-upd w x task-h1)) (refuse w))]))
 (a/defn t-handle-new [w :- World, x :- Nat] Outcome
   (match (comp-find w x) [none (new-task-handle w x)]
-         [(some c) (if (Nat.beq (:handles c) 0) (accept (comp-upd w x comp-h1)) (refuse w))]))
+         [(some c) (if (Nat.beq (:handles c) 0) (if (:tomb c) (refuse w) (accept (comp-upd w x comp-h1))) (refuse w))]))
 
 (defmacro ^:private defnew-lemmas
-  [f find upd row-f inv-lemma inv-args next-f]
+  [f find upd row-f inv-lemma inv-args next-f & [tomb?]]
   (let [inv (symbol (str f "-inv")) ref (symbol (str f "-refuse"))
         next-inv (when next-f (symbol (str next-f "-inv"))) next-ref (when next-f (symbol (str next-f "-refuse")))]
     `(do
@@ -1730,8 +1738,13 @@
              [`(~'simp ~'only [~f ~'hc ~'refuse]) `(~'exact ~'h)])
          (~'cases ~'hn (~'Nat.beq (:handles ~'c) 0))
          (~'simp ~'only [~f ~'hc ~'hn ~'refuse]) (~'exact ~'h)
-         (~'simp ~'only [~f ~'hc ~'hn ~'accept])
-         (~'exact (~inv-lemma ~'w ~'x ~row-f ~@inv-args ~'h)))
+         ~@(if tomb?
+             [`(~'cases ~'ht (:tomb ~'c))
+              `(~'simp ~'only [~f ~'hc ~'hn ~'ht ~'accept])
+              `(~'exact (~inv-lemma ~'w ~'x ~row-f ~@inv-args ~'h))
+              `(~'simp ~'only [~f ~'hc ~'hn ~'ht ~'refuse]) `(~'exact ~'h)]
+             [`(~'simp ~'only [~f ~'hc ~'hn ~'accept])
+              `(~'exact (~inv-lemma ~'w ~'x ~row-f ~@inv-args ~'h))]))
        (a/theorem ~ref [~'w :- ~'World, ~'x :- ~'Nat]
          (~'=> (~'= (:accepted (~f ~'w ~'x)) false) (~'= (:world (~f ~'w ~'x)) ~'w))
          (~'intro ~'ha)
@@ -1741,12 +1754,16 @@
              [`(~'simp ~'only [~f ~'hc ~'refuse])])
          (~'cases ~'hn (~'Nat.beq (:handles ~'c) 0))
          (~'simp ~'only [~f ~'hc ~'hn ~'refuse])
-         (~'simp [~f ~'hc ~'hn ~'accept] ~'at ~'ha)))))
+         ~@(if tomb?
+             [`(~'cases ~'ht (:tomb ~'c))
+              `(~'simp [~f ~'hc ~'hn ~'ht ~'accept] ~'at ~'ha)
+              `(~'simp ~'only [~f ~'hc ~'hn ~'ht ~'refuse])]
+             [`(~'simp [~f ~'hc ~'hn ~'accept] ~'at ~'ha)])))))
 
 (defnew-lemmas new-pub-handle pub-find pub-upd pub-h1 inv-pub-upd [pub-h1-id] nil)
 (defnew-lemmas new-source-handle source-find source-upd source-h1 inv-source-upd [source-h1-id] new-pub-handle)
 (defnew-lemmas new-task-handle task-find task-upd task-h1 inv-task-upd [task-h1-id] new-source-handle)
-(defnew-lemmas t-handle-new comp-find comp-upd comp-h1 inv-comp-upd [comp-h1-id comp-h1-pending] new-task-handle)
+(defnew-lemmas t-handle-new comp-find comp-upd comp-h1 inv-comp-upd [comp-h1-id comp-h1-pending] new-task-handle true)
 
 ;; ---- `any` losers (T6): when an `any` activation resumed (its row is gone and its run is not
 ;; done), the tasks R created for this await (`spawned`, from the item) that are still running
@@ -2049,7 +2066,10 @@
 ;; the run parks (`take-park` on the armed row); effect-index advances once. kind: timer (0) or
 ;; offload (2), the engine's `:timer`/`:offload`. T18 fires E (T9 fills A, the run resumes); T14
 ;; removes A with E and puts Z in cancelling; T15 acknowledges Z any time it has no edge.
-(a/defn arm-kind-ok [kind :- Nat] Bool (Bool.or (Nat.beq kind rk-timer) (Nat.beq kind rk-offload)))
+;; C1: `await-op` arms a resource of kind op (its start/cancel arbitration and hooks are the
+;; engine's: the log shows arm, fire (the op's result) and acknowledgement)
+(a/defn arm-kind-ok [kind :- Nat] Bool
+  (Bool.or (Nat.beq kind rk-timer) (Bool.or (Nat.beq kind rk-offload) (Nat.beq kind rk-op))))
 (a/defn arm-park [w :- World, r :- RunRow, kind :- Nat, k :- Nat] World
   (take-park (arm-raw w r kind) (run-arm (:next-id w) r) (:next-id w) k))
 (a/defn t17-arm [w :- World, st :- Nat, kind :- Nat, k :- Nat, fresh :- Nat] Outcome
@@ -2106,6 +2126,22 @@
 (a/theorem run-fin-push-id [fz :- Finalizer, r :- RunRow] (= (run-id (run-fin-push fz r)) (run-id r)) (rfl))
 (a/theorem run-fin-pop-id [r :- RunRow] (= (run-id (run-fin-pop r)) (run-id r)) (rfl))
 (a/theorem run-fin-pop-end-id [r :- RunRow] (= (run-id (run-fin-pop-end r)) (run-id r)) (rfl))
+;; C1 (B8 for normal runs): a region's block runs between its `finally-exit` and the matching
+;; `finally-leave` (engine R-INFIN). `finally-exit` replaces the head region (F 0) by a running
+;; clause (F 1, at = effect-index, refs []); `finally-leave` pops the head clause. So the list
+;; nests regions and running clauses as the CPS body does; the engine's R-FINS is the number of
+;; regions (`fin-region`), R-INFIN the number of clauses (`fin-running`).
+(a/defn fin-running [fz :- Finalizer] Bool (Bool.not (Nat.beq (:f fz) 0)))
+(a/defn fin-exit-bad [fs :- (List Finalizer)] Bool (match fs [nil true] [(cons h t) (fin-running h)]))
+(a/defn fin-leave-bad [fs :- (List Finalizer)] Bool (match fs [nil true] [(cons h t) (fin-region h)]))
+(a/defn fin-mark [r :- RunRow] Finalizer (Finalizer.mk 1 (:effect-index r) (List.nil Nat)))
+(a/defn fins-exit [m :- Finalizer, fs :- (List Finalizer)] (List Finalizer)
+  (match fs [nil (List.nil Finalizer)] [(cons h t) (List.cons Finalizer m t)]))
+(a/defn run-fin-exit [r :- RunRow] RunRow
+  (RunRow.mk (:id r) (:of r) (:stamp r) (:epoch r) (:scope r) (:act r) (:mode r) (:slice r)
+             (:effect-index r) (fins-exit (fin-mark r) (:finalizers r)) (:resources r)))
+(a/theorem run-fin-exit-id [r :- RunRow] (= (run-id (run-fin-exit r)) (run-id r)) (rfl))
+(a/defn run-in-fin [r :- RunRow] Bool (tbl-any fin-running (:finalizers r)))
 
 (a/defn t-finally-enter [w :- World, st :- Nat] Outcome
   (match (tok-run w st)
@@ -2117,7 +2153,11 @@
 (a/defn t-finally-exit [w :- World, st :- Nat] Outcome
   (match (tok-run w st)
     [none (refuse w)]
-    [(some r) (if (fins-empty (:finalizers r)) (refuse w) (accept (run-upd w (:id r) run-fin-pop)))]))
+    [(some r) (if (fin-exit-bad (:finalizers r)) (refuse w) (accept (run-upd w (:id r) run-fin-exit)))]))
+(a/defn t-finally-leave [w :- World, st :- Nat] Outcome
+  (match (tok-run w st)
+    [none (refuse w)]
+    [(some r) (if (fin-leave-bad (:finalizers r)) (refuse w) (accept (run-upd w (:id r) run-fin-pop)))]))
 
 ;; ---- slice-exit r (Z#35): the slice of a cancelled run returns. A cleanup slice runs the
 ;; whole finally chain (each region's exit a `finally-exit`, committed at the block's start, so
@@ -2159,18 +2199,36 @@
   (intro h)
   (cases ht (tok-run w st)) (case' [some r]) (case' [none])
   (simp only [t-finally-exit ht refuse]) (exact h)
-  (cases he (fins-empty (:finalizers r)))
+  (cases he (fin-exit-bad (:finalizers r)))
   (case [true] (simp only [t-finally-exit ht he refuse]) (exact h))
-  (case [false] (simp only [t-finally-exit ht he accept]) (exact (inv-run-upd w (:id r) run-fin-pop run-fin-pop-id h))))
+  (case [false] (simp only [t-finally-exit ht he accept]) (exact (inv-run-upd w (:id r) run-fin-exit run-fin-exit-id h))))
 
 (a/theorem t-finally-exit-refuse [w :- World, st :- Nat]
   (=> (= (:accepted (t-finally-exit w st)) false) (= (:world (t-finally-exit w st)) w))
   (intro ha)
   (cases ht (tok-run w st)) (case' [some r]) (case' [none])
   (simp only [t-finally-exit ht refuse])
-  (cases he (fins-empty (:finalizers r)))
+  (cases he (fin-exit-bad (:finalizers r)))
   (case [true] (simp only [t-finally-exit ht he refuse]))
   (case [false] (simp [t-finally-exit ht he accept] at ha)))
+
+(a/theorem t-finally-leave-inv [w :- World, st :- Nat]
+  (=> (= (inv-sample w) true) (= (inv-sample (:world (t-finally-leave w st))) true))
+  (intro h)
+  (cases ht (tok-run w st)) (case' [some r]) (case' [none])
+  (simp only [t-finally-leave ht refuse]) (exact h)
+  (cases he (fin-leave-bad (:finalizers r)))
+  (case [true] (simp only [t-finally-leave ht he refuse]) (exact h))
+  (case [false] (simp only [t-finally-leave ht he accept]) (exact (inv-run-upd w (:id r) run-fin-pop run-fin-pop-id h))))
+
+(a/theorem t-finally-leave-refuse [w :- World, st :- Nat]
+  (=> (= (:accepted (t-finally-leave w st)) false) (= (:world (t-finally-leave w st)) w))
+  (intro ha)
+  (cases ht (tok-run w st)) (case' [some r]) (case' [none])
+  (simp only [t-finally-leave ht refuse])
+  (cases he (fin-leave-bad (:finalizers r)))
+  (case [true] (simp only [t-finally-leave ht he refuse]))
+  (case [false] (simp [t-finally-leave ht he accept] at ha)))
 
 (a/theorem t-slice-exit-inv [w :- World, rid :- Nat]
   (=> (= (inv-sample w) true) (= (inv-sample (:world (t-slice-exit w rid))) true))
@@ -2194,6 +2252,9 @@
 (a/theorem t-finally-exit-l4 [w :- World, st :- Nat]
   (=> (= (run-tok-ok w st) false) (= (:world (t-finally-exit w st)) w))
   (intro hf) (simp only [t-finally-exit (run-tok-none w st hf) refuse]))
+(a/theorem t-finally-leave-l4 [w :- World, st :- Nat]
+  (=> (= (run-tok-ok w st) false) (= (:world (t-finally-leave w st)) w))
+  (intro hf) (simp only [t-finally-leave (run-tok-none w st hf) refuse]))
 
 ;; ---- finalize R (B3, B8): the scheduling choice for a cleanup slice. R is done and unwinding
 ;; with an open finally region, holds no slice, and no run holds one (D0): R gets the slice;
@@ -2234,10 +2295,21 @@
 ;; slices; reading B19). An ordinary cancel (debtor side included), cascading.
 (a/defn host-cancel-ok [w :- World, r :- RunRow] Bool
   (Bool.and (run-alive r) (Bool.and (Bool.not (:slice r)) (task-has w (:of r)))))
+;; C1: a done (unretired) task run that holds no slice is still cancellable (engine `cancel-task!`
+;; commits `[:cancel r]` while K.run names it): T14 is idempotent on the run itself, and the
+;; cancellation reaches its run scope's subtree at once (R4): the alive runs owned there are
+;; cancelled (none, unless work was moved into a scope it still holds). Its fired, unacknowledged
+;; await-op has its controller cancelled by the engine (the acknowledgement follows as T15).
+(a/defn host-cancel-done [w :- World, r :- RunRow] Bool
+  (Bool.and (Bool.not (run-alive r)) (Bool.and (Bool.not (:slice r)) (task-has w (:of r)))))
+(a/defn cancel-done [w :- World, r :- RunRow] Outcome
+  (if (host-cancel-done w r)
+      (accept (run-cascade w (cancel-jobs (owned-runs w (scope-subtree w (:scope r))))))
+      (refuse w)))
 (a/defn t-cancel [w :- World, rid :- Nat] Outcome
   (match (run-find w rid)
     [none (refuse w)]
-    [(some r) (if (host-cancel-ok w r) (t14-cancel w rid false) (refuse w))]))
+    [(some r) (if (host-cancel-ok w r) (t14-cancel w rid false) (cancel-done w r))]))
 
 (a/theorem t-cancel-inv [w :- World, rid :- Nat]
   (=> (= (inv-sample w) true) (= (inv-sample (:world (t-cancel w rid))) true))
@@ -2245,7 +2317,9 @@
   (cases hf (run-find w rid)) (case' [some r]) (case' [none])
   (simp only [t-cancel hf refuse]) (exact h)
   (cases hg (host-cancel-ok w r))
-  (simp only [t-cancel hf hg refuse]) (exact h)
+  (cases hd (host-cancel-done w r))
+  (simp only [t-cancel hf hg cancel-done hd refuse]) (exact h)
+  (simp only [t-cancel hf hg cancel-done hd accept]) (exact (inv-run-cascade w _ h))
   (simp only [t-cancel hf hg]) (exact (t14-inv w rid false h)))
 
 (a/theorem t-cancel-refuse [w :- World, rid :- Nat]
@@ -2254,7 +2328,9 @@
   (cases hf (run-find w rid)) (case' [some r]) (case' [none])
   (simp only [t-cancel hf refuse])
   (cases hg (host-cancel-ok w r))
-  (simp only [t-cancel hf hg refuse])
+  (cases hd (host-cancel-done w r))
+  (simp only [t-cancel hf hg cancel-done hd refuse])
+  (simp [t-cancel hf hg cancel-done hd accept] at ha)
   (simp only [t-cancel hf hg] at ha) (simp only [t-cancel hf hg]) (exact (t14-refuse w rid false ha)))
 
 ;; ---- open-scope st s / close-scope s (T16, with-scope): open allocates the explicit scope
@@ -2326,8 +2402,16 @@
 (a/defn detach-move [w :- World, k :- Nat, s :- Nat, rs :- Nat] World
   (scope-upd (task-upd w k (task-set-owner s)) rs (scope-set-parent s)))
 (a/defn remove-empty-at [w :- World, o :- Nat] World (remove-if-empty w (scope-subtree w o)))
+;; Z#69: whether scope a is s or on s's parent chain (engine `within?`): the chain is s's
+;; `scope-ancestors` (retain, the worklist over the parent fields that Rule R's cleanup uses)
+(a/defn scope-within [w :- World, s :- Nat, a :- Nat] Bool
+  (Bool.or (Nat.beq s a) (reach-mem a (scope-ancestors w s))))
+;; Z#69: s must not lie in the task's own run-scope subtree (else re-parenting the run scope under
+;; s closes a cycle of parents, and neither scope is ever removed)
 (a/defn detach-ok [w :- World, t :- TaskRow, s :- Nat] Bool
-  (Bool.and (Nat.beq (:tag (:result t)) res-none) (Bool.and (scope-has w (:owner t)) (scope-open-at w s))))
+  (Bool.and (Nat.beq (:tag (:result t)) res-none)
+    (Bool.and (scope-has w (:owner t))
+      (Bool.and (scope-open-at w s) (Bool.not (scope-within w s (task-run-scope w t)))))))
 (a/defn t-detach [w :- World, k :- Nat, s :- Nat] Outcome
   (match (task-find w k)
     [none (refuse w)]
@@ -2365,7 +2449,7 @@
 (a/defn comp-h0 [c :- CompRow] CompRow
   (CompRow.mk (:id c) (:owner c) (:inputs c) (:body c) (:run c) (:epoch c) (:done-epoch c)
               (:pending c) (:rank c) (:version c) (:result c) (:idle c) (:validity c) (:basis c)
-              (:adopt-basis c) (:adopt-baselines c) 0))
+              (:adopt-basis c) (:adopt-baselines c) 0 (:tomb c)))
 (a/defn task-h0 [t :- TaskRow] TaskRow (TaskRow.mk (:id t) (:owner t) (:run t) (:result t) 0 (:inputs t)))
 (a/defn source-h0 [s :- SourceRow] SourceRow
   (SourceRow.mk (:id s) (:owner s) (:kind s) (:state s) (:version s) (:open s) 0 (:queue s) (:rtask s) (:next s) (:tail s) (:fail s)))
@@ -2389,6 +2473,22 @@
   (set-pending-act (set-pins (drop-edges (set-released w true) not-host) (List.nil Nat)) 0))
 (a/defn release-world-raw [w :- World] World
   (run-cascade (zero-handles (revoke-roots w)) (List.cons Job (Job.jclose root-scope-id) (List.nil Job))))
+;; C1 world completion (T21, Z#67), layer 1 part: the world's unretired runs (the engine's W-RUNS:
+;; +1 at run creation, -1 at T13; every task and computation run, cleanup included) and the local
+;; test; a world is complete once released, with no run left and every owned child world complete
+;; or collected (layer 2, the owner relation of spindel.v2.sys; an unborn instance released before
+;; its activation is complete at once)
+(a/defn world-runs [w :- World] Nat (List.length (:runs w)))
+(a/defn world-quiet [w :- World] Bool (Bool.and (:released w) (Nat.beq (world-runs w) 0)))
+
+;; C1/E4: an unborn instance (layer 2, sys.clj `Cell.unborn`) released before its activation: nothing
+;; in it runs, its copied work and finalizers included; the engine logs `[:release-world]` and only
+;; sets the flag (the instance is complete at once, layer 2)
+(a/defn release-unborn [w :- World] World (set-released w true))
+(a/theorem inv-release-unborn [w :- World]
+  (=> (= (inv-sample w) true) (= (inv-sample (release-unborn w)) true))
+  (intro h) (simp only [release-unborn]) (exact (inv-set-released w true h)))
+
 (a/defn t-release-world [w :- World] Outcome
   (if (:released w) (refuse w) (accept (release-world-raw w))))
 
@@ -2501,7 +2601,10 @@
 (a/defn run-cur-closed [w :- World, r :- RunRow] Bool
   (Bool.and (Bool.not (in-comp w r)) (Bool.not (scope-open-at w (cur-scope w r)))))
 (a/defn cur-closed [w :- World, st :- Nat] Bool (opt-test (run-cur-closed w) (tok-run w st)))
-(a/defn body-shut [w :- World, st :- Nat] Bool (Bool.or (in-cleanup w st) (cur-closed w st)))
+;; C1 (Q5, Q8): a released world takes no new root, handle or creation (root-shut, below)
+(a/defn root-shut [w :- World] Bool (:released w))
+(a/defn body-shut [w :- World, st :- Nat] Bool (Bool.or (Bool.or (in-cleanup w st) (root-shut w)) (cur-closed w st)))
+(a/defn cc-shut [w :- World, st :- Nat] Bool (Bool.or (in-cleanup w st) (root-shut w)))
 ;; Z#43: completion with open finally regions is refused (the CPS body cannot produce it)
 (a/defn run-fins-open [r :- RunRow] Bool (Bool.not (fins-empty (:finalizers r))))
 (a/defn fins-open [w :- World, st :- Nat] Bool (opt-test run-fins-open (tok-run w st)))
@@ -2903,6 +3006,40 @@
   (Bool.or (Nat.beq (:kind s) sk-mailbox) (Bool.or (Nat.beq (:kind s) sk-semaphore) (Nat.beq (:kind s) sk-stream))))
 (a/defn deb-consuming [w :- World, d :- Nat] Bool (opt-test src-consuming (source-find w d)))
 (a/defn await-kind-bad [w :- World, ds :- (List Nat)] Bool (tbl-any (deb-consuming w) ds))
+;; C1 (Q5, spindel #269): a released world takes no new root, also from a held slice (a cleanup
+;; slice's own host operations, Z#40): observe, pin and host waits are refused (the engine throws
+;; released-ex / delivers it to a value-async callback; no item). Write, deliver, post, release and
+;; close stay as Z#40. (`host-shut` refuses the host's items only while no slice is held.)
+(a/defn host-await-bad [w :- World, d :- Nat] Bool (Bool.or (root-shut w) (deb-consuming w d)))
+;; C1, B8 reduced (finalizers are synchronous): in a cancelled run's finally clause (its cleanup
+;; slice, `in-cleanup`) every await and take is refused, settled debtor or not (engine
+;; `unwinding-finalizer-refusal`: the effect fails with ::invalid :finalizer, no commit). A
+;; suspending effect in a normal run's finally clause (between `finally-exit` and `finally-leave`,
+;; `in-fin`) also fails with no commit (engine `finalizer-refusal`, C1 A5): an await whose
+;; debtors are not settled now (`settled-now`, engine `settled-now?`: a live computation, a
+;; completed task, a delivered deferred, a fired resource, any other source read at once; `one`
+;; and `all` need every debtor, `any` one), a take with nothing to take on an open source, and
+;; every arm (sleep, offload, await-op).
+(a/defn in-fin [w :- World, st :- Nat] Bool (opt-test run-in-fin (tok-run w st)))
+(a/defn fin-shut [w :- World, st :- Nat] Bool (Bool.or (in-cleanup w st) (in-fin w st)))
+(a/defn settled-now [w :- World, d :- Nat] Bool
+  (match (comp-find w d)
+    [none (match (source-find w d)
+            [none (Bool.or (deb-final w d) (res-fired w d))]
+            [(some s) (Bool.or (Bool.not (Nat.beq (:kind s) sk-deferred)) (src-delivered s))])]
+    [(some c) (comp-live c)]))
+(a/defn settled-mode [w :- World, ds :- (List Nat), mode :- Nat] Bool
+  (if (Nat.beq mode am-any) (tbl-any (settled-now w) ds) (tbl-all (settled-now w) ds)))
+(a/defn fin-suspends [w :- World, st :- Nat, ds :- (List Nat), mode :- Nat] Bool
+  (Bool.and (in-fin w st) (Bool.not (settled-mode w ds mode))))
+(a/defn await-bad [w :- World, st :- Nat, ds :- (List Nat), mode :- Nat] Bool
+  (Bool.or (in-cleanup w st) (Bool.or (fin-suspends w st ds mode) (await-kind-bad w ds))))
+(a/defn take-bad [w :- World, st :- Nat, x :- Nat] Bool
+  (Bool.or (in-cleanup w st) (Bool.and (in-fin w st) (Bool.not (opt-test take-ready (source-find w x))))))
+(a/theorem fin-shut-cleanup [w :- World, st :- Nat] (=> (= (fin-shut w st) false) (= (in-cleanup w st) false))
+  (intro h) (cases hc (in-cleanup w st)) (case [false] (rfl)) (case [true] (simp [fin-shut hc] at h)))
+(a/theorem take-bad-cleanup [w :- World, st :- Nat, x :- Nat] (=> (= (take-bad w st x) false) (= (in-cleanup w st) false))
+  (intro h) (cases hc (in-cleanup w st)) (case [false] (rfl)) (case [true] (simp [take-bad hc] at h)))
 ;; C0 (engine session, 2026-11-16): T8 observe on a stream is refused as await/T22 (the engine
 ;; delivers an error to the callback, creates no edge and logs no item)
 (a/defn t8-obs [w :- World, d :- Nat, cb :- Nat, fresh :- Nat] Outcome
@@ -2959,33 +3096,33 @@
 (a/defn raw0 [w :- World, it :- Item] Outcome
   (match it
     [(create-source st kind v fresh) (if (body-shut w st) (refuse w) (c0-gate w (Nat.beq kind sk-stream) (t1-body w st kind v fresh)))]
-    [(create-source-top scope kind v fresh) (c0-gate w (Nat.beq kind sk-stream) (t1-top-full w scope kind v fresh))]
+    [(create-source-top scope kind v fresh) (if (root-shut w) (refuse w) (c0-gate w (Nat.beq kind sk-stream) (t1-top-full w scope kind v fresh)))]
     [(write x v) (t2-write w x v)]
     [(track st x k fresh) (if (in-cleanup w st) (refuse w) (t7-track w st x k fresh))]
-    [(observe d cb fresh) (t8-obs w d cb fresh)]
+    [(observe d cb fresh) (if (root-shut w) (refuse w) (t8-obs w d cb fresh))]
     [(unobserve e) (t8-unobserve w e)]
     [(fire e tag val) (t9-fire w e tag val)]
     [(resource-ack z) (t15-full w z)]
-    [(arm st kind k fresh) (if (in-cleanup w st) (refuse w) (t17-arm w st kind k fresh))]
+    [(arm st kind k fresh) (if (fin-shut w st) (refuse w) (t17-arm w st kind k fresh))]
     [(resource-fire z tag val) (t18-resource-fire w z tag val)]
     [(handle-drop x) (t19-handle-drop w x)]
-    [(pin x) (t20-pin w x)]
+    [(pin x) (if (root-shut w) (refuse w) (t20-pin w x))]
     [(unpin x) (t20-unpin w x)]
-    [(create-comp st c i b) (if (in-cleanup w st) (refuse w) (t3-create w st c i b))]
-    [(create-comp-top sc c i b) (t3-create-top w sc c i b)]
+    [(create-comp st c i b) (if (cc-shut w st) (refuse w) (t3-create w st c i b))]
+    [(create-comp-top sc c i b) (if (root-shut w) (refuse w) (t3-create-top w sc c i b))]
     [(spawn st b fresh ins) (if (body-shut w st) (refuse w) (t4-spawn w st b fresh ins))]
-    [(spawn-top sc b fresh ins) (t4-spawn-top w sc b fresh ins)]
+    [(spawn-top sc b fresh ins) (if (root-shut w) (refuse w) (t4-spawn-top w sc b fresh ins))]
     [(start c fresh) (t5-start w c fresh)]
-    [(await st ds m k fresh mine) (if (await-kind-bad w ds) (refuse w) (t6-await w st ds m k fresh mine))]
+    [(await st ds m k fresh mine) (if (await-bad w st ds m) (refuse w) (t6-await w st ds m k fresh mine))]
     [(dispatch-comp c fresh) (t11-dispatch w c fresh)]
     [(complete st tag val) (if (complete-refused w st tag) (refuse w) (t12-complete w st tag val))]
     [(schedule r) (t-schedule w r)]
-    [(host-await d fresh) (if (deb-consuming w d) (refuse w) (t22-host-await w d fresh))]
+    [(host-await d fresh) (if (host-await-bad w d) (refuse w) (t22-host-await w d fresh))]
     [(host-unawait e) (t22-host-unawait w e)]
-    [(handle-new x) (t-handle-new w x)]
+    [(handle-new x) (if (root-shut w) (refuse w) (t-handle-new w x))]
     [(deliver x v) (t-deliver w x v)]
     [(post x v) (t-post w x v)]
-    [(take st x k fresh) (t-take w st x k fresh)]
+    [(take st x k fresh) (if (take-bad w st x) (refuse w) (t-take w st x k fresh))]
     [(release x) (t-release w x)]
     [(finalize r) (t-finalize w r)]
     [(cancel r) (t-cancel w r)]
@@ -2996,12 +3133,13 @@
     [(finally-enter st) (t-finally-enter w st)]
     [(finally-exit st) (t-finally-exit w st)]
     [(slice-exit r) (t-slice-exit w r)]
-    [(create-link st l) (if (in-cleanup w st) (refuse w) (c0-gate w true (t-create-link w st l)))]
-    [(create-link-top sc l) (c0-gate w true (t-create-link-top w sc l))]
-    [(link-demand l k) (t-link-demand w l k)]
-    [(link-realize l tag v n) (c0-gate w true (t-link-realize w l tag v n))]
-    [(append x v t) (c0-gate w true (t-append w x v t))]
-    [(close x tag v) (t-close w x tag v)]))
+    [(create-link st l) (if (cc-shut w st) (refuse w) (c0-gate w true (t-create-link w st l)))]
+    [(create-link-top sc l) (if (root-shut w) (refuse w) (c0-gate w true (t-create-link-top w sc l)))]
+    [(link-demand l k) (if (root-shut w) (refuse w) (t-link-demand w l k))]
+    [(link-realize l tag v n) (if (root-shut w) (refuse w) (c0-gate w true (t-link-realize w l tag v n)))]
+    [(append x v t) (if (root-shut w) (refuse w) (c0-gate w true (t-append w x v t)))]
+    [(close x tag v) (t-close w x tag v)]
+    [(finally-leave st) (t-finally-leave w st)]))
 
 ;; Z#56 (T21): a released world refuses the HOST's admissions (top-level creations, writes, observe,
 ;; pins, handles, host waits, source operations, cancel, close, detach), except while a run holds the
@@ -3053,7 +3191,8 @@
     [(link-demand l k) false]
     [(link-realize l tag v n) false]
     [(append x v t) true]
-    [(close x tag v) true]))
+    [(close x tag v) true]
+    [(finally-leave st) false]))
 (a/defn slice-held [w :- World] Bool (tbl-any run-slice (:runs w)))
 (a/defn host-shut [w :- World, it :- Item] Bool
   (Bool.and (:released w) (Bool.and (host-item it) (Bool.not (slice-held w)))))
@@ -3078,32 +3217,42 @@
   (rename_i st kind v fresh) (cases hc (body-shut w st))
   (simp only [hc]) (exact (c0-gate-inv w _ _ h (t1-body-inv w st kind v fresh h)))
   (simp only [hc refuse]) (exact h)
-  (rename_i scope kind v fresh) (exact (c0-gate-inv w _ _ h (t1-top-full-inv w scope kind v fresh h)))
+  (rename_i scope kind v fresh) (cases hc (root-shut w))
+  (simp only [hc]) (exact (c0-gate-inv w _ _ h (t1-top-full-inv w scope kind v fresh h)))
+  (simp only [hc refuse]) (exact h)
   (exact (t2-inv w _ _ h))
   (rename_i st x k fresh) (cases hc (in-cleanup w st))
   (simp only [hc]) (exact (t7-inv w _ _ _ _ h))
   (simp only [hc refuse]) (exact h)
-  (exact (t8-obs-inv w _ _ _ h))
+  (rename_i d cb fresh) (cases hc (root-shut w))
+  (simp only [hc]) (exact (t8-obs-inv w _ _ _ h))
+  (simp only [hc refuse]) (exact h)
   (exact (t8-unobserve-inv w _ h))
   (exact (t9-inv w _ _ _ h))
   (exact (t15-full-inv w _ h))
-  (rename_i st kind k fresh) (cases hc (in-cleanup w st))
+  (rename_i st kind k fresh) (cases hc (fin-shut w st))
   (simp only [hc]) (exact (t17-inv w _ _ _ _ h))
   (simp only [hc refuse]) (exact h)
   (exact (t18-inv w _ _ _ h))
   (exact (t19-inv w _ h))
-  (exact (t20-pin-inv w _ h))
+  (rename_i x) (cases hc (root-shut w))
+  (simp only [hc]) (exact (t20-pin-inv w _ h))
+  (simp only [hc refuse]) (exact h)
   (exact (t20-unpin-inv w _ h))
-  (rename_i st c i b) (cases hc (in-cleanup w st))
+  (rename_i st c i b) (cases hc (cc-shut w st))
   (simp only [hc]) (exact (t3-inv w _ _ _ _ h))
   (simp only [hc refuse]) (exact h)
-  (exact (t3-top-inv w _ _ _ _ h))
+  (cases hc (root-shut w))
+  (simp only [hc]) (exact (t3-top-inv w _ _ _ _ h))
+  (simp only [hc refuse]) (exact h)
   (rename_i st b fresh ins) (cases hc (body-shut w st))
   (simp only [hc]) (exact (t4-inv w _ _ _ _ h))
   (simp only [hc refuse]) (exact h)
-  (exact (t4-top-inv w _ _ _ _ h))
+  (cases hc (root-shut w))
+  (simp only [hc]) (exact (t4-top-inv w _ _ _ _ h))
+  (simp only [hc refuse]) (exact h)
   (exact (t5-inv w _ _ h))
-  (rename_i st ds m k fresh mine) (cases hc (await-kind-bad w ds))
+  (rename_i st ds m k fresh mine) (cases hc (await-bad w st ds m))
   (simp only [hc]) (exact (t6-inv w _ _ _ _ _ _ h))
   (simp only [hc refuse]) (exact h)
   (exact (t11-inv w _ _ h))
@@ -3111,14 +3260,18 @@
   (simp only [hc]) (exact (t12-inv w _ _ _ h))
   (simp only [hc refuse]) (exact h)
   (exact (sched-inv w _ h))
-  (rename_i d fresh) (cases hc (deb-consuming w d))
+  (rename_i d fresh) (cases hc (host-await-bad w d))
   (simp only [hc]) (exact (t22-inv w _ _ h))
   (simp only [hc refuse]) (exact h)
   (exact (t22-un-inv w _ h))
-  (exact (t-handle-new-inv w _ h))
+  (cases hc (root-shut w))
+  (simp only [hc]) (exact (t-handle-new-inv w _ h))
+  (simp only [hc refuse]) (exact h)
   (exact (t-deliver-inv w _ _ h))
   (exact (t-post-inv w _ _ h))
-  (exact (t-take-inv w _ _ _ _ h))
+  (rename_i st x k fresh) (cases hc (take-bad w st x))
+  (simp only [hc]) (exact (t-take-inv w _ _ _ _ h))
+  (simp only [hc refuse]) (exact h)
   (exact (t-release-inv w _ h))
   (exact (t-finalize-inv w _ h))
   (exact (t-cancel-inv w _ h))
@@ -3129,14 +3282,23 @@
   (exact (t-finally-enter-inv w _ h))
   (exact (t-finally-exit-inv w _ h))
   (exact (t-slice-exit-inv w _ h))
-  (rename_i st l) (cases hc (in-cleanup w st))
+  (rename_i st l) (cases hc (cc-shut w st))
   (simp only [hc]) (exact (c0-gate-inv w _ _ h (t-create-link-inv w st l h)))
   (simp only [hc refuse]) (exact h)
-  (rename_i sc l) (exact (c0-gate-inv w _ _ h (t-create-link-top-inv w sc l h)))
-  (exact (t-link-demand-inv w _ _ h))
-  (rename_i l tag v n) (exact (c0-gate-inv w _ _ h (t-link-realize-inv w l tag v n h)))
-  (rename_i x v t) (exact (c0-gate-inv w _ _ h (t-append-inv w x v t h)))
-  (exact (t-close-inv w _ _ _ h)))
+  (rename_i sc l) (cases hc (root-shut w))
+  (simp only [hc]) (exact (c0-gate-inv w _ _ h (t-create-link-top-inv w sc l h)))
+  (simp only [hc refuse]) (exact h)
+  (cases hc (root-shut w))
+  (simp only [hc]) (exact (t-link-demand-inv w _ _ h))
+  (simp only [hc refuse]) (exact h)
+  (rename_i l tag v n) (cases hc (root-shut w))
+  (simp only [hc]) (exact (c0-gate-inv w _ _ h (t-link-realize-inv w l tag v n h)))
+  (simp only [hc refuse]) (exact h)
+  (rename_i x v t) (cases hc (root-shut w))
+  (simp only [hc]) (exact (c0-gate-inv w _ _ h (t-append-inv w x v t h)))
+  (simp only [hc refuse]) (exact h)
+  (exact (t-close-inv w _ _ _ h))
+  (exact (t-finally-leave-inv w _ h)))
 
 (a/theorem raw0-refuse [w :- World, it :- Item]
   (=> (= (:accepted (raw0 w it)) false) (= (:world (raw0 w it)) w))
@@ -3147,32 +3309,42 @@
   (rename_i st kind v fresh) (cases hc (body-shut w st))
   (simp only [hc] at ha) (simp only [hc]) (exact (c0-gate-refuse w _ _ ha (t1-body-refuse w st kind v fresh)))
   (simp only [hc refuse])
-  (rename_i scope kind v fresh) (exact (c0-gate-refuse w _ _ ha (t1-top-full-refuse w scope kind v fresh)))
+  (rename_i scope kind v fresh) (cases hc (root-shut w))
+  (simp only [hc] at ha) (simp only [hc]) (exact (c0-gate-refuse w _ _ ha (t1-top-full-refuse w scope kind v fresh)))
+  (simp only [hc refuse])
   (exact (t2-refuse w _ _ ha))
   (rename_i st x k fresh) (cases hc (in-cleanup w st))
   (simp only [hc] at ha) (simp only [hc]) (exact (t7-refuse w _ _ _ _ ha))
   (simp only [hc refuse])
-  (exact (t8-obs-refuse w _ _ _ ha))
+  (rename_i d cb fresh) (cases hc (root-shut w))
+  (simp only [hc] at ha) (simp only [hc]) (exact (t8-obs-refuse w _ _ _ ha))
+  (simp only [hc refuse])
   (exact (t8-unobserve-refuse w _ ha))
   (exact (t9-refuse w _ _ _ ha))
   (exact (t15-full-refuse w _ ha))
-  (rename_i st kind k fresh) (cases hc (in-cleanup w st))
+  (rename_i st kind k fresh) (cases hc (fin-shut w st))
   (simp only [hc] at ha) (simp only [hc]) (exact (t17-refuse w _ _ _ _ ha))
   (simp only [hc refuse])
   (exact (t18-refuse w _ _ _ ha))
   (exact (t19-refuse w _ ha))
-  (exact (t20-pin-refuse w _ ha))
+  (rename_i x) (cases hc (root-shut w))
+  (simp only [hc] at ha) (simp only [hc]) (exact (t20-pin-refuse w _ ha))
+  (simp only [hc refuse])
   (exact (t20-unpin-refuse w _ ha))
-  (rename_i st c i b) (cases hc (in-cleanup w st))
+  (rename_i st c i b) (cases hc (cc-shut w st))
   (simp only [hc] at ha) (simp only [hc]) (exact (t3-refuse w _ _ _ _ ha))
   (simp only [hc refuse])
-  (exact (t3-top-refuse w _ _ _ _ ha))
+  (cases hc (root-shut w))
+  (simp only [hc] at ha) (simp only [hc]) (exact (t3-top-refuse w _ _ _ _ ha))
+  (simp only [hc refuse])
   (rename_i st b fresh ins) (cases hc (body-shut w st))
   (simp only [hc] at ha) (simp only [hc]) (exact (t4-refuse w _ _ _ _ ha))
   (simp only [hc refuse])
-  (exact (t4-top-refuse w _ _ _ _ ha))
+  (cases hc (root-shut w))
+  (simp only [hc] at ha) (simp only [hc]) (exact (t4-top-refuse w _ _ _ _ ha))
+  (simp only [hc refuse])
   (exact (t5-refuse w _ _ ha))
-  (rename_i st ds m k fresh mine) (cases hc (await-kind-bad w ds))
+  (rename_i st ds m k fresh mine) (cases hc (await-bad w st ds m))
   (simp only [hc] at ha) (simp only [hc]) (exact (t6-refuse w _ _ _ _ _ _ ha))
   (simp only [hc refuse])
   (exact (t11-refuse w _ _ ha))
@@ -3180,14 +3352,18 @@
   (simp only [hc] at ha) (simp only [hc]) (exact (t12-refuse w _ _ _ ha))
   (simp only [hc refuse])
   (exact (sched-refuse w _ ha))
-  (rename_i d fresh) (cases hc (deb-consuming w d))
+  (rename_i d fresh) (cases hc (host-await-bad w d))
   (simp only [hc] at ha) (simp only [hc]) (exact (t22-refuse w _ _ ha))
   (simp only [hc refuse])
   (exact (t22-un-refuse w _ ha))
-  (exact (t-handle-new-refuse w _ ha))
+  (cases hc (root-shut w))
+  (simp only [hc] at ha) (simp only [hc]) (exact (t-handle-new-refuse w _ ha))
+  (simp only [hc refuse])
   (exact (t-deliver-refuse w _ _ ha))
   (exact (t-post-refuse w _ _ ha))
-  (exact (t-take-refuse w _ _ _ _ ha))
+  (rename_i st x k fresh) (cases hc (take-bad w st x))
+  (simp only [hc] at ha) (simp only [hc]) (exact (t-take-refuse w _ _ _ _ ha))
+  (simp only [hc refuse])
   (exact (t-release-refuse w _ ha))
   (exact (t-finalize-refuse w _ ha))
   (exact (t-cancel-refuse w _ ha))
@@ -3198,14 +3374,23 @@
   (exact (t-finally-enter-refuse w _ ha))
   (exact (t-finally-exit-refuse w _ ha))
   (exact (t-slice-exit-refuse w _ ha))
-  (rename_i st l) (cases hc (in-cleanup w st))
+  (rename_i st l) (cases hc (cc-shut w st))
   (simp only [hc] at ha) (simp only [hc]) (exact (c0-gate-refuse w _ _ ha (t-create-link-refuse w st l)))
   (simp only [hc refuse])
-  (rename_i sc l) (exact (c0-gate-refuse w _ _ ha (t-create-link-top-refuse w sc l)))
-  (exact (t-link-demand-refuse w _ _ ha))
-  (rename_i l tag v n) (exact (c0-gate-refuse w _ _ ha (t-link-realize-refuse w l tag v n)))
-  (rename_i x v t) (exact (c0-gate-refuse w _ _ ha (t-append-refuse w x v t)))
-  (exact (t-close-refuse w _ _ _ ha)))
+  (rename_i sc l) (cases hc (root-shut w))
+  (simp only [hc] at ha) (simp only [hc]) (exact (c0-gate-refuse w _ _ ha (t-create-link-top-refuse w sc l)))
+  (simp only [hc refuse])
+  (cases hc (root-shut w))
+  (simp only [hc] at ha) (simp only [hc]) (exact (t-link-demand-refuse w _ _ ha))
+  (simp only [hc refuse])
+  (rename_i l tag v n) (cases hc (root-shut w))
+  (simp only [hc] at ha) (simp only [hc]) (exact (c0-gate-refuse w _ _ ha (t-link-realize-refuse w l tag v n)))
+  (simp only [hc refuse])
+  (rename_i x v t) (cases hc (root-shut w))
+  (simp only [hc] at ha) (simp only [hc]) (exact (c0-gate-refuse w _ _ ha (t-append-refuse w x v t)))
+  (simp only [hc refuse])
+  (exact (t-close-refuse w _ _ _ ha))
+  (exact (t-finally-leave-refuse w _ ha)))
 
 (a/theorem inv-cancel-losers [w0 :- World, w1 :- World]
   (=> (= (inv-sample w1) true) (= (inv-sample (cancel-losers w0 w1)) true))
@@ -3265,17 +3450,21 @@
   (simp [item-token-ok] at hg)
   (simp only [item-token-ok] at hg) (simp only [raw0 t9-fire hg refuse])
   (simp only [item-token-ok] at hg) (simp only [raw0 t15-full hg refuse])
-  (simp only [raw0 in-cleanup opt-test t17-arm (run-tok-none w _ hg) refuse])
+  (simp only [raw0 fin-shut in-fin in-cleanup opt-test t17-arm (run-tok-none w _ hg) refuse Bool.or_false])
   (simp only [raw0 t18-resource-fire (res-tok-none w _ hg) refuse])
   (simp [item-token-ok] at hg)
   (simp [item-token-ok] at hg)
   (simp [item-token-ok] at hg)
-  (simp only [raw0 in-cleanup opt-test t3-create (run-tok-none w _ hg) refuse])
+  (cases hrs (root-shut w))
+  (simp only [raw0 cc-shut in-cleanup hrs opt-test t3-create (run-tok-none w _ hg) refuse Bool.or_false Bool.or_true Bool.false_or ite_self])
+  (simp only [raw0 cc-shut in-cleanup hrs opt-test t3-create (run-tok-none w _ hg) refuse Bool.or_false Bool.or_true Bool.false_or ite_self])
   (simp [item-token-ok] at hg)
-  (simp only [raw0 body-shut in-cleanup cur-closed opt-test t4-spawn (run-tok-none w _ hg) refuse Bool.or_false])
+  (cases hrs (root-shut w))
+  (simp only [raw0 body-shut in-cleanup cur-closed hrs opt-test t4-spawn (run-tok-none w _ hg) refuse Bool.or_false Bool.or_true Bool.false_or ite_self])
+  (simp only [raw0 body-shut in-cleanup cur-closed hrs opt-test t4-spawn (run-tok-none w _ hg) refuse Bool.or_false Bool.or_true Bool.false_or ite_self])
   (simp [item-token-ok] at hg)
   (simp [item-token-ok] at hg)
-  (rename_i st ds m k fresh mine) (cases hc (await-kind-bad w ds))
+  (rename_i st ds m k fresh mine) (cases hc (await-bad w st ds m))
   (simp only [raw0 hc t6-await (run-tok-none w _ hg) refuse])
   (simp only [raw0 hc refuse])
   (simp [item-token-ok] at hg)
@@ -3286,7 +3475,7 @@
   (simp [item-token-ok] at hg)
   (simp [item-token-ok] at hg)
   (simp [item-token-ok] at hg)
-  (simp only [raw0 t-take (run-tok-none w _ hg) refuse])
+  (simp only [raw0 take-bad in-fin in-cleanup opt-test t-take (run-tok-none w _ hg) refuse Bool.false_and Bool.or_false])
   (simp [item-token-ok] at hg)
   (simp [item-token-ok] at hg)
   (simp [item-token-ok] at hg)
@@ -3297,11 +3486,16 @@
   (simp only [raw0 t-finally-enter (run-tok-none w _ hg) refuse])
   (simp only [raw0 t-finally-exit (run-tok-none w _ hg) refuse])
   (simp [item-token-ok] at hg)
-  (rename_i st l) (cases hc (in-cleanup w st))
+  (rename_i st l) (cases hc (cc-shut w st))
   (simp only [raw0 hc]) (apply c0-gate-l4)
   (simp only [t-create-link (run-tok-none w _ hg) refuse])
   (simp only [raw0 hc refuse])
-  (all_goals (simp [item-token-ok] at hg)))
+  (simp [item-token-ok] at hg)
+  (simp [item-token-ok] at hg)
+  (simp [item-token-ok] at hg)
+  (simp [item-token-ok] at hg)
+  (simp [item-token-ok] at hg)
+  (simp only [raw0 t-finally-leave (run-tok-none w _ hg) refuse]))
 
 (a/theorem raw-l4 [w :- World, it :- Item]
   (=> (= (raw-token-ok w it) false) (= (:accepted (raw w it)) false))
