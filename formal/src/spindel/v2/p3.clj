@@ -1186,7 +1186,7 @@
      (cases hg (detach-ok w t s))
      (simp only [t-detach hf hg refuse]) (exact h)
      (have hg2 := hg) (simp only [detach-ok Bool.and_eq_true] at hg2)
-     (have p1 := (scope-ref-ok w s (esb-sample w h) (open-has w s (And.right (And.right hg2)))))
+     (have p1 := (scope-ref-ok w s (esb-sample w h) (open-has w s (And.left (And.right (And.right hg2))))))
      (simp only [t-detach hf hg accept remove-empty-at detach-move])
      (have h1 := (esb-task-upd w k (task-set-owner s) (task-set-owner-id s) h))
      (have h2 := (esb-scope-reparent (task-upd w k (task-set-owner s)) (task-run-scope w t) s p1 h1))

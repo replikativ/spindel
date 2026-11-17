@@ -158,7 +158,8 @@
         normal run without an effect-index step (as the engine). close-scope s: T16 on an
         explicit scope, no token. detach k s: a task without result whose owner is a scope
         moves to the open scope s, and its run scope is re-parented under s (Z#41); the old
-        owner's subtree is then removed when empty.
+        owner's subtree is then removed when empty. Z#69: refused when s lies in the task's own
+        run-scope subtree (the run scope is s or on s's parent chain, `scope-within`).
     B21. release-world: refused when already released; removes every host-creditor edge
         (observe, host waits), drops pins, abandons pending-activation, sets every handle
         count to 0 (spec: released handles' rows are removed; the engine keeps handle counts),
@@ -2401,8 +2402,16 @@
 (a/defn detach-move [w :- World, k :- Nat, s :- Nat, rs :- Nat] World
   (scope-upd (task-upd w k (task-set-owner s)) rs (scope-set-parent s)))
 (a/defn remove-empty-at [w :- World, o :- Nat] World (remove-if-empty w (scope-subtree w o)))
+;; Z#69: whether scope a is s or on s's parent chain (engine `within?`): the chain is s's
+;; `scope-ancestors` (retain, the worklist over the parent fields that Rule R's cleanup uses)
+(a/defn scope-within [w :- World, s :- Nat, a :- Nat] Bool
+  (Bool.or (Nat.beq s a) (reach-mem a (scope-ancestors w s))))
+;; Z#69: s must not lie in the task's own run-scope subtree (else re-parenting the run scope under
+;; s closes a cycle of parents, and neither scope is ever removed)
 (a/defn detach-ok [w :- World, t :- TaskRow, s :- Nat] Bool
-  (Bool.and (Nat.beq (:tag (:result t)) res-none) (Bool.and (scope-has w (:owner t)) (scope-open-at w s))))
+  (Bool.and (Nat.beq (:tag (:result t)) res-none)
+    (Bool.and (scope-has w (:owner t))
+      (Bool.and (scope-open-at w s) (Bool.not (scope-within w s (task-run-scope w t)))))))
 (a/defn t-detach [w :- World, k :- Nat, s :- Nat] Outcome
   (match (task-find w k)
     [none (refuse w)]
