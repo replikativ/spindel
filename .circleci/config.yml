@@ -10,8 +10,8 @@ jobs:
       - checkout
       - restore_cache:
           keys:
-            - spindel-ci-deps-v1-{{ checksum "deps.edn" }}-{{ checksum ".circleci/config.yml" }}
-            - spindel-ci-deps-v1-
+            - spindel-ci-deps-v2-{{ checksum "deps.edn" }}-{{ checksum "formal/deps.edn" }}-{{ checksum ".circleci/config.yml" }}
+            - spindel-ci-deps-v2-
             - deps-{{ checksum "deps.edn" }}
             - deps-
       - run:
@@ -22,8 +22,9 @@ jobs:
             clojure -P -M:format
             clojure -P -T:build
             clojure -P -M:cljs
+            (cd formal && clojure -P -M:test)
       - save_cache:
-          key: spindel-ci-deps-v1-{{ checksum "deps.edn" }}-{{ checksum ".circleci/config.yml" }}
+          key: spindel-ci-deps-v2-{{ checksum "deps.edn" }}-{{ checksum "formal/deps.edn" }}-{{ checksum ".circleci/config.yml" }}
           paths:
             - /home/circleci/.m2
             - /home/circleci/.gitlibs
@@ -66,6 +67,15 @@ jobs:
           name: Verify v2 ownership with real Node garbage collection
           command: node --expose-gc target/lifetime-gc/main.js
 
+  formal:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci/
+      - run:
+          name: Formal model, proofs and engine-log oracle (formal/)
+          command: cd formal && clojure -M:test
+
 workflows:
   build-test-and-deploy:
     jobs:
@@ -93,6 +103,10 @@ workflows:
           context: docker-deploy
           requires:
             - tools/build
+      - formal:
+          context: docker-deploy
+          requires:
+            - tools/setup
       - tools/deploy:
           context:
             - clojars-deploy
