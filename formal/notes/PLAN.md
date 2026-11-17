@@ -1375,3 +1375,12 @@ New (Stage B finding):
 - Released-world `[:append s v 0]` from a cleanup slice is logged as a refusal entry (engine session); the model
   refuses it with the world unchanged (raw0's `root-shut`) and the oracle compares the accepted flag only.
 
+- Next (quiet half, step (1) of "hq (step 3), state"): extend `gk-rest`'s released clause by "every comp/task/source
+  handle count is 0". Findings for the copy: the handle-carrying creations are exactly 10 source-theorem sites
+  (`inv-comp-ins-fresh` in create-comp-raw; `inv-task-ins-fresh` in spawn-rows; `inv-source-ins-fresh` in t1-body,
+  t1-top, t1-full, create-link, create-link-top, the stream rows, link-realize, append), all with handles 1 and all
+  reached only through raw0 arms guarded by body-shut / cc-shut / root-shut (each implies `root-shut w = false`); no
+  cascade, dispatch (respawn) or Rule R step creates a row. T21's `release-world-raw` sets `released` (revoke-roots)
+  before `zero-handles`, so GK needs an override of `release-world-raw` (not of `revoke-roots`); `comp-h1`/`task-h1`/
+  `source-h1` need handle-new's `root-shut` premise, `comp-dec-handles`/`*-h0` keep 0. `release-unborn` (E4) sets the
+  flag only (unborn cells need `step-released` only).
