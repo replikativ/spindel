@@ -32,7 +32,7 @@ Feasibility notes: `../ansatz/.internal/design/spindel-v2-feasibility.md`.
 | `spindel.v2.inv` | predicates for I1/I5/I7/I9/I10/I11a (tripwire `inv-all`), counterexamples to literal I1/I5/I7/I8/I9/I10, I13 guards, L1, I10 D0 (`step-i10-slice`), I9 (`step-i9`), I5 wait half (`step-i5-wait`) | in progress |
 | `spindel.v2.lit` | literal invariants through `world-step`: I10 task part (`step-lit-i10-task`, bundle `gl`), I9 resources (`step-lit-i9-res`, bundle `g9`); P3 core `filter-safe-of-refs`; copier `lcopy!` with source patches (`patch!`) | in progress |
 | `spindel.v2.idle` | I7 (idle shape) through the step: bundle `g7` (a7, dep/marked creditor awake, idle clean, slice-normal alive, observe host), companion `awo` (T6/T11/reactivation chains), cascade completeness for demote (`kdb`, `casc-kill`); `step-g7`, `step-lit-i7` | done (honest hyps ga, rule-r-safe) |
-| `spindel.v2.qworld` | C1 quiet half: bundle `gc` (every cleanup entry's run is a run row; `step-gc-rest`), `qinv` = p3l && K && gc && I3 (`step-qinv`, `qinv-empty`), the closure lemma `quiet-rows` (a quiet world with qinv holds only scopes), the refusal lemma | in progress |
+| `spindel.v2.qworld` | C1 quiet half: bundle `gc` (every cleanup entry's run is a run row; `step-gc-rest`), `qinv` = p3l && K && gc && I3 (`step-qinv`, `qinv-empty`), the closure lemma `quiet-rows` (a quiet world with qinv holds only scopes), the refusal lemma `quiet-refused`, `quiet-step`, `quiet-stays` | done |
 | `spindel.v2.tomb` | C1 Q6: tombstones are dormant. Bundle `gy y` (copy of the raw step and of normalization): every alive run's computation and every dep edge's creditor is no tombstone (`ta-one`, `dep-untomb`), nor is computation y; `gy 0` is in P3's round invariant `ri` (`refs-untomb`, the new premise of `filter-safe-of-refs`); `trc` (acts-alive && gy 0) is the round context the i10/i14/hmk2/hm18 normalization chains take; `step-gy`, `gy-empty` | done |
 | `spindel.v2.p3` | P3 complete: bundles `mdb` (marked edges are dep), `esb` (edge-sep: references are non-edge ids), `aha` (activation runs exist and are alive), round invariant `ri` -> every round filter-safe (`rule-r-safe-ri`); combined bundle `p3b` (ga, inv-rank, gl, g9, g7, mdb, esb, aha) with `step-p3b` and the step theorems with no honest hypothesis (`step-rule-r-safe`, `step-inv-total`, `step-acts-total`, `step-rank-total`, ...) | done |
 | `spindel.v2.i10` | literal I10, computation part (one current run per computation) through the step: bundle `g10 gxz gkz` (E1 run epoch <= C.epoch, E2 a current run is C.run of an awake C and alive or C.done-epoch = C.epoch, run pointers name runs of their entity; computations gxz / runs gkz exempt), job condition for cascades (`job-ok`, transport bundle `nq`), bundle `g10r` = g10 [] [] for the raw transition (T5); `step-g10`, `step-lit-i10-current`, `p3c` = p3b && g10r with `step-p3c`, `p3c-empty`, `step-lit-i10-current-total` (no honest hypothesis) | done |
@@ -1426,4 +1426,14 @@ New (Stage B finding):
   gw's root-ok for the root scope; no running task (no run); no fork marker (gw)); keep is live (`keep-scope`: no
   cleanup entry (gc), nothing admitted (K's handle clause), no storage (no run)); a scope id is no other row's id
   (`scope-only`, unique ids); I3 keeps every row id, so every non-scope table is empty.
+
+### Quiet half, step (3): the refusal lemma (spindel.v2.qworld)
+- `quiet-refused` (`qh w -> (:accepted (raw w it)) = false` for every item): host items by `host-shut` (released, no
+  run holds a slice); the others (`raw0-quiet`) by raw0's released guards (creations and link items: root-shut,
+  body-shut, cc-shut), for want of a run (every token item: `tok-run` is none; schedule, finalize, slice-exit), or for
+  want of their row (start/dispatch: no computation; fire: no edge; resource-ack/resource-fire: no resource);
+  release-world by the released flag. So `quiet-step` (the step leaves a quiet world unchanged) and `quiet-stays`
+  (`qinv w`, `world-quiet w` -> `world-quiet` after any step). A released-world `[:append s v 0]` (the engine's
+  refusal entry) is refused with the world unchanged (host-shut / root-shut); qworld_test `quiet-world-runtime`
+  replays the Q5 trace and checks K, gc, I3, only scopes and the refusal of eight item kinds at runtime.
 

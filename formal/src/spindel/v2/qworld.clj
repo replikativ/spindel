@@ -570,3 +570,49 @@
   (have cn := (cleanup-nil w (And.left (And.right (And.right qi))) (And.right (And.right q))))
   (exact (And.intro c1 (And.intro c2 (And.intro (And.right (And.right q)) (And.intro c4 (And.intro c5 (And.intro c6
            (And.intro c7 (And.intro cn (And.intro (And.left (And.right k)) ef)))))))))))
+
+;; ===========================================================================
+;; Part C. The refusal lemma: every item is refused in a quiet world
+;; ===========================================================================
+
+;; a non-host item: raw0's released guards (creations, roots, link items), a token for want of a
+;; run, the rest for want of their row
+(a/theorem raw0-quiet [w :- World, it :- Item]
+  (=> (= (host-item it) false) (= (:runs w) (List.nil RunRow)) (= (:comps w) (List.nil CompRow))
+      (= (:edges w) (List.nil EdgeRow)) (= (:res w) (List.nil ResRow)) (= (:sources w) (List.nil SourceRow))
+      (= (:released w) true)
+      (= (:accepted (raw0 w it)) false))
+  (intros hh rn cn en zn sn hr)
+  (cases it)
+  (all_goals (simp only [host-item] at hh))
+  (all_goals (simp only [raw0 body-shut cc-shut root-shut hr Bool.or_true Bool.true_or refuse]))
+  (all_goals (simp [t7-track t9-fire fire-tok-ok t15-full ack-tok-ok t17-arm t18-resource-fire t5-start t6-await t11-dispatch
+                    t12-complete t-schedule t-take t-finalize t-open-scope t-finally-enter t-finally-exit t-finally-leave t-slice-exit
+                    t-release-world tok-run run-find comp-find edge-find resource-find resource-has source-find rn cn en zn sn hr
+                    tbl-find tbl-has refuse in-cleanup fin-shut in-fin await-bad take-bad complete-refused fins-open opt-test]))
+  (all_goals (cases hh)))
+
+;; Theorem (refusal): in a quiet world with qinv every item is refused (host items by host-shut: no
+;; run holds a slice)
+(a/theorem quiet-refused [w :- World, it :- Item] (=> (= (qh w) true) (= (:accepted (raw w it)) false))
+  (intro h)
+  (have q := (qh-parts w h))
+  (have o := (quiet-rows w h))
+  (have hr := (And.left (And.right q)))
+  (have rn := (And.right (And.right q)))
+  (have sh (= (slice-held w) false)) (simp only [slice-held rn tbl-any])
+  (have e0 (= (:accepted (raw0g w it)) false))
+  (cases hh (host-item it))
+  (simp only [raw0g host-shut hr sh hh Bool.and_false])
+  (exact (raw0-quiet w it hh rn (And.left o) (And.left (And.right (And.right (And.right (And.right o)))))
+           (And.left (And.right (And.right (And.right (And.right (And.right (And.right o)))))))
+           (And.left (And.right (And.right (And.right o)))) hr))
+  (simp only [raw0g host-shut hr sh hh Bool.not_false Bool.and_self refuse])
+  (simp only [raw post e0]))
+
+;; Theorem: a quiet world with qinv is left as it is by every step (so it stays quiet)
+(a/theorem quiet-step [w :- World, it :- Item] (=> (= (qh w) true) (= (:world (world-step w it)) w))
+  (intro h) (simp only [(step-refuse w it (quiet-refused w it h)) refuse]))
+(a/theorem quiet-stays [w :- World, it :- Item]
+  (=> (= (qinv w) true) (= (world-quiet w) true) (= (world-quiet (:world (world-step w it))) true))
+  (intros h hq) (rw [(quiet-step w it (qh-of w h hq))]) (exact hq))
