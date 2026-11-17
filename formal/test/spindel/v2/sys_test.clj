@@ -90,7 +90,7 @@
 (deftest idle-release-fires-on-an-idle-world-only
   (let [{:keys [child]} (fork-worlds)
         it (fn [tag & fs] (into [(o/ctor-idx tag)] fs))
-        cell (fn [w] (sys/->Cell w true 1 s/root-scope-id [] false 0 [] false []))
+        cell (fn [w] (sys/->Cell w true 1 s/root-scope-id [] false 0 [] false [] []))
         cells (fn [w] (fn [k] (cell (if (= k 2) w s/empty-world))))
         step (fn [w i] (let [o (en/world-step w i)] (is (:accepted o) (pr-str i)) (:world o)))
         ;; the host lets go: every handle dropped, every host edge removed
@@ -173,7 +173,7 @@
     (:world (en/world-step w3 (it :await st [(dec (:next-id w3))] s/am-one 1 (:next-id w3) [])))))
 
 (defn- c1-cell [w & {:keys [parent unborn pending] :or {parent 0 unborn false pending 0}}]
-  (sys/->Cell w true parent s/root-scope-id [] unborn pending [] false []))
+  (sys/->Cell w true parent s/root-scope-id [] unborn pending [] false [] []))
 (defn- c1-cells [m] (fn [k] (get m k (c1-cell s/empty-world))))
 (defn- released [w] (:world (en/world-step w [(o/ctor-idx :release-world)])))
 
@@ -345,3 +345,86 @@
     (is (= (st (done 1)) (st ((sys/sys-withdraw done 1 1) 1))) "a delivered join stays delivered")
     (is (= (st (done 1)) (st ((sys/sys-deliver done 1) 1))) "delivered at most once")
     (is (= (c2 1) ((sys/sys-join c2 1 0) 1)) "a join on id 0 (none) is refused")))
+
+;; ---------------------------------------------------------------------------
+;; C1c stage B (Z#71, spindel.v2.owned): owned forks. prefix-world-c1's task forks with the `(fork)` effect: the
+;; child is counted on the forking run's current scope (its run scope), a fork marker in the parent's world.
+
+(defn- marker-owners [w] (mapv :owner (:forks w)))
+(defn- scope-row [w x] (first (filter #(= x (:id %)) (:scopes w))))
+
+;; cell 1 runs prefix-world-c1; its task's run forks child cell 2 (the fork effect, its acceptance and count)
+(defn- forked []
+  (let [w (prefix-world-c1)
+        r (first (:runs w))
+        sc (en/cur-scope w r)
+        c0 (c1-cells {1 (c1-cell w)})
+        c1 (-> c0 (sys/sys-fork-effect 1 2 sc (:stamp r) 0 7) (sys/sys-accept 1 2) (sys/sys-own 1 sc 2))]
+    {:w w :sc sc :mid (:next-id w) :cells c1}))
+
+(deftest c1c-owned-fork-holds-its-scope
+  (let [{:keys [w sc mid cells]} (forked)
+        [k items] (finish-task w)
+        done (reduce (fn [cs i] (sys/sys-step cs 1 i)) cells items)
+        w2 (:world (done 1))
+        od (sys/sys-owned-done done 1 sc mid)]
+    (is (= (lg/task-srow k) sc) "the run's current scope is its run scope")
+    (is (= [sc] (marker-owners (:world (cells 1)))) "counted: one marker on the run scope")
+    (is (= [mid] (map :id (:forks (:world (cells 1))))) "the marker's id is the parent's fresh id (the child world's)")
+    (is (empty? (:forks (:world (cells 2)))) "the child does not inherit its own marker (copied before the count)")
+    (is (= 0 (en/world-runs w2)) "the task's run retired")
+    (is (some? (scope-row w2 sc)) "its run scope stays: the owned fork holds it")
+    (is (false? (:open (scope-row w2 sc))))
+    (is (false? (lg/task-complete w2 k)) "so the task is not complete")
+    (is (= [k] (pj ((sys/sys-deliver (sys/sys-join done 1 k) 1) 1))) "a host join waits")
+    (is (= (:world (done 1)) (:world ((sys/sys-owned-done done 1 sc (inc mid)) 1))) "owned-done of no marker: unchanged")
+    (is (empty? (:forks (:world (od 1)))) "[:owned-done s child] drops the marker")
+    (is (nil? (scope-row (:world (od 1)) sc)) "and the scope goes")
+    (is (true? (lg/task-complete (:world (od 1)) k)) "the task completes")))
+
+(deftest c1c-owned-fork-early-branch-not-counted
+  (let [w (prefix-world-c1)
+        r (first (:runs w))
+        sc (en/cur-scope w r)]
+    (is (= [sc] (marker-owners (:world ((sys/sys-own (c1-cells {1 (c1-cell w)}) 1 sc 2) 1)))))
+    (is (empty? (:forks (:world ((sys/sys-own (c1-cells {1 (c1-cell (released w))}) 1 sc 2) 1)))) "released")
+    (is (empty? (:forks (:world ((sys/sys-own (c1-cells {1 (c1-cell w)}) 1 99 2) 1)))) "no open scope 99")))
+
+;; question 16: W-KIDS reaches zero (the child is collected) before the owner runs [:owned-done]: no completion
+(deftest c1c-completion-waits-for-the-count
+  (let [{:keys [w sc mid cells]} (forked)
+        [_ items] (finish-task w)
+        done (reduce (fn [cs i] (sys/sys-step cs 1 i)) cells items)
+        rel (-> done (sys/sys-step 1 [(o/ctor-idx :release-world)]) (sys/sys-drop 2))
+        c1 (sys/sys-complete rel 1)
+        c2 (sys/sys-owned-done rel 1 sc mid)]
+    (is (true? (:released (:world (rel 1)))))
+    (is (= 0 (en/world-runs (:world (rel 1)))))
+    (is (true? (sys/kid-done rel 2)) "the only accepted child is collected")
+    (is (false? (:complete (c1 1))) "the count holds the completion")
+    (is (true? (:complete (c2 1))) "owned-done ends with maybe-complete!")))
+
+;; v4 L2 normalization: a fork of the parent inherits its markers (W-NORMALIZE); a scope kept only by them is
+;; removed by the child's drain ([:normalize]); question 15: the child does not complete before it
+(deftest c1c-normalization
+  (let [{:keys [w sc mid cells]} (forked)
+        [k items] (finish-task w)
+        done (reduce (fn [cs i] (sys/sys-step cs 1 i)) cells items)
+        f (sys/sys-fork done 1 3 s/root-scope-id)
+        rel (sys/sys-step f 3 [(o/ctor-idx :release-world)])
+        dr (sys/sys-drain rel 3)]
+    (is (= [mid] (:norm (f 3))) "the inherited marker is the child's W-NORMALIZE")
+    (is (some? (scope-row (:world (f 3)) sc)) "the inherited scope stays in the child")
+    (is (false? (lg/task-complete (:world (f 3)) k)))
+    (is (false? (:complete ((sys/sys-complete rel 3) 3))) "released first (fast path): not complete before the drain")
+    (is (empty? (:forks (:world (dr 3)))))
+    (is (nil? (scope-row (:world (dr 3)) sc)) "the drain removes the scope")
+    (is (true? (lg/task-complete (:world (dr 3)) k)))
+    (is (true? (:complete (dr 3))) "the drain ends with maybe-complete!")
+    (is (empty? (:norm (dr 3))))
+    (is (= (dr 1) (rel 1) (done 1)) "the parent keeps its count")
+    (testing "the parent's pending W-NORMALIZE is inherited too (a fork of the undrained child)"
+      (is (= [mid] (:norm ((sys/sys-fork rel 3 4 s/root-scope-id) 4)))))
+    (testing "an unborn cell does not drain"
+      (let [u (c1-cells {5 (assoc (c1-cell (:world (f 3)) :unborn true :pending 99) :norm [mid])})]
+        (is (= (u 5) ((sys/sys-drain u 5) 5)))))))

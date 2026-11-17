@@ -360,9 +360,14 @@
   (Bool.and (ref-ok-k es n (:run c)) (tbl-all (ref-ok-k es n) (:rows c))))
 (a/defn rrow-ok [es :- (List EdgeRow), n :- Nat, r :- RunRow] Bool (tbl-all (ref-ok-k es n) (run-stored r)))
 (a/defn srow-ok [es :- (List EdgeRow), n :- Nat, s :- ScopeRow] Bool (ref-ok-k es n (:parent s)))
-(a/defn esk [es :- (List EdgeRow), n :- Nat, cl :- (List CleanupRow), rs :- (List RunRow), ss :- (List ScopeRow)] Bool
-  (Bool.and (tbl-all (crow-ok es n) cl) (Bool.and (tbl-all (rrow-ok es n) rs) (tbl-all (srow-ok es n) ss))))
-(a/defn esb-rest [w :- World] Bool (esk (:edges w) (:next-id w) (:cleanup w) (:runs w) (:scopes w)))
+;; C1c stage B: a fork marker's id and owner are references too (they are storage, spindel.v2.retain `fork-keep`)
+(a/defn frow-ok [es :- (List EdgeRow), n :- Nat, f :- ForkRow] Bool
+  (Bool.and (ref-ok-k es n (:id f)) (ref-ok-k es n (:owner f))))
+(a/defn esk [es :- (List EdgeRow), n :- Nat, cl :- (List CleanupRow), rs :- (List RunRow), ss :- (List ScopeRow),
+             fs :- (List ForkRow)] Bool
+  (Bool.and (tbl-all (crow-ok es n) cl)
+            (Bool.and (tbl-all (rrow-ok es n) rs) (Bool.and (tbl-all (srow-ok es n) ss) (tbl-all (frow-ok es n) fs)))))
+(a/defn esb-rest [w :- World] Bool (esk (:edges w) (:next-id w) (:cleanup w) (:runs w) (:scopes w) (:forks w)))
 (a/defn esb [w :- World] Bool (Bool.and (inv-sample w) (esb-rest w)))
 
 (a/theorem esb-sample [w :- World] (=> (= (esb w) true) (= (inv-sample w) true))
@@ -374,14 +379,22 @@
 (a/theorem esb-parts [w :- World]
   (=> (= (esb w) true) (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
   (intro h) (exact (inv-parts w (esb-sample w h))))
-(a/theorem esk-parts [es :- (List EdgeRow), n :- Nat, cl :- (List CleanupRow), rs :- (List RunRow), ss :- (List ScopeRow)]
-  (=> (= (esk es n cl rs ss) true)
+(a/theorem esk-parts [es :- (List EdgeRow), n :- Nat, cl :- (List CleanupRow), rs :- (List RunRow), ss :- (List ScopeRow),
+                      fs :- (List ForkRow)]
+  (=> (= (esk es n cl rs ss fs) true)
       (And (= (tbl-all (crow-ok es n) cl) true) (And (= (tbl-all (rrow-ok es n) rs) true) (= (tbl-all (srow-ok es n) ss) true))))
-  (intro h) (simp only [esk Bool.and_eq_true] at h) (exact h))
-(a/theorem esk-intro [es :- (List EdgeRow), n :- Nat, cl :- (List CleanupRow), rs :- (List RunRow), ss :- (List ScopeRow)]
+  (intro h) (simp only [esk Bool.and_eq_true] at h)
+  (exact (And.intro (And.left h) (And.intro (And.left (And.right h)) (And.left (And.right (And.right h)))))))
+(a/theorem esk-fparts [es :- (List EdgeRow), n :- Nat, cl :- (List CleanupRow), rs :- (List RunRow), ss :- (List ScopeRow),
+                       fs :- (List ForkRow)]
+  (=> (= (esk es n cl rs ss fs) true) (= (tbl-all (frow-ok es n) fs) true))
+  (intro h) (simp only [esk Bool.and_eq_true] at h) (exact (And.right (And.right (And.right h)))))
+(a/theorem esk-intro [es :- (List EdgeRow), n :- Nat, cl :- (List CleanupRow), rs :- (List RunRow), ss :- (List ScopeRow),
+                      fs :- (List ForkRow)]
   (=> (= (tbl-all (crow-ok es n) cl) true) (= (tbl-all (rrow-ok es n) rs) true) (= (tbl-all (srow-ok es n) ss) true)
-      (= (esk es n cl rs ss) true))
-  (intros h1 h2 h3) (simp only [esk h1 h2 h3 Bool.and_self]))
+      (= (tbl-all (frow-ok es n) fs) true)
+      (= (esk es n cl rs ss fs) true))
+  (intros h1 h2 h3 h4) (simp only [esk h1 h2 h3 h4 Bool.and_self]))
 
 ;; ---- sublists
 
@@ -415,20 +428,27 @@
   (intro h) (simp only [crow-ok Bool.and_eq_true] at h)
   (simp only [crow-ok (m (:run c) (And.left h)) (tbl-all-mono Nat (ref-ok-k es n) (ref-ok-k es2 n2) m (:rows c) (And.right h)) Bool.and_self]))
 
+(a/theorem frow-mono [es :- (List EdgeRow), es2 :- (List EdgeRow), n :- Nat, n2 :- Nat,
+                      m :- (forall [y :- Nat] (=> (= (ref-ok-k es n y) true) (= (ref-ok-k es2 n2 y) true))), f :- ForkRow]
+  (=> (= (frow-ok es n f) true) (= (frow-ok es2 n2 f) true))
+  (intro h) (simp only [frow-ok Bool.and_eq_true] at h)
+  (simp only [frow-ok (m (:id f) (And.left h)) (m (:owner f) (And.right h)) Bool.and_self]))
+
 (a/theorem esk-mono [es :- (List EdgeRow), es2 :- (List EdgeRow), n :- Nat, n2 :- Nat,
-                     cl :- (List CleanupRow), rs :- (List RunRow), ss :- (List ScopeRow)]
-  (=> (edges-sub n es es2) (<= n n2) (= (esk es n cl rs ss) true) (= (esk es2 n2 cl rs ss) true))
+                     cl :- (List CleanupRow), rs :- (List RunRow), ss :- (List ScopeRow), fs :- (List ForkRow)]
+  (=> (edges-sub n es es2) (<= n n2) (= (esk es n cl rs ss fs) true) (= (esk es2 n2 cl rs ss fs) true))
   (intros hs hn h)
-  (have p := (esk-parts es n cl rs ss h))
+  (have p := (esk-parts es n cl rs ss fs h))
   (have m (forall [y :- Nat] (=> (= (ref-ok-k es n y) true) (= (ref-ok-k es2 n2 y) true))))
   (intros y hy) (exact (ref-ok-mono es es2 n n2 y hs hn hy))
-  (exact (esk-intro es2 n2 cl rs ss
+  (exact (esk-intro es2 n2 cl rs ss fs
            (tbl-all-mono CleanupRow (crow-ok es n) (crow-ok es2 n2)
              (fn [c :- CleanupRow, hc :- (= (crow-ok es n c) true)] (crow-mono es es2 n n2 m c hc)) cl (And.left p))
            (tbl-all-mono RunRow (rrow-ok es n) (rrow-ok es2 n2)
              (fn [r :- RunRow, hr :- (= (rrow-ok es n r) true)] (tbl-all-mono Nat (ref-ok-k es n) (ref-ok-k es2 n2) m (run-stored r) hr)) rs (And.left (And.right p)))
            (tbl-all-mono ScopeRow (srow-ok es n) (srow-ok es2 n2)
-             (fn [s :- ScopeRow, hs2 :- (= (srow-ok es n s) true)] (m (:parent s) hs2)) ss (And.right (And.right p))))))
+             (fn [s :- ScopeRow, hs2 :- (= (srow-ok es n s) true)] (m (:parent s) hs2)) ss (And.right (And.right p)))
+           (tbl-all-mono ForkRow (frow-ok es n) (frow-ok es2 n2) (frow-mono es es2 n n2 m) fs (esk-fparts es n cl rs ss fs h)))))
 
 ;; ---- references to existing non-edge rows (unique ids, below the allocator)
 
@@ -578,21 +598,23 @@
 
 (a/theorem esb-rest-mw [w :- World, w2 :- World]
   (=> (edges-sub (:next-id w) (:edges w) (:edges w2)) (<= (:next-id w) (:next-id w2))
-      (= (:cleanup w2) (:cleanup w)) (= (:runs w2) (:runs w)) (= (:scopes w2) (:scopes w))
+      (= (:cleanup w2) (:cleanup w)) (= (:runs w2) (:runs w)) (= (:scopes w2) (:scopes w)) (= (:forks w2) (:forks w))
       (= (esb-rest w) true) (= (esb-rest w2) true))
-  (intros hs hn hc hr hsc h)
-  (simp only [esb-rest hc hr hsc])
-  (exact (esk-mono _ _ _ _ _ _ _ hs hn h)))
+  (intros hs hn hc hr hsc hf h)
+  (simp only [esb-rest hc hr hsc hf])
+  (exact (esk-mono _ _ _ _ _ _ _ _ hs hn h)))
 
-(a/theorem esb-rest-sets [w :- World, cl :- (List CleanupRow), rs :- (List RunRow), ss :- (List ScopeRow)]
+(a/theorem esb-rest-sets [w :- World, cl :- (List CleanupRow), rs :- (List RunRow), ss :- (List ScopeRow), fs :- (List ForkRow)]
   (=> (= (esb-rest w) true)
+      (=> (= (tbl-all (frow-ok (:edges w) (:next-id w)) (:forks w)) true) (= (tbl-all (frow-ok (:edges w) (:next-id w)) fs) true))
       (=> (= (tbl-all (crow-ok (:edges w) (:next-id w)) (:cleanup w)) true) (= (tbl-all (crow-ok (:edges w) (:next-id w)) cl) true))
       (=> (= (tbl-all (rrow-ok (:edges w) (:next-id w)) (:runs w)) true) (= (tbl-all (rrow-ok (:edges w) (:next-id w)) rs) true))
       (=> (= (tbl-all (srow-ok (:edges w) (:next-id w)) (:scopes w)) true) (= (tbl-all (srow-ok (:edges w) (:next-id w)) ss) true))
-      (= (esk (:edges w) (:next-id w) cl rs ss) true))
-  (intros h h1 h2 h3)
-  (have p := (esk-parts _ _ _ _ _ h))
-  (exact (esk-intro _ _ _ _ _ (h1 (And.left p)) (h2 (And.left (And.right p))) (h3 (And.right (And.right p))))))
+      (= (esk (:edges w) (:next-id w) cl rs ss fs) true))
+  (intros h h4 h1 h2 h3)
+  (have p := (esk-parts _ _ _ _ _ _ h))
+  (exact (esk-intro _ _ _ _ _ _ (h1 (And.left p)) (h2 (And.left (And.right p))) (h3 (And.right (And.right p)))
+           (h4 (esk-fparts _ _ _ _ _ _ h)))))
 
 ;; ---- primitives
 
@@ -603,9 +625,9 @@
   (case [some e]
     (cases hm (:marked e))
     (case [false] (simp only [remove-edge hf hm])
-      (exact (esb-rest-mw w (edge-del w x) (esub-del (:next-id w) x (:edges w)) (Nat.le_refl _) (rfl) (rfl) (rfl) h)))
+      (exact (esb-rest-mw w (edge-del w x) (esub-del (:next-id w) x (:edges w)) (Nat.le_refl _) (rfl) (rfl) (rfl) (rfl) h)))
     (case [true] (simp only [remove-edge hf hm])
-      (exact (esb-rest-mw w (comp-upd (edge-del w x) (:creditor e) comp-dec-pending) (esub-del (:next-id w) x (:edges w)) (Nat.le_refl _) (rfl) (rfl) (rfl) h)))))
+      (exact (esb-rest-mw w (comp-upd (edge-del w x) (:creditor e) comp-dec-pending) (esub-del (:next-id w) x (:edges w)) (Nat.le_refl _) (rfl) (rfl) (rfl) (rfl) h)))))
 
 (a/theorem esb-rest-mark-edge [w :- World, x :- Nat] (=> (= (esb-rest w) true) (= (esb-rest (mark-edge w x)) true))
   (intro h)
@@ -616,7 +638,7 @@
     (case [true] (simp only [mark-edge hf hm]) (exact h))
     (case [false] (simp only [mark-edge hf hm])
       (exact (esb-rest-mw w (comp-upd (edge-upd w x (edge-set-marked true)) (:creditor e) comp-inc-pending)
-               (esub-upd (:next-id w) x (edge-set-marked true) (fn [d :- EdgeRow] (Eq.refl (edge-id d))) (:edges w)) (Nat.le_refl _) (rfl) (rfl) (rfl) h)))))
+               (esub-upd (:next-id w) x (edge-set-marked true) (fn [d :- EdgeRow] (Eq.refl (edge-id d))) (:edges w)) (Nat.le_refl _) (rfl) (rfl) (rfl) (rfl) h)))))
 
 (a/theorem esb-rest-unmark-edge [w :- World, x :- Nat] (=> (= (esb-rest w) true) (= (esb-rest (unmark-edge w x)) true))
   (intro h)
@@ -627,7 +649,7 @@
     (case [false] (simp only [unmark-edge hf hm]) (exact h))
     (case [true] (simp only [unmark-edge hf hm])
       (exact (esb-rest-mw w (comp-upd (edge-upd w x (edge-set-marked false)) (:creditor e) comp-dec-pending)
-               (esub-upd (:next-id w) x (edge-set-marked false) (fn [d :- EdgeRow] (Eq.refl (edge-id d))) (:edges w)) (Nat.le_refl _) (rfl) (rfl) (rfl) h)))))
+               (esub-upd (:next-id w) x (edge-set-marked false) (fn [d :- EdgeRow] (Eq.refl (edge-id d))) (:edges w)) (Nat.le_refl _) (rfl) (rfl) (rfl) (rfl) h)))))
 
 (a/theorem all-del-same [A :- Type, P :- (=> A Bool), idf :- (=> A Nat), x :- Nat, xs :- (List A)]
   (=> (= (tbl-all P xs) true) (= (tbl-all P (tbl-del idf x xs)) true))
@@ -636,21 +658,23 @@
 
 (a/theorem esb-rest-run-del [w :- World, x :- Nat] (=> (= (esb-rest w) true) (= (esb-rest (run-del w x)) true))
   (intro h) (simp only [esb-rest run-del set-runs])
-  (exact (esb-rest-sets w _ _ _ h (self-imp _) (all-del-same RunRow (rrow-ok (:edges w) (:next-id w)) run-id x (:runs w)) (self-imp _))))
+  (exact (esb-rest-sets w _ _ _ _ h (self-imp _) (self-imp _) (all-del-same RunRow (rrow-ok (:edges w) (:next-id w)) run-id x (:runs w)) (self-imp _))))
 (a/theorem esb-rest-scope-del [w :- World, x :- Nat] (=> (= (esb-rest w) true) (= (esb-rest (scope-del w x)) true))
   (intro h) (simp only [esb-rest scope-del set-scopes])
-  (exact (esb-rest-sets w _ _ _ h (self-imp _) (self-imp _) (all-del-same ScopeRow (srow-ok (:edges w) (:next-id w)) scope-id x (:scopes w)))))
+  (exact (esb-rest-sets w _ _ _ _ h (self-imp _) (self-imp _) (self-imp _) (all-del-same ScopeRow (srow-ok (:edges w) (:next-id w)) scope-id x (:scopes w)))))
 (a/theorem esb-rest-cleanup-del [w :- World, x :- Nat] (=> (= (esb-rest w) true) (= (esb-rest (cleanup-del w x)) true))
   (intro h) (simp only [esb-rest cleanup-del set-cleanup])
-  (exact (esb-rest-sets w _ _ _ h (all-del-same CleanupRow (crow-ok (:edges w) (:next-id w)) cleanup-id x (:cleanup w)) (self-imp _) (self-imp _))))
+  (exact (esb-rest-sets w _ _ _ _ h (self-imp _) (all-del-same CleanupRow (crow-ok (:edges w) (:next-id w)) cleanup-id x (:cleanup w)) (self-imp _) (self-imp _))))
 
 (a/theorem esb-rest-filter-world [w :- World, K :- (=> Nat Bool)] (=> (= (esb-rest w) true) (= (esb-rest (filter-world K w)) true))
   (intro h)
-  (have h1 (= (esk (:edges w) (:next-id w) (:cleanup w) (tbl-keep K run-id (:runs w)) (tbl-keep K scope-id (:scopes w))) true))
-  (exact (esb-rest-sets w _ _ _ h (self-imp _) (tbl-all-keep-same RunRow K run-id (rrow-ok (:edges w) (:next-id w)) (:runs w))
+  (have h1 (= (esk (:edges w) (:next-id w) (:cleanup w) (tbl-keep K run-id (:runs w)) (tbl-keep K scope-id (:scopes w))
+                   (tbl-keep K fork-id (:forks w))) true))
+  (exact (esb-rest-sets w _ _ _ _ h (tbl-all-keep-same ForkRow K fork-id (frow-ok (:edges w) (:next-id w)) (:forks w))
+           (self-imp _) (tbl-all-keep-same RunRow K run-id (rrow-ok (:edges w) (:next-id w)) (:runs w))
            (tbl-all-keep-same ScopeRow K scope-id (srow-ok (:edges w) (:next-id w)) (:scopes w))))
   (simp only [esb-rest filter-world])
-  (exact (esk-mono _ _ _ _ _ _ _ (esub-keep (:next-id w) K (:edges w)) (Nat.le_refl _) h1)))
+  (exact (esk-mono _ _ _ _ _ _ _ _ (esub-keep (:next-id w) K (:edges w)) (Nat.le_refl _) h1)))
 
 (a/theorem esb-run-upd-m [w :- World, x :- Nat, f :- (=> RunRow RunRow),
                           hf :- (forall [r :- RunRow] (= (run-id (f r)) (run-id r))),
@@ -659,7 +683,7 @@
   (intro h)
   (have r (= (esb-rest (run-upd w x f)) true))
   (simp only [esb-rest run-upd set-runs])
-  (apply (esb-rest-sets w _ _ _ (esb-rest-of w h) (self-imp _) _ (self-imp _)))
+  (apply (esb-rest-sets w _ _ _ _ (esb-rest-of w h) (self-imp _) (self-imp _) _ (self-imp _)))
   (intro h2)
   (exact (tbl-all-upd RunRow run-id x f (rrow-ok (:edges w) (:next-id w)) (rrow-ok (:edges w) (:next-id w))
            (fn [q :- RunRow, hq :- (= (rrow-ok (:edges w) (:next-id w) q) true), hx :- (= (Nat.beq (run-id q) x) true)]
@@ -681,7 +705,7 @@
   (intro h)
   (have r (= (esb-rest (scope-upd w x f)) true))
   (simp only [esb-rest scope-upd set-scopes])
-  (apply (esb-rest-sets w _ _ _ (esb-rest-of w h) (self-imp _) (self-imp _)))
+  (apply (esb-rest-sets w _ _ _ _ (esb-rest-of w h) (self-imp _) (self-imp _) (self-imp _)))
   (intro h2)
   (exact (tbl-all-upd ScopeRow scope-id x f (srow-ok (:edges w) (:next-id w)) (srow-ok (:edges w) (:next-id w))
            (fn [s :- ScopeRow, hq :- (= (srow-ok (:edges w) (:next-id w) s) true), hx :- (= (Nat.beq (scope-id s) x) true)]
@@ -704,7 +728,7 @@
   (intro h)
   (have r (= (esb-rest (cleanup-upd w x f)) true))
   (simp only [esb-rest cleanup-upd set-cleanup])
-  (apply (esb-rest-sets w _ _ _ (esb-rest-of w h) _ (self-imp _) (self-imp _)))
+  (apply (esb-rest-sets w _ _ _ _ (esb-rest-of w h) (self-imp _) _ (self-imp _) (self-imp _)))
   (intro h2)
   (exact (tbl-all-upd CleanupRow cleanup-id x f (crow-ok (:edges w) (:next-id w)) (crow-ok (:edges w) (:next-id w))
            (fn [c :- CleanupRow, hq :- (= (crow-ok (:edges w) (:next-id w) c) true), hx :- (= (Nat.beq (cleanup-id c) x) true)]
@@ -777,7 +801,7 @@
       (And (= (ref-ok-k (:edges w) (:next-id w) (:id r)) true) (= (tbl-all (ref-ok-k (:edges w) (:next-id w)) (cleanup-rows-of w r)) true)))
   (intros h hm)
   (have hs := (esb-sample w h))
-  (have p := (esk-parts _ _ _ _ _ (esb-rest-of w h)))
+  (have p := (esk-parts _ _ _ _ _ _ (esb-rest-of w h)))
   (have rr := (tbl-all-mem RunRow (rrow-ok (:edges w) (:next-id w)) r (:runs w) (And.left (And.right p)) hm))
   (simp only [rrow-ok run-stored tbl-all Bool.and_eq_true] at rr)
   (have id1 := (run-ref-ok w (:id r) hs (tbl-find-has-mem w r hm)))
@@ -815,7 +839,7 @@
       (= (esb w) true) (= (esb (add-run-scope w of ep parent ei)) true))
   (intros ho hp h)
   (have hs := (esb-sample w h))
-  (have p := (esk-parts _ _ _ _ _ (esb-rest-of w h)))
+  (have p := (esk-parts _ _ _ _ _ _ (esb-rest-of w h)))
   (have le2 (<= (:next-id w) (+ (+ (:next-id w) 1) 1))) (omega)
   (have m (forall [y :- Nat] (=> (= (ref-ok-k (:edges w) (:next-id w) y) true) (= (ref-ok-k (:edges w) (+ (+ (:next-id w) 1) 1) y) true))))
   (intros y hy) (exact (ref-ok-up _ _ _ y le2 hy))
@@ -829,7 +853,7 @@
   (simp only [srow-ok new-scope-row]) (exact (m parent hp))
   (have r (= (esb-rest (add-run-scope w of ep parent ei)) true))
   (simp only [esb-rest add-run-scope bump scope-ins run-ins set-next-id set-scopes set-runs tbl-ins])
-  (exact (esk-intro _ _ _ _ _
+  (exact (esk-intro _ _ _ _ _ _
            (tbl-all-mono CleanupRow (crow-ok (:edges w) (:next-id w)) (crow-ok (:edges w) (+ (+ (:next-id w) 1) 1))
              (crow-mono _ _ _ _ m) (:cleanup w) (And.left p))
            (all-cons RunRow (rrow-ok (:edges w) (+ (+ (:next-id w) 1) 1)) _ _ rr
@@ -837,19 +861,21 @@
                (fn [q :- RunRow, hq :- (= (rrow-ok (:edges w) (:next-id w) q) true)] (tbl-all-mono Nat _ _ m (run-stored q) hq)) (:runs w) (And.left (And.right p))))
            (all-cons ScopeRow (srow-ok (:edges w) (+ (+ (:next-id w) 1) 1)) _ _ sr
              (tbl-all-mono ScopeRow (srow-ok (:edges w) (:next-id w)) (srow-ok (:edges w) (+ (+ (:next-id w) 1) 1))
-               (fn [q :- ScopeRow, hq :- (= (srow-ok (:edges w) (:next-id w) q) true)] (m (:parent q) hq)) (:scopes w) (And.right (And.right p))))))
+               (fn [q :- ScopeRow, hq :- (= (srow-ok (:edges w) (:next-id w) q) true)] (m (:parent q) hq)) (:scopes w) (And.right (And.right p))))
+           (tbl-all-mono ForkRow (frow-ok (:edges w) (:next-id w)) _ (frow-mono _ _ _ _ m) (:forks w)
+             (esk-fparts _ _ _ _ _ _ (esb-rest-of w h)))))
   (exact (esb-intro _ (inv-add-run-scope w of ep parent ei hs) r)))
 
 (a/theorem esb-cleanup-set [w :- World, rid :- Nat, rows :- (List Nat)]
   (=> (= (ref-ok-k (:edges w) (:next-id w) rid) true) (= (tbl-all (ref-ok-k (:edges w) (:next-id w)) rows) true)
       (= (esb w) true) (= (esb (cleanup-set w rid rows)) true))
   (intros hr hrows h)
-  (have p := (esk-parts _ _ _ _ _ (esb-rest-of w h)))
+  (have p := (esk-parts _ _ _ _ _ _ (esb-rest-of w h)))
   (have c1 (= (crow-ok (:edges w) (:next-id w) (CleanupRow.mk rid rows)) true)) (simp only [crow-ok hr hrows Bool.and_self])
   (have r (= (esb-rest (cleanup-set w rid rows)) true))
   (simp only [esb-rest cleanup-set cleanup-ins cleanup-del set-cleanup tbl-ins])
-  (exact (esk-intro _ _ _ _ _ (all-cons CleanupRow _ _ _ c1 (all-del-same CleanupRow _ cleanup-id rid (:cleanup w) (And.left p)))
-           (And.left (And.right p)) (And.right (And.right p))))
+  (exact (esk-intro _ _ _ _ _ _ (all-cons CleanupRow _ _ _ c1 (all-del-same CleanupRow _ cleanup-id rid (:cleanup w) (And.left p)))
+           (And.left (And.right p)) (And.right (And.right p)) (esk-fparts _ _ _ _ _ _ (esb-rest-of w h))))
   (exact (esb-intro _ (inv-cleanup-set w rid rows (esb-sample w h)) r)))
 
 ;; ---- the bundle
@@ -861,18 +887,18 @@
 (doseq [o '[inv-pub-upd inv-source-upd inv-resource-upd inv-set-pins inv-resource-del inv-act-upd inv-task-upd
             inv-comp-upd inv-comp-del-unref]]
   (prim! ESB o nil))
-(prim! ESB 'inv-bump '(esb-rest-mw w (bump w) (esub-refl (:next-id w) (:edges w)) (Nat.le_succ _) (rfl) (rfl) (rfl) R))
-(prim! ESB 'inv-source-ins-fresh '(esb-rest-mw w (bump (source-ins w r)) (esub-refl (:next-id w) (:edges w)) (Nat.le_succ _) (rfl) (rfl) (rfl) R))
-(prim! ESB 'inv-resource-ins-fresh '(esb-rest-mw w (bump (resource-ins w r)) (esub-refl (:next-id w) (:edges w)) (Nat.le_succ _) (rfl) (rfl) (rfl) R))
-(prim! ESB 'inv-act-ins-fresh '(esb-rest-mw w (bump (act-ins w r)) (esub-refl (:next-id w) (:edges w)) (Nat.le_succ _) (rfl) (rfl) (rfl) R))
-(prim! ESB 'inv-task-ins-fresh '(esb-rest-mw w (bump (task-ins w r)) (esub-refl (:next-id w) (:edges w)) (Nat.le_succ _) (rfl) (rfl) (rfl) R))
-(prim! ESB 'inv-comp-ins-fresh '(esb-rest-mw w (bump (comp-ins w r)) (esub-refl (:next-id w) (:edges w)) (Nat.le_succ _) (rfl) (rfl) (rfl) R))
-(prim! ESB 'inv-edge-upd '(esb-rest-mw w (edge-upd w x f) (esub-upd (:next-id w) x f hid (:edges w)) (Nat.le_refl _) (rfl) (rfl) (rfl) R))
-(prim! ESB 'inv-drop-cred '(esb-rest-mw w (drop-cred-edges w a) (esub-filter (:next-id w) (cred-ne a) (:edges w)) (Nat.le_refl _) (rfl) (rfl) (rfl) R))
-(prim! ESB 'inv-drop-act '(esb-rest-mw w (drop-act w a) (esub-filter (:next-id w) (cred-ne a) (:edges w)) (Nat.le_refl _) (rfl) (rfl) (rfl) R))
-(prim! ESB 'inv-drop-edges '(esb-rest-mw w (drop-edges w p) (esub-filter (:next-id w) p (:edges w)) (Nat.le_refl _) (rfl) (rfl) (rfl) R))
+(prim! ESB 'inv-bump '(esb-rest-mw w (bump w) (esub-refl (:next-id w) (:edges w)) (Nat.le_succ _) (rfl) (rfl) (rfl) (rfl) R))
+(prim! ESB 'inv-source-ins-fresh '(esb-rest-mw w (bump (source-ins w r)) (esub-refl (:next-id w) (:edges w)) (Nat.le_succ _) (rfl) (rfl) (rfl) (rfl) R))
+(prim! ESB 'inv-resource-ins-fresh '(esb-rest-mw w (bump (resource-ins w r)) (esub-refl (:next-id w) (:edges w)) (Nat.le_succ _) (rfl) (rfl) (rfl) (rfl) R))
+(prim! ESB 'inv-act-ins-fresh '(esb-rest-mw w (bump (act-ins w r)) (esub-refl (:next-id w) (:edges w)) (Nat.le_succ _) (rfl) (rfl) (rfl) (rfl) R))
+(prim! ESB 'inv-task-ins-fresh '(esb-rest-mw w (bump (task-ins w r)) (esub-refl (:next-id w) (:edges w)) (Nat.le_succ _) (rfl) (rfl) (rfl) (rfl) R))
+(prim! ESB 'inv-comp-ins-fresh '(esb-rest-mw w (bump (comp-ins w r)) (esub-refl (:next-id w) (:edges w)) (Nat.le_succ _) (rfl) (rfl) (rfl) (rfl) R))
+(prim! ESB 'inv-edge-upd '(esb-rest-mw w (edge-upd w x f) (esub-upd (:next-id w) x f hid (:edges w)) (Nat.le_refl _) (rfl) (rfl) (rfl) (rfl) R))
+(prim! ESB 'inv-drop-cred '(esb-rest-mw w (drop-cred-edges w a) (esub-filter (:next-id w) (cred-ne a) (:edges w)) (Nat.le_refl _) (rfl) (rfl) (rfl) (rfl) R))
+(prim! ESB 'inv-drop-act '(esb-rest-mw w (drop-act w a) (esub-filter (:next-id w) (cred-ne a) (:edges w)) (Nat.le_refl _) (rfl) (rfl) (rfl) (rfl) R))
+(prim! ESB 'inv-drop-edges '(esb-rest-mw w (drop-edges w p) (esub-filter (:next-id w) p (:edges w)) (Nat.le_refl _) (rfl) (rfl) (rfl) (rfl) R))
 (prim! ESB 'insert-edge-fresh-inv-sample
-  '(esb-rest-mw w (insert-edge-fresh w e) (esub-ins (:next-id w) (edge-set-marked false (edge-set-id (:next-id w) e)) (rfl) (:edges w)) (Nat.le_succ _) (rfl) (rfl) (rfl) R))
+  '(esb-rest-mw w (insert-edge-fresh w e) (esub-ins (:next-id w) (edge-set-marked false (edge-set-id (:next-id w) e)) (rfl) (:edges w)) (Nat.le_succ _) (rfl) (rfl) (rfl) (rfl) R))
 (prim! ESB 'inv-remove-edge '(esb-rest-remove-edge w x R))
 (prim! ESB 'mark-edge-inv-sample '(esb-rest-mark-edge w x R))
 (prim! ESB 'unmark-edge-inv-sample '(esb-rest-unmark-edge w x R))
@@ -1117,7 +1143,7 @@
   (intros hz h)
   (have r (= (esb-rest (run-upd w x f)) true))
   (simp only [esb-rest run-upd set-runs])
-  (apply (esb-rest-sets w _ _ _ (esb-rest-of w h) (self-imp _) _ (self-imp _)))
+  (apply (esb-rest-sets w _ _ _ _ (esb-rest-of w h) (self-imp _) (self-imp _) _ (self-imp _)))
   (intro h2)
   (apply (tbl-all-upd RunRow run-id x f (rrow-ok (:edges w) (:next-id w)) (rrow-ok (:edges w) (:next-id w)) _ _ (:runs w) h2))
   (intros q hq hx)
@@ -1163,7 +1189,7 @@
   (intros hp h)
   (have r (= (esb-rest (scope-upd w x (scope-set-parent p))) true))
   (simp only [esb-rest scope-upd set-scopes])
-  (apply (esb-rest-sets w _ _ _ (esb-rest-of w h) (self-imp _) (self-imp _)))
+  (apply (esb-rest-sets w _ _ _ _ (esb-rest-of w h) (self-imp _) (self-imp _) (self-imp _)))
   (intro h2)
   (exact (tbl-all-upd ScopeRow scope-id x (scope-set-parent p) (srow-ok (:edges w) (:next-id w)) (srow-ok (:edges w) (:next-id w))
            (fn [s :- ScopeRow, hq :- (= (srow-ok (:edges w) (:next-id w) s) true), hx :- (= (Nat.beq (scope-id s) x) true)] hp)
@@ -1210,7 +1236,7 @@
   (=> (= (esb w) true) (List.Mem r (:runs w)) (= (ref-ok-k (:edges w) (:next-id w) (cur-scope w r)) true))
   (intros h hm)
   (have hs := (esb-sample w h))
-  (have p := (esk-parts _ _ _ _ _ (esb-rest-of w h)))
+  (have p := (esk-parts _ _ _ _ _ _ (esb-rest-of w h)))
   (have rr := (tbl-all-mem RunRow (rrow-ok (:edges w) (:next-id w)) r (:runs w) (And.left (And.right p)) hm))
   (simp only [rrow-ok run-stored tbl-all Bool.and_eq_true] at rr)
   (have v (= (tbl-all (ref-ok-k (:edges w) (:next-id w))
@@ -1228,18 +1254,20 @@
   (=> (= (scope-id sr) (:next-id w)) (= (ref-ok-k (:edges w) (:next-id w) (:parent sr)) true) (= (esb w) true)
       (= (esb (bump (scope-ins w sr))) true))
   (intros hi hp h)
-  (have p := (esk-parts _ _ _ _ _ (esb-rest-of w h)))
+  (have p := (esk-parts _ _ _ _ _ _ (esb-rest-of w h)))
   (have m (forall [y :- Nat] (=> (= (ref-ok-k (:edges w) (:next-id w) y) true) (= (ref-ok-k (:edges w) (+ (:next-id w) 1) y) true))))
   (intros y hy) (exact (ref-ok-up _ _ _ y (Nat.le_succ _) hy))
   (have r (= (esb-rest (bump (scope-ins w sr))) true))
   (simp only [esb-rest bump scope-ins set-next-id set-scopes tbl-ins])
-  (exact (esk-intro _ _ _ _ _
+  (exact (esk-intro _ _ _ _ _ _
            (tbl-all-mono CleanupRow (crow-ok (:edges w) (:next-id w)) (crow-ok (:edges w) (+ (:next-id w) 1)) (crow-mono _ _ _ _ m) (:cleanup w) (And.left p))
            (tbl-all-mono RunRow (rrow-ok (:edges w) (:next-id w)) (rrow-ok (:edges w) (+ (:next-id w) 1))
              (fn [q :- RunRow, hq :- (= (rrow-ok (:edges w) (:next-id w) q) true)] (tbl-all-mono Nat _ _ m (run-stored q) hq)) (:runs w) (And.left (And.right p)))
            (all-cons ScopeRow (srow-ok (:edges w) (+ (:next-id w) 1)) sr _ (m (:parent sr) hp)
              (tbl-all-mono ScopeRow (srow-ok (:edges w) (:next-id w)) (srow-ok (:edges w) (+ (:next-id w) 1))
-               (fn [q :- ScopeRow, hq :- (= (srow-ok (:edges w) (:next-id w) q) true)] (m (:parent q) hq)) (:scopes w) (And.right (And.right p))))))
+               (fn [q :- ScopeRow, hq :- (= (srow-ok (:edges w) (:next-id w) q) true)] (m (:parent q) hq)) (:scopes w) (And.right (And.right p))))
+           (tbl-all-mono ForkRow (frow-ok (:edges w) (:next-id w)) _ (frow-mono _ _ _ _ m) (:forks w)
+             (esk-fparts _ _ _ _ _ _ (esb-rest-of w h)))))
   (exact (esb-intro _ (inv-scope-ins-fresh w sr hi (esb-sample w h)) r)))
 
 (override! ESB 't-open-scope-inv '[]
@@ -1908,15 +1936,26 @@
     (have aa := (anc-all-ok w (cleanup-base w hd) hsc))
     (simp only [cleanup-rows-in cleanup-contrib anc-close tbl-all-append b aa (ih hr (And.right hc) hsc) Bool.and_self])))
 
+(a/theorem fork-keep-ok [es :- (List EdgeRow), n :- Nat, fs :- (List ForkRow)]
+  (=> (= (tbl-all (frow-ok es n) fs) true) (= (tbl-all (ref-ok-k es n) (fork-keep fs)) true))
+  (induction fs)
+  (case [nil] (intro h) (simp only [fork-keep tbl-all]))
+  (case [cons f t ih]
+    (intro h) (simp only [tbl-all frow-ok Bool.and_eq_true] at h)
+    (simp only [fork-keep tbl-all (And.left (And.left h)) (And.right (And.left h)) (ih (And.right h)) Bool.and_self])))
+
 (a/theorem esb-edge-sep [w :- World] (=> (= (esb w) true) (= (tbl-all (edge-sep w) (:edges w)) true))
   (intro h)
-  (have p := (esk-parts _ _ _ _ _ (esb-rest-of w h)))
+  (have p := (esk-parts _ _ _ _ _ _ (esb-rest-of w h)))
   (have c := (crows-in-ok w (:cleanup w) (And.left (And.right p)) (And.left p) (And.right (And.right p))))
-  (have st0 (= (tbl-all (ref-ok-k (:edges w) (:next-id w)) (storage-gather w (live-list w))) true))
-  (simp only [storage-gather])
+  (have g0 (= (tbl-all (ref-ok-k (:edges w) (:next-id w)) (storage-gather0 w (live-list w))) true))
+  (simp only [storage-gather0])
   (apply (gather-all RunRow (stored-run (live-list w)) run-refs (ref-ok-k (:edges w) (:next-id w)) (:runs w)))
   (apply (tbl-all-mono RunRow (rrow-ok (:edges w) (:next-id w)) _ _ (:runs w) (And.left (And.right p))))
   (intros r hr) (simp only [rrow-ok run-stored tbl-all tbl-all-append Bool.and_eq_true] at hr) (simp only [run-refs]) (exact (And.right (And.right (And.right hr))))
+  (have f0 := (fork-keep-ok (:edges w) (:next-id w) (:forks w) (esk-fparts _ _ _ _ _ _ (esb-rest-of w h))))
+  (have st0 (= (tbl-all (ref-ok-k (:edges w) (:next-id w)) (storage-gather w (live-list w))) true))
+  (simp only [storage-gather tbl-all-append g0 f0 Bool.and_self])
   (have st (= (tbl-all (ref-ok-k (:edges w) (:next-id w)) (storage w)) true))
   (simp only [storage storage-with anc-close tbl-all-append st0 (anc-all-ok w (storage-gather w (live-list w)) (And.right (And.right p))) Bool.and_self])
   (apply all-of-mem) (intros e hm)

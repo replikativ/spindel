@@ -291,6 +291,13 @@
   (intro h) (exact (ga-sample w (And.left (p3b-parts w (p3l-p3b w h))))))
 (a/theorem p3l-gw [w :- World] (=> (= (p3l w) true) (= (gw-rest w) true))
   (intro h) (exact (gw-rest-of w (And.left (And.right (p3d-parts _ (p3l-p3d w h)))))))
+;; layer 1 creates no fork marker (gw); C1c stage B: so no marker is storage either
+(a/theorem p3l-forks-nil [w :- World] (=> (= (p3l w) true) (= (:forks w) (List.nil ForkRow)))
+  (intro h)
+  (have g := (p3l-gw w h))
+  (simp only [gw-rest gwk Bool.and_eq_true] at g)
+  (have fk := (And.left (And.right (And.right g))))
+  (cases hf (:forks w)) (case [nil] (rfl)) (case [cons a t] (rw [hf] at fk) (simp [forks-nil] at fk)))
 (a/theorem p3l-i1 [w :- World] (=> (= (p3l w) true) (= (lit-i1-scope w) true))
   (intro h) (exact (g1-rest-of w (And.right (p3e-parts _ (p3l-p3e w h))))))
 
@@ -516,8 +523,9 @@
   (cases hk)
   (case [inl a] (exact (reach-scope w y h (Iff.mp (in-live-iff w y (live-converged-all w)) a))))
   (case [inr b]
-    (simp [cleanup-rows cn cleanup-rows-in admitted a1 a2 a3 pn tbl-any storage storage-with storage-gather rn
-           tbl-gather anc-close anc-all reach-mem] at b)))
+    (have ef := (p3l-forks-nil w (And.left qi)))
+    (simp [cleanup-rows cn cleanup-rows-in admitted a1 a2 a3 pn tbl-any storage storage-with storage-gather storage-gather0
+           ef fork-keep rn tbl-gather anc-close anc-all reach-mem] at b)))
 
 ;; Theorem (closure): a quiet world with qinv holds only scopes: no computation (tombstones
 ;; included), task, run, source, edge, activation, resource, cleanup entry, publication or fork marker
@@ -704,8 +712,9 @@
   (cases hk)
   (case [inl a] (exact (Iff.mp (in-live-iff w y (live-converged-all w)) a)))
   (case [inr b]
-    (simp [cleanup-rows cn cleanup-rows-in admitted a1 a2 a3 pn tbl-any storage storage-with storage-gather rn
-           tbl-gather anc-close anc-all reach-mem] at b)))
+    (have ef := (p3l-forks-nil w (And.left qi)))
+    (simp [cleanup-rows cn cleanup-rows-in admitted a1 a2 a3 pn tbl-any storage storage-with storage-gather storage-gather0
+           ef fork-keep rn tbl-gather anc-close anc-all reach-mem] at b)))
 ;; live is the root scope
 (a/theorem live-root [w :- World, y :- Nat]
   (=> (= (qh w) true) (Reach (retain-succ w) (roots w) y) (= y root-scope-id))
