@@ -34,6 +34,7 @@ Feasibility notes: `../ansatz/.internal/design/spindel-v2-feasibility.md`.
 | `spindel.v2.idle` | I7 (idle shape) through the step: bundle `g7` (a7, dep/marked creditor awake, idle clean, slice-normal alive, observe host), companion `awo` (T6/T11/reactivation chains), cascade completeness for demote (`kdb`, `casc-kill`); `step-g7`, `step-lit-i7` | done (honest hyps ga, rule-r-safe) |
 | `spindel.v2.qworld` | C1 quiet half: bundle `gc` (every cleanup entry's run is a run row; `step-gc-rest`), `qinv` = p3l && K && gc && I3 (`step-qinv`, `qinv-empty`), the closure lemma `quiet-rows` (a quiet world with qinv holds only scopes), the refusal lemma `quiet-refused`, `quiet-step`, `quiet-stays` | done |
 | `spindel.v2.ledger` | C1c stage A (Z#70): derived completion ledger, `task-held`, `task-complete` (not held and no run scope row k + 2), `scope-complete` (no row); layer-2 host joins in sys.clj (`Cell.joins`, `sys-join`, `sys-deliver`, `complete-cell` delivers the rest) | defs only (theorems: later stage) |
+| `spindel.v2.lstab` | C1c stage A proof stage, stability: parametric bundle `gst k s` (k below the allocator and task k not held, s below the allocator and no scope row s), copied over raw/normalize with T12/T13/T14 task-row overrides; `step-gst`, `task-complete-stable`, `scope-complete-stable` | done |
 | `spindel.v2.tomb` | C1 Q6: tombstones are dormant. Bundle `gy y` (copy of the raw step and of normalization): every alive run's computation and every dep edge's creditor is no tombstone (`ta-one`, `dep-untomb`), nor is computation y; `gy 0` is in P3's round invariant `ri` (`refs-untomb`, the new premise of `filter-safe-of-refs`); `trc` (acts-alive && gy 0) is the round context the i10/i14/hmk2/hm18 normalization chains take; `step-gy`, `gy-empty` | done |
 | `spindel.v2.acyc` | Z#69: scope parents are acyclic. Bundle `gcy` = inv-sample && `gcy-rest` (every scope's parent below the allocator, `cy-par-below`; no scope on its own `scope-ancestors`, `scopes-acyclic`, equivalently no `Reach (scope-up w) (scope-up w y) y`); generic graph lemmas (sub-graph, fresh node, re-parenting outside the subtree); copy as i1's G1 with overrides at run creation, open-scope and detach; `step-gcy`, `step-acyc` / `acyc-empty` (from p3b), `step-acyclic`, `step-acyclic-reach` | done |
 | `spindel.v2.p3` | P3 complete: bundles `mdb` (marked edges are dep), `esb` (edge-sep: references are non-edge ids), `aha` (activation runs exist and are alive), round invariant `ri` -> every round filter-safe (`rule-r-safe-ri`); combined bundle `p3b` (ga, inv-rank, gl, g9, g7, mdb, esb, aha) with `step-p3b` and the step theorems with no honest hypothesis (`step-rule-r-safe`, `step-inv-total`, `step-acts-total`, `step-rank-total`, ...) | done |
@@ -1623,3 +1624,33 @@ only by a child's cleanup chain) is therefore not complete, as in the engine (it
 14. Pending joins at the completion of a born world: by the theorem above none should remain (every task complete).
     Is `complete-world!`'s delivery meant only for unborn instances (a tripwire candidate: assert nothing pending in a
     born world)?
+
+## C1c stage A, proof stage (2026-11-16, branch `formal/c1c-a-proofs`)
+
+### Engine session answers (questions 10-14)
+10. Intended: a complete world has every task and every NON-root scope complete. The root scope is never removed. A
+    computation run's scope (parent 0) is not the root and is included.
+11. The engine materializes a run scope only when it immediately owns something. Engine PR #275 adds `:materialized?`
+    per task to the sidecar; the oracle is to use it instead of inferring.
+12. Withdrawal is part of the contract: `on-joined` returns a withdraw fn (a host-side flag: no gate, no item).
+    Delivery is at most once (a CAS races withdrawal, the winner is final); a subscription withdrawn before delivery
+    never fires. #275 makes `:pending-joins` count only live joins and adds sample 33 (two joins, one withdrawn;
+    checkpoints 2, 1, 0; only the live one fires). Model: a host-side mark that delivery skips, a system operation,
+    not an Item.
+13. `on-joined` on a task of a collected world is unreachable in the engine; the model's refusal stays.
+14. For a BORN world nothing is pending at completion: once runs = 0 every task is done and every non-root scope
+    removed before completion, so only an unborn instance's copied tasks can be pending. To be a theorem.
+
+### Step 2: stability (spindel.v2.lstab)
+- Bundle `gst k s` = inv-sample && `gst-rest k s` (k < next-id, task k not held: no row, or result /= none and run 0;
+  s < next-id, no scope row s), parameters `tk9`/`sc9` (the copier puts parameters before the source binders, which
+  use `k` and `s`). Primitives: `*-ins-fresh` insert at next-id (> k, s), scope update/deletion/filter only keep or
+  remove rows, the allocator only grows. Task row updates take an extra argument (`th-row t = false -> th-row (f t)
+  = false`, rfl for every update that keeps result and run); the three that write them: `task-cancel-result`
+  (writes over none only, `gst-task-tcr`, patch of `inv-debtor-side`), `task-clear-run` (`gst-task-tcl`, patch of
+  `inv-clear-task-run`), and T12's `task-result-row res` (run kept, result tag ok/err from raw0's `complete-refused`
+  guard: overrides `gst-complete-body`, `gst-complete-raw`, `t12-gst` and the raw0 patch, as GL in spindel.v2.lit).
+- Theorems: `step-gst` (Rule R's honest hypothesis), `task-complete-stable` (p3b w, k + 2 < next-id, task-complete w k
+  -> task-complete after any step), `scope-complete-stable` (p3b w, s < next-id, scope-complete w s -> the same after
+  any step; the bundle at k = 0, which is never a row). No counterexample. A collected task row with its run scope
+  still present reads not held, so its completion is then "no scope row k + 2" (covered: the clauses are separate).
