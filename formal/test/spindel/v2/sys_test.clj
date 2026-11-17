@@ -21,7 +21,13 @@
     cinv-step-q cinv-wake-q cinv-resume-q cinv-merge-q cinv-publish-q cinv-abandon-q
     qsinv-init qpinv-none qsinv-step qsinv-wake qsinv-resume qsinv-merge qsinv-publish qsinv-abandon qsinv-accept
     qsinv-complete qsinv-drop qsinv-idle-release qsinv-release-unborn qsinv-activate qsinv-fork qsinv-fork-effect
-    qsinv-instantiate qpinv-publish qpinv-abandon])
+    qsinv-instantiate qpinv-publish qpinv-abandon
+    ;; C1c stage A, proof stage
+    jinv-init jinv-join jinv-deliver jinv-withdraw jinv-complete jinv-step jinv-publish jinv-abandon jinv-wake jinv-accept
+    jinv-release-unborn jinv-drop jinv-idle-release jinv-resume jinv-activate jinv-merge jinv-fork jinv-fork-effect
+    jinv-instantiate deliver-pending sinv-join sinv-deliver sinv-withdraw qsinv-join qsinv-deliver qsinv-withdraw
+    cinv-join cinv-deliver cinv-withdraw once-deliver once-withdraw once-complete once-join final-stays
+    complete-born-ledger born-complete-delivered born-abandon-none])
 
 (deftest theorems-kernel-checked
   (doseq [t theorems]

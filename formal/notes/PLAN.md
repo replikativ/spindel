@@ -1708,3 +1708,22 @@ only by a child's cleanup chain) is therefore not complete, as in the engine (it
 - Ansatz notes: constants are global by name (two namespaces may not define the same theorem name: `beq-comm`,
   `ids-len`, `runs-nodup` renamed `os-*`); `(simp only ...)` that turns a hypothesis into False errors instead of
   closing the goal (full `simp` closes); `cases` on `List.Mem` substitutes either variable (use an eliminator lemma).
+
+### Step 4: layer-2 joins (sys.clj)
+- `jinv cells`: every live cell is `jok`: complete -> no pending join; join ids distinct and below the number of
+  joins admitted; targets not 0. Kept by every system operation: `jinv-join`, `-deliver`, `-withdraw`, `-complete`,
+  `-step`, `-publish`, `-abandon`, `-wake`, `-accept`, `-release-unborn`, `-drop`, `-idle-release`, `-resume`,
+  `-activate`, `-merge`, `-fork`, `-fork-effect`, `-instantiate`; start: `jinv-init` (live cells have no joins).
+- `deliver-pending`: every pending join after `sys-deliver` has an incomplete target.
+- Frames (the world and every flag but the joins untouched): `sinv-join/-deliver/-withdraw`,
+  `cinv-join/-deliver/-withdraw`, `qsinv-join/-deliver/-withdraw`; `qpinv` reads publications only, which none of
+  the three touches (no lemma needed).
+- Delivery at most once: `jkeep js js2` (every non-pending join of js is in js2 as it is); `once-deliver`,
+  `once-withdraw`, `once-complete`, `once-join`; with distinct ids (jinv), `final-stays`: a delivered or withdrawn
+  join is the only join with its id afterwards, so the race's winner is final (no second delivery, a withdrawn
+  join never fires).
+- Question 10, layer 2: `complete-born-ledger` (qsinv, cinv, a live complete born cell -> every task id /= 0 and every
+  scope /= 2 complete in its world). Question 14: `born-complete-delivered` (qsinv, jinv, a live born cell with
+  complete-ready -> after sys-deliver no join is pending: every target is complete) and `born-abandon-none` (then
+  `complete-cell` changes no join): abandonment delivery is only ever needed for an unborn instance.
+- No earlier statement changed in this step.
