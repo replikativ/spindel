@@ -1130,14 +1130,18 @@
 
 (defn- remove-scope-if-empty!
   "T16/Z#18: a closed scope row goes once its subtree has no rows left. A run
-   scope stays while its run is in cleanup (T13 step 4, Z#52)."
+   scope stays while its run is in cleanup (T13 step 4, Z#52), and while a
+   counted fork it owns runs (C1c stage B: W-OWNED-N, or W-NORMALIZE in a
+   fork until its first turn)."
   [w s]
   (when (and (not (g s rw/S-OPEN))
              (not (g s rw/S-HELD))
              (not (g s rw/S-COMPLETE))          ; removed already (a double visit)
              (not= :root (g s rw/S-KIND))       ; the administrative allowance (I11a)
              (zero? (hs/oset-count (g s rw/S-TASKS)))
-             (zero? (acount (g s rw/S-CHILDREN))))
+             (zero? (acount (g s rw/S-CHILDREN)))
+             (not (contains? (g w rw/W-OWNED-N) (id-of s)))
+             (not (contains? (g w rw/W-NORMALIZE) (id-of s))))
     (unregister! w s)
     (s! s rw/S-COMPLETE true)                 ; C1c L1
     (when-let [k (rv w (g s rw/S-TASK))] (task-complete! w k))
@@ -1173,9 +1177,16 @@
 
 (defn- own-child!
   "F2: the fork marker of `child` in `w`, owned by `scope`, held strongly or
-   weakly (see above). An owner that has closed releases the child at once."
+   weakly (see above). An owner that has closed releases the child at once.
+   C1c stage B: a strong child (the fork effect's) of an open owner is
+   counted on its scope until the owner runs [:owned-done s child]."
   [w scope child strong?]
-  (accept-child! w child strong?)   ; C1 R2: counted until it completes
+  (let [early? (or (g w rw/W-RELEASED) (not (g scope rw/S-OPEN)))
+        sid (when (and strong? (not early?)) (id-of scope))]
+    (when sid
+      (let [m (g w rw/W-OWNED-N)]
+        (s! w rw/W-OWNED-N (assoc m sid [scope (inc (long (second (get m sid [nil 0]))))]))))
+    (accept-child! w child sid))      ; C1 R2: an obligation until it completes
   (if (or (g w rw/W-RELEASED) (not (g scope rw/S-OPEN)))
     (do (release-child! w child) child)
     (let [sid (id-of scope)
@@ -2591,7 +2602,7 @@
 
 (defn- ingress [w] (g w rw/W-INGRESS))
 
-(declare activate-dormant!)
+(declare activate-dormant! normalize!)
 
 (defn- run-turn!
   "H2: processes ingress items and internal work up to the budget. Returns
@@ -2602,6 +2613,7 @@
     ;; E4: an unborn instance commits host items only: its inherited work and
     ;; dormant resources wait for activate!
     (when (and (not unborn?) (or (g w rw/W-DORMANT) (g w rw/W-DISCHARGE))) (activate-dormant! w))
+    (when (and (not unborn?) (g w rw/W-NORMALIZE)) (normalize! w))
     (try
       (loop [n (gl w rw/W-BUDGET) unborn? unborn?]
         (if (zero? n)
@@ -4069,13 +4081,18 @@
 ;; child world it owns is complete or was collected. Cancellation settles at
 ;; once (T14); completion is when the work has physically stopped.
 
+(declare owned-done!)
+
 (defn- kid-done!
   "Child token `t` ends once (the child completed, or was collected): its
    owner's obligation ends. Runs outside every gate (an after-gate action or
-   a Cleaner)."
+   a Cleaner). A counted child (C1c stage B) also ends its count: the owner
+   runs [:owned-done s child], before which it cannot complete."
   [^objects t]
   (when (hs/flag-cas! (aget t 1) false true)
     (when-let [o (hs/deref-weak (aget t 0))]
+      (when-let [sid (aget t 2)]
+        (let [cid (aget t 3)] (internal! o #(owned-done! o sid cid))))
       (let [k (g o rw/W-KIDS)]
         (when (and (zero? (hs/kids-add! k -1)) (hs/kids-released? k))
           (internal! o #(maybe-complete! o)))))))
@@ -4103,12 +4120,36 @@
 
 (defn- maybe-complete!
   "W1: complete once released, with no unretired run and no owned child
-   left."
+   left; C1c stage B: no counted fork and nothing inherited to normalize."
   [w]
   (when (and (g w rw/W-RELEASED) (not (g w rw/W-COMPLETE))
              (zero? (gl w rw/W-RUNS))
-             (let [k (g w rw/W-KIDS)] (or (nil? k) (zero? (hs/kids-count k)))))
+             (let [k (g w rw/W-KIDS)] (or (nil? k) (zero? (hs/kids-count k))))
+             (nil? (g w rw/W-OWNED-N))
+             (nil? (g w rw/W-NORMALIZE)))
     (complete-world! w)))
+
+(defn- owned-done!
+  "C1c stage B: the counted child `cid` of scope `sid` completed or was
+   collected: the count drops, and the scope goes if nothing else keeps it
+   (Z#18). An internal item, accepted after release."
+  [w sid cid]
+  (let [m (g w rw/W-OWNED-N)]
+    (when-let [[s n] (get m sid)]
+      (s! w rw/W-OWNED-N (if (== 1 (long n)) (not-empty (dissoc m sid)) (assoc m sid [s (dec (long n))])))
+      (when (== 1 (long n)) (when-let [s (rv w s)] (remove-scope-if-empty! w s)))
+      (commit! w [:owned-done sid cid])
+      (maybe-complete! w))))
+
+(defn- normalize!
+  "C1c stage B: a fork's first turn (an instance's activation) drains the
+   counts it inherited: each owner scope goes if nothing else keeps it (Z#18)."
+  [w]
+  (when-let [m (g w rw/W-NORMALIZE)]
+    (s! w rw/W-NORMALIZE nil)
+    (doseq [s (vals m)] (when-let [s (rv w s)] (remove-scope-if-empty! w s)))
+    (commit! w [:normalize])
+    (maybe-complete! w)))
 
 (defn- kid-collected!
   "C1 R2: a fork or instance was collected (its world's single collection
@@ -4128,10 +4169,11 @@
 (defn- accept-child!
   "R2: owner `w` takes an obligation for `child` until its completion or its
    collection. A complete owner takes none. A child that is already done
-   (completed or collected) acknowledges at once."
-  [w child _strong?]
+   (completed or collected) acknowledges at once. `sid`: the scope it is
+   counted on (C1c stage B), or nil."
+  [w child sid]
   (when-not (g w rw/W-COMPLETE)
-    (let [t (object-array [(hs/weak w) (hs/flag false)])
+    (let [t (object-array [(hs/weak w) (hs/flag false) sid (g child rw/ID)])
           k (or (g w rw/W-KIDS)
                 (let [k (hs/kids)] (when (g w rw/W-RELEASED) (hs/kids-released! k)) (s! w rw/W-KIDS k) k))]
       (hs/kids-add! k 1)
@@ -4431,6 +4473,11 @@
     (s! c rw/W-CALLBACKS (alist))
     ;; lifecycle state is the world's own, never inherited (spec §8.1 D3)
     (s! c rw/W-OWNED nil)
+    ;; C1c stage B: the parent's counts are the child's to normalize, with
+    ;; what the parent itself has not normalized yet
+    (s! c rw/W-OWNED-N nil)
+    (s! c rw/W-NORMALIZE (not-empty (reduce-kv (fn [m sid [s _]] (assoc m sid s))
+                                               (or (g w rw/W-NORMALIZE) {}) (g w rw/W-OWNED-N))))
     (s! c rw/W-HOLDER nil)
     (s! c rw/W-AFTER (alist))
     (s! c rw/W-UNBORN false)
@@ -4496,6 +4543,7 @@
     (s! c rw/W-DRAINING false)
     (s! c rw/W-CALLBACKS (alist))
     (s! c rw/W-OWNED nil)
+    (s! c rw/W-OWNED-N nil)             ; a basis never runs: it has no counts, only W-NORMALIZE
     (s! c rw/W-HOLDER nil)
     (s! c rw/W-AFTER (alist))
     (s! c rw/W-UNBORN false)
@@ -4914,7 +4962,8 @@
              (sp-fire! w zid v))
            ;; the other inherited resources: this item is the first turn's
            ;; work, so they are settled here, not at a later turn entry
-           (when (and born? (or (g w rw/W-DORMANT) (g w rw/W-DISCHARGE))) (activate-dormant! w))))
+           (when (and born? (or (g w rw/W-DORMANT) (g w rw/W-DISCHARGE))) (activate-dormant! w))
+           (when (and born? (g w rw/W-NORMALIZE)) (normalize! w))))
   w)
 
 (defn offload [& _] (throw (ex-info "offload outside a body" {})))

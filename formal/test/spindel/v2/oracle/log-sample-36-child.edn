@@ -1,0 +1,151 @@
+[{:item [:schedule 5],
+  :accepted true,
+  :proj
+  {:scopes
+   {6 {:parent 2, :kind :run, :open true},
+    2 {:parent nil, :kind :root, :open true}},
+   :pubs {},
+   :pins {},
+   :next-id 13,
+   :sources
+   {3
+    {:owner 2,
+     :kind :deferred,
+     :state 0,
+     :version 0,
+     :open true,
+     :handles 1}},
+   :pending-act nil,
+   :tasks
+   {4 {:owner 2, :run 5, :inputs [4 5 6 7], :result nil, :handles 1}},
+   :comps {},
+   :released false,
+   :forks {},
+   :res {},
+   :runs
+   {5
+    {:effect-index 1,
+     :epoch 0,
+     :stamp 5,
+     :mode :normal,
+     :scope 6,
+     :act :active,
+     :finalizers [],
+     :slice true,
+     :resources [],
+     :of 4}},
+   :acts {},
+   :edges {},
+   :cleanup {}}}
+ {:item [:arm 5 :offload 9 13],
+  :accepted true,
+  :proj
+  {:scopes
+   {6 {:parent 2, :kind :run, :open true},
+    2 {:parent nil, :kind :root, :open true}},
+   :pubs {},
+   :pins {},
+   :next-id 16,
+   :sources
+   {3
+    {:owner 2,
+     :kind :deferred,
+     :state 0,
+     :version 0,
+     :open true,
+     :handles 1}},
+   :pending-act nil,
+   :tasks
+   {4 {:owner 2, :run 5, :inputs [4 5 6 7], :result nil, :handles 1}},
+   :comps {},
+   :released false,
+   :forks {},
+   :res {13 {:owner 5, :kind :offload, :at 1, :phase :armed}},
+   :runs
+   {5
+    {:effect-index 2,
+     :epoch 0,
+     :stamp 5,
+     :mode :normal,
+     :scope 6,
+     :act :parked,
+     :finalizers [],
+     :slice false,
+     :resources [13],
+     :of 4}},
+   :acts
+   {14
+    {:run 5,
+     :mode :one,
+     :members [[15 0]],
+     :slots [nil],
+     :remaining 1,
+     :cont 9}},
+   :edges
+   {15
+    {:baseline nil,
+     :marked false,
+     :cont :restart,
+     :phase :armed,
+     :creditor 14,
+     :seen nil,
+     :kind :wait,
+     :at 1,
+     :debtor 13}},
+   :cleanup {}}}
+ {:item [:release-world],
+  :accepted true,
+  :proj
+  {:scopes
+   {6 {:parent 2, :kind :run, :open false},
+    2 {:parent nil, :kind :root, :open false}},
+   :pubs {},
+   :pins {},
+   :next-id 17,
+   :sources {},
+   :pending-act nil,
+   :tasks
+   {4
+    {:owner 2,
+     :run 5,
+     :inputs [4 5 6 7],
+     :result [:err 1],
+     :handles 0}},
+   :comps {},
+   :released true,
+   :forks {},
+   :res {13 {:owner 5, :kind :offload, :at 1, :phase :cancelling}},
+   :runs
+   {5
+    {:effect-index 2,
+     :epoch 0,
+     :stamp 5,
+     :mode :unwinding,
+     :scope 6,
+     :act :done,
+     :finalizers [],
+     :slice false,
+     :resources [13],
+     :of 4}},
+   :acts {},
+   :edges {},
+   :cleanup {5 {:rows []}}}}
+ {:item [:resource-fire 13], :accepted false}
+ {:item [:resource-ack 13],
+  :accepted true,
+  :proj
+  {:scopes {2 {:parent nil, :kind :root, :open false}},
+   :pubs {},
+   :pins {},
+   :next-id 19,
+   :sources {},
+   :pending-act nil,
+   :tasks {},
+   :comps {},
+   :released true,
+   :forks {},
+   :res {},
+   :runs {},
+   :acts {},
+   :edges {},
+   :cleanup {}}}]

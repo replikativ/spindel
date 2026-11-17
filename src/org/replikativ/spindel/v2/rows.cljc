@@ -190,7 +190,9 @@
 (def ^:const W-OUTSTANDING 51)   ; every resource until its acknowledgement (all phases), by ID
 (def ^:const W-DISCHARGE 52)  ; a fork's inherited non-armed outstanding resources, acknowledged at its first turn
 (def ^:const W-JOIN-SUBS 53)  ; C1c: host join subscriptions {task id -> list of [live-flag cb]}, never inherited
-(def ^:const W-SIZE 54)
+(def ^:const W-OWNED-N 54)   ; C1c stage B: counted forks per owner scope {scope id -> [scope n]}, n > 0; never inherited
+(def ^:const W-NORMALIZE 55) ; C1c stage B: owner scopes a fork inherited counts on {scope id -> scope}, drained at its first turn
+(def ^:const W-SIZE 56)
 
 ;; Scope
 (def ^:const S-PARENT 2)

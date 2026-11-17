@@ -1,0 +1,104 @@
+[{:step :child-parked,
+  :log-length {:child 2, :parent 5},
+  :obs
+  {:child
+   {:scopes
+    {2 {:open? true, :present? true, :complete? false},
+     6 {:open? true, :present? true, :complete? false}},
+    :pending-joins 0,
+    :tasks
+    {4
+     {:done? false,
+      :retired? false,
+      :materialized? true,
+      :srow-present? true,
+      :complete? false}},
+    :token :installed,
+    :kids nil,
+    :complete? false,
+    :owned {},
+    :runs 1,
+    :normalize #{},
+    :released? false},
+   :parent
+   {:scopes
+    {2 {:open? true, :present? true, :complete? false},
+     6 {:open? true, :present? true, :complete? false}},
+    :pending-joins 0,
+    :tasks
+    {4
+     {:done? false,
+      :retired? false,
+      :materialized? true,
+      :srow-present? true,
+      :complete? false}},
+    :token nil,
+    :kids 1,
+    :complete? false,
+    :owned {6 1},
+    :runs 1,
+    :normalize #{},
+    :released? false}}}
+ {:step :task-returned,
+  :log-length {:child 3, :parent 9},
+  :obs
+  {:child
+   {:scopes
+    {2 {:open? false, :present? true, :complete? false},
+     6 {:open? false, :present? true, :complete? false}},
+    :pending-joins 0,
+    :tasks
+    {4
+     {:done? true,
+      :retired? false,
+      :materialized? true,
+      :srow-present? true,
+      :complete? false}},
+    :token :installed,
+    :kids nil,
+    :complete? false,
+    :owned {},
+    :runs 1,
+    :normalize #{},
+    :released? true},
+   :parent
+   {:scopes
+    {2 {:open? true, :present? true, :complete? false},
+     6 {:open? false, :present? true, :complete? false}},
+    :pending-joins 0,
+    :tasks
+    {4
+     {:done? true,
+      :retired? true,
+      :materialized? true,
+      :srow-present? true,
+      :complete? false}},
+    :token nil,
+    :kids 1,
+    :complete? false,
+    :owned {6 1},
+    :runs 0,
+    :normalize #{},
+    :released? false}}}
+ {:step :collected,
+  :log-length {:parent 11},
+  :obs
+  {:parent
+   {:scopes
+    {2 {:open? true, :present? true, :complete? false},
+     6 {:open? false, :present? false, :complete? true}},
+    :pending-joins 0,
+    :tasks
+    {4
+     {:done? true,
+      :retired? true,
+      :materialized? true,
+      :srow-present? false,
+      :complete? true}},
+    :token nil,
+    :kids 0,
+    :complete? false,
+    :owned {},
+    :runs 0,
+    :normalize #{},
+    :released? false}}}]

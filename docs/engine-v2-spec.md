@@ -239,7 +239,7 @@ prototypes are not acceptance evidence for this smaller operation API.
     make no row, edge, handle or id and no item, are admitted after release,
     and are not inherited by forks. Not covered (stage A): computations
     created in the body and the tasks they own (world completion only), and
-    forks owned by the task's scopes (stage B). `detach` is refused into a
+    forks owned by the task's scopes (stage B, Z#72). `detach` is refused into a
     scope of another world (family and lineage).
   - Z#71 (L12, W6, H2; a flaky merge test): engine metadata jobs (MVCC
     version pruning, handle-token drops, atom sweeps) are never ingress items
@@ -250,6 +250,23 @@ prototypes are not acceptance evidence for this smaller operation API.
     held. Before, version pruning was an ingress item, so a merge racing it
     saw a non-quiescent child, and a busy parent gate made `merge!` return
     false while the merge still ran later.
+  - Z#72 (C1c stage B, `c1c-task-joins-design.md` v4 L2, model
+    `spindel.v2.owned`): **owned-fork counts.** A fork made by the `(fork)`
+    effect while its world is live and the forking run's current scope `s`
+    is open is counted on `s` (W-OWNED-N) until it completes or is collected;
+    the owner then runs the internal item `[:owned-done s child]` (accepted
+    after release), which drops the count and applies Z#18 at `s`. Host
+    forks and instances are owned weakly by the root scope and are not
+    counted. A fork, savepoint basis or instance inherits the parent's
+    counted scopes, with what the parent has not normalized yet, as
+    W-NORMALIZE; it drains them at its first turn (an instance at its
+    activation) with `[:normalize]`, applying Z#18 at each. Z#18 keeps a
+    scope with a count or in W-NORMALIZE, so a task joins (Z#70) only after
+    the forks its scopes own. W1: a world completes only with no count and
+    an empty W-NORMALIZE; `[:owned-done]` and `[:normalize]` re-check it. A
+    host item may precede the first-turn drain (the inline fast path), and
+    the release of a child may precede its owner's `[:owned-done]`: neither
+    completes a world early.
 
 Once approved, this document is the normative contract for the v2 engine. It
 supersedes `engine-formalism.md` Part 4 and `engine-memory-v2.md`. Parts 1–3

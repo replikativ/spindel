@@ -299,7 +299,7 @@
         fc (o/fork-child (nth (:worlds pr) (dec at)) r)
         cr (o/replay cl :family? true :init (:world fc))]
     (is (= [:fork 11 16] (:item (nth pl at))) "ids 13-15 are the child's resource, activation and edge")
-    (is (= [20 0 0] ((juxt :checked :n-divergences :resyncs) pr)) "the parent: its run keeps the slice across the fork")
+    (is (= [21 0 0] ((juxt :checked :n-divergences :resyncs) pr)) "the parent: its run keeps the slice across the fork")
     (is (true? (:accepted fc)) "the child's run is parked at the effect and resumed")
     (is (= [:schedule 11] (:item (nth cl 1))) "the child's copy of the run gets its slice")
     (is (= [:release-world] (:item (peek cl))) "the owner scope's close releases the child")
@@ -447,6 +447,45 @@
    "32" {:w {:log (log "32-w") :kind :root :joins [[:joined-after-release 3]]}}
    "33" {:w {:log (log "33-w") :kind :root :joins [[:two-joins 4] [:two-joins 4]] :withdraw [[:one-withdrawn 0]]}}})
 
+;; C1c stage B samples 34-38 (spec Z#72, generator oracle/gen/samples-c1c-b.clj): the items
+;; `[:owned-done s child]` and `[:normalize]`; the sidecars add per world :owned {s n} (W-OWNED-N) and
+;; :normalize #{s} (W-NORMALIZE), read under the gate without a turn.
+;;   34  task 4 forks; it returns while the fork runs: run scope 6 closed and kept by the count, task 4
+;;       done but not complete until the child completes and the parent runs [:owned-done 6 10]
+;;   35  the counted child parks on an external operation that ignores cancellation; released, it is
+;;       collected: [:owned-done 6 10] (the parent is not released: the model does not see the collection)
+;;   36  two host forks while the count keeps scope 6: :touched drains at its first turn (a host item),
+;;       :untouched is released first (Q15: [:release-world] then [:normalize], then completion)
+;;   37  Q16: the parent's release and its run's retirement precede [:owned-done]; complete after it
+;;   38  a savepoint while the count keeps scope 6: the instance inherits it and drains at activation
+;; Not yet in `c1-samples` (oracle gaps, model side): (A) a fork effect's child inherits its run scope's
+;; materialization (current-scope! before the boundary), the sidecar's :materialized? is true, the oracle reads
+;; the child's own log only; (B) ids come from the family counter (`alloc-id!`, W-NEXT), so the id-less
+;; [:owned-done]/[:normalize] see next-id jumps from relatives (36 :touched, 38 :parent); (C) 35: the model
+;; refuses [:arm r :external ...] in the child, and does not see the collection (:kids 0 against 1).
+;; The stage B fields themselves (:owned, :normalize) match the model in every sample.
+(def ^:private c1c-b-specs
+  {"34" (let [p (log "34-parent")]
+          {:parent {:log p :kind :root}
+           :child {:log (log "34-child") :from :parent :kind :fork :at (c1-idx p #(= :fork (first %)))}})
+   "35" (let [p (log "35-parent")]
+          {:parent {:log p :kind :root}
+           :child {:log (log "35-child") :from :parent :kind :fork :at (c1-idx p #(= :fork (first %)))}})
+   "36" (let [p (log "36-parent") fh (keep-indexed (fn [i c] (when (= :fork-host (first (:item c))) i)) p)]
+          {:parent {:log p :kind :root}
+           :child {:log (log "36-child") :from :parent :kind :fork :at (c1-idx p #(= :fork (first %)))}
+           :touched {:log (log "36-touched") :from :parent :kind :fork-host :at (first fh)}
+           :untouched {:log (log "36-untouched") :from :parent :kind :fork-host :at (second fh)}})
+   "37" (let [p (log "37-parent")]
+          {:parent {:log p :kind :root}
+           :child {:log (log "37-child") :from :parent :kind :fork :at (c1-idx p #(= :fork (first %)))}})
+   "38" (let [p (log "38-parent")]
+          {:parent {:log p :kind :root}
+           :child {:log (log "38-child") :from :parent :kind :fork :at (c1-idx p #(= :fork (first %)))}
+           :instance {:log (log "38-instance") :from :parent :kind :instance
+                      :at (c1-idx p #(= [:arm :savepoint] [(first %) (nth % 2 nil)]))}})})
+
+
 (deftest c1-samples
   (doseq [[n spec] (merge c1-specs c1c-specs)]
     (let [fam (o/replay-family spec)
@@ -483,3 +522,24 @@
         "31b: the abandoned join is delivered with the instance's completion")
     (is (false? (get-in (at "31b" :instance-complete :instance) [:tasks 3 :complete?])) "31b: task 3 itself never completes")
     (is (= [[:release-world]] (map :item (log "31b-instance"))))))
+
+(deftest c1c-b-sample-shapes
+  (let [obs (fn [n] (o/read-observations (str "test/spindel/v2/oracle/log-sample-" n "-observations.edn")))
+        at (fn [n step k] (get-in (first (filter #(= step (:step %)) (obs n))) [:obs k]))
+        items (fn [n] (mapv :item (log n)))
+        b-items (fn [n] (filterv #(#{:owned-done :normalize :release-world} (first %)) (items n)))]
+    (doseq [n ["34" "35" "36" "37" "38"] c (obs n) [k e] (:obs c)]
+      (is (every? #(contains? e %) [:owned :normalize]) (str "sample " n " " (:step c) " " k ": stage B fields")))
+    (is (= [[:owned-done 6 10] [:release-world]] (b-items "34-parent")))
+    (is (= [{6 1} false] ((juxt :owned #(get-in % [:tasks 4 :complete?])) (at "34" :task-returned :parent)))
+        "34: the task returned, its fork runs: the count keeps scope 6, task 4 is not complete")
+    (is (= [{} true] ((juxt :owned #(get-in % [:tasks 4 :complete?])) (at "34" :owned-done :parent))))
+    (is (= [[:owned-done 6 10]] (b-items "35-parent")) "35: the collection ends the count")
+    (is (= #{6} (:normalize (at "36" :forked :touched)) (:normalize (at "36" :forked :untouched))))
+    (is (= [[:normalize] [:release-world]] (b-items "36-touched")))
+    (is (= [[:release-world] [:normalize]] (b-items "36-untouched")) "36: Q15, the release before the drain")
+    (is (= [:complete :release-world :owned-done] (take-last 3 (map first (items "37-parent")))) "37: Q16 ordering")
+    (is (= #{6} (:normalize (at "38" :instantiated :instance))))
+    (is (= [[:normalize] [:release-world]] (b-items "38-instance")) "38: the drain at activation")
+    (is (= [[:owned-done 12 16]] (filterv #(= :owned-done (first %)) (items "15-parent"))) "15 regenerated")
+    (is (= [[:owned-done 5 9]] (filterv #(= :owned-done (first %)) (items "22-parent"))) "22 regenerated")))
