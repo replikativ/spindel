@@ -189,7 +189,8 @@
 (def ^:const W-COMPLETE-SUBS 50) ; host terminal subscriptions [live-flag cb], never inherited
 (def ^:const W-OUTSTANDING 51)   ; every resource until its acknowledgement (all phases), by ID
 (def ^:const W-DISCHARGE 52)  ; a fork's inherited non-armed outstanding resources, acknowledged at its first turn
-(def ^:const W-SIZE 53)
+(def ^:const W-JOIN-SUBS 53)  ; C1c: host join subscriptions {task id -> list of [live-flag cb]}, never inherited
+(def ^:const W-SIZE 54)
 
 ;; Scope
 (def ^:const S-PARENT 2)
@@ -197,11 +198,13 @@
 (def ^:const S-OPEN 4)
 (def ^:const S-TASKS 5)      ; running tasks owned by the scope
 (def ^:const S-CHILDREN 6)   ; child scopes (explicit scopes, run scopes of owned tasks)
-(def ^:const S-WORLD 7)
+(def ^:const S-WORLD 7)      ; the creating world's family (detach validation)
 (def ^:const S-SOURCES 8)    ; weak refs to sources owned by the scope, closed with it (T16, Z#18)
 (def ^:const S-PRUNE 9)      ; prune threshold for S-SOURCES
 (def ^:const S-HELD 10)      ; a run scope whose run is not retired (Z#52)
-(def ^:const S-SIZE 11)
+(def ^:const S-TASK 11)      ; C1c: a run scope's task, recorded when the scope is materialized
+(def ^:const S-COMPLETE 12)  ; C1c: the scope row was removed (Z#18); set once
+(def ^:const S-SIZE 13)
 
 ;; Debtor rows (computation, source, task)
 (def ^:const WORLD 2)
@@ -248,7 +251,9 @@
 (def ^:const K-FRAME 18)     ; as C-FRAME
 (def ^:const K-PATH 19)      ; as C-PATH
 (def ^:const K-LINK 20)      ; a realizer task: the link it realizes (C0)
-(def ^:const K-SIZE 21)
+(def ^:const K-SROW 21)      ; C1c: its run's scope row, once materialized (outlives the run)
+(def ^:const K-COMPLETE 22)  ; C1c: done, run retired, run scope removed or never made; set once
+(def ^:const K-SIZE 23)
 
 ;; Source
 (def ^:const X-KIND 12)

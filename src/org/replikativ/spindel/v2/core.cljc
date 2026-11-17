@@ -170,6 +170,7 @@
     (s! s rw/ID id)
     (s! s rw/S-PARENT parent)
     (s! s rw/S-KIND kind)
+    (s! s rw/S-WORLD (g w rw/W-FAMILY))     ; its world family (forks share it)
     (s! s rw/S-OPEN true)
     (s! s rw/S-TASKS (hs/oset))
     (s! s rw/S-CHILDREN (alist))
@@ -1083,7 +1084,29 @@
             s (new-scope w (g r rw/R-SCOPE) :run parent)]
         (s! s rw/S-HELD true)
         (s! r rw/R-SROW s)
+        (when (task? x)                     ; C1c: the task completes with this scope
+          (s! s rw/S-TASK x)
+          (s! x rw/K-SROW s))
         s)))
+
+(defn- deliver-subs!
+  "Runs each live subscription [live cb] of `subs` once, after the gate."
+  [w subs]
+  (doseq [[live cb] subs]
+    (when (hs/flag? live) (aadd! (g w rw/W-AFTER) #(when (hs/flag-cas! live true false) (cb))))))
+
+(defn- task-complete!
+  "C1c L1: task `k` is complete once done, its run retired, and its run
+   scope removed or never materialized. Set once; its host joins fire."
+  [w k]
+  (when (and (g k rw/K-DONE) (not (g k rw/K-COMPLETE)) (nil? (rv w (g k rw/K-RUN)))
+             (let [s (rv w (g k rw/K-SROW))] (or (nil? s) (g s rw/S-COMPLETE))))
+    (s! k rw/K-COMPLETE true)
+    (when-let [m (g w rw/W-JOIN-SUBS)]
+      (let [id (g k rw/ID)]
+        (when-let [subs (get m id)]
+          (s! w rw/W-JOIN-SUBS (dissoc m id))
+          (deliver-subs! w subs))))))
 
 (defn- current-scope!
   "The innermost open explicit scope of the run, else its run scope."
@@ -1099,10 +1122,13 @@
   [w s]
   (when (and (not (g s rw/S-OPEN))
              (not (g s rw/S-HELD))
+             (not (g s rw/S-COMPLETE))          ; removed already (a double visit)
              (not= :root (g s rw/S-KIND))       ; the administrative allowance (I11a)
              (zero? (hs/oset-count (g s rw/S-TASKS)))
              (zero? (acount (g s rw/S-CHILDREN))))
     (unregister! w s)
+    (s! s rw/S-COMPLETE true)                 ; C1c L1
+    (when-let [k (rv w (g s rw/S-TASK))] (task-complete! w k))
     (when-let [p (rv w (g s rw/S-PARENT))]
       (let [cs (gm p rw/S-CHILDREN)
             i (idx-of cs s)]
@@ -1210,11 +1236,13 @@
       (close-scope! w s))
     (unregister! w r)
     (s! w rw/W-RUNS (dec (gl w rw/W-RUNS)))     ; C1 W1
-    (maybe-complete! w)
-    ;; the tombstone and its owner chain go with the run (Z#56)
+    (when (task? x) (task-complete! w x))       ; C1c L1: if its run scope is gone
+    ;; the spent task and its owner chain go with the run (Z#56)
     (when (and (task? x) (g x rw/K-DONE)) (release-ownership! w x))
     ;; a computation kept only as this run's tombstone (§3.2) goes now
-    (when (and (comp? x) (zero? (gl x rw/REFS)) (zero? (gl x rw/HANDLES))) (aadd! (g w rw/W-RQ) x))))
+    (when (and (comp? x) (zero? (gl x rw/REFS)) (zero? (gl x rw/HANDLES))) (aadd! (g w rw/W-RQ) x))
+    ;; last: a complete world implies every task in it is complete (C1c)
+    (maybe-complete! w)))
 
 (defn- fins ^long [r] (let [n (g r rw/R-FINS)] (if n (long n) 0)))
 
@@ -1374,6 +1402,7 @@
     (s! k rw/VERSION (inc (gl k rw/VERSION)))
     (settle! w k)
     (when-not (rv w (g k rw/K-RUN))
+      (task-complete! w k)
       (release-ownership! w k))))
 
 (defn- complete!
@@ -4053,7 +4082,12 @@
       (s! w rw/W-COMPLETE-SUBS nil)
       (dotimes [i (acount subs)]
         (let [[live cb] (anth subs i)]
-          (when (hs/flag? live) (aadd! (g w rw/W-AFTER) #(when (hs/flag-cas! live true false) (cb)))))))))
+          (when (hs/flag? live) (aadd! (g w rw/W-AFTER) #(when (hs/flag-cas! live true false) (cb)))))))
+    ;; C1c: host joins still pending name tasks that never run again (an
+    ;; unborn instance's copies): abandoned, delivered with the world
+    (when-let [m (g w rw/W-JOIN-SUBS)]
+      (s! w rw/W-JOIN-SUBS nil)
+      (doseq [subs (vals m)] (deliver-subs! w subs)))))
 
 (defn- maybe-complete!
   "W1: complete once released, with no unretired run and no owned child
@@ -4147,6 +4181,52 @@
       (when (holding-gate?) (throw (ex-info "blocking await-complete while processing a world (B7)" {})))
       (let [p (promise)
             withdraw (on-complete w #(deliver p true))]
+        (if timeout-ms
+          (let [r (deref p timeout-ms ::timeout)]
+            (if (= ::timeout r) (do (withdraw) timeout-val) true))
+          @p)))))
+
+(defn on-joined
+  "C1c: calls `(cb)` once, after the gate, when task `h` is complete: done,
+   its run retired, and everything its run scope owned gone (its child tasks
+   and explicit scopes; not computations, nor forks it owns: stage B). At
+   once if it is, or if its world is complete (a task that never runs again,
+   as in an unborn instance, is abandoned with its world). Makes no row, edge
+   or handle; accepted after release. Returns a fn that withdraws it."
+  [h cb]
+  (let [x (when (instance? Handle h) (aget ^objects (.-cell ^Handle h) 0))]
+    (when-not (and (instance? Handle h) (or (nil? x) (task? x)))   ; nil: not yet bound (H1)
+      (throw (ex-info "on-joined: not a task handle" {:spindel/invalid :join}))))
+  (let [w (world-of h)
+        live (hs/flag true)]
+    (internal-after! w (fn []
+                         (let [k (row-of h)]
+                           (cond
+                             (not (and k (task? k))) nil   ; an unbound handle that named no task
+                             (or (g k rw/K-COMPLETE) (g w rw/W-COMPLETE))
+                             (deliver-subs! w [[live cb]])
+                             :else
+                             (let [m (or (g w rw/W-JOIN-SUBS) {})
+                                   id (g k rw/ID)
+                                   subs (get m id [])
+                                   ;; withdrawn entries are pruned as the list grows
+                                   subs (if (and (>= (count subs) 16) (zero? (mod (count subs) 16)))
+                                          (filterv (comp hs/flag? first) subs)
+                                          subs)]
+                               (s! w rw/W-JOIN-SUBS (assoc m id (conj subs [live cb]))))))))
+    (fn [] (hs/flag-set! live false) nil)))
+
+#?(:clj
+   (defn await-joined
+     "JVM host: blocks until task `h` is complete (`on-joined`); with a
+      timeout, returns `timeout-val` if it is not in time (and withdraws).
+      Returns true."
+     ([h] (await-joined h nil nil))
+     ([h timeout-ms timeout-val]
+      (when (active-run) (throw (ex-info "blocking await-joined inside a body (B7)" {})))
+      (when (holding-gate?) (throw (ex-info "blocking await-joined while processing a world (B7)" {})))
+      (let [p (promise)
+            withdraw (on-joined h #(deliver p true))]
         (if timeout-ms
           (let [r (deref p timeout-ms ::timeout)]
             (if (= ::timeout r) (do (withdraw) timeout-val) true))
@@ -4274,11 +4354,13 @@
   (let [w (world-of h)]
     (gated w
            (let [k (row-of h)
-                 s (rv w s)                  ; e.g. (root-scope w): a raw row pointer
+                 family? (identical? (g s rw/S-WORLD) (g w rw/W-FAMILY))
+                 s (if family? (rv w s) s)   ; e.g. (root-scope w): a raw row pointer
                  old (rv w (g k rw/OWNER))
                  rs (when-let [kr (rv w (g k rw/K-RUN))] (rv w (g kr rw/R-SROW)))]
              (if (or (g k rw/K-DONE) (not (g s rw/S-OPEN))
                      (not (and old (not (fn? old)) (== rw/T-SCOPE (gl old rw/TYPE))))
+                     (not (and family? (inherited? w s)))   ; C1c: a scope of this world
                      (and rs (within? w s rs)))
                (refuse! w [:detach (g k rw/ID) (g s rw/ID)])
                (do
@@ -4365,6 +4447,7 @@
     (s! c rw/W-KID-TOKEN (hs/kid-cell))
     (s! c rw/W-COMPLETE false)
     (s! c rw/W-COMPLETE-SUBS nil)
+    (s! c rw/W-JOIN-SUBS nil)
     (s! c rw/W-PENDING-ACT nil)
     (s! c rw/W-MBASE nil)
     (s! c rw/W-MPARENT nil)
@@ -4420,6 +4503,7 @@
     (s! c rw/W-KID-TOKEN (hs/kid-cell))
     (s! c rw/W-COMPLETE false)
     (s! c rw/W-COMPLETE-SUBS nil)
+    (s! c rw/W-JOIN-SUBS nil)
     (s! c rw/W-PENDING-ACT nil)
     (s! c rw/W-MBASE nil)
     (s! c rw/W-MPARENT nil)
