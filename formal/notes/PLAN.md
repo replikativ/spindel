@@ -1573,5 +1573,53 @@ only by a child's cleanup chain) is therefore not complete, as in the engine (it
 - Host joins are not in the log: the family spec lists them (`:joins [[world step target]]`: registered before
   checkpoint `step`).
 
+### Results
+- Commits: 661415c (this plan), ee2fddc (`spindel.v2.ledger`), e1c1078 (sys.clj host joins), 0f3500d (oracle,
+  samples 29-32), b38bf56 (tests).
+- Every namespace loads (no item, no layer-1 transition changed; sys.clj re-checks with the new Cell field). No
+  `sorry`. **No theorem statement changed.** Definitions changed: `Cell` (new last field `joins`) and its
+  constructors (`cell-step`, `wake-cell`, `accept-cell`, `release-unborn-cell`, `drop-cell`, `resume-cell`,
+  `act-cell`, `merge-cell` keep `joins`; `fork-cell`, `fork-effect-cell`, `inst-cell` start with none;
+  `complete-cell` empties it). New: ledger `task-srow`, `task-held`, `task-complete`, `scope-complete`; sys
+  `join-pending`, `join-cell`, `join-ok`, `sys-join`, `deliver-cell`, `sys-deliver`.
+- Oracle: samples 29, 30, 31a, 31b (family, instance at `[:arm 4 :savepoint]`) and 32 replay with 0 divergences, and
+  `check-observations` gives [] on every field, the C1c ones included (key sets of `:tasks`/`:scopes` exact). Checked
+  not vacuous: dropping a join from the spec, or freezing the model's worlds, gives mismatches. Every earlier sample
+  replays as before. The sidecars and the model agree everywhere; no side to pick.
+- Tests: engine_test `c1c-completion-ledger` (the three conditions; P > E > C > G with G's offload: P, C and the
+  scopes P+2, E, C+2 complete only in the step that retires G; G's unmaterialized run scope goes with G; the root
+  scope never completes); sys_test `c1c-join-delivered-at-target-completion`, `c1c-abandoned-join-delivered-at-completion`
+  (E4 instance), `c1c-join-after-release` (admitted after release; at once on a complete target or world; refused
+  for an unallocated id or a collected world), `c1c-joins-not-inherited` (fork, fork effect, instance); oracle_test
+  `c1c-sample-shapes`.
+- Fresh-JVM `clojure -M:test` (2026-11-16, after C1c stage A): 254 tests, 207,529 assertions, 0 failures, 0 errors.
+
+### Theorems for the proof stage (not started)
+- Stability: `task-complete w k -> task-complete (step w it) k` for a task id k (k + 2 < next-id): a scope id is never
+  re-inserted (scope creation takes next-id; ids below the allocator), a task row with a result keeps it and run 0
+  stays 0 (tasks never restart; re-spawn adoption creates no run), no task row reappears. Same for
+  `scope-complete`. Through Rule R: the filter only removes.
+- Complete world => every task and every non-root scope complete: `quiet-rows` gives no task row (not held); what is
+  missing is "a quiet qinv world holds the root scope only" (live = roots = the root scope, as no open explicit scope
+  survives its run: needs an invariant that an open explicit scope lies in the run-scope subtree of an alive run).
+- Layer 2: `jinv` (a complete cell has no pending join; after `sys-deliver` every pending target is incomplete); frames
+  (`sys-join`/`sys-deliver` keep sinv, cinv, qsinv, qpinv: the world is untouched); delivery exactly once (an entry
+  leaves only by `sys-deliver`/`complete-cell` and the list grows only by `sys-join`); abandonment is only ever
+  needed for an unborn cell (a born complete cell's targets are complete, by the previous theorem).
+
 ### Questions (engine session), C1c stage A
-(filled in after the replay)
+10. The root scope is never removed (Z#56), so it is never complete, also in a complete world (every sidecar shows
+    scope 2 present after completion). The statement "a complete world has every task and scope complete" then
+    reads "every task and every non-root scope". Intended?
+11. Materialization: the oracle infers a materialized run scope from what it has owned (a task, a source, a
+    computation, a child scope, a fork marker). Does `run-scope!` materialize in any other case? If so,
+    `:srow-present?` and the scope key set could differ on a future sample; an `:materialized?` per scope (or the
+    S-TASK presence) in the sidecar would make the comparison independent of the inference.
+12. `:pending-joins` counts every entry of W-JOIN-SUBS, withdrawn ones included (pruned lazily, every 16). The model
+    has no withdrawal (host side). Should the sidecar count live subscriptions only, and is withdrawal meant to be
+    modelled?
+13. `on-joined` on a task of a world that was collected (idle release, merge): the model refuses it (nothing ever
+    delivered). What does the engine do (deliver, as the world is gone, or never)?
+14. Pending joins at the completion of a born world: by the theorem above none should remain (every task complete).
+    Is `complete-world!`'s delivery meant only for unborn instances (a tripwire candidate: assert nothing pending in a
+    born world)?
