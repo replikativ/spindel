@@ -227,6 +227,20 @@ prototypes are not acceptance evidence for this smaller operation API.
     parent chain). Otherwise re-parenting the run scope under `S` closes a
     cycle and neither scope is ever removed. Invariant: scope parents are
     acyclic.
+  - Z#70 (C1c stage A, user decision 2026-11-16, `c1c-task-joins-design.md`
+    v4, `c1c-options-evaluation.md`): **task completion.** A task is complete
+    when it is done, its run has retired (T13) and its run scope was removed
+    (Z#18) or never materialized; a scope is complete when its row is
+    removed. Both are derived from the scope tree and stable. A run scope
+    records its task when it is materialized. In T13, world completion (W1) is
+    checked last, so a complete world implies every task in it is complete.
+    Host `on-joined(K, cb)` / `await-joined` deliver once K is complete, or
+    once its world is (an unborn instance's tasks never run: abandoned). They
+    make no row, edge, handle or id and no item, are admitted after release,
+    and are not inherited by forks. Not covered (stage A): computations
+    created in the body and the tasks they own (world completion only), and
+    forks owned by the task's scopes (stage B). `detach` is refused into a
+    scope of another world (family and lineage).
 
 Once approved, this document is the normative contract for the v2 engine. It
 supersedes `engine-formalism.md` Part 4 and `engine-memory-v2.md`. Parts 1–3
