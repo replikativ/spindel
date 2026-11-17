@@ -223,6 +223,27 @@
     (v2/value a 1000 ::timeout)
     {:a a :k k}))
 
+(deftest detach-into-own-subtree-is-refused
+  ;; Z#69: a task detached into a scope below its own run scope would make the
+  ;; scope tree cyclic, and neither scope could ever be removed
+  (checked
+   (let [w (vworld)]
+     (binding [v2/*world* w]
+       (let [sa (promise) gate (v2/deferred)
+             j (task (let [s (v2/open-scope!)]
+                       (deliver sa s)
+                       (await gate)
+                       (v2/close-scope-fx! s)
+                       :j))
+             s (deref sa 1000 nil)]
+         (v2/detach! j s)                            ; refused: s is j's own scope
+         (v2/deliver! gate :go)
+         (is (= [:ok :j] (outcome (do (v2/value j 1000 ::timeout) j))))
+         (Thread/sleep 50)
+         (is (= 1 (:scopes (census w))) "j's run scope and its explicit scope are removed")
+         (is (some #(and (= :detach (first (:item %))) (false? (:accepted %))) (verify/log w))
+             "the detach into its own subtree is a refusal entry"))))))
+
 (deftest cleanup-retains-current-ancestors
   (checked
    (let [w (vworld) hold (promise)]

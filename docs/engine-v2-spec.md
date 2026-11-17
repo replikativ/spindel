@@ -222,6 +222,11 @@ prototypes are not acceptance evidence for this smaller operation API.
     quiet. A Z#40 effect on a row Rule R already removed (a finalizer still
     holding a handle T21 revoked) reaches nobody and is not an item; the
     engine cannot record a finalizer's refs (§3.2 X#7) and relies on this.
+  - Z#69 (Q10, Z#41; found by the C1c model check): `detach(K, S)` is refused
+    when `S` lies in `K`'s own run-scope subtree (`K`'s run scope is on `S`'s
+    parent chain). Otherwise re-parenting the run scope under `S` closes a
+    cycle and neither scope is ever removed. Invariant: scope parents are
+    acyclic.
 
 Once approved, this document is the normative contract for the v2 engine. It
 supersedes `engine-formalism.md` Part 4 and `engine-memory-v2.md`. Parts 1–3
@@ -952,7 +957,7 @@ resource acknowledgement (T15), operation completion (T25), finalizer exit
 | Creator | Created computation | Created source | Spawned task |
 |---|---|---|---|
 | computation run | in `basis` with `at`; owner is the computation | in `basis` with `at`; owner is the computation | in `basis` with `at`; owner is the computation; cancelled if a later run does not re-spawn it |
-| task run | owner is the run scope; retained while running or until consumed | owner is the run scope; retained by edges and handles only | structured child of the run scope (Q10); `detach` re-owns it to a named outer scope |
+| task run | owner is the run scope; retained while running or until consumed | owner is the run scope; retained by edges and handles only | structured child of the run scope (Q10); `detach` re-owns it to a named open scope outside its own run-scope subtree (Z#69) |
 | top level | owner is the current scope | owner is the current scope | owner is the current scope |
 
 **Errors.**
