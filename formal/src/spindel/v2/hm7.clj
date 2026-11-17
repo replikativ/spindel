@@ -205,7 +205,7 @@
   (intro h)
   (have pb := (p3b-parts w (p3la-p3b w h)))
   (have rp := (ri-parts w (And.right (And.right (And.right (And.right pb))))))
-  (exact (And.right (And.right (And.right rp)))))
+  (exact (And.left (And.right (And.right (And.right rp))))))
 
 (a/theorem h3-react-loop-p3la [xm :- (List Nat), fuel :- (List Nat), w :- World, q :- (List Nat)]
   (=> (= (p3la w) true) (= (h3 xm w) true) (= (h3 xm (react-loop fuel w q)) true))

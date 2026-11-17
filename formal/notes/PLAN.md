@@ -32,6 +32,10 @@ Feasibility notes: `../ansatz/.internal/design/spindel-v2-feasibility.md`.
 | `spindel.v2.inv` | predicates for I1/I5/I7/I9/I10/I11a (tripwire `inv-all`), counterexamples to literal I1/I5/I7/I8/I9/I10, I13 guards, L1, I10 D0 (`step-i10-slice`), I9 (`step-i9`), I5 wait half (`step-i5-wait`) | in progress |
 | `spindel.v2.lit` | literal invariants through `world-step`: I10 task part (`step-lit-i10-task`, bundle `gl`), I9 resources (`step-lit-i9-res`, bundle `g9`); P3 core `filter-safe-of-refs`; copier `lcopy!` with source patches (`patch!`) | in progress |
 | `spindel.v2.idle` | I7 (idle shape) through the step: bundle `g7` (a7, dep/marked creditor awake, idle clean, slice-normal alive, observe host), companion `awo` (T6/T11/reactivation chains), cascade completeness for demote (`kdb`, `casc-kill`); `step-g7`, `step-lit-i7` | done (honest hyps ga, rule-r-safe) |
+| `spindel.v2.qworld` | C1 quiet half: bundle `gc` (every cleanup entry's run is a run row; `step-gc-rest`), `qinv` = p3l && K && gc && I3 (`step-qinv`, `qinv-empty`), the closure lemma `quiet-rows` (a quiet world with qinv holds only scopes), the refusal lemma `quiet-refused`, `quiet-step`, `quiet-stays` | done |
+| `spindel.v2.ledger` | C1c stage A (Z#70): derived completion ledger, `task-held`, `task-complete` (not held and no run scope row k + 2), `scope-complete` (no row); layer-2 host joins in sys.clj (`Cell.joins`, `sys-join`, `sys-deliver`, `complete-cell` delivers the rest) | defs only (theorems: later stage) |
+| `spindel.v2.tomb` | C1 Q6: tombstones are dormant. Bundle `gy y` (copy of the raw step and of normalization): every alive run's computation and every dep edge's creditor is no tombstone (`ta-one`, `dep-untomb`), nor is computation y; `gy 0` is in P3's round invariant `ri` (`refs-untomb`, the new premise of `filter-safe-of-refs`); `trc` (acts-alive && gy 0) is the round context the i10/i14/hmk2/hm18 normalization chains take; `step-gy`, `gy-empty` | done |
+| `spindel.v2.acyc` | Z#69: scope parents are acyclic. Bundle `gcy` = inv-sample && `gcy-rest` (every scope's parent below the allocator, `cy-par-below`; no scope on its own `scope-ancestors`, `scopes-acyclic`, equivalently no `Reach (scope-up w) (scope-up w y) y`); generic graph lemmas (sub-graph, fresh node, re-parenting outside the subtree); copy as i1's G1 with overrides at run creation, open-scope and detach; `step-gcy`, `step-acyc` / `acyc-empty` (from p3b), `step-acyclic`, `step-acyclic-reach` | done |
 | `spindel.v2.p3` | P3 complete: bundles `mdb` (marked edges are dep), `esb` (edge-sep: references are non-edge ids), `aha` (activation runs exist and are alive), round invariant `ri` -> every round filter-safe (`rule-r-safe-ri`); combined bundle `p3b` (ga, inv-rank, gl, g9, g7, mdb, esb, aha) with `step-p3b` and the step theorems with no honest hypothesis (`step-rule-r-safe`, `step-inv-total`, `step-acts-total`, `step-rank-total`, ...) | done |
 | `spindel.v2.i10` | literal I10, computation part (one current run per computation) through the step: bundle `g10 gxz gkz` (E1 run epoch <= C.epoch, E2 a current run is C.run of an awake C and alive or C.done-epoch = C.epoch, run pointers name runs of their entity; computations gxz / runs gkz exempt), job condition for cascades (`job-ok`, transport bundle `nq`), bundle `g10r` = g10 [] [] for the raw transition (T5); `step-g10`, `step-lit-i10-current`, `p3c` = p3b && g10r with `step-p3c`, `p3c-empty`, `step-lit-i10-current-total` (no honest hypothesis) | done |
 | `spindel.v2.i11` | I11a through the step: bundle `gw` (id 2 is the root scope's, run scopes are not 2, no fork markers), `reach-roots-obl` (reach from the roots = the root scope or reach from the obligations), `i11a-of` (from I3); `p3d` = p3c && gw && inv-i11a with `step-p3d`, `p3d-empty`, `step-i11a-total` (no honest hypothesis) | done |
@@ -49,7 +53,7 @@ Feasibility notes: `../ansatz/.internal/design/spindel-v2-feasibility.md`.
 | `spindel.v2.hm5` | h-mem2 (P11) overrides continued: T7 track, take/T17 arm, T14 cancel-acts, T10 finalize family (hmk threaded), T13 run-pointer clears; tools for new activations (`h3r-act-ins`, `h3-undo-g`, `h3-r-new2`) | in progress (branch hm5) |
 | `spindel.v2.react` | P8 (`react-done-ok`: reactivation worklist empties within react-fuel) and P6 (`valid-done-ok`: the validation walk, each idle computation expanded once, ends within valid-fuel) | done |
 | `spindel.v2.mvcc` | layer 2 physical, MVCC representation (engine #260): rows with stamps and versions, tokens and cells, lineage resolution, barrier, pruning, token end; refinement against the value-copy model (`mv-refinement`, `mv-no-missing-version`) and the row-monitor interleaving (`mi-protocol`); see notes/LAYER2.md §9 | done (2026-11-15) |
-| `spindel.v2.oracle` (test) | lockstep driver against the engine commit log (table + legacy formats, re-sync, quiesce, implicit `slice-exit`, refused items without projection, triage in `oracle_test`) | done (samples 1-13; 4, 6-13 without divergence (7-11 regenerated against engine 27fc1e4, 12 from 4d8a06e, 13 from e735039); 1-3, 5 legacy with triaged lists) |
+| `spindel.v2.oracle` (test) | lockstep driver against the engine commit log (table + legacy formats, re-sync, quiesce, implicit `slice-exit`, refused items without projection, triage in `oracle_test`) | done (every sample of the replay set without divergence or triage list; 1 regenerated by spindel #271, 4-5 by #270; 2 and 3 retired to adapter fixtures, 2026-11-16) |
 
 ## Running
 - One JVM per worker, through `../ansatz/.internal/scripts/jvm-slot.sh` (`repl PORT` or
@@ -1164,3 +1168,458 @@ statement again.
 
 `c0-root w it = !(c0-root-item it) || scope-open-at w root-scope-id` was defined in i8.clj and threaded through the
 theorems listed above (commits ad4a953 .. f0ee12c on `formal/c0-model`); the root gate removed it and its definition.
+
+## C1 (2026-11-16): world-level completion, cancellation, synchronous finalizers, await-op
+
+Engine 823771c / engine-v2 d3b22f1 (spec Z#67, T14, T21, B8 reduced, §4.3 await-op/idle?; c1-cancellation-joins-design.md).
+Branch `formal/c1-model`. Stage A (model, oracle, tests) and Stage B (downstream bundles, layer-2 completion) done;
+Stage B found one false obligation (completion stability, below). A4/A5 wait for spindel PR #268.
+
+### Mapping of the C1 rules onto the model
+
+| C1 rule | level | model |
+|---|---|---|
+| `runs` (+1 at run creation, -1 at T13) | layer 1, derived | the run rows: `world-runs w = length (:runs w)` (engine.clj). Rule R's filter keeps every run (gr0 `run-kept`), so rows = unretired runs. No counter. |
+| `kids`, child token, acceptance (own-child!, host fork!, activate!), "whichever of acceptance and completion comes second acknowledges", "a complete owner takes no new obligation" | layer 2 | `Cell.kids` (accepted children, never inherited) and `sys-accept` (a complete owner takes none). The exactly-once token is the engine's bookkeeping of the same relation: a child counts while it is accepted, live and not complete (`kid-done`); a child complete before its acceptance is done at once. Acceptance is its own operation (also for the fork effect: `sys-fork-effect` keeps its frame theorems). |
+| completion (released, runs = 0, kids = 0), latched | layer 2 | `Cell.complete`, set by `sys-complete` when `complete-ready` (released and: unborn, or no run and every kid done). Internal: no item (the engine logs none). Layer 1 has the local part `world-quiet`. |
+| host terminal subscriptions (on-complete), survive T21 | host | out of scope: callbacks after the gate; they observe the latch and change no row. |
+| fork/instance copy runs; kids/subscriptions/token start empty | layer 2 | a fork cell copies the world (so its run rows) with `kids []`, `complete false`. |
+| R1: inherited non-armed resources (cancelling, fired unacknowledged) acknowledged at the child's first turn | layer 2 | `fork-cell`/`fork-effect-cell`/`inst-cell` inherit every outstanding resource (`res-ids`); `wake-one` keeps only an armed timer and settles the rest (armed: fire ::forked + ack; non-armed: ack, its fire refused). |
+| E4: an unborn instance released before activation is complete at once | layer 1 + 2 | `release-unborn w` (engine.clj: the flag only, nothing in it runs), `sys-release-unborn`, `sys-complete` (unborn). A later activation is refused (`act-ok` requires an unreleased world; sample 24). |
+| T14/Q10: cancel the whole run-scope subtree at request time, release the subtree's worlds | layer 1 + 2 | the model already cancelled `owned-runs` of `scope-subtree` in the cancel's cascade (T14 job-next, T12's Q10, T16); no change. Releasing the owned worlds is the child's own `[:release-world]` through its ingress (layer 2: a `sys-step` of the child), as the engine (`release-child!`). |
+| tombstones: a done task leaves its owner scope once its run retired (Z#56, `release-ownership!`) | layer 1 | `subtree-empty` ignores a done task with no run (`task-held-in`): sample 22 closes scopes whose tasks the request-time cancel already retired. Was latent before C1. |
+| B8 reduced: suspending effects in a finally clause fail with ::invalid :finalizer; every await/take refused in a cancelled run's finally clause; custom effects refused in finally | layer 1 | the refused effect is never an item (it fails before any commit; samples 25, 25b). Modelled: in a cancelled run's cleanup slice (`in-cleanup`) T6 (`await-bad`) and take are refused. Not modelled: the normal-run clause (the engine logs no item for the clause's end, `leave-finalizer!`, so the model cannot track it; such items never appear). |
+| await-op (resource kind :op): start/cancel arbitration, hooks, ack when start returned ∧ hooks done ∧ settled, :detach | layer 1 | `rk-op 4`, armable (`arm-kind-ok`); arbitration, hooks and the ack condition are the engine's physical side: the log shows arm, fire (the result) and the ack (T15), which the model already admits in any phase without an edge on Z. |
+| a fired, unacknowledged op is still cancellable, also on a done run | layer 1 | `t-cancel` on a done, unretired task run holding no slice (`host-cancel-done`) is `cancel-done`: T14 is idempotent on the run and R4 reaches its run scope's subtree at once, so the cascade cancels the alive runs owned in that subtree (none unless work was detached into a scope the done run still holds). Engine `cancel-task!` commits `[:cancel r]` (A2). |
+| link guards (append/link-realize/... under a closed root) | layer 1 | c0-guard's `c0-gate`, unchanged. |
+| idle? | host | out of scope (a snapshot of queues the model does not have: runnable work, cleanup queue, ingress). |
+
+### Oracle (Stage A)
+- res kind `:op`; `replay-family` (root, host fork, fork effect, instance; `:from`/`:owner` separate, sample 23a) and
+  `check-observations`: per sidecar checkpoint and world, the model's `runs` = W-RUNS, `released?`, derived `complete?`
+  (released and: unborn, or no run and every owned child complete), and the engine's `kids` at most the model's open
+  children; tokens are not compared (bookkeeping). `:unborn?` replays E4.
+- `kids` compared exactly (A3): accepted children not complete and not collected, at every sidecar checkpoint.
+  Acceptance is at creation (fork effect, host fork), at activation (instance), and for a host fork into a busy owner
+  at the owner's queued internal item (family spec `:accepted-from`, sample 23a's `:owner-free`).
+- A run scope that owns nothing (no task, no source owner, no child scope) reads as closed (A1: never materialized
+  means nothing to close); the former `:lazy-run-scope` deviation is dropped.
+- Deviation: `:released-proj` (the engine's verify projection, test/org/replikativ/spindel/v2/verify.clj, hard-codes
+  `:released false` after the release commit; the sidecar has `:released? true`). Dropped when PR #268 merges (A4).
+- Samples 22-27: every world replays with 0 divergences and every checkpoint of every sidecar matches; samples 1-21
+  unchanged (0 divergences, triaged lists as before).
+
+### Changed statements
+None: every theorem statement of the core is unchanged (definitions changed: `raw0` await/take arms, `t-cancel`,
+`subtree-empty`, `arm-kind-ok`, `res-kind-ok`; layer 2 `Cell`, `wake-one`, `fork-cell`/`fork-effect-cell`/`inst-cell`,
+`act-ok`). New: `await-bad`, `host-cancel-done`, `cancel-done`, `task-held-in`, `release-unborn` (+`inv-release-unborn`),
+`world-runs`, `world-quiet`, `rk-op`; sys `res-ids`, `timer-kept`, `accept-cell`, `sys-accept`, `kid-done`,
+`complete-ready`, `complete-cell`, `sys-complete`, `release-unborn-cell`, `sys-release-unborn`, `sinv-accept`,
+`sinv-complete`, `complete-latch`; Stage B: `p3l-release-unborn`, `sinv-release-unborn`, `wq`, `cinv` and its
+lemmas (below). Test-side: sys_test's unarmable kind is `rk-native` (op is armable now).
+
+### Loads / breaks (Stage A)
+Core (state .. acts, rank, rank-step) load; lit .. hm11, skip, z59, cow, sys, mvcc load unchanged. Break: hm12
+(`await-kind-bad` -> `await-bad` in `h12-raw0-await-outcome`, mechanical), hm17 (h3's raw0 assembly: the await arm's
+guard and the take arm's cleanup refusal), hm18 (blocked by hm17).
+
+### Stage B results
+- hm12, hm17, hm18 repaired (mechanical: `await-bad` in the await arm, the take arm's cleanup refusal); the done-run
+  cancel (A2) needed the subtree cascade in i10 (`t-cancel-g10`), i8 (`t-cancel-g8`) and hm6 (`t-cancel-h3`). Every
+  namespace loads; no statement changed.
+- `sinv-release-unborn`: `p3l (release-unborn w) = p3l w` holds definitionally (`p3l-release-unborn`, `rfl`): no bundle
+  of `p3l` reads `released`. No per-bundle copies needed.
+- Completion soundness `cinv cells`: every live complete cell is `complete-ready` (released and: unborn, or no run and
+  every accepted child complete or collected). `cinv-none` (no complete cell); kept outright by `sys-accept`,
+  `sys-complete`, `sys-release-unborn`, `sys-activate` (a complete cell is released, so neither touches one),
+  `sys-drop`, `sys-idle-release`; by `sys-fork`, `sys-fork-effect`, `sys-instantiate` for an id no cell has accepted
+  (`forall j, tbl-all (nat-ne m) (:kids (cells j))`); by `sys-step`, `sys-wake`, `sys-resume`, `sys-merge`,
+  `sys-publish`, `sys-abandon` under the premise `hq`:
+  `forall w it, p3l w -> wq w (:world (world-step w it))`, `wq w w2` = released stays released and `world-quiet`
+  stays quiet. `complete-latch` (earlier) is the latch.
+- **Finding: `hq`'s quiet half is false in the current model**, so completion stability is NOT proved. Sequence
+  (layer 1, from the empty world): create-comp-top c, observe c, start c (run r), schedule r, release-world (T21: r cancelled,
+  mode unwinding, still holding the slice), `observe c` (or `pin c`) ACCEPTED (host-shut exempts a held slice), slice-exit
+  r: released, 0 runs (`world-quiet`), c observed/pinned and startable; `start c` accepted: a run in a quiet world. A
+  cell completed at the quiet point would be complete with a run. The released half (nothing clears `released`) is
+  believed true but not proved; `hq` stays an explicit premise, not a theorem.
+- B8 as an invariant fact: no bundle needed it.
+
+### After PR #268 / #269 (A4, A5, Q5)
+- A4 (7964d55): `:released-proj` dropped; samples 26b/26c/27 compare `:released` directly.
+- A5 (24d5e4a): item 44 `finally-leave st`. `finally-exit` turns the head region (F 0) into a running clause
+  (F 1, `fins-exit`), `finally-leave` pops it (`fin-exit-bad`/`fin-leave-bad` guards). B8 for normal runs: in a
+  clause (`in-fin`) raw0 refuses an await whose debtors are not settled now (`settled-now`, engine `settled-now?`;
+  one/all every debtor, any one: `fin-suspends` in `await-bad w st ds m`), a take with nothing to take on an open
+  source (`take-bad`), every arm (`fin-shut`). `await-cont` reads regions only (engine `reentrant-k`). progress:
+  a region weighs 2 and a clause 1 in mu-f; `finally-exit-dec` holds again, `finally-leave-dec` is new. Changed
+  statements: the overrides `t17-g9`/`t17-mb` take `fin-shut w st = false` (was `in-cleanup w st = false`;
+  `fin-shut-cleanup` gives the old fact); progress.clj's `mfv-pop-held`/`pop-held` (a pop of any head drops mu-f by
+  one: false once a region weighs 2) are replaced by `mfv-exit-held`/`exit-held` (exit of a head region) and
+  `mfv-leave-held`/`leave-held` (pop of a head clause); `fx-row` now concludes for `run-fin-exit` (was
+  `run-fin-pop`), with `q-fx` guarded by `fin-exit-bad` (was `fins-empty`); `finally-exit-dec`'s statement is
+  unchanged. Oracle: run finalizers project regions; logs with exits and no leave
+  (samples 4, 5: no generator exists; they predate #268) end each clause within its exit's commit; sample 7
+  regenerated (`oracle/gen/samples-legacy.clj`, only the leave is new); 22, 25, 25b replay with 0 divergences.
+- Q5 (c25c0de, 29021c7): a released world takes no new root, also from a held slice: raw0 refuses observe and pin
+  (`root-shut`) and host waits (`host-await-bad`) once released. engine_test `c1-no-roots-after-release` replays
+  the counterexample (refused; quiet after the slice exit; c cannot start).
+- Sample 28 (#269): the sidecar matches at every checkpoint (complete after the slice exit, c2 never starts), but
+  the replay has 5 divergent commits, triaged in `c1-sample-28-triaged` (questions 6, 7).
+- `hq` is still a premise. Plan (not done): `wq` = R (released stays released) and Q (quiet stays quiet).
+  R: a bundle `b -> released w` over the step (every primitive edit is a frame except `set-released`).
+  Q needs an invariant beyond the guard: K w = pending-act = 0, pubs = [] (no layer-1 transition creates one),
+  and released -> pins = [] and no host-creditor edge (only T8/T22/pin add them, now refused when released; T21
+  removes them). With K, I3 (every id kept, `step-i3-total`; refused steps keep the world), I1 (`lit-i1-scope`:
+  scope parents are scopes) and ids-unique, a quiet world's live set is scopes and forks only (no run, so no
+  running task; roots: root/open explicit scopes), so it holds no computation, task, source, edge, activation or
+  resource, and every item is refused there (token items: no run; host items: `host-shut`; start/dispatch/
+  link-demand/fire/ack: no row). K's bundle needs patches at the edge insertions (await's wait edge: creditor =
+  the fresh activation id > 0; take likewise) and an override for `revoke-roots`. Layer 2 then carries K and I3
+  for every live born cell (an unborn instance released by E4 needs only R).
+
+### hq (step 3), state
+- Released half: DONE (0c2a49e). spindel.v2.quiet `grel` bundle; `step-released` (p3b w, released w -> released after
+  any step).
+- K: DONE (0d8d35c). `gk-rest` = pending-act = 0, no publication row, and once released no pin and no host-creditor
+  edge; `step-k` (p3b w, K w -> K after any step), `k-empty`. Edge insertions are patched (track/reactivation: dep;
+  await/take: wait edge whose creditor is the fresh activation id, > 0 by ids-below; T8/T22 only while not released,
+  raw0's root-shut / host-await-bad), pin needs root-shut, unpin deletes from no pins, revoke-roots resets all. No
+  counterexample to K.
+- Quiet half: BLOCKED (question 8). The planned argument (a quiet world's rows are scopes and forks only, so every
+  item is refused) fails on §3.4 admissions: `keep-fn` keeps a row with handles > 0 (`admitted`) without a root.
+  T21 zeroes every handle, but `handle-new` is a host item that a held slice may still issue after T21 (it is not
+  one of #269's roots). Trace (engine_test helpers, from the empty world): create-comp-top c, observe c, start c
+  (run r), schedule r, release-world, `handle-new c` ACCEPTED (r's cleanup slice), slice-exit r: released, no run
+  (quiet), c kept (idle, handles 1, done-epoch 0); `start c` ACCEPTED. In this trace Rule R cancels and retires the
+  stray run in the same step, so the world stays quiet, but completion stability then rests on Rule R's stray-run
+  handling plus facts the invariants do not give (an admitted link source with `link-demand` would need the root
+  scope's closure after T21, also not an invariant yet). With `handle-new` refused once released (as observe/pin),
+  K extends by "released -> every handle count is 0" and the planned proof goes through.
+
+- Q8 answered (no handle after T21): 7881eaf refuses, once released, handle-new, the top-level creations,
+  create-source/spawn in a body (`body-shut`), create-comp/create-link in a body (`cc-shut`), link-demand,
+  link-realize and append (`root-shut`), besides observe/pin/host waits. Remaining for the quiet half, in order:
+  (1) K gains "released -> every comp/task/source handle count is 0": the `gk` copy then needs the handle facts
+  at `inv-comp-upd`/`inv-task-upd`/`inv-source-upd` (extra argument: f keeps a zero count; comp-h0/dec keep it,
+  comp-h1/task-h1/source-h1 only under `root-shut w = false`, from handle-new's guard) and a `released = false`
+  premise at every row creation (`inv-*-ins-fresh` in t1-body/t1-top, t3, spawn-rows (t4, t4-top, link-demand),
+  create-link(-top), link-realize, append), threaded from the raw0 guards above; `drop-edges`'s comps-resync and
+  `drop-cred`'s comp-set-pending keep the counts. (2) the closure lemma: K, I3 (`step-i3-total`), I1
+  (`lit-i1-scope`), ids-unique and no run give a live set of scopes and forks and no admitted row, hence no
+  computation, task, source, edge or resource (cleanup rows: to check that a cleanup entry's run exists); (3) the
+  quiet-world refusal lemma (token items: no run; host items: host-shut; start/dispatch/link/fire/ack: no row);
+  (4) sys.clj carries K and I3 for every live born cell (fork copies, instance basis via pinv, activation) and
+  discharges `hq` (E4 unborn cells need only `step-released`).
+
+### Questions (engine session)
+Answered: 1 (A4: the projection is fixed in PR #268; drop `:released-proj` then), 2 (A1), 4 (A2); 3 is A5 (after #268).
+New (Stage B finding):
+5. After T21, a cancelled run's cleanup slice still holds the slice, and Z#56 exempts a held slice from the host
+   refusal, so `observe`/`pin` (and other host items beyond Z#40's deliver/post/release/write/close) are accepted there.
+   Once the slice exits the world is released with no run but holds a demanded (or pinned) computation, which T5/T11
+   then start. Does the engine admit these in a cleanup slice after release, and if so what does completion do (latch
+   complete, then a run)? Candidate fixes: in a released world a cleanup slice admits only Z#40's items; or completion
+   also requires that no computation is demanded/startable.
+   Answered (#269): option 1.
+6. Sample 28, commits 10-14: after T21 the engine keeps computation 5 not idle with run 7 (cancelled, unwinding,
+   cleanup pending); the model's Rule R idles it (validity :invalid, run cleared: a non-idle computation outside
+   live, its run held only by the cleanup entry). Which is intended?
+7. Sample 28, commit 13: `[:write 3 12]` from the cleanup slice is logged accepted although signal 3 was collected at
+   T21 (both projections lack it); the model refuses a write to a missing source. Is an accepted no-op write the
+   log contract here?
+8. After T21, may a cleanup slice create a handle (`[:handle-new x]`, re-admitting a row by §3.4 handles > 0)?
+   If not (a released world takes no new admission, as no new root), the model refuses it and completion
+   stability follows from K; if yes, a computation admitted that way can be started (T5) after completion.
+
+1. `:released` in the verify projection is `false` after the release commit (verify.clj `projection`); keep the
+   deviation or fix the projection?
+2. A run scope never materialized is not closed by T16/T21 (it is no S-CHILD) while a materialized one is (sample 9 vs
+   27): is "the run scope closes at its run's retirement" the intended rule for both? The model closes both with the
+   subtree (as the materialized case).
+3. B8 in a normal run's finally clause: should the engine log `[:finally-leave r]` (the clause's end) so the model can
+   refuse suspending items there too? Without it the refusal is invisible in the log and unneeded for replay.
+4. `cancel-task!` on a done, unretired run commits `[:cancel r]` (no row change in the model); confirm that is intended
+   also when the run holds no op resource.
+
+### Engine PR #270 (Q7) and Q6 (2026-11-16)
+- Merged origin/engine-v2 65991b6 (spec Z#68). Q7: a Z#40 effect on a row Rule R removed is no item; the model needs
+  no change (it never sees the item). Samples 4 (43 commits) and 5 (41) regenerated with `[:finally-leave]`; sample 4
+  logs run 29's cleanup `[:slice-exit 29]`; sample 28 lost its write. The oracle's fallback that ended a clause at its
+  exit (logs without `[:finally-leave]`) is gone. Samples 4-28 replay with 0 divergences and every sidecar matches;
+  sample 28 is a normal C1 sample (`c1-samples`). Samples 1-3 keep their triaged lists (logs of older engines with no
+  generator: legacy epoch step at demand, settle/E granularity; not reproducible without a generator).
+- Q6 (spec §3.3 step 1.3, §3.2): the demotion keeps a computation idle only with a result or handles > 0; one with
+  neither whose run is in cleanup (in `cleanup-rows`) stays a **tombstone**: not idle, no validity, basis/adoption
+  released, C.run = its (stale, epoch-stepped) cancelled run; T13 clears C.run and the filter removes it (no reason).
+  Model: `CompRow.tomb` (model-only, not projected), set only by `comp-demote-row` (rule.clj; field-wise
+  `comp-make-idle` when `demote-idle`, else `comp-tomb-row`), cleared by every row that starts a run or wakes
+  (`comp-start-row`, `comp-set-run`, `comp-react-row`, `comp-demand-row`, `comp-replace-row`,
+  `comp-make-idle`); copied by every other row. Normalization leaves a tombstone alone (`comp-norm` = idle or tomb or
+  live; `comp-active` = neither idle nor tomb, the P2 measure). A re-demanded tombstone is dispatched (T11/T5) like
+  the engine (`needs-run?`), which clears the flag. handle-new on a tombstone is refused (engine session: `handle!`
+  on an existing row runs only through adoption, which finds the row through a reference, and a tombstone has none):
+  `t-handle-new`'s computation arm refuses `(:tomb c)`, and `comp-h1` copies the flag (was: cleared it; the former
+  corner "handle-new on a tombstone clears the flag" is gone). engine_test `c1-handle-new-tombstone-refused`.
+- Proofs: the tombstone is dormant (spindel.v2.tomb, `gy`); P3 (`filter-safe-of-refs`) needs it for a dep edge's
+  creditor (`refs-untomb`), I10/I14/h-mark/h-mem2's normalization rounds for a stray run's or a dep edge's
+  computation (`trc`). Demotion proofs split on `demote-idle` (`demote-row-idle-upd`/`demote-row-tomb-upd`, lit.clj):
+  I10 `g10-tomb` (key `ck-tomb`), I14 `vrk-frame` with domination (`dom14-wake`).
+- **Changed statements** (premises added; every `step-p3x`/`*-total` headline theorem is unchanged):
+  `normalized-comps` (+ `(:tomb c) = false`: a tombstone may sit outside live); `step-l1-comp` (conclusion
+  `idle || tomb`: L1 for a computation outside live); casc `demote-lt` (+ not a tombstone: only strays are demoted);
+  lit `dep-cred-live`, `cred-kept`, `fs-ref-ok`, `fs-mark-ok`, `filter-safe-of-refs` (+ `refs-untomb w`); p3 `ri`
+  gains `gy 0` (so `ri-parts`/`ri-intro` have 5 parts); i10 `stray-pair`, `stray-ncw`, `g10-norm-round` (+ the
+  `ta-one` list), `g10-norm-loop`, `g10-normalize`, `g10-rule-r-round`, `g10-rr-loop`, `g10-rule-r` (+ acts-alive,
+  gy 0), `step-g10`, `step-lit-i10-current` (+ `p3b w`); i14 `vr-pass-start`, `vr-norm-round`, `vr-norm-loop`,
+  `vr-normalize`, `vr-rule-r-round`, `vr-rr-loop`, `vr-rule-r` (+ `trc w`), `step-v14` (+ ga, gy 0); hmk2
+  `hmk-norm-round`, `hmk-norm-loop`, `hmk-normalize-x`, `hmk-rule-r-round`, `hmk-rr-loop`, `hmk-rule-r` (+ `trc w`),
+  `step-hmk` (+ gy 0); hm18 `h18-norm-round`, `h18-norm-loop`, `h18-normalize`, `h18-rule-r-round`, `h18-rr-loop`,
+  `h18-rule-r` (+ `trc w`). Reason for all: a tombstone is a non-idle computation outside live, and the facts these
+  lemmas used ("not idle and normalized, hence live") need "and not a tombstone", which `gy 0` gives.
+- Released-world `[:append s v 0]` from a cleanup slice is logged as a refusal entry (engine session); the model
+  refuses it with the world unchanged (raw0's `root-shut`) and the oracle compares the accepted flag only.
+
+- Next (quiet half, step (1) of "hq (step 3), state"): extend `gk-rest`'s released clause by "every comp/task/source
+  handle count is 0". Findings for the copy: the handle-carrying creations are exactly 10 source-theorem sites
+  (`inv-comp-ins-fresh` in create-comp-raw; `inv-task-ins-fresh` in spawn-rows; `inv-source-ins-fresh` in t1-body,
+  t1-top, t1-full, create-link, create-link-top, the stream rows, link-realize, append), all with handles 1 and all
+  reached only through raw0 arms guarded by body-shut / cc-shut / root-shut (each implies `root-shut w = false`); no
+  cascade, dispatch (respawn) or Rule R step creates a row. T21's `release-world-raw` sets `released` (revoke-roots)
+  before `zero-handles`, so GK needs an override of `release-world-raw` (not of `revoke-roots`); `comp-h1`/`task-h1`/
+  `source-h1` need handle-new's `root-shut` premise, `comp-dec-handles`/`*-h0` keep 0. `release-unborn` (E4) sets the
+  flag only (unborn cells need `step-released` only).
+
+### Quiet half, step (1): K's handle clause (2026-11-16)
+- Follow-up A first (543bd4e): handle-new refuses a tombstone (engine session); `comp-h1` copies the flag.
+- `gk-rest` = `gk0-rest` (the former K) and `gh-rest`: once released, every computation, task and source has handle
+  count 0 (`hz-all`). `step-k`, `k-empty`: statement text unchanged, K is stronger (the definition of `gk-rest`
+  changed). Helper lemmas about the former K were renamed `gk0-*` (`gk0-rest-mono`, `gk0-rest-edge-upd`, ...,
+  `gk0-set-pins-*`, `gk0-rest-revoke`); the `gk-rest-*` names are now the combined lemmas. `gk-revoke-roots` is gone
+  (revoke-roots alone breaks the handle clause: T21 sets `released` before zeroing): T21 is overridden whole
+  (`t-release-world-gk`: `gk-zero-revoke`, `zero-handles-hz`, then the cascade copy).
+- The copy: computation/task/source row edits take `hz` (a zero count stays zero; default by rfl, per-case lemmas
+  `task-cancel-result-hk`/`source-consume-hk`, decrements `-z` with `sub1-zero`, serve-or overridden with its `keep`'s
+  hz); handle-new's h1 (`-open`) and the three creations with handles 1 take `hr0 : root-shut w = false`, threaded
+  (`add-premise`) through the 27 theorems between raw0's arms and the creations (`gk-threaded`); raw0's arms supply it
+  from their guards (`body-root`, `cc-root`, or the root-shut case). No counterexample: every creation and h1 is
+  under a released guard.
+
+### Follow-up B (2026-11-16): samples 1-3
+- Merged origin/engine-v2 54e3df1 (#271: log-sample-1.edn regenerated by gen/samples-legacy-1.clj, table format,
+  12 commits). oracle_test `sample-1-table-format` = `(aligned 1 12)`: 0 divergences, no triage.
+- Samples 2 (legacy format) and 3 (early table format) are sample 4's scenario: retired from the replay set
+  (`sample-2-legacy`, `sample-3-table-format`, `sample-3-strict`, `sample-3-known` removed); they stay as adapter
+  fixtures in `projection-roundtrip` (roundtrip + `log-format`). The strict deviations stay covered by sample 4's
+  strict test. Every sample of the replay set replays with 0 divergences and no triage list.
+
+### Quiet half, step (2): the closure lemma (spindel.v2.qworld)
+- New bundle `gc`: every cleanup entry's run is a run row. Cleanup entries are written at a run's cancel
+  (`cancel-run-local`, from `job-apply`'s run-find) and at T12's `retire-after` (run-find), and go with the run
+  (`retire-with`: run-del then cleanup-del); the filter keeps every cleanup entry's run (it is in `cleanup-rows`).
+  Overrides: `cleanup-set` (premise: the run exists), `retire-after`, `cancel-run-local`, `job-apply`, `retire-with`.
+  `step-gc-rest`, `gc-empty`. Checked: a cleanup entry always has its run (no counterexample).
+- `i3 w` = the filter keeps every id (`tbl-all (keep-fn w) (all-ids w)`); a state fact through every step
+  (`step-i3-inv`: accepted steps by `step-i3-total`, refused ones keep the world).
+- `qinv` = p3l && K (`gk-rest`) && gc && i3; `step-qinv`, `qinv-empty`. `qh` = qinv && released && no run.
+- `quiet-rows` (`qh w -> only-scopes w`): no computation (tombstones included), task, run, source, edge, activation,
+  resource, cleanup entry, publication or fork marker. Live is scopes only (`reach-scope`: roots are scopes since no
+  pin, host edge, pending activation or publication; a scope's successors are its parent, a scope by literal I1 and
+  gw's root-ok for the root scope; no running task (no run); no fork marker (gw)); keep is live (`keep-scope`: no
+  cleanup entry (gc), nothing admitted (K's handle clause), no storage (no run)); a scope id is no other row's id
+  (`scope-only`, unique ids); I3 keeps every row id, so every non-scope table is empty.
+
+### Quiet half, step (3): the refusal lemma (spindel.v2.qworld)
+- `quiet-refused` (`qh w -> (:accepted (raw w it)) = false` for every item): host items by `host-shut` (released, no
+  run holds a slice); the others (`raw0-quiet`) by raw0's released guards (creations and link items: root-shut,
+  body-shut, cc-shut), for want of a run (every token item: `tok-run` is none; schedule, finalize, slice-exit), or for
+  want of their row (start/dispatch: no computation; fire: no edge; resource-ack/resource-fire: no resource);
+  release-world by the released flag. So `quiet-step` (the step leaves a quiet world unchanged) and `quiet-stays`
+  (`qinv w`, `world-quiet w` -> `world-quiet` after any step). A released-world `[:append s v 0]` (the engine's
+  refusal entry) is refused with the world unchanged (host-shut / root-shut); qworld_test `quiet-world-runtime`
+  replays the Q5 trace and checks K, gc, I3, only scopes and the refusal of eight item kinds at runtime.
+
+### Quiet half, step (4): layer 2 without hq (sys.clj)
+- `cq c` = (unborn and released: an E4 instance) or `qinv` of its world; `qsinv cells` = every live cell has cq;
+  `qpinv pubs` = every live publication's basis is released or holds qinv. Kept by every system operation
+  (`qsinv-step/-wake/-resume/-merge/-publish/-abandon/-accept/-complete/-drop/-idle-release/-release-unborn/
+  -activate/-fork/-fork-effect/-instantiate`, `qpinv-publish/-abandon`; start: `qsinv-init`, `qpinv-none`).
+  Activation: `act-ok` says not released, so the instance's cq is qinv, and the activated world keeps it.
+- `wqc c w2` (released stays; a born cell's quiet world stays quiet) replaces `wq` for the cell: an unborn cell is
+  ready by its flag, so it needs only the released half. Composites: `rel-*` (released stays: `step-released`),
+  `qid-*` (a quiet qinv world is left as it is: `quiet-step`; fire-ack, wake-one/-all, apply-diff, merge-world),
+  `qinv-*` (qinv through them: `step-qinv`).
+- Completion stability outright: `cinv-step-q`, `cinv-wake-q`, `cinv-resume-q`, `cinv-merge-q`, `cinv-publish-q`,
+  `cinv-abandon-q` (premises sinv, qsinv, cinv; no hq). The hq-premised `cinv-*` theorems are unchanged (hq itself
+  stays false of an arbitrary p3l world: quiet stability needs qinv).
+- Premise of `qsinv-fork`/`qsinv-fork-effect`: the forked cell is not an E4-released unborn instance (its world need
+  not have K: handles may be > 0, so a born copy could start an admitted computation after completing). Question 9.
+  Gone since question 9 was answered (below): both fork forms are refused from an unborn cell.
+
+### Questions (engine session), C1 quiet half
+9. May a fork (host `fork!` or the fork effect) be taken from an unborn instance, in particular one released by E4?
+   The model's `sys-fork`/`sys-fork-effect` have no guard; the completion invariant for the child assumes the parent
+   is not an E4-released instance (a released world with handles > 0 copied into a born cell could, after its runs
+   retire and it completes, start a computation admitted by a handle).
+   Answered (engine-v2 54e3df1, core.cljc): no, neither form, E4-released or not. Host `fork!` throws "fork! of an
+   unactivated instance" while W-UNBORN is set (host-fork-call!); an E4 release keeps the instance unborn (`born?`
+   requires not released); the `(fork)` effect needs a valid run inside a slice, and an unborn instance drains no
+   slice (E4: its inherited work waits).
+
+### Question 9 answered: fork guard (sys.clj, 2026-11-16)
+- `sys-fork` and `sys-fork-effect` are guarded by "the source cell is born" (`(:unborn (cells k)) = false`); otherwise
+  the operation is refused with the system unchanged (the `sys-wake`/`sys-activate` convention): `fork-refused`,
+  `fork-effect-refused` (new). This is LAYER2.md L2's guard "not unborn", now in the model.
+- `qsinv-fork`/`qsinv-fork-effect` hold for every live source cell: the refused case keeps qsinv, the accepted case
+  is born, so its cq is qinv (`cq-born`). Completion stability (`qsinv`, `qpinv`) is kept by every system operation
+  with no premise beyond liveness of the source.
+- **Changed statements**: `qsinv-fork`, `qsinv-fork-effect`: premise `(:unborn (cells k)) && (:released ...) = false`
+  removed (discharged by the guard). `fork-copy`: premise `(:unborn (cells k)) = false` added (a refused fork leaves
+  cell m as it was, so the child's world is the parent's only when the fork is taken). Unchanged statements, proofs
+  split on the guard: `fork-frame`, `fork-effect-frame`, `sinv-fork`, `sinv-fork-effect`, `cinv-fork`,
+  `cinv-fork-effect`.
+- sys_test: no existing case forked an unborn cell (`c1-fork-discharge` forks a born, released world). New
+  `c1-fork-of-unborn-refused`: both forms are refused from an unborn and from an E4-released instance (system
+  unchanged at the source and the target id), and both are taken from the same world as a born cell.
+- Fresh-JVM `clojure -M:test` (2026-11-16, after question 9): 245 tests, 207,430 assertions, 0 failures, 0 errors.
+  No sorry.
+- Fresh-JVM `clojure -M:test` (2026-11-16, after step 4): 244 tests, 207,419 assertions, 0 failures, 0 errors. No sorry.
+
+### Z#69 detach acyclic (engine PR #272, c8829bf; 2026-11-16)
+- Merge of origin/engine-v2 c8829bf (a21b69e): spec Z#69, core.cljc `within?` + the `detach!` guard, task_test
+  `detach-into-own-subtree-is-refused`; nothing under formal/ changed. No new oracle sample.
+- Guard (engine.clj, 3544ef0): `scope-within w s a` = `s == a` or `a` on `scope-ancestors w s` (the worklist over the
+  parent fields Rule R's cleanup already uses; engine `within?` walks the same chain). `detach-ok` gains
+  `not (scope-within w s (task-run-scope w t))` as its innermost conjunct, so detach is refused (refusal entry, world
+  unchanged, `t-detach-refuse`) when the destination is the task's run scope or any scope below it. A task with no
+  run has run scope 0, which is never on a chain (scope-up drops parent 0), as the engine skips the check without
+  a run scope.
+- Proof repairs: the three bundle overrides that destructure `detach-ok` take the open-scope conjunct from its new
+  position (`t-detach-g1` i1, `t-detach-esb` p3, `t-detach-g8` i8; proof text only). Every other detach proof cases
+  on `detach-ok` only (refusing more is a refused case). **No theorem statement changed.** Definitions changed:
+  `detach-ok`; new: `scope-within`.
+- Invariant (spindel.v2.acyc, 97e634e): `scopes-acyclic w` = no scope is on its own `scope-ancestors` (executable),
+  equivalent to `forall y, Reach (scope-up w) (scope-up w y) y -> False` (`cy-acyc-of`, `cy-acyc-intro`). The
+  bundle `gcy-rest` adds `cy-par-below`: every scope's parent is below the allocator. That auxiliary fact is needed
+  for scope creation: a fresh scope (id next-id) is then nobody's parent, so no cycle passes through it; it holds
+  because new scopes get parent 0 or an existing scope (run creation: 0 or `task-scope-parent`; open-scope: the
+  current scope under `open-ok`), and detach's destination is an open (so existing) scope.
+  Generic lemmas over the parent function: a sub-graph keeps acyclicity (`cy-acyc-sub`: scope deletion,
+  `remove-if-empty`, Rule R's filter, parent-preserving scope edits), a fresh node no edge points to keeps it
+  (`cy-acyc-fresh`), re-parenting x under p keeps it when x is neither p nor above p (`cy-acyc-reparent`: every walk
+  either never uses x's new edge, or after it stays in p's chain, which avoids x). The guard is exactly the last
+  premise; without it detach is the only transition that breaks the invariant (no other path re-parents a scope).
+- Theorems: `step-gcy` (Rule R's honest hypothesis), `step-acyc` (p3b w, gcy-rest w -> gcy-rest after any step),
+  `acyc-empty`, `step-acyclic`, `step-acyclic-reach`. No counterexample: the invariant holds for every step.
+- Cross-world destination: not expressible in layer 1 (ids are world-local); the engine refuses it (#273).
+- Tests: engine_test `z69-detach-into-own-subtree-refused` (K0 opens O and spawns J; J opens S below its run scope;
+  detach J S and detach J (J's run scope) are refused with the world unchanged; the unguarded `detach-move` makes the
+  parent fields cyclic by a direct parent walk; detach J root is accepted, J and its run scope move under the root).
+  acyc_test: the theorems, and `scopes-acyclic` on the empty world and on a 2-cycle.
+- Fresh-JVM `clojure -M:test` (2026-11-16, after Z#69): 248 tests, 207,177 assertions, 0 failures, 0 errors. No sorry.
+  (+3 tests: acyc_test's two, engine_test's z69 case. Fewer assertions than after question 9 (207,430), not investigated; likely engine_test's
+  random-item walks now refuse some detaches, and a refused step makes fewer per-step checks than an accepted one.)
+
+## C1c stage A (2026-11-16): task/scope completion ledger, host joins
+
+Engine PR #273 (engine-v2 1aac850, spec Z#70; `c1c-task-joins-design.md` v4 amendments), oracle samples PR #274
+(branch `test/v2-oracle-c1c-stage-a`, generator `oracle/gen/samples-c1c-a.clj`, samples 29, 30, 31a, 31b, 32 with
+sidecars). Merged both into `formal/c1-model` (the samples branch had not merged into engine-v2 yet). No log shape
+changed: no new item, so no `Item` constructor and no layer-1 transition changes; every namespace loads as before.
+
+### Facts checked against the model (from the earlier review)
+- The run scope is K+2 and created eagerly: T4's `spawn-rows` (engine.clj ~610) allocates task K, run K+1 and run
+  scope K+2 (`add-run-scope`) in one step; the engine materializes it on first use (`run-scope!`).
+- Z#18 `subtree-empty` (rule.clj ~411) requires every scope of the subtree closed, no scope outside it with its parent
+  inside, no held task (`task-held-in`: owned there and not done or its run unretired), no fork marker, no run scoped
+  in it, and no root-kind scope.
+- No upward cascade in the model: T13's `retire-with` runs `remove-if-empty` on the retiring run's subtree only. A
+  parent left closed and empty is not live (scopes retain only upward, `scope-contrib`; downward retention comes from
+  alive runs, open explicit roots and cleanup entries via `anc-close`), so the same step's Rule R filter (`keep-fn`,
+  retain.clj ~297) removes it. The engine cascades in `remove-scope-if-empty!`; at commit boundaries the rows agree.
+- Computations' run scopes have parent 0 (`start-raw` and `new-run-of` call `add-run-scope ... 0`), and a task owned
+  by a computation has run scope parent 0 (`task-scope-parent`: its owner is no scope). Neither is in any task's run
+  scope subtree, so a task's completion never waits for computations created in its body nor for the tasks they own
+  (the D2 boundary of the v4 amendments).
+
+### Mapping
+| Z#70 rule | level | model |
+|---|---|---|
+| task complete: done, run retired (T13), run scope removed or never materialized | layer 1, derived | `spindel.v2.ledger/task-complete w k` = not `task-held w k` (a task row with result none or run /= 0) and no scope row k+2. The eager run scope collapses the two engine cases: one never materialized owns nothing, so T13 removes it in the retiring step (`remove-if-empty`), exactly when the engine completes the task with no K-SROW. |
+| scope complete: its row removed | layer 1, derived | `scope-complete w s` = no scope row s. The root scope is never removed (Z#56: `root-in`, and it is a root), so it is never complete, also in a complete world (sidecars: scope 2 present after completion). |
+| K-COMPLETE / S-COMPLETE flags, set once | engine bookkeeping | not modelled: derived predicates. Stability (once complete, complete forever) is a theorem to prove (later stage). |
+| S-TASK / K-SROW recorded at materialization | engine bookkeeping | the pairing k <-> k+2 is fixed by the allocation order (oracle contract), no field. |
+| `retire!`: `maybe-complete!` last, after `release-ownership!` | layer 1 + 2 | layer-2 completion (`sys-complete`) is a separate system operation after a step, so the order is given; "complete world => every task complete" becomes a theorem from `quiet-rows` (later stage, below). |
+| host `on-joined` / `await-joined` | layer 2 | `Cell.joins` (new last field): the pending host joins of the cell, a list of target task ids (one entry per subscription). `sys-join` admits one: no row, edge, handle, id or item; no released guard (admitted after release); delivered at once (not recorded) when the target is complete or the cell is. `sys-deliver` delivers the pending joins whose target is complete (the engine does it inside the completing commit). `complete-cell` empties the list (abandonment: joins still pending at world completion are delivered with it). `fork-cell`, `fork-effect-cell` and `inst-cell` start with no joins (not inherited). Both operations are system operations, not Items. |
+| `detach!` refuses a scope of another world | - | not expressible in layer 1 (ids are world-local; see Z#69 above). |
+
+### Identity of a removed id
+The model keeps no kind for an id after its row is gone (one global id space, nothing typed after deletion). A
+removed id is known to be a task by its holder: a host join records the id it was admitted for (the host holds a
+task handle, so the id was allocated: admission requires `k < next-id`), and the oracle remembers every task and
+scope it has seen (as the generator's `seen`). For such a task id, no task row reads as not held, so
+`task-complete` is then "no scope row k+2". Removal of the task row with its run scope still present (handles 0, kept
+only by a child's cleanup chain) is therefore not complete, as in the engine (its K-SROW is still a present row).
+
+### Oracle
+- `check-observations` compares, when the sidecar has them, per task (every task seen at a checkpoint so far)
+  `:done?` (result /= none; no row = true), `:retired?` (run = 0; no row = true), `:srow-present?` (scope k+2 present
+  and materialized), `:complete?` (`task-complete`); per scope (every scope seen so far) `:open?`, `:present?`,
+  `:complete?` (`scope-complete`); and `:pending-joins` (length of the cell's `joins` after `sys-join` of the joins the
+  spec registers before that checkpoint and `sys-deliver`). The task and scope key sets are compared exactly.
+- Materialized (oracle only): a run scope is reported once it has owned something (a task, a source, a child scope or
+  a fork marker) in some model world up to the checkpoint; never-materialized run scopes are not in the engine's
+  registry, so they are left out of the scope set and read `srow-present? false`.
+- Host joins are not in the log: the family spec lists them (`:joins [[world step target]]`: registered before
+  checkpoint `step`).
+
+### Results
+- Commits: 661415c (this plan), ee2fddc (`spindel.v2.ledger`), e1c1078 (sys.clj host joins), 0f3500d (oracle,
+  samples 29-32), b38bf56 (tests).
+- Every namespace loads (no item, no layer-1 transition changed; sys.clj re-checks with the new Cell field). No
+  `sorry`. **No theorem statement changed.** Definitions changed: `Cell` (new last field `joins`) and its
+  constructors (`cell-step`, `wake-cell`, `accept-cell`, `release-unborn-cell`, `drop-cell`, `resume-cell`,
+  `act-cell`, `merge-cell` keep `joins`; `fork-cell`, `fork-effect-cell`, `inst-cell` start with none;
+  `complete-cell` empties it). New: ledger `task-srow`, `task-held`, `task-complete`, `scope-complete`; sys
+  `join-pending`, `join-cell`, `join-ok`, `sys-join`, `deliver-cell`, `sys-deliver`.
+- Oracle: samples 29, 30, 31a, 31b (family, instance at `[:arm 4 :savepoint]`) and 32 replay with 0 divergences, and
+  `check-observations` gives [] on every field, the C1c ones included (key sets of `:tasks`/`:scopes` exact). Checked
+  not vacuous: dropping a join from the spec, or freezing the model's worlds, gives mismatches. Every earlier sample
+  replays as before. The sidecars and the model agree everywhere; no side to pick.
+- Tests: engine_test `c1c-completion-ledger` (the three conditions; P > E > C > G with G's offload: P, C and the
+  scopes P+2, E, C+2 complete only in the step that retires G; G's unmaterialized run scope goes with G; the root
+  scope never completes); sys_test `c1c-join-delivered-at-target-completion`, `c1c-abandoned-join-delivered-at-completion`
+  (E4 instance), `c1c-join-after-release` (admitted after release; at once on a complete target or world; refused
+  for an unallocated id or a collected world), `c1c-joins-not-inherited` (fork, fork effect, instance); oracle_test
+  `c1c-sample-shapes`.
+- Fresh-JVM `clojure -M:test` (2026-11-16, after C1c stage A): 254 tests, 207,529 assertions, 0 failures, 0 errors.
+
+### Theorems for the proof stage (not started)
+- Stability: `task-complete w k -> task-complete (step w it) k` for a task id k (k + 2 < next-id): a scope id is never
+  re-inserted (scope creation takes next-id; ids below the allocator), a task row with a result keeps it and run 0
+  stays 0 (tasks never restart; re-spawn adoption creates no run), no task row reappears. Same for
+  `scope-complete`. Through Rule R: the filter only removes.
+- Complete world => every task and every non-root scope complete: `quiet-rows` gives no task row (not held); what is
+  missing is "a quiet qinv world holds the root scope only" (live = roots = the root scope, as no open explicit scope
+  survives its run: needs an invariant that an open explicit scope lies in the run-scope subtree of an alive run).
+- Layer 2: `jinv` (a complete cell has no pending join; after `sys-deliver` every pending target is incomplete); frames
+  (`sys-join`/`sys-deliver` keep sinv, cinv, qsinv, qpinv: the world is untouched); delivery exactly once (an entry
+  leaves only by `sys-deliver`/`complete-cell` and the list grows only by `sys-join`); abandonment is only ever
+  needed for an unborn cell (a born complete cell's targets are complete, by the previous theorem).
+
+### Questions (engine session), C1c stage A
+10. The root scope is never removed (Z#56), so it is never complete, also in a complete world (every sidecar shows
+    scope 2 present after completion). The statement "a complete world has every task and scope complete" then
+    reads "every task and every non-root scope". Intended?
+11. Materialization: the oracle infers a materialized run scope from what it has owned (a task, a source, a
+    computation, a child scope, a fork marker). Does `run-scope!` materialize in any other case? If so,
+    `:srow-present?` and the scope key set could differ on a future sample; an `:materialized?` per scope (or the
+    S-TASK presence) in the sidecar would make the comparison independent of the inference.
+12. `:pending-joins` counts every entry of W-JOIN-SUBS, withdrawn ones included (pruned lazily, every 16). The model
+    has no withdrawal (host side). Should the sidecar count live subscriptions only, and is withdrawal meant to be
+    modelled?
+13. `on-joined` on a task of a world that was collected (idle release, merge): the model refuses it (nothing ever
+    delivered). What does the engine do (deliver, as the world is gone, or never)?
+14. Pending joins at the completion of a born world: by the theorem above none should remain (every task complete).
+    Is `complete-world!`'s delivery meant only for unborn instances (a tripwire candidate: assert nothing pending in a
+    born world)?

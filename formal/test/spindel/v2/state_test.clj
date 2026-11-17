@@ -37,7 +37,7 @@
 
 (def no-result (s/->RunResult s/res-none 0))
 
-(defn comp-row [id] (s/->CompRow id 0 [] 0 0 1 0 0 0 0 no-result false [] [] [] [] 0))
+(defn comp-row [id] (s/->CompRow id 0 [] 0 0 1 0 0 0 0 no-result false [] [] [] [] 0 false))
 (defn edge-row [kind creditor debtor] (s/->EdgeRow 0 kind creditor debtor s/cont-restart 0 s/ph-armed false false 0 false 0 0))
 
 (defn fresh-comp [w]

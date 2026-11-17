@@ -15,7 +15,7 @@
 
 (def theorems
   '[mb-run-upd mb-run-upd-ne mb-run-upd-q mb-run-ins raw-mb mb-normalize mb-rule-r step-mb step-mb-total
-    sok-empty step-sok mb-of-done step-mu-le finally-exit-dec slice-exit-dec slice-exit-retires ack-dec ack-retires
+    sok-empty step-sok mb-of-done step-mu-le finally-exit-dec finally-leave-dec slice-exit-dec slice-exit-retires ack-dec ack-retires
     mb-retire-gone l5-step l5-core l5-safety l5-dirty])
 
 (deftest theorems-kernel-checked
@@ -34,16 +34,20 @@
         z (:next-id w)
         w (step! w (et/arm (stamp w rk) s/rk-offload 5 z))           ; Z#55: the offload parks the run
         _ (is (= s/act-parked (:act (find-row w :runs rk))))
-        _ (is (= [3 1] (mu w rk)) "alive (not yet in the measure): two regions + their cleanup slice, one resource")
+        _ (is (= [5 1] (mu w rk)) "alive (not yet in the measure): two regions (2 each) + their cleanup slice, one resource")
         w (step! w (et/cancel rk))
         m0 (mu w rk)
-        _ (is (= [3 1] m0) "cancelled: 2 finalizers + the cleanup slice to return, 1 resource")
+        _ (is (= [5 1] m0) "cancelled: 2 regions (exit + leave each) + the cleanup slice to return, 1 resource")
         w (step! w (et/finalize rk))
         _ (is (= m0 (mu w rk)) "finalize schedules the cleanup slice: mu unchanged")
         w (step! w (et/finally-exit (stamp w rk)))
-        _ (is (= [2 1] (mu w rk)) "finalizer exit: mu-f - 1 (finally-exit-dec)")
+        _ (is (= [4 1] (mu w rk)) "finalizer exit: mu-f - 1 (finally-exit-dec)")
+        w (step! w (et/finally-leave (stamp w rk)))
+        _ (is (= [3 1] (mu w rk)) "its clause ends: mu-f - 1 (finally-leave-dec)")
         w (step! w (et/finally-exit (stamp w rk)))
-        _ (is (= [1 1] (mu w rk)) "the last region exits; the slice still runs the outermost block")
+        _ (is (= [2 1] (mu w rk)) "the last region exits; the slice runs the outermost block")
+        w (step! w (et/finally-leave (stamp w rk)))
+        _ (is (= [1 1] (mu w rk)) "the outermost block ends")
         w (step! w (et/slice-exit rk))
         _ (is (= [0 1] (mu w rk)) "slice return: mu-f 0 (slice-exit-dec); a resource is outstanding: not retired")
         _ (is (= s/act-done (:act (find-row w :runs rk))))
@@ -61,9 +65,11 @@
         w (step! w (et/finally-enter (stamp w rk)))
         w (step! w (et/await* (stamp w rk) [y] s/am-one 1 (:next-id w) []))
         w (step! w (et/cancel rk))
-        _ (is (= [2 0] (mu w rk)))
+        _ (is (= [3 0] (mu w rk)))
         w (step! w (et/finalize rk))
         w (step! w (et/finally-exit (stamp w rk)))
+        _ (is (= [2 0] (mu w rk)))
+        w (step! w (et/finally-leave (stamp w rk)))
         _ (is (= [1 0] (mu w rk)))
         w (step! w (et/slice-exit rk))]
     (is (nil? (mu w rk)) "slice-exit-retires")))

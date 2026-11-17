@@ -40,7 +40,8 @@
             [spindel.v2.i1 :refer :all]
             [spindel.v2.i8 :refer :all]
             [spindel.v2.hm :refer :all]
-            [spindel.v2.react :refer :all]))
+            [spindel.v2.react :refer :all]
+            [spindel.v2.tomb :refer :all]))
 
 ;; ===========================================================================
 ;; Part A. Domination: list edits that only wake rows or drop rows
@@ -2085,9 +2086,19 @@
   (simp only [xr14 ic32 Bool.not_true Bool.false_or] at xc3)
   (have rc3 := (Nat.eq_of_beq_eq_true xc3))
   (have hin := (inx-of (end-basis (drop-edges W2 (not-dep-of x)) x) x (comp-rank W2 x) c3 hs3 (rk-ranks _ k3) hf3 rc3))
-  (have r (= (vr-rest S R (comp-upd (end-basis (drop-edges W2 (not-dep-of x)) x) x (comp-make-idle (validity-of W2 x)))) true))
-  (exact (vrk-make-idle S R _ _ _ x (comp-rank W2 x) (validity-of W2 x) (vr-rest-of S R _ h3) hx hncd hxr hvs hin))
-  (exact (vr-intro S R _ (inv-comp-upd _ x (comp-make-idle (validity-of W2 x)) (comp-make-idle-id (validity-of W2 x)) (comp-make-idle-pending (validity-of W2 x)) hs3) r)))
+  (cases hdi (demote-idle c3))
+  (case [true]
+    (rw [(demote-row-idle-upd _ x c3 _ hs3 hf3 hdi)])
+    (have r (= (vr-rest S R (comp-upd (end-basis (drop-edges W2 (not-dep-of x)) x) x (comp-make-idle (validity-of W2 x)))) true))
+    (exact (vrk-make-idle S R _ _ _ x (comp-rank W2 x) (validity-of W2 x) (vr-rest-of S R _ h3) hx hncd hxr hvs hin))
+    (exact (vr-intro S R _ (inv-comp-upd _ x (comp-make-idle (validity-of W2 x)) (comp-make-idle-id (validity-of W2 x)) (comp-make-idle-pending (validity-of W2 x)) hs3) r)))
+  ;; C1 Q6: the tombstone is not idle (dominated by its row: same id and rank)
+  (case [false]
+    (rw [(demote-row-tomb-upd _ x c3 _ hs3 hf3 hdi)])
+    (have r (= (vr-rest S R (comp-upd (end-basis (drop-edges W2 (not-dep-of x)) x) x comp-tomb-row)) true))
+    (exact (vrk-frame S R _ _ _ _ _ (cpres-upd x comp-tomb-row (fn [c :- CompRow] (dom14-wake (comp-tomb-row c) c (rfl) (rfl) (rfl))) _)
+             (epres-refl _) (vr-rest-of S R _ h3)))
+    (exact (vr-intro S R _ (inv-comp-upd _ x comp-tomb-row comp-tomb-row-id comp-tomb-row-pending hs3) r))))
 
 ;; Theorem (one demotion of a stray x of the pass): x leaves the creditors to come
 (a/theorem vr-demote [S :- (List Nat), R :- (List Nat), w :- World, x :- Nat]
@@ -2112,9 +2123,9 @@
 
 ;; ---- a normalization round: the strays of the round are the exemption list
 (a/theorem vr-pass-start [w :- World]
-  (=> (= (vr (List.nil Nat) (List.nil Nat) w) true)
+  (=> (= (trc w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true)
       (= (vr (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) w) true))
-  (intro h)
+  (intros htc h)
   (have hs := (vr-sample _ _ w h))
   (have p := (vrk-parts _ _ _ _ _ (vr-rest-of _ _ w h)))
   (have i2 (= (tbl-all (dnb14 (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) (:comps w)) (:edges w)) true))
@@ -2163,7 +2174,11 @@
         (have el := (live-close w (:id cy) (:id e) hl2 (succ-dep w cy e my yi2 hm dep)))
         (have dl := (live-close w (:id e) (:debtor e) el (succ-edge w e hm (deb-nz w e hs hm))))
         (simp only [in-live] at dl) (rw [ld] at dl) (cases dl))
-      (have st (= (comp-stray (live-list w) cy) true)) (simp only [comp-stray comp-norm yi2 Bool.false_or]) (rw [iy2]) (rw [ly])
+      ;; C1 Q6: the creditor of a dep edge is no tombstone (gy 0)
+      (have ut := (tbl-all-mem EdgeRow (dep-untomb (:comps w)) e (:edges w) (trc-refs w htc) hm))
+      (simp only [dep-untomb hk Bool.not_true Bool.false_or] at ut)
+      (have ty := (untomb-mem (:comps w) cy (:creditor e) ut my iy3))
+      (have st (= (comp-stray (live-list w) cy) true)) (simp only [comp-stray comp-norm yi2 ty Bool.false_or]) (rw [iy2]) (rw [ly])
       (have sc := (scan-mem CompRow comp-id (comp-stray (live-list w)) cy (:comps w) my st))
       (have iy4 (= (comp-id cy) (:creditor e))) (exact iy2)
       (rw [iy4] at sc) (exact sc)))
@@ -2224,9 +2239,9 @@
 
 ;; Theorem (a normalization round keeps vr): the strays of the round demote among themselves
 (a/theorem vr-norm-round [w :- World]
-  (=> (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (vr (List.nil Nat) (List.nil Nat) (norm-round w)) true))
-  (intros hk h)
-  (have h0 := (vr-pass-start w h))
+  (=> (= (trc w) true) (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (vr (List.nil Nat) (List.nil Nat) (norm-round w)) true))
+  (intros htc hk h)
+  (have h0 := (vr-pass-start w htc h))
   (have h1 := (vr-run-cascade _ _ w (cancel-jobs (tbl-scan run-id (run-stray (live-list w)) (:runs w))) h0))
   (have k1 := (rk-run-cascade w (cancel-jobs (tbl-scan run-id (run-stray (live-list w)) (:runs w))) hk))
   (have f := (vr-fold (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) (tbl-scan comp-id (comp-stray (live-list w)) (:comps w))
@@ -2235,40 +2250,41 @@
   (exact (vr-detach (List.nil Nat) (List.nil Nat) _ (vr-pass-end _ _ (And.left f)))))
 
 (a/theorem vr-norm-loop [fuel :- (List Nat)]
-  (forall [w :- World] (=> (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (vr (List.nil Nat) (List.nil Nat) (norm-loop fuel w)) true)))
+  (forall [w :- World] (=> (= (trc w) true) (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (vr (List.nil Nat) (List.nil Nat) (norm-loop fuel w)) true)))
   (induction fuel)
-  (case [nil] (intros w hk h) (simp only [norm-loop]) (exact h))
+  (case [nil] (intros w htc hk h) (simp only [norm-loop]) (exact h))
   (case [cons u f ih]
-    (intros w hk h)
+    (intros w htc hk h)
     (cases hn (normalized w))
-    (case [false] (simp only [norm-loop hn]) (exact (ih (norm-round w) (rk-norm-round w hk) (vr-norm-round w hk h))))
+    (case [false] (simp only [norm-loop hn]) (exact (ih (norm-round w) (trc-norm-round w htc) (rk-norm-round w hk) (vr-norm-round w htc hk h))))
     (case [true] (simp only [norm-loop hn]) (exact h))))
 (a/theorem vr-normalize [w :- World]
-  (=> (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (vr (List.nil Nat) (List.nil Nat) (normalize w)) true))
-  (intros hk h)
+  (=> (= (trc w) true) (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (vr (List.nil Nat) (List.nil Nat) (normalize w)) true))
+  (intros htc hk h)
   (simp only [normalize])
-  (exact (vr-norm-loop (norm-fuel (detach w)) (detach w) (rk-detach w hk) (vr-detach (List.nil Nat) (List.nil Nat) w h))))
+  (exact (vr-norm-loop (norm-fuel (detach w)) (detach w) (trc-detach w htc) (rk-detach w hk) (vr-detach (List.nil Nat) (List.nil Nat) w h))))
 (a/theorem vr-rule-r-round [w :- World]
-  (=> (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (filter-safe (normalize w)) true)
+  (=> (= (trc w) true) (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (filter-safe (normalize w)) true)
       (= (vr (List.nil Nat) (List.nil Nat) (rule-r-round w)) true))
-  (intros hk h hf)
+  (intros htc hk h hf)
   (simp only [rule-r-round]) (rw [rule-r-filter-eq])
-  (exact (vr-filter-world (List.nil Nat) (List.nil Nat) _ (keep-fn (normalize w)) (vr-normalize w hk h) hf)))
+  (exact (vr-filter-world (List.nil Nat) (List.nil Nat) _ (keep-fn (normalize w)) (vr-normalize w htc hk h) hf)))
 (a/theorem vr-rr-loop [fuel :- (List Nat)]
-  (forall [w0 :- World] (=> (= (inv-rank w0) true) (= (vr (List.nil Nat) (List.nil Nat) w0) true) (= (rr-safe fuel w0) true)
+  (forall [w0 :- World] (=> (= (trc w0) true) (= (inv-rank w0) true) (= (vr (List.nil Nat) (List.nil Nat) w0) true) (= (rr-safe fuel w0) true)
                             (= (vr (List.nil Nat) (List.nil Nat) (rr-loop fuel (rule-r-round w0))) true)))
   (induction fuel)
-  (case [nil] (intros w0 hk h hs) (simp only [rr-safe] at hs) (simp only [rr-loop]) (exact (vr-rule-r-round w0 hk h hs)))
+  (case [nil] (intros w0 htc hk h hs) (simp only [rr-safe] at hs) (simp only [rr-loop]) (exact (vr-rule-r-round w0 htc hk h hs)))
   (case [cons x f ih]
-    (intros w0 hk h hs)
+    (intros w0 htc hk h hs)
     (simp only [rr-safe Bool.and_eq_true] at hs)
-    (have h1 := (vr-rule-r-round w0 hk h (And.left hs)))
+    (have h1 := (vr-rule-r-round w0 htc hk h (And.left hs)))
     (cases ho (no-orphans (rule-r-round w0)))
-    (case [false] (simp only [ho] at hs) (simp only [rr-loop ho]) (exact (ih (rule-r-round w0) (rk-rule-r-round w0 hk (And.left hs)) h1 (And.right hs))))
+    (case [false] (simp only [ho] at hs) (simp only [rr-loop ho])
+      (exact (ih (rule-r-round w0) (trc-rule-r-round w0 htc (And.left hs)) (rk-rule-r-round w0 hk (And.left hs)) h1 (And.right hs))))
     (case [true] (simp only [rr-loop ho]) (exact h1))))
 (a/theorem vr-rule-r [w :- World]
-  (=> (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (rule-r-safe w) true) (= (vr (List.nil Nat) (List.nil Nat) (rule-r w)) true))
-  (intros hk h hs) (simp only [rule-r-safe] at hs) (simp only [rule-r]) (exact (vr-rr-loop (rr-fuel w) w hk h hs)))
+  (=> (= (trc w) true) (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (rule-r-safe w) true) (= (vr (List.nil Nat) (List.nil Nat) (rule-r w)) true))
+  (intros htc hk h hs) (simp only [rule-r-safe] at hs) (simp only [rule-r]) (exact (vr-rr-loop (rr-fuel w) w htc hk h hs)))
 
 ;; ===========================================================================
 ;; Part I. The step, the combined bundle, I14 as a theorem
@@ -2316,16 +2332,16 @@
 ;; the step invariant
 (a/defn v14 [w :- World] Bool (vq (List.nil Nat) (List.nil Nat) false w))
 (a/theorem step-v14 [w :- World, it :- Item]
-  (=> (= (v14 w) true) (= (g7 w) true) (= (inv-rank w) true) (= (rule-r-safe (:world (raw w it))) true)
+  (=> (= (ga w) true) (= (gy 0 w) true) (= (v14 w) true) (= (g7 w) true) (= (inv-rank w) true) (= (rule-r-safe (:world (raw w it))) true)
       (= (v14 (:world (world-step w it))) true))
-  (intros h hg hk hs)
+  (intros hga hgy h hg hk hs)
   (simp only [v14] at h) (simp only [v14])
   (cases ha (:accepted (raw w it)))
   (case [false] (have e1 := (step-refuse w it ha)) (simp only [e1 refuse]) (exact h))
   (case [true]
     (have e2 := (step-accepted w it ha)) (rw [e2])
     (have r0 := (raw-vq (List.nil Nat) (List.nil Nat) false w it h))
-    (exact (vq-of-vr _ (vr-rule-r _ (raw-rk w it hk) (vr-of-vq (List.nil Nat) false _ r0 (dep-active-of-g7 _ (raw-g7 w it hg))) hs)))))
+    (exact (vq-of-vr _ (vr-rule-r _ (trc-raw w it hga hg hgy) (raw-rk w it hk) (vr-of-vq (List.nil Nat) false _ r0 (dep-active-of-g7 _ (raw-g7 w it hg))) hs)))))
 (a/theorem v14-empty [] (= (v14 empty-world) true) (rfl))
 
 ;; the combined bundle: p3k = p3j && v14 (no honest hypothesis)
@@ -2340,7 +2356,8 @@
   (have pb := (And.left (p3i-ctx w pi)))
   (have hk := (And.left (And.right (p3b-parts w pb))))
   (have a1 := (step-p3j w it (And.left p)))
-  (have a2 := (step-v14 w it (And.right p) (p3i-g7 w pi) hk (step-rule-r-safe w it pb)))
+  (have rq := (ri-parts w (And.right (And.right (And.right (And.right (p3b-parts w pb)))))))
+  (have a2 := (step-v14 w it (And.left (p3b-parts w pb)) (And.right (And.right (And.right (And.right rq)))) (And.right p) (p3i-g7 w pi) hk (step-rule-r-safe w it pb)))
   (simp only [p3k a1 a2 Bool.and_self]))
 
 ;; ---- I14: the validity graph over idle computations has no cycle

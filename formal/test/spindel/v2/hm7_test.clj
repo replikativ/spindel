@@ -147,7 +147,7 @@
 (defn reactivation-world []
   (let [none (s/->RunResult s/res-none 0)
         comp (fn [id epoch done rank version idle validity]
-               (s/->CompRow id 2 [] 1 0 epoch done 0 rank version (s/->RunResult s/res-ok (+ 40 id)) idle validity [] [] [] 1))]
+               (s/->CompRow id 2 [] 1 0 epoch done 0 rank version (s/->RunResult s/res-ok (+ 40 id)) idle validity [] [] [] 1 false))]
     (assoc s/empty-world
            :next-id 11
            :sources [(s/->SourceRow 3 2 s/sk-signal 30 8 true 1 [] 0 0 0 false)

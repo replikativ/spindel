@@ -1660,7 +1660,7 @@
                              comp-cut-row comp-rebasis})
 (def ^:private h3-comp-ep '#{comp-inc-epoch comp-demand-row comp-replace-row comp-start-row})
 (def ^:private h3-comp-hkm '#{comp-inc-epoch comp-demand-row comp-replace-row comp-start-row})
-(def ^:private h3-run-ok '#{run-wake run-tick run-enter-row run-fin-pop run-tick-park run-fin-pop-end run-park-row run-unres run-arm run-fin-push})
+(def ^:private h3-run-ok '#{run-wake run-tick run-enter-row run-fin-pop run-fin-exit run-tick-park run-fin-pop-end run-park-row run-unres run-arm run-fin-push})
 (def ^:private h3-edge-ok '#{edge-reawait edge-set-seen edge-rearm edge-reread})
 (defn- h3-fhead [f] (if (seq? f) (first f) f))
 (defn- h3-lapp [f lem] (if (seq? f) (apply list lem (rest f)) lem))

@@ -554,6 +554,9 @@
   (all_goals (apply gd-ble-of) (omega)))
 (a/theorem comp-make-idle-gcm [vs :- (List Valid), c :- CompRow] (= (gd-cmono (gdkey c) (gdkey (comp-make-idle vs c))) true)
   (simp only [gd-cmono gdkey comp-make-idle Nat.beq_refl gd-ble-refl Bool.true_or Bool.or_true Bool.and_self]))
+(a/theorem comp-demote-row-gcm [vs :- (List Valid), c :- CompRow] (= (gd-cmono (gdkey c) (gdkey (comp-demote-row vs c))) true)
+  (cases h (demote-idle c))
+  (all_goals (simp only [gd-cmono gdkey comp-demote-row h Nat.beq_refl gd-ble-refl Bool.true_or Bool.or_true Bool.and_self])))
 (a/theorem comp-clear-run-gcm [c :- CompRow] (= (gd-cmono (gdkey c) (gdkey (comp-clear-run c))) true)
   (simp only [gd-cmono gdkey comp-clear-run Nat.beq_refl gd-ble-refl Bool.true_or Bool.or_true Bool.and_self]))
 
@@ -583,7 +586,7 @@
 (prim! GD 'inv-filter-world '(gdr-filter-world w K R))
 
 ;; the source patch: every computation / run edit goes through gd-comp-upd(-m) / gd-run-upd-m
-(def ^:private gd-cm '#{comp-inc-epoch comp-demand-row comp-replace-row comp-make-idle comp-clear-run})
+(def ^:private gd-cm '#{comp-inc-epoch comp-demand-row comp-replace-row comp-make-idle comp-demote-row comp-clear-run})
 (def ^:private gd-rm '#{run-cancel-row run-complete-row run-wake})
 (defn- gd-fhead [f] (if (seq? f) (first f) f))
 (defn- gd-lapp [f lem] (if (seq? f) (apply list lem (rest f)) lem))

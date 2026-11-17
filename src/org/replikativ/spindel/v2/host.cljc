@@ -85,6 +85,13 @@
 (defn try-lock! [lk]
   #?(:clj (.tryLock ^java.util.concurrent.locks.ReentrantLock lk)
      :cljs (if (.-held ^js lk) false (do (set! (.-held ^js lk) true) true))))
+(defn lock!
+  "Waits for the lock. Only where no cycle can form: the caller holds no gate
+   a holder of `lk` could wait for (B7)."
+  [lk]
+  #?(:clj (.lock ^java.util.concurrent.locks.ReentrantLock lk)
+     :cljs (if (.-held ^js lk) (throw (js/Error. "lock! on a held gate")) (set! (.-held ^js lk) true)))
+  nil)
 (defn unlock! [lk] #?(:clj (.unlock ^java.util.concurrent.locks.ReentrantLock lk) :cljs (set! (.-held ^js lk) false)) nil)
 
 #?(:clj (def default-executor

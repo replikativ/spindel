@@ -526,7 +526,7 @@
        (case [false] (simp only [t-detach hf hg refuse]) (exact h))
        (case [true]
          (have hs2 (= (scope-has w s) true))
-         (simp only [detach-ok Bool.and_eq_true] at hg) (exact (open-at-has w s (And.right (And.right hg))))
+         (simp only [detach-ok Bool.and_eq_true] at hg) (exact (open-at-has w s (And.left (And.right (And.right hg)))))
          (simp only [t-detach hf hg accept remove-empty-at detach-move])
          (have h1 := (g1-task-upd w k (task-set-owner s) (task-set-owner-id s) h))
          (exact (g1-remove-if-empty _ _ (g1-set-parent (task-upd w k (task-set-owner s)) (task-run-scope w t) s hs2 h1)))))))

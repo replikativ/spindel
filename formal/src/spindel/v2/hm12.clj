@@ -106,7 +106,7 @@
         (= (:world (raw0 w (Item.await st ds mode k fresh mine))) w))))
   (intros hp h)
   (apply And.intro)
-  (cases hd (await-kind-bad w ds))
+  (cases hd (await-bad w st ds mode))
   (case [true] (simp only [raw0 hd refuse]) (exact h))
   (case [false] (simp only [raw0 hd]) (exact (And.left (h12-t6-outcome xm w st ds mode k fresh mine hp h))))
   (exact (raw0-refuse w (Item.await st ds mode k fresh mine)))

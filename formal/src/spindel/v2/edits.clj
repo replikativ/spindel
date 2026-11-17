@@ -34,7 +34,7 @@
 (a/defn comp-set-pending [n :- Nat, c :- CompRow] CompRow
   (CompRow.mk (:id c) (:owner c) (:inputs c) (:body c) (:run c) (:epoch c) (:done-epoch c)
               n (:rank c) (:version c) (:result c) (:idle c) (:validity c) (:basis c)
-              (:adopt-basis c) (:adopt-baselines c) (:handles c)))
+              (:adopt-basis c) (:adopt-baselines c) (:handles c) (:tomb c)))
 
 (a/defn comp-inc-pending [c :- CompRow] CompRow (comp-set-pending (+ (:pending c) 1) c))
 (a/defn comp-dec-pending [c :- CompRow] CompRow (comp-set-pending (- (:pending c) 1) c))

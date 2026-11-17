@@ -47,7 +47,7 @@
 (defn add-scope [w parent kind] (add-row w s/scope-ins #(s/->ScopeRow % parent kind true)))
 (defn add-comp [w owner & {:keys [handles result] :or {handles 1 result no-result}}]
   (add-row w s/comp-ins #(s/->CompRow % owner [] 0 0 1 (if (= s/res-none (:tag result)) 0 1) 0 0 0
-                                      result false [] [] [] [] handles)))
+                                      result false [] [] [] [] handles false)))
 (defn add-task [w owner] (add-row w s/task-ins #(s/->TaskRow % owner 0 no-result 1 [])))
 (defn add-run [w of scope & {:keys [slice act epoch] :or {slice false act s/act-active epoch 1}}]
   (add-row w s/run-ins #(s/->RunRow % of (+ 1000 %) epoch scope act s/mode-normal slice 0 [] [])))
@@ -97,7 +97,8 @@
 (defn ref-normalized? [w]
   (let [lv (rtt/ref-live w)]
     (and (every? #(or (= s/act-done (:act %)) (lv (:id %))) (:runs w))
-         (every? #(or (:idle %) (lv (:id %))) (:comps w)))))
+         ;; C1 Q6: a tombstone (kept by its run's cleanup entry) may sit outside live
+         (every? #(or (:idle %) (:tomb %) (lv (:id %))) (:comps w)))))
 
 (defn rule-r-checks
   "The honest hypotheses and the conclusions for Rule R applied to w (an accepted raw world)."

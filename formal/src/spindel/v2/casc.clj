@@ -1386,6 +1386,8 @@
   (rw [e]))
 
 (a/theorem comp-make-idle-inactive [vs :- (List Valid), c :- CompRow] (= (comp-active (comp-make-idle vs c)) false) (rfl))
+(a/theorem comp-demote-row-inactive [vs :- (List Valid), c :- CompRow] (= (comp-active (comp-demote-row vs c)) false)
+  (cases h (demote-idle c)) (all_goals (simp only [comp-demote-row h comp-active Bool.or_true Bool.true_or Bool.not_true Bool.not_false Bool.or_false Bool.false_or])))
 
 (a/theorem bn-demote-finish [a :- Nat, k :- Nat, w :- World, cid :- Nat, vs :- (List Valid)]
   (=> (= (bn a k w) true) (= (bn a k (demote-finish w cid vs)) true))
@@ -1397,11 +1399,11 @@
     (cases hk (demote-keep w c))
     (case [true]
       (simp only [demote-finish hf hk])
-      (have l (<= (act-cnt (comp-upd w cid (comp-make-idle vs))) (act-cnt w)))
+      (have l (<= (act-cnt (comp-upd w cid (comp-demote-row vs))) (act-cnt w)))
       (simp only [act-cnt comp-upd set-comps])
-      (exact (count-upd-false-le CompRow comp-id cid (comp-make-idle vs) comp-active (comp-make-idle-inactive vs) (:comps w)))
+      (exact (count-upd-false-le CompRow comp-id cid (comp-demote-row vs) comp-active (comp-demote-row-inactive vs) (:comps w)))
       (exact (bn-intro a k _
-               (inv-comp-upd w cid (comp-make-idle vs) (comp-make-idle-id vs) (comp-make-idle-pending vs) (And.left p))
+               (inv-comp-upd w cid (comp-demote-row vs) (comp-demote-row-id vs) (comp-demote-row-pending vs) (And.left p))
                (And.left (And.right p)) (And.left (And.right (And.right p)))
                (Nat.le_trans l (And.right (And.right (And.right p)))))))
     (case [false]
@@ -1552,7 +1554,7 @@
     (cases hk (demote-keep w c))
     (case [true]
       (simp only [demote-finish hf hk act-cnt comp-upd set-comps])
-      (exact (count-upd-false-lt CompRow comp-id x (comp-make-idle vs) comp-active (comp-make-idle-inactive vs) c (:comps w) hf hfind)))
+      (exact (count-upd-false-lt CompRow comp-id x (comp-demote-row vs) comp-active (comp-demote-row-inactive vs) c (:comps w) hf hfind)))
     (case [false]
       (simp only [demote-finish hf hk])
       (have h2 := (inv-drop-edges w (edge-avoids x) h))
@@ -1573,13 +1575,14 @@
 
 (a/theorem demote-lt [w :- World, x :- Nat, c :- CompRow]
   (=> (= (inv-sample w) true) (= (acts-alive w) true) (= (comp-find w x) (Option.some CompRow c)) (= (:idle c) false)
+      (= (:tomb c) false)
       (And (<= (+ (act-cnt (demote w x)) 1) (act-cnt w)) (<= (alive-cnt (demote w x)) (alive-cnt w))))
-  (intros h ha hf hi)
+  (intros h ha hf hi ht)
   (have h1 := (bc-demote-epoch (bnd-of w) _ x (demote-cur w c) (bc-run-cascade (bnd-of w) w (cancel-jobs (demote-cancels w c)) (bc-of-bnd w h ha))))
   (have q := (bc-rest-parts _ _ (bc-rest-of _ _ h1)))
   (have hx (= (reach-mem x (active-ids w)) true))
   (have e (= (comp-id c) x)) (exact (tbl-find-id CompRow comp-id x c (:comps w) hf))
-  (have hac (= (comp-active c) true)) (simp only [comp-active hi Bool.not_false])
+  (have hac (= (comp-active c) true)) (simp only [comp-active hi ht Bool.or_false Bool.not_false])
   (have hm := (scan-mem CompRow comp-id comp-active c (:comps w) (tbl-find-mem CompRow comp-id x c (:comps w) hf) hac))
   (rw [e] at hm) (exact hm)
   (have hx2 (= (reach-mem x (active-ids (drop-edges (demote-epoch (run-cascade w (cancel-jobs (demote-cancels w c))) x (demote-cur w c)) (not-dep-of x)))) true))
@@ -1630,6 +1633,11 @@
   (cases hi (:idle c))
   (case [false] (rfl))
   (case [true] (simp [comp-stray comp-norm hi] at h)))
+(a/theorem stray-comp-tomb [lv :- (List Nat), c :- CompRow] (=> (= (comp-stray lv c) true) (= (:tomb c) false))
+  (intro h)
+  (cases hi (:tomb c))
+  (case [false] (rfl))
+  (case [true] (simp [comp-stray comp-norm hi] at h)))
 
 ;; one round of a world that is not normalized lowers #non-done runs + #non-idle computations
 (a/theorem round-lt [w :- World, lv :- (List Nat)]
@@ -1675,7 +1683,7 @@
       (case [none] (simp [opt-test hf] at hfind))
       (case [some c]
         (simp only [opt-test hf] at hfind)
-        (have d := (demote-lt w x c h ha hf (stray-comp-busy lv c hfind)))
+        (have d := (demote-lt w x c h ha hf (stray-comp-busy lv c hfind) (stray-comp-tomb lv c hfind)))
         (have bd := (bn-demote (alive-cnt w) (act-cnt w) w x (bn-intro _ _ w h ha (Nat.le_refl _) (Nat.le_refl _))))
         (have pd := (bn-parts _ _ _ bd))
         (have b1 := (bn-intro (alive-cnt (demote w x)) (act-cnt (demote w x)) _

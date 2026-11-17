@@ -12,6 +12,7 @@
             [spindel.v2.rule :as r]
             [spindel.v2.engine :as en]
             [spindel.v2.inv :as inv]
+            [spindel.v2.ledger :as lg]
             [spindel.v2.rule-test :as rlt]))
 
 (def theorems
@@ -33,7 +34,7 @@
     ids-ok-bump inv-bump t-deliver-inv t-deliver-refuse inv-serve-or t-post-inv t-post-refuse
     t-release-inv t-release-refuse inv-take-park inv-take-now t-take-inv t-take-refuse t-take-l4
     t-finally-enter-inv t-finally-enter-refuse t-finally-enter-l4 t-finally-exit-inv t-finally-exit-refuse
-    t-finally-exit-l4 t-slice-exit-inv t-slice-exit-refuse inv-deliver-fire inv-dep-consumed t-finalize-inv t-finalize-refuse t-cancel-inv t-cancel-refuse
+    t-finally-exit-l4 t-finally-leave-inv t-finally-leave-refuse t-finally-leave-l4 t-slice-exit-inv t-slice-exit-refuse inv-deliver-fire inv-dep-consumed t-finalize-inv t-finalize-refuse t-cancel-inv t-cancel-refuse
     t-open-scope-inv t-open-scope-refuse t-open-scope-l4 t-close-scope-inv t-close-scope-refuse
     t-detach-inv t-detach-refuse inv-zero-handles inv-revoke-roots t-release-world-inv
     t-release-world-refuse inv-raise-loop inv-raise-for inv-react-add blocked-sound blocked-complete
@@ -91,6 +92,7 @@
 (defn link-realize [l tag v n] [41 l tag v n])
 (defn append* [x v t] [42 x v t])
 (defn close* [x tag v] [43 x tag v])
+(defn finally-leave [st] [44 st])
 
 (def root s/root-scope-id)
 (defn find-row [w field id] (first (filter #(= id (:id %)) (get w field))))
@@ -453,12 +455,17 @@
           _ (step! w (arm (stamp w rk) s/rk-offload 0 (:next-id w)) :refused)
           _ (step! w (slice-exit rk) :refused)                           ; a region is still open
           w (step! w (finally-exit (stamp w rk)))                          ; commits at the block's start
+          _ (step! w (slice-exit rk) :refused)                           ; C1: its clause runs
+          _ (step! w (finally-exit (stamp w rk)) :refused)                 ; the head is the running clause
           w (step! w (write sg 4))                                       ; a finalizer may write
+          w (step! w (finally-leave (stamp w rk)))                         ; C1: the clause ends
           _ (is (= [[0] true] [(mapv :at (:finalizers (find-row w :runs rk))) (:slice (find-row w :runs rk))])
                 "Z#35: the whole chain runs in the one cleanup slice")
+          _ (step! w (finally-leave (stamp w rk)) :refused)                ; no running clause
           w (step! w (finally-exit (stamp w rk)))
+          w (step! w (finally-leave (stamp w rk)))
           _ (is (= [[] true] [(mapv :at (:finalizers (find-row w :runs rk))) (:slice (find-row w :runs rk))])
-                "the outermost block still runs in the slice")
+                "the outermost block ran in the slice")
           _ (step! w (finally-exit (stamp w rk)) :refused)                 ; no region: invalid token (L4)
           _ (step! w (finalize rk) :refused)
           w (step! w (slice-exit rk))]
@@ -506,6 +513,7 @@
       (is (= [rk] (mapv :run (:cleanup w)))))
     (let [w (step! w (finalize rk))
           w (step! w (finally-exit (stamp w rk)))
+          w (step! w (finally-leave (stamp w rk)))
           w (step! w (slice-exit rk))]
       (is (= [root] (s/all-ids w)) "Z#56: everything but the root scope is reclaimed; the root scope stays")
       (is (empty? (:cleanup w))))))
@@ -556,9 +564,9 @@
         _ (step! w (spawn-top root 1 (:next-id w)) :refused)
         _ (step! w (create-source-top root s/sk-signal 0 (:next-id w)) :refused)
         w (step! w (finalize rk))
-        w (step! w (pin d))                                           ; the cleanup slice's own effect (Z#44)
-        w (step! w (unpin d))
+        _ (step! w (pin d) :refused)                                  ; C1 Q5 (#269): no new root after T21, also from the cleanup slice
         w (step! w (finally-exit (stamp w rk)))
+        w (step! w (finally-leave (stamp w rk)))
         w (step! w (slice-exit rk))
         _ (is (some? (find-row w :runs rk)) "the outstanding resource holds the run")
         w (step! w (resource-ack z))]
@@ -747,7 +755,7 @@
         kinds (concat [0 1 2 2 3 3 4 4 5 6 7 8 9 10 11 12 13 13 14 14 15 15 16 16 17 17 17 18 18 18 18 19 19 19
                        20 20 20 20 21 21 21 21 22 23 24]
                       [25 25 26 26 27 27 27 28 28 29 29 29 29 29 29 30 30 30 32 32 33 33 34 35 35 35 35 36 36
-                       37 37 37]
+                       37 37 37 44 44 44]
                       (when (zero? (.nextInt rng 8)) [31]))]
     (case (nth kinds (.nextInt rng (count kinds)))
       0 (create-source (st) (.nextInt rng 5) v fresh)
@@ -792,7 +800,8 @@
       34 (detach (pick (map :id (:tasks w))) (pick scopes))
       35 (finally-enter (st))
       36 (finally-exit (st))
-      37 (slice-exit (if (seq exiting) (pick exiting) (pick (map :id (:runs w))))))))
+      37 (slice-exit (if (seq exiting) (pick exiting) (pick (map :id (:runs w)))))
+      44 (finally-leave (st)))))
 
 ;; a source x (3), an observed computation C (4) with a run (6) holding the slice, a task (9)
 (defn prefix-world []
@@ -927,3 +936,282 @@
     (doseq [it [(link-realize l 0 0 0) (link-realize l 2 9 0)]]
       (is (false? (acc w3 it)) (str "no realization under a closed root scope " (pr-str it)))
       (is (= w3 (:world (en/raw0 w3 it))) "and the world is unchanged"))))
+
+;; ---------------------------------------------------------------------------
+;; C1 (spec Z#67, T14, T21, B8 reduced; engine 823771c)
+
+(defn- c1-steps [w0 fs]
+  (reduce (fn [[w log] f] (let [it (f w) o (en/world-step w it)] [(:world o) (conj log [it (:accepted o)])]))
+          [w0 []] fs))
+(defn- task-run [w k] (:run (find-row w :tasks k)))
+
+;; W1: complete = released, no unretired run (and no open child: layer 2); a run kept by an
+;; outstanding resource keeps a released world incomplete until its acknowledgement (sample 27)
+(deftest c1-completion
+  (let [[w log] (c1-steps s/empty-world
+                         [(fn [w] (spawn-top root 1 (:next-id w)))
+                          (fn [w] (schedule (task-run w 3)))
+                          (fn [w] (arm (stamp w (task-run w 3)) s/rk-offload 7 (:next-id w)))
+                          (fn [w] (release-world))])
+        z (:id (first (:res w)))
+        [w2 log2] (c1-steps w [(fn [_] (resource-fire z 1 0)) (fn [_] (resource-ack z))])]
+    (is (every? second log) (pr-str log))
+    (is (= 1 (en/world-runs w)) "the cancelled run waits for its offload")
+    (is (false? (en/world-quiet w)) "released, not complete")
+    (is (= [false true] (mapv second log2)) "the cancelling offload's fire is refused, its ack accepted")
+    (is (= 0 (en/world-runs w2)))
+    (is (true? (en/world-quiet w2)) "complete after the acknowledgement retires the run")))
+
+;; T14 (C1): a cancellation reaches the whole run-scope subtree in its item: the runs of the tasks
+;; in the run's explicit scopes, nested ones included (sample 22)
+(deftest c1-subtree-cancel
+  (let [k (:next-id s/empty-world)
+        [w log] (c1-steps s/empty-world
+                         [(fn [w] (spawn-top root 1 (:next-id w)))
+                          (fn [w] (schedule (task-run w k)))
+                          (fn [w] (open-scope (stamp w (task-run w k)) (:next-id w)))
+                          (fn [w] (spawn (stamp w (task-run w k)) 2 (:next-id w)))
+                          (fn [w] (open-scope (stamp w (task-run w k)) (:next-id w)))
+                          (fn [w] (spawn (stamp w (task-run w k)) 3 (:next-id w)))
+                          (fn [w] (create-source (stamp w (task-run w k)) s/sk-deferred 0 (:next-id w)))
+                          (fn [w] (await* (stamp w (task-run w k)) [(apply max (map :id (:sources w)))] s/am-one 1 (:next-id w) []))])
+        kids (remove #{k} (map :id (:tasks w)))
+        runs (fn [w] (map #(find-row w :runs (task-run w %)) kids))
+        o (en/world-step w (cancel (task-run w k)))]
+    (is (every? second log) (pr-str log))
+    (is (= 2 (count kids)) "two child tasks, in nested explicit scopes")
+    (is (every? #(= s/act-active (:act %)) (runs w)))
+    (is (:accepted o))
+    (is (every? #(or (nil? %) (= s/act-done (:act %))) (runs (:world o))) "both cancelled by the one cancel item")))
+
+;; B8 reduced (C1): in a cancelled run's finally clause (its cleanup slice) every await and take is
+;; refused, settled debtor or not (sample 25); the item is never logged
+(deftest c1-finalizer-refusal
+  (let [k (:next-id s/empty-world)
+        [w log] (c1-steps s/empty-world
+                         [(fn [w] (create-source-top root s/sk-signal 5 (:next-id w)))
+                          (fn [w] (create-source-top root s/sk-mailbox 0 (:next-id w)))
+                          (fn [w] (spawn-top root 1 (:next-id w)))
+                          (fn [w] (schedule (task-run w (+ k 2))))
+                          (fn [w] (finally-enter (stamp w (task-run w (+ k 2)))))
+                          (fn [w] (create-source (stamp w (task-run w (+ k 2))) s/sk-deferred 0 (:next-id w)))
+                          (fn [w] (await* (stamp w (task-run w (+ k 2))) [(dec (:next-id w))] s/am-one 1 (:next-id w) []))])
+        r (task-run w (+ k 2))]
+    (is (every? second log) (pr-str log))
+    (let [w1 (:world (en/world-step w (cancel r)))
+          o2 (en/world-step w1 (finalize r))
+          w2 (:world o2)
+          st (stamp w2 r)]
+      (is (:accepted o2) "T14 schedules the head finalizer as a cleanup slice")
+      (is (true? (en/in-cleanup w2 st)) "the cancelled run's cleanup slice")
+      (is (false? (:accepted (en/world-step w2 (await* st [k] s/am-one 1 (:next-id w2) [])))) "await on a settled signal: refused")
+      (is (false? (:accepted (en/world-step w2 (take* st (inc k) 1 (:next-id w2))))) "take: refused"))))
+
+;; C1 A5 (B8 for normal runs): between `finally-exit` and `finally-leave` a normal run's suspending
+;; effects are refused (an await on an unsettled debtor, a take with nothing to take, every arm);
+;; settled awaits, writes and creations are accepted; completion waits for the clause's end
+(deftest c1-normal-finally-clause
+  (let [w s/empty-world
+        sg (:next-id w)
+        w (step! w (create-source-top root s/sk-signal 5 sg))
+        d (:next-id w)
+        w (step! w (create-source-top root s/sk-deferred 0 d))
+        mb (:next-id w)
+        w (step! w (create-source-top root s/sk-mailbox 0 mb))
+        [k rk w] (task-with-slice w)
+        st (stamp w rk)
+        _ (step! w (finally-leave st) :refused)                          ; no clause
+        w (step! w (finally-enter st))
+        _ (is (false? (en/in-fin w st)) "a region is no clause")
+        w (step! w (finally-exit st))
+        _ (is (true? (en/in-fin w st)) "the clause runs")
+        _ (step! w (await* st [d] s/am-one 1 (:next-id w) []) :refused)   ; would suspend
+        _ (step! w (await* st [sg d] s/am-all 1 (:next-id w) []) :refused)
+        _ (step! w (take* st mb 1 (:next-id w)) :refused)
+        _ (step! w (arm st s/rk-timer 1 (:next-id w)) :refused)
+        _ (step! w (complete st s/res-ok 1) :refused)                    ; the clause is open
+        _ (step! w (finally-exit st) :refused)                           ; no region at the head
+        _ (step! w (await* st [sg] s/am-one 1 (:next-id w) []))          ; settled: read at once
+        _ (step! w (await* st [sg d] s/am-any 1 (:next-id w) []))
+        w (step! w (write sg 6))
+        w (step! w (finally-leave st))
+        _ (is (false? (en/in-fin w st)))
+        _ (is (empty? (:finalizers (find-row w :runs rk))))
+        w (step! w (await* st [d] s/am-one 1 (:next-id w) []))]
+    (is (= s/act-parked (:act (find-row w :runs rk))) "outside the clause the await parks")))
+
+;; C1 Q5/Q8 (spindel #269): after T21 a cancelled run's cleanup slice still holds the slice, but a
+;; released world takes no new root, handle or creation: observe, pin and host waits are refused there, so the world
+;; is quiet once the slice exits and the computation cannot start (the former counterexample to
+;; completion stability)
+(deftest c1-no-roots-after-release
+  (let [w0 s/empty-world
+        c (:next-id w0)
+        w (step! w0 (create-comp-top root c 1 1))
+        w (step! w (observe c 1 (:next-id w)))
+        w (step! w (start c (:next-id w)))
+        r (:run (find-row w :comps c))
+        w (step! w (schedule r))
+        w (step! w (release-world))
+        _ (is (true? (:slice (find-row w :runs r))) "the cancelled run still holds the slice")
+        _ (is (= s/mode-unwinding (:mode (find-row w :runs r))))
+        _ (step! w (observe c 1 (:next-id w)) :refused)
+        _ (step! w (pin c) :refused)
+        _ (step! w (host-await c (:next-id w)) :refused)
+        _ (step! w (handle-new c) :refused)                             ; Q8: no new handle (admission) either
+        _ (step! w (create-comp-top root (:next-id w) 1 1) :refused)
+        _ (step! w (spawn-top root 1 (:next-id w)) :refused)
+        w (step! w (slice-exit r))]
+    (is (true? (en/world-quiet w)) "released, no run")
+    (is (empty? (:pins w)))
+    (is (nil? (find-row w :comps c)) "nothing retains the computation")
+    (is (false? (:accepted (en/world-step w (start c (:next-id w))))) "it cannot start")))
+
+;; E4 (C1): an unborn instance released before its activation only sets the flag: nothing in it
+;; runs (sample 24); a done task run that holds no slice is still cancellable, with no row change
+(deftest c1-unborn-release-and-done-cancel
+  (let [w (:world (en/world-step (prefix-world) (release-world)))
+        w0 (prefix-world)
+        wu (en/release-unborn w0)]
+    (is (true? (:released wu)))
+    (is (= (dissoc w0 :released) (dissoc wu :released)) "the rows stay as copied")
+    (is (pos? (en/world-runs wu)) "complete at once all the same (layer 2): its runs never run")
+    (is (some? w)))
+  (let [k (:next-id s/empty-world)
+        [w log] (c1-steps s/empty-world
+                         [(fn [w] (spawn-top root 1 (:next-id w)))
+                          (fn [w] (schedule (task-run w k)))
+                          (fn [w] (arm (stamp w (task-run w k)) s/rk-offload 7 (:next-id w)))])
+        r (task-run w k)
+        z (:id (first (:res w)))
+        w1 (:world (en/world-step w (resource-fire z 1 0)))
+        w2 (:world (en/world-step w1 (schedule r)))
+        w3 (:world (en/world-step w2 (complete (stamp w2 r) 1 5)))]
+    (is (every? second log))
+    (when (find-row w3 :runs r)
+      (is (= s/act-done (:act (find-row w3 :runs r))))
+      (let [o (en/world-step w3 (cancel r))]
+        (is (:accepted o) "accepted on a done run")
+        (is (= (:world o) (:world (en/world-step w3 (cancel r)))))))))
+
+;; C1 Q6 + engine session: handle-new on a tombstone is refused (the engine's handle! on an existing
+;; row runs only through adoption, which finds the row through a reference; a tombstone has none)
+(deftest c1-handle-new-tombstone-refused
+  (let [w0 s/empty-world
+        c (:next-id w0)
+        w (step! w0 (create-comp-top root c 1 1))
+        e (:next-id w)
+        w (step! w (observe c 1 e))
+        w (step! w (start c (:next-id w)))
+        r (:run (find-row w :comps c))
+        w (step! w (schedule r))
+        w (step! w (handle-drop c))
+        w (step! w (unobserve e))]
+    (is (= {:idle false :tomb true :handles 0 :run r} (select-keys (find-row w :comps c) [:idle :tomb :handles :run]))
+        "unobserved, no handle, no result, its run cancelled in its cleanup slice: a tombstone")
+    (is (true? (:slice (find-row w :runs r))))
+    (step! w (handle-new c) :refused)))
+
+;; Z#69 (engine PR #272, task_test `detach-into-own-subtree-is-refused`): detach is refused into a
+;; scope of the task's own run-scope subtree (re-parenting the run scope under it would close a cycle
+;; of parents, and neither scope could ever be removed); into an outer open scope it is accepted.
+;; `scope-cycle?` walks the parent fields directly (independent of the model's `scope-ancestors`).
+(defn scope-cycle? [w]
+  (let [par (into {} (map (juxt :id :parent) (:scopes w)))]
+    (boolean (some (fn [s] (loop [x (par s) n 0]
+                             (cond (or (nil? x) (zero? x)) false
+                                   (= x s) true
+                                   (> n (count par)) true
+                                   :else (recur (par x) (inc n)))))
+                   (keys par)))))
+
+(deftest z69-detach-into-own-subtree-refused
+  (let [w s/empty-world
+        [k0 rk0 w] (task-with-slice w)                                      ; K0 holds the slice
+        o (:next-id w)
+        w (step! w (open-scope (stamp w rk0) o))                            ; K0 opens O
+        j (:next-id w)
+        rj (inc j)
+        sj (+ j 2)
+        w (step! w (spawn (stamp w rk0) 5 j))                               ; J, owned by O
+        _ (is (= [o o] [(:owner (find-row w :tasks j)) (:parent (find-row w :scopes sj))]))
+        y (:next-id w)
+        w (step! w (create-source (stamp w rk0) s/sk-deferred 0 y))
+        w (step! w (await* (stamp w rk0) [y] s/am-one 1 (:next-id w) []))  ; K0 parks
+        w (step! w (schedule rj))
+        s (:next-id w)
+        w (step! w (open-scope (stamp w rj) s))                             ; J opens S below its run scope
+        _ (is (= sj (:parent (find-row w :scopes s))))
+        _ (is (false? (scope-cycle? w)))]
+    (testing "refused into J's own subtree (S, or J's run scope itself); the world is unchanged"
+      (step! w (detach j s) :refused)
+      (step! w (detach j sj) :refused)
+      (is (true? (en/scope-within w s sj)) "J's run scope is on S's parent chain")
+      (is (true? (scope-cycle? (en/detach-move w j s sj)))
+          "without the guard the move makes S and J's run scope each other's ancestor"))
+    (testing "accepted into an outer open scope (the root scope): J and its run scope move there"
+      (let [w2 (step! w (detach j root))]
+        (is (= [root root] [(:owner (find-row w2 :tasks j)) (:parent (find-row w2 :scopes sj))]))
+        (is (= sj (:parent (find-row w2 :scopes s))))
+        (is (false? (scope-cycle? w2)))
+        (is (true? (:open (find-row w2 :scopes o))) "O stays K0's open scope")))))
+
+;; ---------------------------------------------------------------------------
+;; C1c stage A (spec Z#70, engine 1aac850): completion is derived from the scope tree (spindel.v2.ledger).
+;; A task is complete when done, its run retired and its run scope (k + 2) removed or never materialized; a scope
+;; when its row is removed. The scenario of sample 30, with an offload for the grandchild's host work: P opens the
+;; explicit scope E and spawns C in it; C spawns G in its run scope; G arms an offload. C completes (its retirement
+;; cancels G, whose run stays in cleanup until the offload's acknowledgement), P closes E and completes. P and C are
+;; done and retired but wait for their run scopes; G is done (cancelled) with its run unretired. G's retirement
+;; completes everything: G's run scope was never materialized, the others are removed in the same step (Rule R).
+(deftest c1c-completion-ledger
+  (let [w s/empty-world
+        d (:next-id w)
+        w (step! w (create-source-top root s/sk-deferred 0 d))
+        [p rp w] (task-with-slice w)
+        e (:next-id w)
+        w (step! w (open-scope (stamp w rp) e))
+        c (:next-id w)
+        rc (inc c)
+        w (step! w (spawn (stamp w rp) 2 c))
+        w (step! w (await* (stamp w rp) [d] s/am-one 1 (:next-id w) []))
+        w (step! w (schedule rc))
+        g (:next-id w)
+        rg (inc g)
+        w (step! w (spawn (stamp w rc) 3 g))
+        w (step! w (await* (stamp w rc) [d] s/am-one 1 (:next-id w) []))
+        w (step! w (schedule rg))
+        z (:next-id w)
+        w (step! w (arm (stamp w rg) s/rk-offload 7 z))
+        tc (fn [w] (mapv #(lg/task-complete w %) [p c g]))
+        sc (fn [w] (mapv #(lg/scope-complete w %) [(+ p 2) e (+ c 2)]))
+        _ (testing "condition 1, not done: nothing complete while the three run"
+            (is (= [e (+ p 2) (+ c 2)] (mapv #(:parent (find-row w :scopes %)) [(+ c 2) e (+ g 2)]))
+                "the scope tree: P's run scope > E > C's run scope > G's run scope")
+            (is (= [false false false] (tc w)))
+            (is (= [false false false] (sc w))))
+        w (step! w (deliver d 5))
+        w (step! w (schedule rc))
+        w (step! w (complete (stamp w rc) s/res-ok 1))
+        _ (testing "C done and retired, its run scope still present (G is held): not complete"
+            (is (= [true true] ((juxt #(= s/res-ok (:tag (:result %))) #(zero? (:run %))) (find-row w :tasks c))))
+            (is (some? (find-row w :scopes (+ c 2))))
+            (is (false? (lg/task-complete w c))))
+        _ (testing "condition 2, G done (cancelled with C's run scope, Q10) but its run unretired: not complete"
+            (is (not= s/res-none (:tag (:result (find-row w :tasks g)))))
+            (is (pos? (:run (find-row w :tasks g))))
+            (is (false? (lg/task-complete w g))))
+        w (step! w (schedule rp))
+        w (step! w (close-scope e))
+        w (step! w (complete (stamp w rp) s/res-ok 2))
+        _ (testing "condition 3, P done and retired, its run scope kept by the subtree: not complete"
+            (is (= [true true] ((juxt #(= s/res-ok (:tag (:result %))) #(zero? (:run %))) (find-row w :tasks p))))
+            (is (= [false false false] (tc w)))
+            (is (= [false false false] (sc w)) "E closed, but its row stays (G's cleanup keeps its chain)")
+            (is (false? (:open (find-row w :scopes e)))))
+        w (step! w (resource-ack z))]
+    (testing "G retires: every task and scope of the subtree is complete in that step"
+      (is (= [true true true] (tc w)))
+      (is (= [true true true] (sc w)))
+      (is (true? (lg/scope-complete w (+ g 2))) "G's run scope, never materialized, went at G's retirement")
+      (is (false? (lg/scope-complete w root)) "the root scope is never removed"))))

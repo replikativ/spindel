@@ -20,6 +20,41 @@
 (defn- wait-until [f] (loop [n 200] (or (f) (when (pos? n) (Thread/sleep 5) (recur (dec n))))))
 (defn- released? [w] (aget ^objects w rw/W-RELEASED))
 
+(defn- hold-gate!
+  "Holds world `w`'s gate from another thread for `ms`, as a metadata job or a
+   turn would, then hands off as every holder does (H2); returns once it is held."
+  [w ms]
+  (let [held (promise)]
+    (future (let [^java.util.concurrent.locks.ReentrantLock lk (aget ^objects w rw/W-LOCK)]
+              (.lock lk)
+              (try (deliver held true) (Thread/sleep ms) (finally (.unlock lk)))
+              (#'org.replikativ.spindel.v2.core/handoff! w)))
+    (deref held 2000 nil)))
+
+(deftest merge-waits-out-a-busy-child-gate
+  ;; a metadata job (MVCC prune, handle drop) holding the child's gate is not a refusal
+  (checked
+   (let [w (vworld)]
+     (binding [v2/*world* w]
+       (let [s (v2/signal 1)
+             child (v2/fork! w {:mergeable? true})]
+         (v2/write! (v2/in-world child s) 7)
+         (hold-gate! child 100)
+         (is (true? (v2/merge! w child)))
+         (is (= 7 (v2/value s))))))))
+
+(deftest merge-waits-for-a-busy-parent-gate
+  ;; the caller waits for its item: never false while the merge happens later
+  (checked
+   (let [w (vworld)]
+     (binding [v2/*world* w]
+       (let [s (v2/signal 1)
+             child (v2/fork! w {:mergeable? true})]
+         (v2/write! (v2/in-world child s) 7)
+         (hold-gate! w 100)
+         (is (true? (v2/merge! w child)))
+         (is (= 7 (v2/value s))))))))
+
 (deftest merge-adopts-the-childs-writes
   (checked
    (let [w (vworld)]

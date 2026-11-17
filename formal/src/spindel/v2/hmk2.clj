@@ -44,7 +44,8 @@
             [spindel.v2.progress :refer :all]
             [spindel.v2.l5 :refer :all]
             [spindel.v2.hmk :refer :all]
-            [spindel.v2.i14 :refer :all]))
+            [spindel.v2.i14 :refer :all]
+            [spindel.v2.tomb :refer :all]))
 
 ;; ===========================================================================
 ;; Part A. Edge keys backward
@@ -1481,7 +1482,7 @@
   (exact (hmk-comp-del-unref _ _ x (drop-edges-avoids _ x)
            (hmk-drop-edges _ _ (edge-avoids x) (hk-dok-avoid S R hxm _ x hx hR v3e nc h3e) h3e)))
   (simp only [demote-finish hf3 hkp])
-  (exact (hmk-comp-upd-xm _ _ x _ (comp-make-idle-id _) (comp-make-idle-pending _) hX h3e)))
+  (exact (hmk-comp-upd-xm _ _ x (comp-demote-row (validity-of (demote-epoch (run-cascade W (cancel-jobs (demote-cancels W c))) x (demote-cur W c)) x)) (comp-demote-row-id _) (comp-demote-row-pending _) hX h3e)))
 (a/theorem hmk-demote-fold [S :- (List Nat), hxm :- (List Nat), R :- (List Nat)]
   (forall [W :- World] (=> (= (tbl-all (rm-in S) R) true) (= (inv-rank W) true) (= (vr S R W) true)
                            (= (hmk (List.append Nat S hxm) W) true) (= (hmk (List.append Nat S hxm) (nat-fold demote W R)) true)))
@@ -1515,9 +1516,9 @@
       (simp only [dnb14 kd dS reach-mem Bool.not_true Bool.false_or Bool.true_or Bool.true_and] at db)
       (cases db))))
 (a/theorem hmk-norm-round [hxm :- (List Nat), w :- World]
-  (=> (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (hmk hxm w) true) (= (hmk hxm (norm-round w)) true))
-  (intros hk hv h)
-  (have h0 := (vr-pass-start w hv))
+  (=> (= (trc w) true) (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (hmk hxm w) true) (= (hmk hxm (norm-round w)) true))
+  (intros htc hk hv h)
+  (have h0 := (vr-pass-start w htc hv))
   (have h1 := (hmk-run-cascade hxm w (cancel-jobs (tbl-scan run-id (run-stray (live-list w)) (:runs w))) h))
   (have h1x := (hmk-intro (List.append Nat (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) hxm) (run-cascade w (cancel-jobs (tbl-scan run-id (run-stray (live-list w)) (:runs w)))) (hmk-sample hxm (run-cascade w (cancel-jobs (tbl-scan run-id (run-stray (live-list w)) (:runs w)))) h1)
                  (hmk-rest-xm hxm (List.append Nat (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) hxm) (run-cascade w (cancel-jobs (tbl-scan run-id (run-stray (live-list w)) (:runs w)))) (fn [d :- Nat, hd :- (= (reach-mem d hxm) true)] (rm-app-r d (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) hxm hd)) (hmk-rest-of hxm (run-cascade w (cancel-jobs (tbl-scan run-id (run-stray (live-list w)) (:runs w)))) h1))))
@@ -1534,41 +1535,41 @@
   (simp only [norm-round norm-round-lv])
   (exact (hmk-detach hxm _ h2)))
 (a/theorem hmk-norm-loop [hxm :- (List Nat), fuel :- (List Nat)]
-  (forall [w :- World] (=> (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (hmk hxm w) true) (= (hmk hxm (norm-loop fuel w)) true)))
+  (forall [w :- World] (=> (= (trc w) true) (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (hmk hxm w) true) (= (hmk hxm (norm-loop fuel w)) true)))
   (induction fuel)
-  (case [nil] (intros w hk hv h) (simp only [norm-loop]) (exact h))
+  (case [nil] (intros w htc hk hv h) (simp only [norm-loop]) (exact h))
   (case [cons u f ih]
-    (intros w hk hv h)
+    (intros w htc hk hv h)
     (cases hn (normalized w))
-    (case [false] (simp only [norm-loop hn]) (exact (ih (norm-round w) (rk-norm-round w hk) (vr-norm-round w hk hv) (hmk-norm-round hxm w hk hv h))))
+    (case [false] (simp only [norm-loop hn]) (exact (ih (norm-round w) (trc-norm-round w htc) (rk-norm-round w hk) (vr-norm-round w htc hk hv) (hmk-norm-round hxm w htc hk hv h))))
     (case [true] (simp only [norm-loop hn]) (exact h))))
 (a/theorem hmk-normalize-x [hxm :- (List Nat), w :- World]
-  (=> (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (hmk hxm w) true) (= (hmk hxm (normalize w)) true))
-  (intros hk hv h)
+  (=> (= (trc w) true) (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (hmk hxm w) true) (= (hmk hxm (normalize w)) true))
+  (intros htc hk hv h)
   (simp only [normalize])
-  (exact (hmk-norm-loop hxm (norm-fuel (detach w)) (detach w) (rk-detach w hk) (vr-detach (List.nil Nat) (List.nil Nat) w hv) (hmk-detach hxm w h))))
+  (exact (hmk-norm-loop hxm (norm-fuel (detach w)) (detach w) (trc-detach w htc) (rk-detach w hk) (vr-detach (List.nil Nat) (List.nil Nat) w hv) (hmk-detach hxm w h))))
 (a/theorem hmk-rule-r-round [hxm :- (List Nat), w :- World]
-  (=> (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (hmk hxm w) true) (= (filter-safe (normalize w)) true)
+  (=> (= (trc w) true) (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (hmk hxm w) true) (= (filter-safe (normalize w)) true)
       (= (hmk hxm (rule-r-round w)) true))
-  (intros hk hv h hf)
+  (intros htc hk hv h hf)
   (simp only [rule-r-round]) (rw [rule-r-filter-eq])
-  (exact (hmk-filter-world hxm _ (keep-fn (normalize w)) (hmk-normalize-x hxm w hk hv h) hf)))
+  (exact (hmk-filter-world hxm _ (keep-fn (normalize w)) (hmk-normalize-x hxm w htc hk hv h) hf)))
 (a/theorem hmk-rr-loop [hxm :- (List Nat), fuel :- (List Nat)]
-  (forall [w0 :- World] (=> (= (inv-rank w0) true) (= (vr (List.nil Nat) (List.nil Nat) w0) true) (= (hmk hxm w0) true) (= (rr-safe fuel w0) true)
+  (forall [w0 :- World] (=> (= (trc w0) true) (= (inv-rank w0) true) (= (vr (List.nil Nat) (List.nil Nat) w0) true) (= (hmk hxm w0) true) (= (rr-safe fuel w0) true)
                             (= (hmk hxm (rr-loop fuel (rule-r-round w0))) true)))
   (induction fuel)
-  (case [nil] (intros w0 hk hv h hs) (simp only [rr-safe] at hs) (simp only [rr-loop]) (exact (hmk-rule-r-round hxm w0 hk hv h hs)))
+  (case [nil] (intros w0 htc hk hv h hs) (simp only [rr-safe] at hs) (simp only [rr-loop]) (exact (hmk-rule-r-round hxm w0 htc hk hv h hs)))
   (case [cons x f ih]
-    (intros w0 hk hv h hs)
+    (intros w0 htc hk hv h hs)
     (simp only [rr-safe Bool.and_eq_true] at hs)
-    (have h1 := (hmk-rule-r-round hxm w0 hk hv h (And.left hs)))
+    (have h1 := (hmk-rule-r-round hxm w0 htc hk hv h (And.left hs)))
     (cases ho (no-orphans (rule-r-round w0)))
     (case [false] (simp only [ho] at hs) (simp only [rr-loop ho])
-      (exact (ih (rule-r-round w0) (rk-rule-r-round w0 hk (And.left hs)) (vr-rule-r-round w0 hk hv (And.left hs)) h1 (And.right hs))))
+      (exact (ih (rule-r-round w0) (trc-rule-r-round w0 htc (And.left hs)) (rk-rule-r-round w0 hk (And.left hs)) (vr-rule-r-round w0 htc hk hv (And.left hs)) h1 (And.right hs))))
     (case [true] (simp only [rr-loop ho]) (exact h1))))
 (a/theorem hmk-rule-r [hxm :- (List Nat), w :- World]
-  (=> (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (hmk hxm w) true) (= (rule-r-safe w) true) (= (hmk hxm (rule-r w)) true))
-  (intros hk hv h hs) (simp only [rule-r-safe] at hs) (simp only [rule-r]) (exact (hmk-rr-loop hxm (rr-fuel w) w hk hv h hs)))
+  (=> (= (trc w) true) (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (hmk hxm w) true) (= (rule-r-safe w) true) (= (hmk hxm (rule-r w)) true))
+  (intros htc hk hv h hs) (simp only [rule-r-safe] at hs) (simp only [rule-r]) (exact (hmk-rr-loop hxm (rr-fuel w) w htc hk hv h hs)))
 
 ;; ===========================================================================
 ;; Part G. The step
@@ -1593,17 +1594,17 @@
 
 ;; Theorem (h-mark bundle through the step)
 (a/theorem step-hmk [w :- World, it :- Item]
-  (=> (= (gd w) true) (= (g7 w) true) (= (ga w) true) (= (g10r w) true) (= (inv-rank w) true) (= (v14 w) true)
+  (=> (= (gy 0 w) true) (= (gd w) true) (= (g7 w) true) (= (ga w) true) (= (g10r w) true) (= (inv-rank w) true) (= (v14 w) true)
       (= (rule-r-safe (:world (raw w it))) true) (= (hmk (List.nil Nat) w) true)
       (= (hmk (List.nil Nat) (:world (world-step w it))) true))
-  (intros hg h7 hga hg10 hk hv hs h)
+  (intros hgy hg h7 hga hg10 hk hv hs h)
   (simp only [v14] at hv)
   (cases ha (:accepted (raw w it)))
   (case [false] (have e1 := (step-refuse w it ha)) (simp only [e1 refuse]) (exact h))
   (case [true]
     (have e2 := (step-accepted w it ha)) (rw [e2])
     (have r0 := (raw-vq (List.nil Nat) (List.nil Nat) false w it hv))
-    (exact (hmk-rule-r _ _ (raw-rk w it hk) (vr-of-vq (List.nil Nat) false _ r0 (dep-active-of-g7 _ (raw-g7 w it h7)))
+    (exact (hmk-rule-r _ _ (trc-raw w it hga h7 hgy) (raw-rk w it hk) (vr-of-vq (List.nil Nat) false _ r0 (dep-active-of-g7 _ (raw-g7 w it h7)))
              (raw-hmk _ w it hg h7 hga hg10 h) hs))))
 
 ;; the combined bundle: p3l = p3k && hmk [] (no honest hypothesis)
@@ -1619,7 +1620,8 @@
   (have pc := (p3i-ctx w (And.left pj)))
   (have pb := (p3b-parts w (And.left pc)))
   (have a1 := (step-p3k w it (And.left p)))
-  (have a2 := (step-hmk w it (And.right pj) (p3i-g7 w (And.left pj)) (And.left pb) (And.right pc) (And.left (And.right pb)) (And.right pk)
+  (have rq := (ri-parts w (And.right (And.right (And.right (And.right pb))))))
+  (have a2 := (step-hmk w it (And.right (And.right (And.right (And.right rq)))) (And.right pj) (p3i-g7 w (And.left pj)) (And.left pb) (And.right pc) (And.left (And.right pb)) (And.right pk)
                 (step-rule-r-safe w it (And.left pc)) (And.right p)))
   (simp only [p3l a1 a2 Bool.and_self]))
 

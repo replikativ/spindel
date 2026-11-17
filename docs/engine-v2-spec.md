@@ -241,6 +241,15 @@ prototypes are not acceptance evidence for this smaller operation API.
     created in the body and the tasks they own (world completion only), and
     forks owned by the task's scopes (stage B). `detach` is refused into a
     scope of another world (family and lineage).
+  - Z#71 (L12, W6, H2; a flaky merge test): engine metadata jobs (MVCC
+    version pruning, handle-token drops, atom sweeps) are never ingress items
+    and never work: each takes the gate only by trying, retries later, and
+    hands off. `merge!` returns only after its item ran (as `host-call!`; B7)
+    and waits out a turn or metadata job that holds the child's gate; it
+    refuses only on the L12 conditions, never because a gate was briefly
+    held. Before, version pruning was an ingress item, so a merge racing it
+    saw a non-quiescent child, and a busy parent gate made `merge!` return
+    false while the merge still ran later.
 
 Once approved, this document is the normative contract for the v2 engine. It
 supersedes `engine-formalism.md` Part 4 and `engine-memory-v2.md`. Parts 1–3
