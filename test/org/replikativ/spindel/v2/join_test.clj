@@ -6,6 +6,7 @@
   (:refer-clojure :exclude [await])
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.spindel.v2.core :as v2 :refer [task await]]
+            [org.replikativ.spindel.v2.rows :as rw]
             [org.replikativ.spindel.v2.verify :as verify]))
 
 (def ^:dynamic *divergences* nil)
@@ -25,6 +26,46 @@
     (deliver started true)
     (loop [] (when-not (realized? stop) (try (Thread/sleep 5) (catch InterruptedException _)) (recur)))
     :stopped))
+
+(defn- row [h] (aget ^objects (.-cell ^org.replikativ.spindel.v2.core.Handle h) 0))
+
+(defn- complete-world-state
+  "Read once `w` is complete (nothing runs): the registered tasks that are not
+   complete, the scopes left, and the given task handles that are not complete.
+   The runtime counterpart of the model's theorem: a complete born world has every
+   task and every non-root scope complete (Z#70)."
+  [^objects w hs]
+  (let [rows (vals (aget w rw/W-REG))
+        kind (fn [^objects r] (aget r rw/TYPE))]
+    {:incomplete-tasks (count (filter #(and (= rw/T-TASK (kind %)) (not (aget ^objects % rw/K-COMPLETE))) rows))
+     :scopes (mapv #(aget ^objects % rw/S-KIND) (filter #(= rw/T-SCOPE (kind %)) rows))
+     :incomplete-handles (count (remove #(aget ^objects (row %) rw/K-COMPLETE) hs))}))
+
+(deftest a-complete-born-world-has-every-task-complete
+  (checked
+   (let [w (vworld) stop (promise) started (promise)]
+     (binding [v2/*world* w]
+       (let [d (v2/deferred)
+             hs (atom [])
+             keep! (fn [h] (swap! hs conj h) h)
+             ;; nested explicit scope with a child and a grandchild parked on d
+             _a (keep! (task (v2/with-scope (keep! (task (keep! (task (await d))) (await d))) (await d))))
+             ;; a child detached to the root
+             b (keep! (task (keep! (v2/detach! (task (await d)) (v2/root-scope v2/*world*))) :b))
+             ;; a computation-owned task
+             c (v2/spin (await (keep! (task :c))))
+             _ (v2/observe! c (fn [_ _]))
+             ;; a run that stays in cleanup after release until its host work stops
+             _e (keep! (task (v2/offload (stubborn stop started))))]
+         (deref started 2000 nil)
+         (is (= :b (v2/value b 2000 ::timeout)))
+         (v2/release-world! w)
+         (is (= ::timeout (v2/await-complete w 100 ::timeout)) "e's run is still in cleanup")
+         (deliver stop true)
+         (is (true? (v2/await-complete w 2000 ::timeout)))
+         (is (= {:incomplete-tasks 0 :scopes [:root] :incomplete-handles 0}
+                (complete-world-state w @hs))
+             "every task is complete and the root is the only scope left"))))))
 
 (deftest a-finished-task-is-joined
   (checked
