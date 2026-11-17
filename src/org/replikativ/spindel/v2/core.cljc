@@ -4257,23 +4257,35 @@
     (commit! w [:close-scope (g s rw/ID)])
     nil))
 
+(defn- within?
+  "Whether scope `s` is `a` or below it: `a` is on `s`'s parent chain."
+  [w s a]
+  (loop [x s]
+    (cond (nil? x) false
+          (identical? x a) true
+          :else (recur (rv w (g x rw/S-PARENT))))))
+
 (defn detach!
   "Q10: re-owns a running task to an outer scope `s` (an explicit scope, or
-   the world's root with `(root-scope w)`), so it outlives its creator."
+   the world's root with `(root-scope w)`), so it outlives its creator. A
+   scope in the task's own run-scope subtree is refused: the scope tree
+   stays acyclic (Z#69)."
   [h s]
   (let [w (world-of h)]
     (gated w
            (let [k (row-of h)
                  s (rv w s)                  ; e.g. (root-scope w): a raw row pointer
-                 old (rv w (g k rw/OWNER))]
+                 old (rv w (g k rw/OWNER))
+                 rs (when-let [kr (rv w (g k rw/K-RUN))] (rv w (g kr rw/R-SROW)))]
              (if (or (g k rw/K-DONE) (not (g s rw/S-OPEN))
-                     (not (and old (not (fn? old)) (== rw/T-SCOPE (gl old rw/TYPE)))))
+                     (not (and old (not (fn? old)) (== rw/T-SCOPE (gl old rw/TYPE))))
+                     (and rs (within? w s rs)))
                (refuse! w [:detach (g k rw/ID) (g s rw/ID)])
                (do
                  (hs/oset-del! (gm old rw/S-TASKS) (id-of k))
                  (hs/oset-add! (gm s rw/S-TASKS) (id-of k) k)
             ;; the run scope's parent follows the owner (Z#26)
-                 (when-let [rs (when-let [kr (rv w (g k rw/K-RUN))] (rv w (g kr rw/R-SROW)))]
+                 (when rs
                    (remove-row! (gm old rw/S-CHILDREN) rs)
                    (s! rs rw/S-PARENT s)
                    (aadd! (gm s rw/S-CHILDREN) rs))
