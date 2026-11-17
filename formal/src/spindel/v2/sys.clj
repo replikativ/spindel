@@ -41,9 +41,10 @@
             operation (`qsinv-*`, `qpinv-*`). A fork or fork effect of an unborn cell (E4-released
             or not) is refused (`fork-refused`, `fork-effect-refused`): question 9, engine 54e3df1.
 
-  C1c stage A (Z#70): `Cell.joins`, the pending host joins; `sys-join` (admission), `sys-deliver` (delivery of
-  the joins on complete targets), `complete-cell` delivers the rest (abandonment); a fork, fork effect or
-  instance starts with none. System operations, not Items. No theorem about them yet (notes/PLAN.md).
+  C1c stage A (Z#70): `Cell.joins`, the host joins (`Join`: id, target, state pending / delivered / withdrawn);
+  `sys-join` (admission), `sys-deliver` (delivery of the pending joins on complete targets), `sys-withdraw` (the
+  host's withdraw fn, question 12), `complete-cell` delivers the rest (abandonment); a fork, fork effect or
+  instance starts with none. System operations, not Items.
 
   Not here: following mode (not in the engine either), sealing, sources created in the child (not merged)."
   (:require [ansatz.core :as a]
@@ -70,8 +71,25 @@
 ;; child complete or collected; an unborn instance released before activation at once).
 ;; C1c stage A (Z#70): `joins` the pending host joins (`on-joined` / `await-joined`), one target task id per
 ;; subscription; never inherited (a fork, fork effect or instance starts with none)
+;; C1c (question 12): a host join is one `on-joined` subscription: its id (the number of joins the cell admitted
+;; before it), its target task id and its state, pending, delivered or withdrawn. Delivery and withdrawal race
+;; (a CAS in the engine) and the winner is final: both act on a pending join only, so a join is delivered at
+;; most once and a withdrawn one never. Entries are never removed (the engine prunes withdrawn ones lazily).
+(a/structure Join [] (id Nat) (target Nat) (st Nat))
+(a/defn js-pending [] Nat 0)
+(a/defn js-delivered [] Nat 1)
+(a/defn js-withdrawn [] Nat 2)
+(a/defn join-id [j :- Join] Nat (:id j))
+(a/defn jpend [j :- Join] Bool (Nat.beq (:st j) js-pending))
+(a/defn hj-done [j :- Join] Join (if (jpend j) (Join.mk (:id j) (:target j) js-delivered) j))
+(a/defn hj-drop [j :- Join] Join (if (jpend j) (Join.mk (:id j) (:target j) js-withdrawn) j))
+(a/defn joins-map [f :- (=> Join Join), js :- (List Join)] (List Join)
+  (match js [nil (List.nil Join)] [(cons h t) (List.cons Join (f h) (joins-map f t))]))
+;; the live (pending) joins: the sidecar's `:pending-joins`
+(a/defn pending-joins [js :- (List Join)] Nat (tbl-count jpend js))
+
 (a/structure Cell [] (world World) (live Bool) (parent Nat) (owner Nat) (dormant (List Nat))
-  (unborn Bool) (pending Nat) (kids (List Nat)) (complete Bool) (joins (List Nat)))
+  (unborn Bool) (pending Nat) (kids (List Nat)) (complete Bool) (joins (List Join)))
 
 ;; a publication: the cell and run that published, the savepoint's resource, the frozen basis
 (a/structure Pub [] (cell Nat) (res Nat) (run Nat) (basis World) (live Bool))
@@ -151,7 +169,7 @@
   (match rs [nil (List.nil Nat)] [(cons r t) (List.cons Nat (:id r) (res-ids t))]))
 
 (a/defn fork-cell [c :- Cell, k :- Nat, owner :- Nat] Cell
-  (Cell.mk (:world c) true k owner (nat-app (res-ids (:res (:world c))) (:dormant c)) false 0 (List.nil Nat) false (List.nil Nat)))
+  (Cell.mk (:world c) true k owner (nat-app (res-ids (:res (:world c))) (:dormant c)) false 0 (List.nil Nat) false (List.nil Join)))
 
 (a/defn sys-fork [cells :- (=> Nat Cell), k :- Nat, m :- Nat, owner :- Nat] (=> Nat Cell)
   (if (:unborn (cells k)) cells (fupd cells m (fork-cell (cells k) k owner))))
@@ -271,7 +289,7 @@
                      (Bool.and (Nat.beq (world-runs (:world (cells k))) 0) (tbl-all (kid-done cells) (:kids (cells k)))))))
 (a/defn complete-cell [c :- Cell] Cell
   (Cell.mk (:world c) (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c) (:kids c) true
-           (List.nil Nat)))
+           (joins-map hj-done (:joins c))))
 (a/defn sys-complete [cells :- (=> Nat Cell), k :- Nat] (=> Nat Cell)
   (if (complete-ready cells k) (fupd cells k (complete-cell (cells k))) cells))
 
@@ -290,26 +308,40 @@
 ;; inherited. Delivered once the target task is complete (spindel.v2.ledger `task-complete`), or once the
 ;; world is (abandonment: an unborn instance's copied tasks never run, so they never complete).
 ;;   sys-join      admission. The target is a task id the host holds a handle to, so an allocated id
-;;                 (`t < next-id`; an id no handle can name is refused: the system unchanged). Delivered at
-;;                 once (nothing recorded) when the target or the cell is complete, else pending.
+;;                 (`0 < t < next-id`; an id no handle can name is refused: the system unchanged). Recorded with
+;;                 the next join id, delivered at once when the target or the cell is complete, else pending.
 ;;   sys-deliver   delivers every pending join whose target is complete (the engine runs it inside the
 ;;                 commit that completes the target, `task-complete!`).
+;;   sys-withdraw  the withdraw fn `on-joined` returns (question 12): a pending join becomes withdrawn, delivery
+;;                 skips it; a delivered one stays delivered.
 ;;   complete-cell delivers every pending join with the world's completion (`complete-world!`).
-;; Both operations are system operations, not Items.
-(a/defn join-pending [w :- World, t :- Nat] Bool (Bool.not (task-complete w t)))
+;; All of them are system operations, not Items.
+;; admission: the join's id is the number admitted so far; delivered at once when the target or the cell is complete
+(a/defn join-new [c :- Cell, t :- Nat] Join
+  (Join.mk (List.length (:joins c)) t
+           (if (Bool.or (:complete c) (task-complete (:world c) t)) js-delivered js-pending)))
 (a/defn join-cell [c :- Cell, t :- Nat] Cell
-  (if (Bool.or (:complete c) (task-complete (:world c) t))
-      c
-      (Cell.mk (:world c) (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c) (:kids c)
-               (:complete c) (List.cons Nat t (:joins c)))))
-(a/defn join-ok [c :- Cell, t :- Nat] Bool (Bool.and (:live c) (Nat.blt t (:next-id (:world c)))))
+  (Cell.mk (:world c) (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c) (:kids c)
+           (:complete c) (List.cons Join (join-new c t) (:joins c))))
+;; the target is a task id the host holds a handle to: allocated (`t < next-id`) and not 0 (none)
+(a/defn join-ok [c :- Cell, t :- Nat] Bool
+  (Bool.and (:live c) (Bool.and (Nat.blt 0 t) (Nat.blt t (:next-id (:world c))))))
 (a/defn sys-join [cells :- (=> Nat Cell), k :- Nat, t :- Nat] (=> Nat Cell)
   (if (join-ok (cells k) t) (fupd cells k (join-cell (cells k) t)) cells))
+;; delivery: every pending join on a complete target (every pending join, once the cell is complete)
+(a/defn hj-due [w :- World, j :- Join] Join (if (task-complete w (:target j)) (hj-done j) j))
 (a/defn deliver-cell [c :- Cell] Cell
   (Cell.mk (:world c) (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c) (:kids c)
-           (:complete c) (if (:complete c) (List.nil Nat) (tbl-filter (join-pending (:world c)) (:joins c)))))
+           (:complete c) (if (:complete c) (joins-map hj-done (:joins c)) (joins-map (hj-due (:world c)) (:joins c)))))
 (a/defn sys-deliver [cells :- (=> Nat Cell), k :- Nat] (=> Nat Cell)
   (fupd cells k (deliver-cell (cells k))))
+;; withdrawal (question 12): the withdraw fn `on-joined` returns, a host-side mark on join j (no gate, no item);
+;; it acts on a pending join only (a delivered join stays delivered)
+(a/defn withdraw-cell [c :- Cell, j :- Nat] Cell
+  (Cell.mk (:world c) (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c) (:kids c)
+           (:complete c) (tbl-upd join-id j hj-drop (:joins c))))
+(a/defn sys-withdraw [cells :- (=> Nat Cell), k :- Nat, j :- Nat] (=> Nat Cell)
+  (fupd cells k (withdraw-cell (cells k) j)))
 
 (a/theorem sinv-accept [cells :- (=> Nat Cell), k :- Nat, m :- Nat]
   (=> (sinv cells) (sinv (sys-accept cells k m)))
@@ -380,7 +412,7 @@
 
 (a/defn fork-effect-cell [c :- Cell, k :- Nat, owner :- Nat, st :- Nat, kont :- Nat, v :- Nat] Cell
   (Cell.mk (fork-effect-world (:world c) st kont v) true k owner
-           (nat-app (res-ids (:res (:world c))) (:dormant c)) false 0 (List.nil Nat) false (List.nil Nat)))
+           (nat-app (res-ids (:res (:world c))) (:dormant c)) false 0 (List.nil Nat) false (List.nil Join)))
 
 (a/defn sys-fork-effect [cells :- (=> Nat Cell), k :- Nat, m :- Nat, owner :- Nat, st :- Nat, kont :- Nat, v :- Nat]
   (=> Nat Cell)
@@ -471,7 +503,7 @@
 ;; activation is the savepoint's resource.
 
 (a/defn inst-cell [b :- Pub, owner :- Nat] Cell
-  (Cell.mk (:basis b) true (:cell b) owner (res-ids (:res (:basis b))) true (:res b) (List.nil Nat) false (List.nil Nat)))
+  (Cell.mk (:basis b) true (:cell b) owner (res-ids (:res (:basis b))) true (:res b) (List.nil Nat) false (List.nil Join)))
 
 (a/defn sys-instantiate [cells :- (=> Nat Cell), pubs :- (=> Nat Pub), p :- Nat, m :- Nat, owner :- Nat] (=> Nat Cell)
   (fupd cells m (inst-cell (pubs p) owner)))

@@ -1641,6 +1641,28 @@ only by a child's cleanup chain) is therefore not complete, as in the engine (it
 14. For a BORN world nothing is pending at completion: once runs = 0 every task is done and every non-root scope
     removed before completion, so only an unborn instance's copied tasks can be pending. To be a theorem.
 
+### Step 1: engine #275 folded in (engine-v2 3fa691a), withdrawal in layer 2
+- Merged origin/engine-v2 3fa691a (#275: sidecars of 29-32 add per task `:materialized?` and count live joins only,
+  logs byte-identical; sample 33, withdrawal).
+- Oracle: a task's run scope (k + 2) is materialized as the sidecar says (scope key set, `:srow-present?`); a run
+  scope of no task (a computation's) is still inferred ("owned something"). The model's `:materialized?` is that
+  inference for the task's run scope and is compared with the sidecar's: it agrees on every checkpoint of 29-33
+  (question 11 cross-checked). Withdrawals are listed in the family spec as `:withdraw [[step join-id]]`.
+  Sample 33 replays exactly: `:pending-joins` 2, 1, 0; without the withdrawal the model reads 2 at `:one-withdrawn`.
+- Layer 2 (sys.clj), definitions changed: `Cell.joins` is a `(List Join)`; `Join` = id (the number of joins the
+  cell admitted before it), target, state (`js-pending` / `js-delivered` / `js-withdrawn`). Entries are never
+  removed: `join-cell` records every admitted join (delivered at once when the target or the cell is complete);
+  `deliver-cell` and `complete-cell` mark pending joins delivered (`hj-done`), the new `sys-withdraw`
+  (`withdraw-cell`) marks a pending join withdrawn (`hj-drop`); both act on a pending join only, so the race's winner
+  is final. `pending-joins` counts the pending ones (the sidecar's `:pending-joins`). `join-ok` now also refuses
+  target 0 (none: no handle names it; without the guard a join on 0 would wait for scope 2, the root scope, which is
+  never removed). Removed: `join-pending`. Fork, fork effect and instance start with no joins.
+- Ansatz note: the elaborator failed with "Unknown constant: joinant" on a defn named `join-deliver` passed as a
+  value (renamed `hj-done`; not investigated further).
+- Tests: sys_test reads pending targets (`pj`), new `c1c-join-withdrawal` (2, then 1 live join; only the live one is
+  delivered; a delivered join stays delivered under withdraw and a second delivery; join on 0 refused); oracle_test
+  sample 33 in `c1c-specs`, `c1c-sample-shapes` checks `:materialized?` presence and the 2/1/0 counts.
+
 ### Step 2: stability (spindel.v2.lstab)
 - Bundle `gst k s` = inv-sample && `gst-rest k s` (k < next-id, task k not held: no row, or result /= none and run 0;
   s < next-id, no scope row s), parameters `tk9`/`sc9` (the copier puts parameters before the source binders, which

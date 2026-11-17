@@ -826,17 +826,22 @@
 
 ;; ---------------------------------------------------------------------------
 ;; C1c stage A (spec Z#70): the completion ledger and host joins, derived as well. Sidecar fields (when present):
-;;   :tasks  {id {:done? :retired? :srow-present? :complete?}}  every task seen at a checkpoint so far
+;;   :tasks  {id {:done? :retired? :materialized? :srow-present? :complete?}}  every task seen at a checkpoint so far
 ;;   :scopes {id {:open? :present? :complete?}}                  every scope seen so far
-;;   :pending-joins                                              host joins admitted and not yet delivered
+;;   :pending-joins                                              live host joins: admitted, not yet delivered, not
+;;                                                               withdrawn (engine #275; question 12)
 ;; Model side: spindel.v2.ledger (`task-complete`, `scope-complete`; the run scope of task k is k + 2) and the
 ;; layer-2 host joins of spindel.v2.sys (`join-ok`/`join-cell` admission, `deliver-cell`). A removed task or scope
 ;; reads as the ledger says: no task row = done and retired (its completion then needs only its run scope gone),
-;; no scope row = complete. The engine materializes a run scope on first use (`run-scope!`) and registers it then;
-;; the model creates it with the run, so a run scope counts as seen only once it has owned something (a task, a
-;; source, a computation, a child scope or a fork marker) in some model world so far, and `srow-present?` likewise.
-;; Host joins are no log item: the family spec lists them as `:joins [[world step target] ...]`, admitted before
-;; checkpoint `step`.
+;; no scope row = complete. The engine materializes a run scope only when it immediately owns something (question
+;; 11) and registers it then; the model creates it with the run. A task's run scope (k + 2) counts as seen, and
+;; `srow-present?` as true, only once the sidecar reports the task `:materialized?` (engine #275); a run scope of no
+;; task seen (a computation's) once it has owned something (a task, a source, a computation, a child scope or a
+;; fork marker) in some model world so far. The model's `:materialized?` is that inference for the task's run
+;; scope, compared with the sidecar's (question 11: the engine materializes a run scope only when it owns something).
+;; Host joins are no log item: the family spec lists them as `:joins [[step target] ...]` per world, admitted before
+;; checkpoint `step`, and withdrawals as `:withdraw [[step join-id] ...]` (join ids count the world's admitted joins
+;; from 0), applied after that checkpoint's admissions and before its delivery.
 
 (defn- owned-ids [w]
   (set (concat (map :owner (:tasks w)) (map :owner (:sources w)) (map :owner (:comps w))
@@ -872,6 +877,7 @@
         unborn-at? (fn [k n] (and (= :instance (:kind (spec k)))
                                   (not-any? #(= :resource-fire (first (:item %))) (take n (:log (spec k))))))
         joins (vec (mapcat (fn [[k x]] (map (fn [[step t]] [k step t]) (:joins x))) spec))
+        withdrawals (vec (mapcat (fn [[k x]] (map (fn [[step j]] [k step j]) (:withdraw x))) spec))
         c1 (fn [idx log-length]
              (let [accepted? (fn [c] (let [a (:accepted-from (spec c))]
                                        (and (or (nil? a) (>= idx (step-idx a)))
@@ -903,16 +909,24 @@
                   (reduce
                    (fn [[out st] k]
                      (let [n (get log-length k 0)
-                           {:keys [seen mat js] :or {seen {:tasks #{} :scopes #{}} mat #{} js []}} (st k)
+                           {:keys [seen mat smat js] :or {seen {:tasks #{} :scopes #{}} mat #{} smat #{} js []}} (st k)
                            mat (into mat (comp (map (partial at* k)) (mapcat owned-ids)) (range (inc n)))
+                           ;; question 11 / #275: a task's run scope is materialized as the sidecar says
+                           et (get-in eo [k :tasks])
+                           smat (into smat (keep (fn [[t o]] (when (:materialized? o) (lg/task-srow t)))) et)
+                           task-scope? (fn [x] (contains? (into (:tasks seen) (keys et)) (- x 2)))
                            w (at k)
-                           [lo seen] (ledger-obs w mat seen)
+                           [lo seen] (ledger-obs w (into smat (remove task-scope?) mat) seen)
+                           ;; cross-check of question 11: the sidecar's :materialized? is the model's "owned something"
+                           lo (update lo :tasks (fn [m] (into (sorted-map) (map (fn [[t o]] [t (assoc o :materialized? (contains? mat (lg/task-srow t)))])) m)))
                            cell (fn [js] (sys/->Cell w true 0 0 [] (unborn? k) 0 [] (complete? k) js))
                            admitted (reduce (fn [c [_ _ t]] (if (sys/join-ok c t) (sys/join-cell c t) c))
                                             (cell js) (filter (fn [[jk js _]] (and (= jk k) (= js step))) joins))
-                           js (vec (:joins (sys/deliver-cell admitted)))]
-                       [(assoc out [idx k] (assoc lo :pending-joins (count js)))
-                        (assoc st k {:seen seen :mat mat :js js})]))
+                           withdrawn (reduce (fn [c [_ _ j]] (sys/withdraw-cell c j))
+                                             admitted (filter (fn [[wk ws _]] (and (= wk k) (= ws step))) withdrawals))
+                           js (vec (:joins (sys/deliver-cell withdrawn)))]
+                       [(assoc out [idx k] (assoc lo :pending-joins (count (filter #(= sys/js-pending (:st %)) js))))
+                        (assoc st k {:seen seen :mat mat :smat smat :js js})]))
                    [out st] (keys eo))))
               [{} {}] (map-indexed vector obs)))]
     (vec

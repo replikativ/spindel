@@ -432,6 +432,10 @@
 ;;   31b abandonment: the unborn instance's copy of task 3 never runs; its join is delivered with the
 ;;       instance's completion (E4)
 ;;   32  on-joined after release on a complete task: delivered at once
+;; Engine #275 (engine-v2 3fa691a): the sidecars add per task :materialized? (the oracle reads the run scopes'
+;; materialization from it, question 11) and count live joins only; sample 33 adds withdrawal (question 12):
+;;   33  two joins on a parked task, the first (join 0) withdrawn: 2, 1, then 0 live joins; only the live one
+;;       is delivered
 (def ^:private c1c-specs
   {"29" {:w {:log (log "29-w") :kind :root :joins [[:joined 3]]}}
    "30" {:w {:log (log "30-w") :kind :root :joins [[:grandchild-started 4]]}}
@@ -440,7 +444,8 @@
            {:parent {:log p :kind :root}
             :instance {:log (log "31b-instance") :from :parent :kind :instance
                        :at (c1-idx p #(= [:arm 4 :savepoint] (take 3 %))) :joins [[:join-pending-unborn 3]]}})
-   "32" {:w {:log (log "32-w") :kind :root :joins [[:joined-after-release 3]]}}})
+   "32" {:w {:log (log "32-w") :kind :root :joins [[:joined-after-release 3]]}}
+   "33" {:w {:log (log "33-w") :kind :root :joins [[:two-joins 4] [:two-joins 4]] :withdraw [[:one-withdrawn 0]]}}})
 
 (deftest c1-samples
   (doseq [[n spec] (merge c1-specs c1c-specs)]
@@ -465,8 +470,11 @@
 (deftest c1c-sample-shapes
   (let [obs (fn [n] (o/read-observations (str "test/spindel/v2/oracle/log-sample-" n "-observations.edn")))
         at (fn [n step k] (get-in (first (filter #(= step (:step %)) (obs n))) [:obs k]))]
-    (doseq [n ["29" "30" "31a" "31b" "32"] c (obs n) [k e] (:obs c)]
-      (is (every? #(contains? e %) [:tasks :scopes :pending-joins]) (str "sample " n " " (:step c) " " k ": C1c fields")))
+    (doseq [n ["29" "30" "31a" "31b" "32" "33"] c (obs n) [k e] (:obs c)]
+      (is (every? #(contains? e %) [:tasks :scopes :pending-joins]) (str "sample " n " " (:step c) " " k ": C1c fields"))
+      (is (every? #(contains? % :materialized?) (vals (:tasks e))) (str "sample " n " " (:step c) " " k ": #275 field")))
+    (is (= [2 1 0] (map #(:pending-joins (at "33" % :w)) [:two-joins :one-withdrawn :complete])) "33: live joins only")
+    (is (false? (get-in (at "33" :complete :w) [:tasks 4 :materialized?])) "33: the parked task's run scope never owned anything")
     (is (= [false false] (map #(get-in (at "30" :parent-settled :w) [:tasks % :complete?]) [4 8])) "30: the parent and the child wait")
     (is (every? #(get-in (at "30" :grandchild-retired :w) [:tasks % :complete?]) [4 8 13]) "30: complete at the grandchild's retirement")
     (is (every? #(get-in (at "30" :grandchild-retired :w) [:scopes % :complete?]) [6 7 10]))
