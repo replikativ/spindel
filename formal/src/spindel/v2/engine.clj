@@ -2067,9 +2067,11 @@
 ;; offload (2), the engine's `:timer`/`:offload`. T18 fires E (T9 fills A, the run resumes); T14
 ;; removes A with E and puts Z in cancelling; T15 acknowledges Z any time it has no edge.
 ;; C1: `await-op` arms a resource of kind op (its start/cancel arbitration and hooks are the
-;; engine's: the log shows arm, fire (the op's result) and acknowledgement)
+;; engine's: the log shows arm, fire (the op's result) and acknowledgement). Z#63: an `external` resource has the
+;; same lifecycle (arm, then a one-shot completion fire + ack, accepted after release; its cancel leaves the physical
+;; completion outstanding): admitted too (C1c stage B sample 35, the first external arm in a sample)
 (a/defn arm-kind-ok [kind :- Nat] Bool
-  (Bool.or (Nat.beq kind rk-timer) (Bool.or (Nat.beq kind rk-offload) (Nat.beq kind rk-op))))
+  (Bool.or (Nat.beq kind rk-timer) (Bool.or (Nat.beq kind rk-offload) (Bool.or (Nat.beq kind rk-op) (Nat.beq kind rk-external)))))
 (a/defn arm-park [w :- World, r :- RunRow, kind :- Nat, k :- Nat] World
   (take-park (arm-raw w r kind) (run-arm (:next-id w) r) (:next-id w) k))
 (a/defn t17-arm [w :- World, st :- Nat, kind :- Nat, k :- Nat, fresh :- Nat] Outcome

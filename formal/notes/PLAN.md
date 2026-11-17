@@ -1813,3 +1813,16 @@ engine follows this model. Mapping and questions 15-18 agreed with the engine se
   owners are scopes), `sinv-own`/`-owned-done`/`-drain`, cinv with markers, Q10 (complete born world -> every scope
   but the root complete) with markers, and normalization: after the drain every inherited scope is complete or kept.
 
+### Stage B samples 34-38 (engine Z#72, `feat/c1c-b-engine`; oracle gaps closed on `formal/c1c-b-oracle`)
+- Samples: 34 (owned fork outlives the task; owned-done completes it), 35 (counted child on an external op that ignores
+  cancellation, collected), 36 (`:touched` drains at its first turn; `:untouched` released first, question 15), 37
+  (question 16 ordering), 38 (savepoint while counted: the instance drains at activation); 15 and 22 regenerated (each
+  gains the parent's `[:owned-done]`). All in `c1-samples`: every world replays with 0 divergences and the sidecars
+  (`:owned`, `:normalize` included) match.
+- Oracle gaps closed: (A) a world starts with its source's materialization up to the fork commit (K-SROW is a copied
+  row flag; fork-effect! materializes the forking run's scope before the boundary), recursively; (B) the id-less
+  `[:owned-done]`/`[:normalize]` align the allocator to the projection (family counter W-NEXT); (C) a child collected
+  without a log item: spec flag `:collected-at <checkpoint>` (done for its owner's `:kids` and `:complete?` from then).
+- Changed statement: engine.clj `arm-kind-ok` admits `rk-external` (Z#63: arm, then a one-shot completion fire + ack,
+  accepted after release; the same lifecycle as `op`). Sample 35 has the first external arm. No proof needed a change.
+
