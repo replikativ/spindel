@@ -1611,6 +1611,53 @@
  {:item [:slice-exit 4],
   :accepted true,
   :proj
+  {:scopes
+   {2 {:parent nil, :kind :root, :open true},
+    5 {:parent 2, :kind :run, :open false}},
+   :pubs {},
+   :pins {},
+   :next-id 30,
+   :sources
+   {18
+    {:owner nil,
+     :kind :deferred,
+     :state 0,
+     :version 0,
+     :open false,
+     :handles 1},
+    21
+    {:owner nil,
+     :kind :deferred,
+     :state 0,
+     :version 0,
+     :open false,
+     :handles 1},
+    24
+    {:owner nil,
+     :kind :deferred,
+     :state 0,
+     :version 0,
+     :open false,
+     :handles 1}},
+   :pending-act nil,
+   :tasks
+   {3
+    {:owner 2, :run nil, :inputs [4 5], :result [:err 1], :handles 1},
+    11
+    {:owner nil, :run nil, :inputs [], :result [:err 1], :handles 1},
+    15
+    {:owner nil, :run nil, :inputs [], :result [:err 1], :handles 1}},
+   :comps {},
+   :released false,
+   :forks {},
+   :res {},
+   :runs {},
+   :acts {},
+   :edges {},
+   :cleanup {}}}
+ {:item [:owned-done 5 9],
+  :accepted true,
+  :proj
   {:scopes {2 {:parent nil, :kind :root, :open true}},
    :pubs {},
    :pins {},
