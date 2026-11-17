@@ -33,7 +33,7 @@ Feasibility notes: `../ansatz/.internal/design/spindel-v2-feasibility.md`.
 | `spindel.v2.lit` | literal invariants through `world-step`: I10 task part (`step-lit-i10-task`, bundle `gl`), I9 resources (`step-lit-i9-res`, bundle `g9`); P3 core `filter-safe-of-refs`; copier `lcopy!` with source patches (`patch!`) | in progress |
 | `spindel.v2.idle` | I7 (idle shape) through the step: bundle `g7` (a7, dep/marked creditor awake, idle clean, slice-normal alive, observe host), companion `awo` (T6/T11/reactivation chains), cascade completeness for demote (`kdb`, `casc-kill`); `step-g7`, `step-lit-i7` | done (honest hyps ga, rule-r-safe) |
 | `spindel.v2.qworld` | C1 quiet half: bundle `gc` (every cleanup entry's run is a run row; `step-gc-rest`), `qinv` = p3l && K && gc && I3 (`step-qinv`, `qinv-empty`), the closure lemma `quiet-rows` (a quiet world with qinv holds only scopes), the refusal lemma `quiet-refused`, `quiet-step`, `quiet-stays` | done |
-| `spindel.v2.ledger` | C1c stage A (Z#70): derived completion ledger, `task-held`, `task-complete` (not held and no run scope row k + 2), `scope-complete` (no row); layer-2 host joins in sys.clj (`Cell.joins`, `sys-join`, `sys-deliver`, `complete-cell` delivers the rest) | defs only (theorems: later stage) |
+| `spindel.v2.ledger` | C1c stage A (Z#70): derived completion ledger, `task-held`, `task-complete` (not held and no run scope row k + 2), `scope-complete` (no row); layer-2 host joins in sys.clj (`Cell.joins` of `Join` records, `sys-join`, `sys-deliver`, `sys-withdraw`, `complete-cell` delivers the rest) | done (theorems in lstab, oscope, qworld, sys) |
 | `spindel.v2.lstab` | C1c stage A proof stage, stability: parametric bundle `gst k s` (k below the allocator and task k not held, s below the allocator and no scope row s), copied over raw/normalize with T12/T13/T14 task-row overrides; `step-gst`, `task-complete-stable`, `scope-complete-stable` | done |
 | `spindel.v2.oscope` | C1c stage A proof stage (questions 10, 14): bundle `gos` (every open non-root scope has a run row whose run scope is it or on its parent chain), copied with overrides at run creation, open-scope (`cur-scope` cases), detach, Z#18 deletion (`parent-outside`), T13 (subtree convergence `sub-conv`, completeness `sub-within`, witness bundle `gox x` over the source closes) and Rule R (`run-kept`, kept parents); `step-gos`, `gos-empty` | done |
 | `spindel.v2.tomb` | C1 Q6: tombstones are dormant. Bundle `gy y` (copy of the raw step and of normalization): every alive run's computation and every dep edge's creditor is no tombstone (`ta-one`, `dep-untomb`), nor is computation y; `gy 0` is in P3's round invariant `ri` (`refs-untomb`, the new premise of `filter-safe-of-refs`); `trc` (acts-alive && gy 0) is the round context the i10/i14/hmk2/hm18 normalization chains take; `step-gy`, `gy-empty` | done |
@@ -1596,7 +1596,7 @@ only by a child's cleanup chain) is therefore not complete, as in the engine (it
   `c1c-sample-shapes`.
 - Fresh-JVM `clojure -M:test` (2026-11-16, after C1c stage A): 254 tests, 207,529 assertions, 0 failures, 0 errors.
 
-### Theorems for the proof stage (not started)
+### Theorems for the proof stage (done: see "C1c stage A, proof stage" below)
 - Stability: `task-complete w k -> task-complete (step w it) k` for a task id k (k + 2 < next-id): a scope id is never
   re-inserted (scope creation takes next-id; ids below the allocator), a task row with a result keeps it and run 0
   stays 0 (tasks never restart; re-spawn adoption creates no run), no task row reappears. Same for
@@ -1727,3 +1727,11 @@ only by a child's cleanup chain) is therefore not complete, as in the engine (it
   complete-ready -> after sys-deliver no join is pending: every target is complete) and `born-abandon-none` (then
   `complete-cell` changes no join): abandonment delivery is only ever needed for an unborn instance.
 - No earlier statement changed in this step.
+
+### Suite (C1c stage A, proof stage)
+- Fresh-JVM `clojure -M:test` (2026-11-17, after steps 1-4 and the merge of engine-v2 f09aa35): 258 tests,
+  207,650 assertions, 0 failures, 0 errors. No sorry. (+4 tests: lstab_test, oscope_test's two, sys_test
+  `c1c-join-withdrawal`.)
+- Merge of #278 (f09aa35): its `:materialized?` line in `ledger-obs` is dropped in favour of the step-1 version
+  (the model's "owned something" inference for the task's run scope, compared with the sidecar's value; the
+  sidecar's value itself feeds the scope key set and `:srow-present?`). Every sample, 33 included, replays exactly.
