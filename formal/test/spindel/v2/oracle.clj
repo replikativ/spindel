@@ -860,6 +860,8 @@
                        {:done? (if t (not= s/res-none (:tag (:result t))) true)
                         :retired? (if t (zero? (:run t)) true)
                         :srow-present? (boolean (and sr (contains? mat (:id sr))))
+                        ;; #275: K-SROW set, i.e. the run scope was ever materialized (it owned something)
+                        :materialized? (contains? mat (lg/task-srow k))
                         :complete? (lg/task-complete w k)}))
         scope (fn [x] (let [r (scope-row x)]
                         {:open? (boolean (and r (:open r))) :present? (some? r) :complete? (lg/scope-complete w x)}))]
