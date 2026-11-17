@@ -1437,3 +1437,25 @@ New (Stage B finding):
   refusal entry) is refused with the world unchanged (host-shut / root-shut); qworld_test `quiet-world-runtime`
   replays the Q5 trace and checks K, gc, I3, only scopes and the refusal of eight item kinds at runtime.
 
+### Quiet half, step (4): layer 2 without hq (sys.clj)
+- `cq c` = (unborn and released: an E4 instance) or `qinv` of its world; `qsinv cells` = every live cell has cq;
+  `qpinv pubs` = every live publication's basis is released or holds qinv. Kept by every system operation
+  (`qsinv-step/-wake/-resume/-merge/-publish/-abandon/-accept/-complete/-drop/-idle-release/-release-unborn/
+  -activate/-fork/-fork-effect/-instantiate`, `qpinv-publish/-abandon`; start: `qsinv-init`, `qpinv-none`).
+  Activation: `act-ok` says not released, so the instance's cq is qinv, and the activated world keeps it.
+- `wqc c w2` (released stays; a born cell's quiet world stays quiet) replaces `wq` for the cell: an unborn cell is
+  ready by its flag, so it needs only the released half. Composites: `rel-*` (released stays: `step-released`),
+  `qid-*` (a quiet qinv world is left as it is: `quiet-step`; fire-ack, wake-one/-all, apply-diff, merge-world),
+  `qinv-*` (qinv through them: `step-qinv`).
+- Completion stability outright: `cinv-step-q`, `cinv-wake-q`, `cinv-resume-q`, `cinv-merge-q`, `cinv-publish-q`,
+  `cinv-abandon-q` (premises sinv, qsinv, cinv; no hq). The hq-premised `cinv-*` theorems are unchanged (hq itself
+  stays false of an arbitrary p3l world: quiet stability needs qinv).
+- Premise of `qsinv-fork`/`qsinv-fork-effect`: the forked cell is not an E4-released unborn instance (its world need
+  not have K: handles may be > 0, so a born copy could start an admitted computation after completing). Question 9.
+
+### Questions (engine session), C1 quiet half
+9. May a fork (host `fork!` or the fork effect) be taken from an unborn instance, in particular one released by E4?
+   The model's `sys-fork`/`sys-fork-effect` have no guard; the completion invariant for the child assumes the parent
+   is not an E4-released instance (a released world with handles > 0 copied into a born cell could, after its runs
+   retire and it completes, start a computation admitted by a handle).
+

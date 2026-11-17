@@ -15,7 +15,11 @@
     sinv-drop sinv-init pinv-publish sinv-resume instantiate-frame instantiate-copy instantiate-indep
     sinv-instantiate sinv-activate activate-born activate-once pinv-abandon
     p3l-apply-diff p3l-merge-world merge-refused diff-ids-self merge-unchanged merge-frame sinv-merge
-    sinv-idle-release drop-step-comm])
+    sinv-idle-release drop-step-comm
+    cinv-step-q cinv-wake-q cinv-resume-q cinv-merge-q cinv-publish-q cinv-abandon-q
+    qsinv-init qpinv-none qsinv-step qsinv-wake qsinv-resume qsinv-merge qsinv-publish qsinv-abandon qsinv-accept
+    qsinv-complete qsinv-drop qsinv-idle-release qsinv-release-unborn qsinv-activate qsinv-fork qsinv-fork-effect
+    qsinv-instantiate qpinv-publish qpinv-abandon])
 
 (deftest theorems-kernel-checked
   (doseq [t theorems]
