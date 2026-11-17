@@ -1515,3 +1515,6 @@ New (Stage B finding):
   detach J S and detach J (J's run scope) are refused with the world unchanged; the unguarded `detach-move` makes the
   parent fields cyclic by a direct parent walk; detach J root is accepted, J and its run scope move under the root).
   acyc_test: the theorems, and `scopes-acyclic` on the empty world and on a 2-cycle.
+- Fresh-JVM `clojure -M:test` (2026-11-16, after Z#69): 248 tests, 207,177 assertions, 0 failures, 0 errors. No sorry.
+  (+3 tests: acyc_test's two, engine_test's z69 case. Fewer assertions than after question 9 (207,430), not investigated; likely engine_test's
+  random-item walks now refuse some detaches, and a refused step makes fewer per-step checks than an accepted one.)
