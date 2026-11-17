@@ -1518,3 +1518,59 @@ New (Stage B finding):
 - Fresh-JVM `clojure -M:test` (2026-11-16, after Z#69): 248 tests, 207,177 assertions, 0 failures, 0 errors. No sorry.
   (+3 tests: acyc_test's two, engine_test's z69 case. Fewer assertions than after question 9 (207,430), not investigated; likely engine_test's
   random-item walks now refuse some detaches, and a refused step makes fewer per-step checks than an accepted one.)
+
+## C1c stage A (2026-11-16): task/scope completion ledger, host joins
+
+Engine PR #273 (engine-v2 1aac850, spec Z#70; `c1c-task-joins-design.md` v4 amendments), oracle samples PR #274
+(branch `test/v2-oracle-c1c-stage-a`, generator `oracle/gen/samples-c1c-a.clj`, samples 29, 30, 31a, 31b, 32 with
+sidecars). Merged both into `formal/c1-model` (the samples branch had not merged into engine-v2 yet). No log shape
+changed: no new item, so no `Item` constructor and no layer-1 transition changes; every namespace loads as before.
+
+### Facts checked against the model (from the earlier review)
+- The run scope is K+2 and created eagerly: T4's `spawn-rows` (engine.clj ~610) allocates task K, run K+1 and run
+  scope K+2 (`add-run-scope`) in one step; the engine materializes it on first use (`run-scope!`).
+- Z#18 `subtree-empty` (rule.clj ~411) requires every scope of the subtree closed, no scope outside it with its parent
+  inside, no held task (`task-held-in`: owned there and not done or its run unretired), no fork marker, no run scoped
+  in it, and no root-kind scope.
+- No upward cascade in the model: T13's `retire-with` runs `remove-if-empty` on the retiring run's subtree only. A
+  parent left closed and empty is not live (scopes retain only upward, `scope-contrib`; downward retention comes from
+  alive runs, open explicit roots and cleanup entries via `anc-close`), so the same step's Rule R filter (`keep-fn`,
+  retain.clj ~297) removes it. The engine cascades in `remove-scope-if-empty!`; at commit boundaries the rows agree.
+- Computations' run scopes have parent 0 (`start-raw` and `new-run-of` call `add-run-scope ... 0`), and a task owned
+  by a computation has run scope parent 0 (`task-scope-parent`: its owner is no scope). Neither is in any task's run
+  scope subtree, so a task's completion never waits for computations created in its body nor for the tasks they own
+  (the D2 boundary of the v4 amendments).
+
+### Mapping
+| Z#70 rule | level | model |
+|---|---|---|
+| task complete: done, run retired (T13), run scope removed or never materialized | layer 1, derived | `spindel.v2.ledger/task-complete w k` = not `task-held w k` (a task row with result none or run /= 0) and no scope row k+2. The eager run scope collapses the two engine cases: one never materialized owns nothing, so T13 removes it in the retiring step (`remove-if-empty`), exactly when the engine completes the task with no K-SROW. |
+| scope complete: its row removed | layer 1, derived | `scope-complete w s` = no scope row s. The root scope is never removed (Z#56: `root-in`, and it is a root), so it is never complete, also in a complete world (sidecars: scope 2 present after completion). |
+| K-COMPLETE / S-COMPLETE flags, set once | engine bookkeeping | not modelled: derived predicates. Stability (once complete, complete forever) is a theorem to prove (later stage). |
+| S-TASK / K-SROW recorded at materialization | engine bookkeeping | the pairing k <-> k+2 is fixed by the allocation order (oracle contract), no field. |
+| `retire!`: `maybe-complete!` last, after `release-ownership!` | layer 1 + 2 | layer-2 completion (`sys-complete`) is a separate system operation after a step, so the order is given; "complete world => every task complete" becomes a theorem from `quiet-rows` (later stage, below). |
+| host `on-joined` / `await-joined` | layer 2 | `Cell.joins` (new last field): the pending host joins of the cell, a list of target task ids (one entry per subscription). `sys-join` admits one: no row, edge, handle, id or item; no released guard (admitted after release); delivered at once (not recorded) when the target is complete or the cell is. `sys-deliver` delivers the pending joins whose target is complete (the engine does it inside the completing commit). `complete-cell` empties the list (abandonment: joins still pending at world completion are delivered with it). `fork-cell`, `fork-effect-cell` and `inst-cell` start with no joins (not inherited). Both operations are system operations, not Items. |
+| `detach!` refuses a scope of another world | - | not expressible in layer 1 (ids are world-local; see Z#69 above). |
+
+### Identity of a removed id
+The model keeps no kind for an id after its row is gone (one global id space, nothing typed after deletion). A
+removed id is known to be a task by its holder: a host join records the id it was admitted for (the host holds a
+task handle, so the id was allocated: admission requires `k < next-id`), and the oracle remembers every task and
+scope it has seen (as the generator's `seen`). For such a task id, no task row reads as not held, so
+`task-complete` is then "no scope row k+2". Removal of the task row with its run scope still present (handles 0, kept
+only by a child's cleanup chain) is therefore not complete, as in the engine (its K-SROW is still a present row).
+
+### Oracle
+- `check-observations` compares, when the sidecar has them, per task (every task seen at a checkpoint so far)
+  `:done?` (result /= none; no row = true), `:retired?` (run = 0; no row = true), `:srow-present?` (scope k+2 present
+  and materialized), `:complete?` (`task-complete`); per scope (every scope seen so far) `:open?`, `:present?`,
+  `:complete?` (`scope-complete`); and `:pending-joins` (length of the cell's `joins` after `sys-join` of the joins the
+  spec registers before that checkpoint and `sys-deliver`). The task and scope key sets are compared exactly.
+- Materialized (oracle only): a run scope is reported once it has owned something (a task, a source, a child scope or
+  a fork marker) in some model world up to the checkpoint; never-materialized run scopes are not in the engine's
+  registry, so they are left out of the scope set and read `srow-present? false`.
+- Host joins are not in the log: the family spec lists them (`:joins [[world step target]]`: registered before
+  checkpoint `step`).
+
+### Questions (engine session), C1c stage A
+(filled in after the replay)
