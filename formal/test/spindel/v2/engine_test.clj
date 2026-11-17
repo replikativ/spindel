@@ -12,6 +12,7 @@
             [spindel.v2.rule :as r]
             [spindel.v2.engine :as en]
             [spindel.v2.inv :as inv]
+            [spindel.v2.ledger :as lg]
             [spindel.v2.rule-test :as rlt]))
 
 (def theorems
@@ -1154,3 +1155,63 @@
         (is (= sj (:parent (find-row w2 :scopes s))))
         (is (false? (scope-cycle? w2)))
         (is (true? (:open (find-row w2 :scopes o))) "O stays K0's open scope")))))
+
+;; ---------------------------------------------------------------------------
+;; C1c stage A (spec Z#70, engine 1aac850): completion is derived from the scope tree (spindel.v2.ledger).
+;; A task is complete when done, its run retired and its run scope (k + 2) removed or never materialized; a scope
+;; when its row is removed. The scenario of sample 30, with an offload for the grandchild's host work: P opens the
+;; explicit scope E and spawns C in it; C spawns G in its run scope; G arms an offload. C completes (its retirement
+;; cancels G, whose run stays in cleanup until the offload's acknowledgement), P closes E and completes. P and C are
+;; done and retired but wait for their run scopes; G is done (cancelled) with its run unretired. G's retirement
+;; completes everything: G's run scope was never materialized, the others are removed in the same step (Rule R).
+(deftest c1c-completion-ledger
+  (let [w s/empty-world
+        d (:next-id w)
+        w (step! w (create-source-top root s/sk-deferred 0 d))
+        [p rp w] (task-with-slice w)
+        e (:next-id w)
+        w (step! w (open-scope (stamp w rp) e))
+        c (:next-id w)
+        rc (inc c)
+        w (step! w (spawn (stamp w rp) 2 c))
+        w (step! w (await* (stamp w rp) [d] s/am-one 1 (:next-id w) []))
+        w (step! w (schedule rc))
+        g (:next-id w)
+        rg (inc g)
+        w (step! w (spawn (stamp w rc) 3 g))
+        w (step! w (await* (stamp w rc) [d] s/am-one 1 (:next-id w) []))
+        w (step! w (schedule rg))
+        z (:next-id w)
+        w (step! w (arm (stamp w rg) s/rk-offload 7 z))
+        tc (fn [w] (mapv #(lg/task-complete w %) [p c g]))
+        sc (fn [w] (mapv #(lg/scope-complete w %) [(+ p 2) e (+ c 2)]))
+        _ (testing "condition 1, not done: nothing complete while the three run"
+            (is (= [e (+ p 2) (+ c 2)] (mapv #(:parent (find-row w :scopes %)) [(+ c 2) e (+ g 2)]))
+                "the scope tree: P's run scope > E > C's run scope > G's run scope")
+            (is (= [false false false] (tc w)))
+            (is (= [false false false] (sc w))))
+        w (step! w (deliver d 5))
+        w (step! w (schedule rc))
+        w (step! w (complete (stamp w rc) s/res-ok 1))
+        _ (testing "C done and retired, its run scope still present (G is held): not complete"
+            (is (= [true true] ((juxt #(= s/res-ok (:tag (:result %))) #(zero? (:run %))) (find-row w :tasks c))))
+            (is (some? (find-row w :scopes (+ c 2))))
+            (is (false? (lg/task-complete w c))))
+        _ (testing "condition 2, G done (cancelled with C's run scope, Q10) but its run unretired: not complete"
+            (is (not= s/res-none (:tag (:result (find-row w :tasks g)))))
+            (is (pos? (:run (find-row w :tasks g))))
+            (is (false? (lg/task-complete w g))))
+        w (step! w (schedule rp))
+        w (step! w (close-scope e))
+        w (step! w (complete (stamp w rp) s/res-ok 2))
+        _ (testing "condition 3, P done and retired, its run scope kept by the subtree: not complete"
+            (is (= [true true] ((juxt #(= s/res-ok (:tag (:result %))) #(zero? (:run %))) (find-row w :tasks p))))
+            (is (= [false false false] (tc w)))
+            (is (= [false false false] (sc w)) "E closed, but its row stays (G's cleanup keeps its chain)")
+            (is (false? (:open (find-row w :scopes e)))))
+        w (step! w (resource-ack z))]
+    (testing "G retires: every task and scope of the subtree is complete in that step"
+      (is (= [true true true] (tc w)))
+      (is (= [true true true] (sc w)))
+      (is (true? (lg/scope-complete w (+ g 2))) "G's run scope, never materialized, went at G's retirement")
+      (is (false? (lg/scope-complete w root)) "the root scope is never removed"))))

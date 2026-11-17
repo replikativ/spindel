@@ -7,6 +7,7 @@
             [spindel.v2.engine :as en]
             [spindel.v2.oracle :as o]
             [spindel.v2.state :as s]
+            [spindel.v2.ledger :as lg]
             [spindel.v2.sys :as sys]))
 
 (def theorems
@@ -239,3 +240,80 @@
         (is (= w (:world (f 4))) "the child starts from the parent's world")
         (is (= [3 3] [(:parent (f 4)) (:parent (fe 4))]))
         (is (= (born 3) (f 3) (fe 3)) "the parent unchanged")))))
+
+;; ---------------------------------------------------------------------------
+;; C1c stage A (spec Z#70): host joins (`on-joined` / `await-joined`): a cell's pending joins, admitted with no
+;; row, edge, handle, id or item and also after release, delivered once the target task is complete or the world
+;; is (abandonment), never inherited
+
+;; prefix-world-c1's task (id 3) and the items that let it finish: the host delivers its deferred, the run takes
+;; its slice and completes (T12 retires it; its run scope, which owns the deferred, is closed and removed)
+(defn- finish-task [w]
+  (let [it (fn [tag & fs] (into [(o/ctor-idx tag)] fs))
+        k (:id (first (:tasks w)))
+        r (:run (first (:tasks w)))
+        d (:id (first (filter #(= s/sk-deferred (:kind %)) (:sources w))))]
+    [k [(it :deliver d 5) (it :schedule r) (it :complete (:stamp (first (filter #(= r (:id %)) (:runs w)))) s/res-ok 1)]]))
+
+(deftest c1c-join-delivered-at-target-completion
+  (let [w (prefix-world-c1)
+        [k items] (finish-task w)
+        cells (sys/sys-join (c1-cells {1 (c1-cell w)}) 1 k)
+        stepped (reduce (fn [cs i] (sys/sys-step cs 1 i)) cells items)
+        w2 (:world (stepped 1))]
+    (is (= [k] (:joins (cells 1))) "pending: the task is running")
+    (is (= (:world (cells 1)) w) "admission changes no row (no edge, handle or id)")
+    (is (= [k] (:joins ((sys/sys-deliver cells 1) 1))) "not delivered before the target completes")
+    (is (true? (lg/task-complete w2 k)) "done, retired, its run scope removed")
+    (is (= [k] (:joins (stepped 1))) "a layer-1 step delivers nothing by itself")
+    (is (= [] (vec (:joins ((sys/sys-deliver stepped 1) 1)))) "delivered once the target is complete")
+    (is (= [] (vec (:joins ((sys/sys-join (sys/sys-deliver stepped 1) 1 k) 1)))) "a join on a complete target is delivered at once")))
+
+;; sample 31b: an unborn instance's copy of a task never runs; a join on it is delivered with the instance's
+;; completion (E4: released before its activation, complete at once)
+(deftest c1c-abandoned-join-delivered-at-completion
+  (let [w (prefix-world-c1)
+        k (:id (first (:tasks w)))
+        c0 (sys/sys-join (c1-cells {3 (c1-cell w :parent 1 :unborn true :pending 99)}) 3 k)
+        c1 (sys/sys-deliver (sys/sys-release-unborn c0 3) 3)
+        c2 (sys/sys-complete c1 3)]
+    (is (= [k] (:joins (c0 3))))
+    (is (= [k] (:joins (c1 3))) "released, not complete: the target never completes")
+    (is (false? (lg/task-complete (:world (c2 3)) k)))
+    (is (true? (:complete (c2 3))))
+    (is (= [] (vec (:joins (c2 3)))) "delivered with the completion (abandonment)")))
+
+;; sample 32 and the released half: admission has no released guard
+(deftest c1c-join-after-release
+  (let [busy (released-busy)
+        kb (:id (first (:tasks busy)))
+        cb (sys/sys-join (c1-cells {1 (c1-cell busy)}) 1 kb)
+        w (prefix-world-c1)
+        [k items] (finish-task w)
+        done (released (reduce (fn [w i] (:world (en/world-step w i))) w items))
+        cd (sys/sys-complete (c1-cells {1 (c1-cell done)}) 1)]
+    (is (true? (:released busy)))
+    (is (false? (lg/task-complete busy kb)) "cancelled, its run still in cleanup (the offload)")
+    (is (= [kb] (:joins (cb 1))) "admitted after release, pending")
+    (is (true? (lg/task-complete done k)))
+    (is (= [] (vec (:joins ((sys/sys-join (c1-cells {1 (c1-cell done)}) 1 k) 1)))) "after release, complete target: at once")
+    (is (true? (:complete (cd 1))))
+    (is (= [] (vec (:joins ((sys/sys-join cd 1 k) 1)))) "on a complete world: at once")
+    (is (= [] (vec (:joins ((sys/sys-join cd 1 kb) 1)))) "on a complete world, whatever the target")
+    (testing "refused (unchanged): an id no handle names, a collected world"
+      (is (= (cb 1) ((sys/sys-join cb 1 (:next-id busy)) 1)))
+      (let [dropped (sys/sys-drop (c1-cells {1 (c1-cell w)}) 1)]
+        (is (= (dropped 1) ((sys/sys-join dropped 1 k) 1)))))))
+
+(deftest c1c-joins-not-inherited
+  (let [w (prefix-world-c1)
+        r (first (:runs w))
+        k (:id (first (:tasks w)))
+        cells (sys/sys-join (c1-cells {1 (c1-cell w)}) 1 k)
+        f (sys/sys-fork cells 1 2 s/root-scope-id)
+        fe (sys/sys-fork-effect cells 1 2 s/root-scope-id (:stamp r) 0 7)
+        inst (sys/sys-instantiate cells (fn [_] (sys/->Pub 1 99 (:id r) w true)) 0 2 s/root-scope-id)]
+    (is (= [k] (:joins (cells 1))))
+    (is (= [[] [] []] (map #(vec (:joins (% 2))) [f fe inst])) "a fork, a fork effect and an instance start with none")
+    (is (= [[k] [k] [k]] (map #(:joins (% 1)) [f fe inst])) "the parent keeps its own")
+    (is (= w (:world (f 2))) "the fork copies the rows (the task with them)")))
