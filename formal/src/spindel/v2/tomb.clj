@@ -7,8 +7,8 @@
     gy y w   inv-sample w, `gyk`: every alive run's computation and every dep edge's creditor is no
              tombstone (`ta-one`, `dep-untomb`), and neither is computation y (`untomb`); the bundle
              copy of the raw transition (`raw-gy`), y the computation an await/track/reactivation
-             adds a dep edge for. Only start (T5), dispatch (T11), reactivation, demand and handle-new
-             rows clear the flag, only `comp-demote-row` sets it.
+             adds a dep edge for. Only start (T5), dispatch (T11), reactivation and demand rows clear
+             the flag (handle-new refuses a tombstone), only `comp-demote-row` sets it.
     gn w     gy 0 w (no computation has id 0): the bundle copy of normalization (`gn-normalize`; the
              demotion makes its computation a tombstone only after its dep edges are gone and its runs
              are cancelled, `demote-dead`), the filter, and the step (`step-gn`).
@@ -480,7 +480,7 @@
 (prim! GY 'inv-filter-world '(gy-rest-filter-world ty w K R))
 
 ;; the generic source patch: a computation edit by a row that clears the flag, a run edit that ends a run
-(def ^:private clear-fns '#{comp-react-row comp-demand-row comp-start-row comp-replace-row comp-set-run comp-h1 comp-make-idle})
+(def ^:private clear-fns '#{comp-react-row comp-demand-row comp-start-row comp-replace-row comp-set-run comp-make-idle})
 (def ^:private down-fns '{run-cancel-row run-cancel-row-dwn run-complete-row run-complete-row-dwn run-fin-pop-end run-fin-pop-end-dwn
                           run-enter-row enter-dwn})
 (defn- fhead [f] (if (seq? f) (first f) f))

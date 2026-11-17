@@ -1406,7 +1406,9 @@
   (cases hc (comp-find w y)) (case' [some c]) (case' [none])
   (simp only [t-handle-new hc]) (exact (sl-new-task-handle x w y h))
   (cases hh (Nat.beq (:handles c) 0))
-  (all_goals (simp only [t-handle-new hc hh refuse accept sl-comp-upd]))
+  (simp only [t-handle-new hc hh refuse]) (exact h)
+  (cases ht (:tomb c))
+  (all_goals (simp only [t-handle-new hc hh ht refuse accept sl-comp-upd]))
   (all_goals (exact h)))
 
 (a/theorem sl-t-deliver [x :- Nat, w :- World, s :- Nat, v :- Nat]
@@ -3302,7 +3304,9 @@
   (cases hc (comp-find w y)) (case' [some c]) (case' [none])
   (simp only [t-handle-new hc]) (exact (s9-new-task-handle w y h))
   (cases hh (Nat.beq (:handles c) 0))
-  (all_goals (simp only [t-handle-new hc hh refuse accept s9-comp-upd]))
+  (simp only [t-handle-new hc hh refuse]) (exact h)
+  (cases ht (:tomb c))
+  (all_goals (simp only [t-handle-new hc hh ht refuse accept s9-comp-upd]))
   (all_goals (exact h)))
 
 (a/theorem s9-t-deliver [w :- World, s :- Nat, v :- Nat]

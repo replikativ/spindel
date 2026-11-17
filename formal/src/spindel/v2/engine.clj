@@ -1693,11 +1693,13 @@
   (simp [t-schedule hf hg accept] at ha))
 
 ;; ---- handle-new x (Z#29): a row's handle count goes from 0 to 1 (computation, task, source
-;; or publication, searched in that order); any other count, or no row, refuses
+;; or publication, searched in that order); any other count, or no row, refuses; so does a
+;; tombstone (engine: handle! on an existing row only runs through adoption, which finds the row
+;; through a reference, and a tombstone has none)
 (a/defn comp-h1 [c :- CompRow] CompRow
   (CompRow.mk (:id c) (:owner c) (:inputs c) (:body c) (:run c) (:epoch c) (:done-epoch c)
               (:pending c) (:rank c) (:version c) (:result c) (:idle c) (:validity c) (:basis c)
-              (:adopt-basis c) (:adopt-baselines c) 1 false))
+              (:adopt-basis c) (:adopt-baselines c) 1 (:tomb c)))
 (a/defn task-h1 [t :- TaskRow] TaskRow (TaskRow.mk (:id t) (:owner t) (:run t) (:result t) 1 (:inputs t)))
 (a/defn source-h1 [s :- SourceRow] SourceRow
   (SourceRow.mk (:id s) (:owner s) (:kind s) (:state s) (:version s) (:open s) 1 (:queue s) (:rtask s) (:next s) (:tail s) (:fail s)))
@@ -1719,10 +1721,10 @@
          [(some t) (if (Nat.beq (:handles t) 0) (accept (task-upd w x task-h1)) (refuse w))]))
 (a/defn t-handle-new [w :- World, x :- Nat] Outcome
   (match (comp-find w x) [none (new-task-handle w x)]
-         [(some c) (if (Nat.beq (:handles c) 0) (accept (comp-upd w x comp-h1)) (refuse w))]))
+         [(some c) (if (Nat.beq (:handles c) 0) (if (:tomb c) (refuse w) (accept (comp-upd w x comp-h1))) (refuse w))]))
 
 (defmacro ^:private defnew-lemmas
-  [f find upd row-f inv-lemma inv-args next-f]
+  [f find upd row-f inv-lemma inv-args next-f & [tomb?]]
   (let [inv (symbol (str f "-inv")) ref (symbol (str f "-refuse"))
         next-inv (when next-f (symbol (str next-f "-inv"))) next-ref (when next-f (symbol (str next-f "-refuse")))]
     `(do
@@ -1735,8 +1737,13 @@
              [`(~'simp ~'only [~f ~'hc ~'refuse]) `(~'exact ~'h)])
          (~'cases ~'hn (~'Nat.beq (:handles ~'c) 0))
          (~'simp ~'only [~f ~'hc ~'hn ~'refuse]) (~'exact ~'h)
-         (~'simp ~'only [~f ~'hc ~'hn ~'accept])
-         (~'exact (~inv-lemma ~'w ~'x ~row-f ~@inv-args ~'h)))
+         ~@(if tomb?
+             [`(~'cases ~'ht (:tomb ~'c))
+              `(~'simp ~'only [~f ~'hc ~'hn ~'ht ~'accept])
+              `(~'exact (~inv-lemma ~'w ~'x ~row-f ~@inv-args ~'h))
+              `(~'simp ~'only [~f ~'hc ~'hn ~'ht ~'refuse]) `(~'exact ~'h)]
+             [`(~'simp ~'only [~f ~'hc ~'hn ~'accept])
+              `(~'exact (~inv-lemma ~'w ~'x ~row-f ~@inv-args ~'h))]))
        (a/theorem ~ref [~'w :- ~'World, ~'x :- ~'Nat]
          (~'=> (~'= (:accepted (~f ~'w ~'x)) false) (~'= (:world (~f ~'w ~'x)) ~'w))
          (~'intro ~'ha)
@@ -1746,12 +1753,16 @@
              [`(~'simp ~'only [~f ~'hc ~'refuse])])
          (~'cases ~'hn (~'Nat.beq (:handles ~'c) 0))
          (~'simp ~'only [~f ~'hc ~'hn ~'refuse])
-         (~'simp [~f ~'hc ~'hn ~'accept] ~'at ~'ha)))))
+         ~@(if tomb?
+             [`(~'cases ~'ht (:tomb ~'c))
+              `(~'simp [~f ~'hc ~'hn ~'ht ~'accept] ~'at ~'ha)
+              `(~'simp ~'only [~f ~'hc ~'hn ~'ht ~'refuse])]
+             [`(~'simp [~f ~'hc ~'hn ~'accept] ~'at ~'ha)])))))
 
 (defnew-lemmas new-pub-handle pub-find pub-upd pub-h1 inv-pub-upd [pub-h1-id] nil)
 (defnew-lemmas new-source-handle source-find source-upd source-h1 inv-source-upd [source-h1-id] new-pub-handle)
 (defnew-lemmas new-task-handle task-find task-upd task-h1 inv-task-upd [task-h1-id] new-source-handle)
-(defnew-lemmas t-handle-new comp-find comp-upd comp-h1 inv-comp-upd [comp-h1-id comp-h1-pending] new-task-handle)
+(defnew-lemmas t-handle-new comp-find comp-upd comp-h1 inv-comp-upd [comp-h1-id comp-h1-pending] new-task-handle true)
 
 ;; ---- `any` losers (T6): when an `any` activation resumed (its row is gone and its run is not
 ;; done), the tasks R created for this await (`spawned`, from the item) that are still running

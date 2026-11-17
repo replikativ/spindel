@@ -1351,11 +1351,13 @@ New (Stage B finding):
   released, C.run = its (stale, epoch-stepped) cancelled run; T13 clears C.run and the filter removes it (no reason).
   Model: `CompRow.tomb` (model-only, not projected), set only by `comp-demote-row` (rule.clj; field-wise
   `comp-make-idle` when `demote-idle`, else `comp-tomb-row`), cleared by every row that starts a run or wakes
-  (`comp-start-row`, `comp-set-run`, `comp-react-row`, `comp-demand-row`, `comp-replace-row`, `comp-h1`,
+  (`comp-start-row`, `comp-set-run`, `comp-react-row`, `comp-demand-row`, `comp-replace-row`,
   `comp-make-idle`); copied by every other row. Normalization leaves a tombstone alone (`comp-norm` = idle or tomb or
   live; `comp-active` = neither idle nor tomb, the P2 measure). A re-demanded tombstone is dispatched (T11/T5) like
-  the engine (`needs-run?`), which clears the flag. Corner: handle-new on a tombstone (not released) clears the flag,
-  so the next Rule R idles it (the engine idles it at T13).
+  the engine (`needs-run?`), which clears the flag. handle-new on a tombstone is refused (engine session: `handle!`
+  on an existing row runs only through adoption, which finds the row through a reference, and a tombstone has none):
+  `t-handle-new`'s computation arm refuses `(:tomb c)`, and `comp-h1` copies the flag (was: cleared it; the former
+  corner "handle-new on a tombstone clears the flag" is gone). engine_test `c1-handle-new-tombstone-refused`.
 - Proofs: the tombstone is dormant (spindel.v2.tomb, `gy`); P3 (`filter-safe-of-refs`) needs it for a dep edge's
   creditor (`refs-untomb`), I10/I14/h-mark/h-mem2's normalization rounds for a stray run's or a dep edge's
   computation (`trc`). Demotion proofs split on `demote-idle` (`demote-row-idle-upd`/`demote-row-tomb-upd`, lit.clj):

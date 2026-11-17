@@ -1092,3 +1092,21 @@
       (let [o (en/world-step w3 (cancel r))]
         (is (:accepted o) "accepted on a done run")
         (is (= (:world o) (:world (en/world-step w3 (cancel r)))))))))
+
+;; C1 Q6 + engine session: handle-new on a tombstone is refused (the engine's handle! on an existing
+;; row runs only through adoption, which finds the row through a reference; a tombstone has none)
+(deftest c1-handle-new-tombstone-refused
+  (let [w0 s/empty-world
+        c (:next-id w0)
+        w (step! w0 (create-comp-top root c 1 1))
+        e (:next-id w)
+        w (step! w (observe c 1 e))
+        w (step! w (start c (:next-id w)))
+        r (:run (find-row w :comps c))
+        w (step! w (schedule r))
+        w (step! w (handle-drop c))
+        w (step! w (unobserve e))]
+    (is (= {:idle false :tomb true :handles 0 :run r} (select-keys (find-row w :comps c) [:idle :tomb :handles :run]))
+        "unobserved, no handle, no result, its run cancelled in its cleanup slice: a tombstone")
+    (is (true? (:slice (find-row w :runs r))))
+    (step! w (handle-new c) :refused)))
