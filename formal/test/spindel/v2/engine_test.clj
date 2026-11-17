@@ -649,10 +649,11 @@
         (is (= s/rp-cancelling (:phase (find-row w2 :res z))))
         (is (nil? (find-row w2 :acts (inc z))) "the activation goes with its wait edge")
         (is (nil? (find-row (step! w2 (resource-ack z)) :runs rk)) "the ack retires the run within the item")))
-    (testing "kinds: timer (0) and offload (2) only; a fresh id other than next-id refuses"
+    (testing "kinds: timer, external (Z#63), offload and op; native refuses; a fresh id other than next-id refuses"
       (let [k2 (:next-id w)
             w2 (step! (step! w (spawn-top root 1 k2)) (schedule (inc k2)))]
-        (step! w2 (arm (stamp w2 (inc k2)) s/rk-external 0 (:next-id w2)) :refused)
+        (step! w2 (arm (stamp w2 (inc k2)) s/rk-native 0 (:next-id w2)) :refused)
+        (step! w2 (arm (stamp w2 (inc k2)) s/rk-external 0 (:next-id w2)))
         (step! w2 (arm (stamp w2 (inc k2)) s/rk-native 0 (:next-id w2)) :refused)
         (step! w2 (arm (stamp w2 (inc k2)) s/rk-offload 0 (inc (:next-id w2))) :refused)
         (step! w2 (arm (stamp w2 (inc k2)) s/rk-offload 0 (:next-id w2)))))))

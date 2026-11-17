@@ -740,7 +740,9 @@
                                                      :accepted {:engine accepted :model true}
                                                      :n-diffs (count ds) :diffs (vec (take max-diffs ds)) :diffs-all ds}))))
           (or (:owned-done a) (:normalize a))
-          (let [w1 (if-let [[sc c] (:owned-done a)] (ow/owned-done-world w sc c) (ow/drain-world w norm0))
+          (let [w1 (cond-> (if-let [[sc c] (:owned-done a)] (ow/owned-done-world w sc c) (ow/drain-world w norm0))
+                     ;; id-less items: the family counter (W-NEXT) moves with the relatives' allocations
+                     (and family? proj) (skip-to (:next-id proj)))
                 ds (if proj (diff proj (world->proj w1)) [])
                 div? (or (not= accepted true) (seq ds))]
             (recur (inc i) w1 (or proj prev)
@@ -905,6 +907,12 @@
         unborn-at? (fn [k n] (and (= :instance (:kind (spec k)))
                                   (not-any? #(= :resource-fire (first (:item %))) (take n (:log (spec k))))))
         joins (vec (mapcat (fn [[k x]] (map (fn [[step t]] [k step t]) (:joins x))) spec))
+        inherited-mat (fn inherited-mat [k]
+                        (let [{p :from at :at} (spec k)]
+                          (if p
+                            (into (inherited-mat p) (comp (map (partial at* p)) (mapcat owned-ids))
+                                  (range (min (+ at 2) (inc (count (:log (spec p)))))))
+                            #{})))
         withdrawals (vec (mapcat (fn [[k x]] (map (fn [[step j]] [k step j]) (:withdraw x))) spec))
         c1 (fn [idx log-length]
              (let [accepted? (fn [c] (let [a (:accepted-from (spec c))]
@@ -917,6 +925,8 @@
                    exists? (fn [k] (let [{:keys [at] parent :from} (spec k)]
                                      (or (nil? parent) (> (get log-length parent 0) at))))
                    unborn? (fn [k] (unborn-at? k (get log-length k 0)))
+                   ;; a child collected (no log item: the spec names the first checkpoint after it, `:collected-at`)
+                   collected? (fn [c] (when-let [s (:collected-at (spec c))] (>= idx (step-idx s))))
                    owner (fn [c] (let [x (spec c)] (get x :owner (:from x))))
                    children (fn [k] (filter #(and (= k (owner %)) (exists? %) (accepted? %)) (keys spec)))
                    complete? (fn complete? [k]
@@ -924,11 +934,12 @@
                                  (boolean (and (:released w)
                                                (or (unborn? k)
                                                    ;; C1c stage B (questions 15, 16): no marker (W-OWNED-N, W-NORMALIZE)
-                                                   (and (empty? (:runs w)) (empty? (:forks w)) (every? complete? (children k))))))))]
+                                                   (and (empty? (:runs w)) (empty? (:forks w))
+                                                        (every? #(or (collected? %) (complete? %)) (children k))))))))]
                {:at at :unborn? unborn? :complete? complete?
                 :model (fn [k] {:runs (count (:runs (at k))) :released? (boolean (:released (at k)))
                                 :complete? (complete? k)
-                                :open-kids (count (remove complete? (children k)))})}))
+                                :open-kids (count (remove #(or (collected? %) (complete? %)) (children k)))})}))
         ;; C1c: per checkpoint and world, the ledger observation and the pending host joins (state carried
         ;; across checkpoints: the ids seen, the run scopes materialized, the cell's joins)
         c1c (first
@@ -938,7 +949,11 @@
                   (reduce
                    (fn [[out st] k]
                      (let [n (get log-length k 0)
-                           {:keys [seen mat smat js] :or {seen {:tasks #{} :scopes #{}} mat #{} smat #{} js []}} (st k)
+                           {:keys [seen mat smat js] :or {seen {:tasks #{} :scopes #{}} smat #{} js []}} (st k)
+                           ;; C1c stage B (gap A): materialization is a row flag a fork copies (K-SROW; fork-effect!
+                           ;; materializes the forking run's scope before the boundary): a world starts with what its
+                           ;; source had owned up to the fork commit
+                           mat (or mat (inherited-mat k))
                            mat (into mat (comp (map (partial at* k)) (mapcat owned-ids)) (range (inc n)))
                            ;; question 11 / #275: a task's run scope is materialized as the sidecar says
                            et (get-in eo [k :tasks])

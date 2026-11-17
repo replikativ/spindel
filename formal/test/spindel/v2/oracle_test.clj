@@ -458,11 +458,10 @@
 ;;       :untouched is released first (Q15: [:release-world] then [:normalize], then completion)
 ;;   37  Q16: the parent's release and its run's retirement precede [:owned-done]; complete after it
 ;;   38  a savepoint while the count keeps scope 6: the instance inherits it and drains at activation
-;; Not yet in `c1-samples` (oracle gaps, model side): (A) a fork effect's child inherits its run scope's
-;; materialization (current-scope! before the boundary), the sidecar's :materialized? is true, the oracle reads
-;; the child's own log only; (B) ids come from the family counter (`alloc-id!`, W-NEXT), so the id-less
-;; [:owned-done]/[:normalize] see next-id jumps from relatives (36 :touched, 38 :parent); (C) 35: the model
-;; refuses [:arm r :external ...] in the child, and does not see the collection (:kids 0 against 1).
+;; Oracle gaps closed in the model's PR: (A) a world inherits its source's materialization up to the fork commit (a
+;; fork effect's child: its run scope, current-scope! before the boundary); (B) the id-less [:owned-done]/[:normalize]
+;; align the allocator to the projection (the family counter, W-NEXT); (C) the model admits an `external` arm (Z#63,
+;; `arm-kind-ok`), and 35's child is collected before the checkpoint `:collected` (`:collected-at`).
 ;; The stage B fields themselves (:owned, :normalize) match the model in every sample.
 (def ^:private c1c-b-specs
   {"34" (let [p (log "34-parent")]
@@ -470,7 +469,8 @@
            :child {:log (log "34-child") :from :parent :kind :fork :at (c1-idx p #(= :fork (first %)))}})
    "35" (let [p (log "35-parent")]
           {:parent {:log p :kind :root}
-           :child {:log (log "35-child") :from :parent :kind :fork :at (c1-idx p #(= :fork (first %)))}})
+           :child {:log (log "35-child") :from :parent :kind :fork :at (c1-idx p #(= :fork (first %)))
+                   :collected-at :collected}})
    "36" (let [p (log "36-parent") fh (keep-indexed (fn [i c] (when (= :fork-host (first (:item c))) i)) p)]
           {:parent {:log p :kind :root}
            :child {:log (log "36-child") :from :parent :kind :fork :at (c1-idx p #(= :fork (first %)))}
@@ -487,7 +487,7 @@
 
 
 (deftest c1-samples
-  (doseq [[n spec] (merge c1-specs c1c-specs)]
+  (doseq [[n spec] (merge c1-specs c1c-specs c1c-b-specs)]
     (let [fam (o/replay-family spec)
           obs (o/read-observations (str "test/spindel/v2/oracle/log-sample-" n "-observations.edn"))]
       (is (seq obs) (str "sample " n ": sidecar"))
