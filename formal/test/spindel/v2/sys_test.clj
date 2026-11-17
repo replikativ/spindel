@@ -83,7 +83,7 @@
 (deftest idle-release-fires-on-an-idle-world-only
   (let [{:keys [child]} (fork-worlds)
         it (fn [tag & fs] (into [(o/ctor-idx tag)] fs))
-        cell (fn [w] (sys/->Cell w true 1 s/root-scope-id [] false 0 [] false))
+        cell (fn [w] (sys/->Cell w true 1 s/root-scope-id [] false 0 [] false []))
         cells (fn [w] (fn [k] (cell (if (= k 2) w s/empty-world))))
         step (fn [w i] (let [o (en/world-step w i)] (is (:accepted o) (pr-str i)) (:world o)))
         ;; the host lets go: every handle dropped, every host edge removed
@@ -166,7 +166,7 @@
     (:world (en/world-step w3 (it :await st [(dec (:next-id w3))] s/am-one 1 (:next-id w3) [])))))
 
 (defn- c1-cell [w & {:keys [parent unborn pending] :or {parent 0 unborn false pending 0}}]
-  (sys/->Cell w true parent s/root-scope-id [] unborn pending [] false))
+  (sys/->Cell w true parent s/root-scope-id [] unborn pending [] false []))
 (defn- c1-cells [m] (fn [k] (get m k (c1-cell s/empty-world))))
 (defn- released [w] (:world (en/world-step w [(o/ctor-idx :release-world)])))
 
