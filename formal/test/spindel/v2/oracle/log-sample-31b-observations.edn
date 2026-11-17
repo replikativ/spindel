@@ -1,0 +1,93 @@
+[{:step :join-pending-unborn,
+  :log-length {:instance 0, :parent 3},
+  :obs
+  {:instance
+   {:complete? false,
+    :released? false,
+    :runs 1,
+    :kids nil,
+    :token :none,
+    :tasks
+    {3
+     {:done? false,
+      :retired? false,
+      :srow-present? false,
+      :complete? false}},
+    :scopes {2 {:open? true, :present? true, :complete? false}},
+    :pending-joins 1},
+   :parent
+   {:complete? false,
+    :released? false,
+    :runs 1,
+    :kids nil,
+    :token nil,
+    :tasks
+    {3
+     {:done? false,
+      :retired? false,
+      :srow-present? false,
+      :complete? false}},
+    :scopes {2 {:open? true, :present? true, :complete? false}},
+    :pending-joins 0}}}
+ {:step :instance-complete,
+  :log-length {:instance 1, :parent 3},
+  :obs
+  {:instance
+   {:complete? true,
+    :released? true,
+    :runs 1,
+    :kids nil,
+    :token :done,
+    :tasks
+    {3
+     {:done? false,
+      :retired? false,
+      :srow-present? false,
+      :complete? false}},
+    :scopes {2 {:open? true, :present? true, :complete? false}},
+    :pending-joins 0},
+   :parent
+   {:complete? false,
+    :released? false,
+    :runs 1,
+    :kids nil,
+    :token nil,
+    :tasks
+    {3
+     {:done? false,
+      :retired? false,
+      :srow-present? false,
+      :complete? false}},
+    :scopes {2 {:open? true, :present? true, :complete? false}},
+    :pending-joins 0}}}
+ {:step :released,
+  :log-length {:instance 1, :parent 6},
+  :obs
+  {:instance
+   {:complete? true,
+    :released? true,
+    :runs 1,
+    :kids nil,
+    :token :done,
+    :tasks
+    {3
+     {:done? false,
+      :retired? false,
+      :srow-present? false,
+      :complete? false}},
+    :scopes {2 {:open? true, :present? true, :complete? false}},
+    :pending-joins 0},
+   :parent
+   {:complete? true,
+    :released? true,
+    :runs 0,
+    :kids nil,
+    :token nil,
+    :tasks
+    {3
+     {:done? true,
+      :retired? true,
+      :srow-present? false,
+      :complete? true}},
+    :scopes {2 {:open? false, :present? true, :complete? false}},
+    :pending-joins 0}}}]

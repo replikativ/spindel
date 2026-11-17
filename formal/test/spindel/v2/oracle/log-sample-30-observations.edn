@@ -1,0 +1,93 @@
+[{:step :grandchild-started,
+  :log-length {:w 12},
+  :obs
+  {:w
+   {:complete? false,
+    :released? false,
+    :runs 3,
+    :kids nil,
+    :token nil,
+    :tasks
+    {4
+     {:done? false,
+      :retired? false,
+      :srow-present? true,
+      :complete? false},
+     8
+     {:done? false,
+      :retired? false,
+      :srow-present? true,
+      :complete? false},
+     13
+     {:done? false,
+      :retired? false,
+      :srow-present? false,
+      :complete? false}},
+    :scopes
+    {2 {:open? true, :present? true, :complete? false},
+     6 {:open? true, :present? true, :complete? false},
+     7 {:open? true, :present? true, :complete? false},
+     10 {:open? true, :present? true, :complete? false}},
+    :pending-joins 1}}}
+ {:step :parent-settled,
+  :log-length {:w 21},
+  :obs
+  {:w
+   {:complete? false,
+    :released? false,
+    :runs 1,
+    :kids nil,
+    :token nil,
+    :tasks
+    {4
+     {:done? true,
+      :retired? true,
+      :srow-present? true,
+      :complete? false},
+     8
+     {:done? true,
+      :retired? true,
+      :srow-present? true,
+      :complete? false},
+     13
+     {:done? true,
+      :retired? false,
+      :srow-present? false,
+      :complete? false}},
+    :scopes
+    {2 {:open? true, :present? true, :complete? false},
+     6 {:open? false, :present? true, :complete? false},
+     7 {:open? false, :present? true, :complete? false},
+     10 {:open? false, :present? true, :complete? false}},
+    :pending-joins 1}}}
+ {:step :grandchild-retired,
+  :log-length {:w 23},
+  :obs
+  {:w
+   {:complete? false,
+    :released? false,
+    :runs 0,
+    :kids nil,
+    :token nil,
+    :tasks
+    {4
+     {:done? true,
+      :retired? true,
+      :srow-present? false,
+      :complete? true},
+     8
+     {:done? true,
+      :retired? true,
+      :srow-present? false,
+      :complete? true},
+     13
+     {:done? true,
+      :retired? true,
+      :srow-present? false,
+      :complete? true}},
+    :scopes
+    {2 {:open? true, :present? true, :complete? false},
+     6 {:open? false, :present? false, :complete? true},
+     7 {:open? false, :present? false, :complete? true},
+     10 {:open? false, :present? false, :complete? true}},
+    :pending-joins 0}}}]
