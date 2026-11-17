@@ -33,8 +33,10 @@
   (`norm-round`) recomputes live, cancels (T14, cascading) every non-done run outside live,
   demotes every non-idle computation outside live (the live list of the round's start), and
   detaches orphans. `demote`: cancel C's non-done runs and the runs of the tasks in its basis,
-  remove its dep edges (validity from them), then idle (I7 shape) if it has a result, handles > 0
-  or is the body entity of a cleanup entry (tombstone), else removed with every edge naming it.
+  remove its dep edges (validity from them), then idle (I7 shape) if it has a result or handles > 0,
+  a tombstone if it is the body entity of a cleanup entry (C1 Q6, §3.2: not idle, no validity,
+  C.run still the stale cancelled run; model-only flag `tomb`, removed by the filter once T13 retires
+  the run), else removed with every edge naming it. A tombstone is no stray (`comp-norm`).
   `detach`: a source or task whose owner (/= 0) is no existing scope or computation gets owner
   0; a detached source is closed and finalized (T10). The loop stops when `normalized` holds;
   fuel = #non-done runs + #non-idle computations + 1 (`norm-measure` + 1). `rule-r w` =
@@ -47,7 +49,7 @@
     t15-full-inv/-refuse/-l4, inv-demote, inv-detach, inv-norm-round, inv-norm-loop,
     inv-normalize                inv-sample is preserved by every edit and by the loop
     normalized-runs              normalized w, r in runs, r not done -> in-live w r.id
-    normalized-comps             normalized w, c in comps, c not idle -> in-live w c.id
+    normalized-comps             normalized w, c in comps, c neither idle nor a tombstone -> in-live w c.id
     inv-filter-world             inv-sample w, filter-safe-k K w -> inv-sample (filter-world K w)
     inv-rule-r-filter, inv-rule-r, step-inv
                                  inv-sample w, filter-safe (normalize raw-world) ->
@@ -234,12 +236,29 @@
 (a/defn comp-clear-run [c :- CompRow] CompRow
   (CompRow.mk (:id c) (:owner c) (:inputs c) (:body c) 0 (:epoch c) (:done-epoch c)
               (:pending c) (:rank c) (:version c) (:result c) (:idle c) (:validity c) (:basis c)
-              (:adopt-basis c) (:adopt-baselines c) (:handles c)))
+              (:adopt-basis c) (:adopt-baselines c) (:handles c) (:tomb c)))
 ;; I7 idle shape: no run, empty basis, no adoption; validity from the removed dep edges
 (a/defn comp-make-idle [vs :- (List Valid), c :- CompRow] CompRow
   (CompRow.mk (:id c) (:owner c) (:inputs c) (:body c) 0 (:epoch c) (:done-epoch c)
               (:pending c) (:rank c) (:version c) (:result c) true vs (List.nil Created)
-              (List.nil Created) (List.nil AdoptBase) (:handles c)))
+              (List.nil Created) (List.nil AdoptBase) (:handles c) false))
+;; C1 Q6 (§3.2 cleanup table, §3.3 step 1.3): a demoted computation with neither a result nor a
+;; handle whose run is in cleanup stays as a tombstone: not idle, no validity, C.run still names its
+;; (stale, epoch-stepped) cancelled run until T13; basis and adoption are released, as demote!
+(a/defn comp-tomb-row [c :- CompRow] CompRow
+  (CompRow.mk (:id c) (:owner c) (:inputs c) (:body c) (:run c) (:epoch c) (:done-epoch c)
+              (:pending c) (:rank c) (:version c) (:result c) false (List.nil Valid) (List.nil Created)
+              (List.nil Created) (List.nil AdoptBase) (:handles c) true))
+;; idle when it has a result or a handle (Z#2), else the tombstone
+(a/defn demote-idle [c :- CompRow] Bool
+  (Bool.or (Bool.not (Nat.beq (:tag (:result c)) res-none)) (Nat.blt 0 (:handles c))))
+;; field by field (`comp-make-idle` when `demote-idle`, else `comp-tomb-row`), so every field the two
+;; share is definitionally the old one
+(a/defn comp-demote-row [vs :- (List Valid), c :- CompRow] CompRow
+  (CompRow.mk (:id c) (:owner c) (:inputs c) (:body c) (if (demote-idle c) 0 (:run c)) (:epoch c) (:done-epoch c)
+              (:pending c) (:rank c) (:version c) (:result c) (demote-idle c)
+              (if (demote-idle c) vs (List.nil Valid)) (List.nil Created)
+              (List.nil Created) (List.nil AdoptBase) (:handles c) (Bool.not (demote-idle c))))
 (a/defn source-close-row [s :- SourceRow] SourceRow
   (SourceRow.mk (:id s) (:owner s) (:kind s) (:state s) (:version s) false (:handles s) (:queue s)
                 (:rtask s) (:next s) (:tail s) (:fail s)))
@@ -258,6 +277,15 @@
 (a/theorem comp-clear-run-pending [c :- CompRow] (= (:pending (comp-clear-run c)) (:pending c)) (rfl))
 (a/theorem comp-make-idle-id [vs :- (List Valid), c :- CompRow] (= (comp-id (comp-make-idle vs c)) (comp-id c)) (rfl))
 (a/theorem comp-make-idle-pending [vs :- (List Valid), c :- CompRow] (= (:pending (comp-make-idle vs c)) (:pending c)) (rfl))
+(a/theorem comp-demote-row-id [vs :- (List Valid), c :- CompRow] (= (comp-id (comp-demote-row vs c)) (comp-id c)) (rfl))
+(a/theorem comp-demote-row-pending [vs :- (List Valid), c :- CompRow] (= (:pending (comp-demote-row vs c)) (:pending c)) (rfl))
+;; the two shapes
+(a/theorem comp-demote-row-idle [vs :- (List Valid), c :- CompRow]
+  (=> (= (demote-idle c) true) (= (comp-demote-row vs c) (comp-make-idle vs c)))
+  (intro h) (simp only [comp-demote-row comp-make-idle h Bool.not_true]))
+(a/theorem comp-demote-row-tomb [vs :- (List Valid), c :- CompRow]
+  (=> (= (demote-idle c) false) (= (comp-demote-row vs c) (comp-tomb-row c)))
+  (intro h) (simp only [comp-demote-row comp-tomb-row h Bool.not_false]))
 (a/theorem source-close-row-id [s :- SourceRow] (= (source-id (source-close-row s)) (source-id s)) (rfl))
 (a/theorem source-detach-row-id [s :- SourceRow] (= (source-id (source-detach-row s)) (source-id s)) (rfl))
 (a/theorem task-detach-row-id [t :- TaskRow] (= (task-id (task-detach-row t)) (task-id t)) (rfl))
@@ -910,7 +938,8 @@
 (a/defn validity-of [w :- World, c :- Nat] (List Valid) (valid-list w (tbl-filter (dep-of c) (:edges w))))
 (a/defn not-dep-of [c :- Nat, e :- EdgeRow] Bool (Bool.not (dep-of c e)))
 
-;; kept as idle: a result, handles > 0 (Z#2), or a tombstone body entity of a cleanup entry
+;; kept: a result or handles > 0 (Z#2): idle; or the body entity of a cleanup entry: a tombstone
+;; (`comp-demote-row`, C1 Q6)
 (a/defn demote-keep [w :- World, c :- CompRow] Bool
   (Bool.or (Bool.not (Nat.beq (:tag (:result c)) res-none))
            (Bool.or (Nat.blt 0 (:handles c)) (reach-mem (:id c) (cleanup-rows w)))))
@@ -918,7 +947,7 @@
   (match (comp-find w cid)
     [none w]
     [(some c) (if (demote-keep w c)
-                  (comp-upd w cid (comp-make-idle vs))
+                  (comp-upd w cid (comp-demote-row vs))
                   (comp-del (drop-edges w (edge-avoids cid)) cid))]))
 ;; C0: the streams in C's basis end with the demotion (close-source realizes the tail as the end),
 ;; after C's dep edges are gone, as the engine's demote! (like its basis tasks, cancelled above)
@@ -951,7 +980,7 @@
   (simp only [demote-finish hf hk])
   (exact (inv-comp-del-unref _ cid (drop-edges-avoids w cid) (inv-drop-edges w (edge-avoids cid) h)))
   (simp only [demote-finish hf hk])
-  (exact (inv-comp-upd w cid (comp-make-idle vs) (comp-make-idle-id vs) (comp-make-idle-pending vs) h)))
+  (exact (inv-comp-upd w cid (comp-demote-row vs) (comp-demote-row-id vs) (comp-demote-row-pending vs) h)))
 
 (a/theorem inv-demote-epoch [w :- World, cid :- Nat, b :- Bool]
   (=> (= (inv-sample w) true) (= (inv-sample (demote-epoch w cid b)) true))
@@ -991,7 +1020,7 @@
 (a/defn comp-detach-row [c :- CompRow] CompRow
   (CompRow.mk (:id c) 0 (:inputs c) (:body c) (:run c) (:epoch c) (:done-epoch c)
               (:pending c) (:rank c) (:version c) (:result c) (:idle c) (:validity c) (:basis c)
-              (:adopt-basis c) (:adopt-baselines c) (:handles c)))
+              (:adopt-basis c) (:adopt-baselines c) (:handles c) (:tomb c)))
 (a/defn detach-comp [w :- World, x :- Nat] World (comp-upd w x comp-detach-row))
 (a/defn detach [w :- World] World
   (nat-fold detach-comp
@@ -1024,12 +1053,13 @@
 ;; ---- the loop
 
 (a/defn run-norm [lv :- (List Nat), r :- RunRow] Bool (Bool.or (Bool.not (run-alive r)) (reach-mem (:id r) lv)))
-(a/defn comp-norm [lv :- (List Nat), c :- CompRow] Bool (Bool.or (:idle c) (reach-mem (:id c) lv)))
+;; a tombstone (C1 Q6) is demoted already: normalization leaves it to its cleanup entry
+(a/defn comp-norm [lv :- (List Nat), c :- CompRow] Bool (Bool.or (Bool.or (:idle c) (:tomb c)) (reach-mem (:id c) lv)))
 (a/defn run-stray [lv :- (List Nat), r :- RunRow] Bool (Bool.not (run-norm lv r)))
 (a/defn comp-stray [lv :- (List Nat), c :- CompRow] Bool (Bool.not (comp-norm lv c)))
 (a/defn normalized-with [w :- World, lv :- (List Nat)] Bool
   (Bool.and (tbl-all (run-norm lv) (:runs w)) (tbl-all (comp-norm lv) (:comps w))))
-;; §3.3: no non-done run and no non-idle computation outside live
+;; §3.3: no non-done run and no non-idle computation outside live but the tombstones (C1 Q6)
 (a/defn normalized [w :- World] Bool (normalized-with w (live-list w)))
 
 ;; one round: cancel (T14) the non-done runs outside live, demote the non-idle computations
@@ -1042,7 +1072,7 @@
 (a/defn norm-loop [fuel :- (List Nat), w :- World] World
   (match fuel [nil w] [(cons h f) (if (normalized w) w (norm-loop f (norm-round w)))]))
 
-(a/defn comp-active [c :- CompRow] Bool (Bool.not (:idle c)))
+(a/defn comp-active [c :- CompRow] Bool (Bool.not (Bool.or (:idle c) (:tomb c))))
 ;; the measure #non-done runs + #non-idle computations, plus 1
 (a/defn norm-fuel [w :- World] (List Nat)
   (List.cons Nat 0 (List.append Nat (tbl-scan run-id run-alive (:runs w)) (tbl-scan comp-id comp-active (:comps w)))))
@@ -1405,11 +1435,11 @@
 
 ;; ... and every computation that is not idle is in live(W)
 (a/theorem normalized-comps [w :- World, c :- CompRow]
-  (=> (= (normalized w) true) (List.Mem c (:comps w)) (= (:idle c) false) (= (in-live w (:id c)) true))
-  (intros hn hm hi)
+  (=> (= (normalized w) true) (List.Mem c (:comps w)) (= (:idle c) false) (= (:tomb c) false) (= (in-live w (:id c)) true))
+  (intros hn hm hi ht)
   (simp only [normalized normalized-with Bool.and_eq_true] at hn)
   (have hp := (tbl-all-mem CompRow (comp-norm (live-list w)) c (:comps w) (And.right hn) hm))
-  (simp only [comp-norm hi Bool.false_or] at hp)
+  (simp only [comp-norm hi ht Bool.false_or] at hp)
   (exact hp))
 
 ;; ---- the filter keeps the world normalized (live is stable under it)

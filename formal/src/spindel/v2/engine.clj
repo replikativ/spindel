@@ -416,7 +416,7 @@
 (a/defn comp-set-rank [n :- Nat, c :- CompRow] CompRow
   (CompRow.mk (:id c) (:owner c) (:inputs c) (:body c) (:run c) (:epoch c) (:done-epoch c)
               (:pending c) n (:version c) (:result c) (:idle c) (:validity c) (:basis c)
-              (:adopt-basis c) (:adopt-baselines c) (:handles c)))
+              (:adopt-basis c) (:adopt-baselines c) (:handles c) (:tomb c)))
 (a/theorem comp-set-rank-id [n :- Nat, c :- CompRow] (= (comp-id (comp-set-rank n c)) (comp-id c)) (rfl))
 (a/theorem comp-set-rank-pending [n :- Nat, c :- CompRow] (= (:pending (comp-set-rank n c)) (:pending c)) (rfl))
 (a/structure RJ [] (node Nat) (need Nat))
@@ -484,7 +484,7 @@
 (a/defn comp-react-row [c :- CompRow] CompRow
   (CompRow.mk (:id c) (:owner c) (:inputs c) (:body c) (:run c) (:epoch c) (:epoch c)
               (:pending c) (:rank c) (:version c) (:result c) false (List.nil Valid) (:basis c)
-              (:adopt-basis c) (:adopt-baselines c) (:handles c)))
+              (:adopt-basis c) (:adopt-baselines c) (:handles c) false))
 (a/defn valid-edge [w :- World, c :- Nat, v :- Valid] EdgeRow
   (EdgeRow.mk 0 ek-dep c (:debtor v) cont-restart 0 ph-armed false true (:version v)
               true (deb-value w (:debtor v)) (:version v)))
@@ -532,7 +532,7 @@
   (CompRow.mk (:id c) (:owner c) (:inputs c) (:body c) (:run c)
               (if (Nat.beq (:done-epoch c) 0) (:epoch c) (+ (:epoch c) 1)) (:done-epoch c)
               (:pending c) (:rank c) (:version c) (:result c) false (List.nil Valid) (:basis c)
-              (:adopt-basis c) (:adopt-baselines c) (:handles c)))
+              (:adopt-basis c) (:adopt-baselines c) (:handles c) false))
 (a/theorem comp-demand-row-id [c :- CompRow] (= (comp-id (comp-demand-row c)) (comp-id c)) (rfl))
 (a/theorem comp-demand-row-pending [c :- CompRow] (= (:pending (comp-demand-row c)) (:pending c)) (rfl))
 (a/defn demand-reactive [w :- World, d :- Nat] World
@@ -647,7 +647,7 @@
   (CompRow.mk (:id c) (:owner c) (:inputs c) (:body c) (:run c) (:epoch c) (:done-epoch c)
               (:pending c) (:rank c) (:version c) (:result c) (:idle c) (:validity c)
               (List.cons Created b (tbl-filter (created-other (:id b)) (:basis c)))
-              (tbl-filter (created-other (:id b)) (:adopt-basis c)) (:adopt-baselines c) (:handles c)))
+              (tbl-filter (created-other (:id b)) (:adopt-basis c)) (:adopt-baselines c) (:handles c) (:tomb c)))
 (a/theorem comp-rebasis-id [b :- Created, c :- CompRow] (= (comp-id (comp-rebasis b c)) (comp-id c)) (rfl))
 (a/theorem comp-rebasis-pending [b :- Created, c :- CompRow] (= (:pending (comp-rebasis b c)) (:pending c)) (rfl))
 (a/defn respawn-raw [w :- World, r :- RunRow, x :- Nat] World
@@ -725,7 +725,7 @@
 (a/defn comp-start-row [rid :- Nat, c :- CompRow] CompRow
   (CompRow.mk (:id c) (:owner c) (:inputs c) (:body c) rid (start-epoch c) (:done-epoch c)
               (:pending c) (:rank c) (:version c) (:result c) false (List.nil Valid) (:basis c)
-              (:adopt-basis c) (:adopt-baselines c) (:handles c)))
+              (:adopt-basis c) (:adopt-baselines c) (:handles c) false))
 (a/theorem comp-start-row-id [rid :- Nat, c :- CompRow] (= (comp-id (comp-start-row rid c)) (comp-id c)) (rfl))
 (a/theorem comp-start-row-pending [rid :- Nat, c :- CompRow] (= (:pending (comp-start-row rid c)) (:pending c)) (rfl))
 
@@ -783,12 +783,12 @@
 ;;     done-epoch := none, validity cleared)
 (a/defn new-comp-row [w :- World, id :- Nat, owner :- Nat, inputs :- (List Nat), body :- Nat] CompRow
   (CompRow.mk id owner inputs body 0 1 0 (marked-in id (:edges w)) 0 0 none-result false
-              (List.nil Valid) (List.nil Created) (List.nil Created) (List.nil AdoptBase) 1))
+              (List.nil Valid) (List.nil Created) (List.nil Created) (List.nil AdoptBase) 1 false))
 (a/defn comp-adopt-row [c :- CompRow] CompRow c)
 (a/defn comp-replace-row [inputs :- (List Nat), body :- Nat, c :- CompRow] CompRow
   (CompRow.mk (:id c) (:owner c) inputs body (:run c) (+ (:epoch c) 1) (if (:idle c) 0 (:done-epoch c))
               (:pending c) (:rank c) (:version c) (:result c) false (List.nil Valid) (:basis c)
-              (:adopt-basis c) (:adopt-baselines c) (:handles c)))
+              (:adopt-basis c) (:adopt-baselines c) (:handles c) false))
 (a/theorem comp-adopt-row-id [c :- CompRow] (= (comp-id (comp-adopt-row c)) (comp-id c)) (rfl))
 (a/theorem comp-adopt-row-pending [c :- CompRow] (= (:pending (comp-adopt-row c)) (:pending c)) (rfl))
 (a/theorem comp-replace-row-id [i :- (List Nat), b :- Nat, c :- CompRow] (= (comp-id (comp-replace-row i b c)) (comp-id c)) (rfl))
@@ -965,11 +965,11 @@
   (CompRow.mk (:id c) (:owner c) (:inputs c) (:body c) (:run c) (:epoch c) (:done-epoch c)
               (:pending c) (:rank c) (:version c) (:result c) (:idle c) (:validity c)
               (tbl-filter (created-upto has cut) (:basis c)) (tbl-filter (created-after has cut) (:basis c))
-              bs (:handles c)))
+              bs (:handles c) (:tomb c)))
 (a/defn comp-set-run [rid :- Nat, c :- CompRow] CompRow
   (CompRow.mk (:id c) (:owner c) (:inputs c) (:body c) rid (:epoch c) (:done-epoch c)
               (:pending c) (:rank c) (:version c) (:result c) (:idle c) (:validity c) (:basis c)
-              (:adopt-basis c) (:adopt-baselines c) (:handles c)))
+              (:adopt-basis c) (:adopt-baselines c) (:handles c) false))
 (a/theorem comp-cut-row-id [h :- Bool, k :- Nat, bs :- (List AdoptBase), c :- CompRow] (= (comp-id (comp-cut-row h k bs c)) (comp-id c)) (rfl))
 (a/theorem comp-cut-row-pending [h :- Bool, k :- Nat, bs :- (List AdoptBase), c :- CompRow] (= (:pending (comp-cut-row h k bs c)) (:pending c)) (rfl))
 (a/theorem comp-set-run-id [rid :- Nat, c :- CompRow] (= (comp-id (comp-set-run rid c)) (comp-id c)) (rfl))
@@ -1212,7 +1212,7 @@
 (a/defn comp-result-row [res :- RunResult, ep :- Nat, c :- CompRow] CompRow
   (CompRow.mk (:id c) (:owner c) (:inputs c) (:body c) (:run c) (:epoch c) ep
               (:pending c) (:rank c) (if (res-same res (:result c)) (:version c) (+ (:version c) 1)) res (:idle c)
-              (:validity c) (:basis c) (List.nil Created) (List.nil AdoptBase) (:handles c)))
+              (:validity c) (:basis c) (List.nil Created) (List.nil AdoptBase) (:handles c) (:tomb c)))
 (a/theorem comp-result-row-id [res :- RunResult, ep :- Nat, c :- CompRow] (= (comp-id (comp-result-row res ep c)) (comp-id c)) (rfl))
 (a/theorem comp-result-row-pending [res :- RunResult, ep :- Nat, c :- CompRow] (= (:pending (comp-result-row res ep c)) (:pending c)) (rfl))
 (a/defn task-result-row [res :- RunResult, t :- TaskRow] TaskRow (TaskRow.mk (:id t) (:owner t) (:run t) res (:handles t) (:inputs t)))
@@ -1697,7 +1697,7 @@
 (a/defn comp-h1 [c :- CompRow] CompRow
   (CompRow.mk (:id c) (:owner c) (:inputs c) (:body c) (:run c) (:epoch c) (:done-epoch c)
               (:pending c) (:rank c) (:version c) (:result c) (:idle c) (:validity c) (:basis c)
-              (:adopt-basis c) (:adopt-baselines c) 1))
+              (:adopt-basis c) (:adopt-baselines c) 1 false))
 (a/defn task-h1 [t :- TaskRow] TaskRow (TaskRow.mk (:id t) (:owner t) (:run t) (:result t) 1 (:inputs t)))
 (a/defn source-h1 [s :- SourceRow] SourceRow
   (SourceRow.mk (:id s) (:owner s) (:kind s) (:state s) (:version s) (:open s) 1 (:queue s) (:rtask s) (:next s) (:tail s) (:fail s)))
@@ -2429,7 +2429,7 @@
 (a/defn comp-h0 [c :- CompRow] CompRow
   (CompRow.mk (:id c) (:owner c) (:inputs c) (:body c) (:run c) (:epoch c) (:done-epoch c)
               (:pending c) (:rank c) (:version c) (:result c) (:idle c) (:validity c) (:basis c)
-              (:adopt-basis c) (:adopt-baselines c) 0))
+              (:adopt-basis c) (:adopt-baselines c) 0 (:tomb c)))
 (a/defn task-h0 [t :- TaskRow] TaskRow (TaskRow.mk (:id t) (:owner t) (:run t) (:result t) 0 (:inputs t)))
 (a/defn source-h0 [s :- SourceRow] SourceRow
   (SourceRow.mk (:id s) (:owner s) (:kind s) (:state s) (:version s) (:open s) 0 (:queue s) (:rtask s) (:next s) (:tail s) (:fail s)))

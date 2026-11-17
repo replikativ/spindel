@@ -289,21 +289,21 @@
 (a/defn comp-add-basis [b :- Created, c :- CompRow] CompRow
   (CompRow.mk (:id c) (:owner c) (:inputs c) (:body c) (:run c) (:epoch c) (:done-epoch c)
               (:pending c) (:rank c) (:version c) (:result c) (:idle c) (:validity c)
-              (List.cons Created b (:basis c)) (:adopt-basis c) (:adopt-baselines c) (:handles c)))
+              (List.cons Created b (:basis c)) (:adopt-basis c) (:adopt-baselines c) (:handles c) (:tomb c)))
 (a/defn adopt-other [site :- Nat, x :- Nat, b :- AdoptBase] Bool
   (Bool.not (Bool.and (Nat.beq (:site b) site) (Nat.beq (:source b) x))))
 (a/defn comp-consume-adopt [site :- Nat, x :- Nat, c :- CompRow] CompRow
   (CompRow.mk (:id c) (:owner c) (:inputs c) (:body c) (:run c) (:epoch c) (:done-epoch c)
               (:pending c) (:rank c) (:version c) (:result c) (:idle c) (:validity c)
-              (:basis c) (:adopt-basis c) (tbl-filter (adopt-other site x) (:adopt-baselines c)) (:handles c)))
+              (:basis c) (:adopt-basis c) (tbl-filter (adopt-other site x) (:adopt-baselines c)) (:handles c) (:tomb c)))
 (a/defn comp-inc-epoch [c :- CompRow] CompRow
   (CompRow.mk (:id c) (:owner c) (:inputs c) (:body c) (:run c) (+ (:epoch c) 1) (:done-epoch c)
               (:pending c) (:rank c) (:version c) (:result c) (:idle c) (:validity c)
-              (:basis c) (:adopt-basis c) (:adopt-baselines c) (:handles c)))
+              (:basis c) (:adopt-basis c) (:adopt-baselines c) (:handles c) (:tomb c)))
 (a/defn comp-dec-handles [c :- CompRow] CompRow
   (CompRow.mk (:id c) (:owner c) (:inputs c) (:body c) (:run c) (:epoch c) (:done-epoch c)
               (:pending c) (:rank c) (:version c) (:result c) (:idle c) (:validity c)
-              (:basis c) (:adopt-basis c) (:adopt-baselines c) (- (:handles c) 1)))
+              (:basis c) (:adopt-basis c) (:adopt-baselines c) (- (:handles c) 1) (:tomb c)))
 
 (a/defn source-write [v :- Nat, s :- SourceRow] SourceRow
   (SourceRow.mk (:id s) (:owner s) (:kind s) v (+ (:version s) 1) (:open s) (:handles s) (:queue s)

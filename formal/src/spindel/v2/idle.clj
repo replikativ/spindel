@@ -1956,6 +1956,11 @@
 
 (a/theorem comp-make-idle-clean [vs :- (List Valid), c :- CompRow] (= (clean-one (comp-make-idle vs c)) true)
   (simp [clean-one idle-clean comp-make-idle created-empty bases-empty]))
+;; the demotion's row (C1 Q6): idle and clean, or a tombstone (not idle)
+(a/theorem comp-demote-row-clean [vs :- (List Valid), c :- CompRow] (= (clean-one (comp-demote-row vs c)) true)
+  (cases h (demote-idle c))
+  (case [false] (simp only [clean-one comp-demote-row h Bool.not_false Bool.true_or]))
+  (case [true] (simp [clean-one idle-clean comp-demote-row h created-empty bases-empty])))
 
 (a/theorem comp-find-has [w :- World, x :- Nat, c :- CompRow] (=> (= (comp-find w x) (Option.some CompRow c)) (= (tbl-has comp-id x (:comps w)) true))
   (intro hf) (exact (tbl-find-has CompRow comp-id x c (:comps w) hf)))
@@ -2085,8 +2090,8 @@
      (exact (g7-comp-del-unref _ cid (drop-edges-avoids w cid) (g7-drop-edges w (edge-avoids cid) h)))
      (simp only [demote-finish hf hk])
      (have hnc := (no-cred-of w cid (g7-sample w h) (g7-rest-of w h) (comp-find-has w cid c hf) hnd))
-     (exact (g7-intro _ (inv-comp-upd w cid (comp-make-idle vs) (comp-make-idle-id vs) (comp-make-idle-pending vs) (g7-sample w h))
-              (g7k-sleep cid (comp-make-idle vs) (comp-make-idle-id vs) (comp-make-idle-clean vs) (:comps w) (:runs w) (:edges w)
+     (exact (g7-intro _ (inv-comp-upd w cid (comp-demote-row vs) (comp-demote-row-id vs) (comp-demote-row-pending vs) (g7-sample w h))
+              (g7k-sleep cid (comp-demote-row vs) (comp-demote-row-id vs) (comp-demote-row-clean vs) (:comps w) (:runs w) (:edges w)
                 hna hnc (g7-rest-of w h))))))
 
 (a/theorem runs-demote-epoch [w :- World, cid :- Nat, b :- Bool] (= (:runs (demote-epoch w cid b)) (:runs w))

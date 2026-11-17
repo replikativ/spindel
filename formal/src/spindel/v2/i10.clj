@@ -44,7 +44,8 @@
             [spindel.v2.inv :refer :all]
             [spindel.v2.lit :refer :all]
             [spindel.v2.idle :refer :all]
-            [spindel.v2.p3 :refer :all]))
+            [spindel.v2.p3 :refer :all]
+            [spindel.v2.tomb :refer :all]))
 
 ;; ===========================================================================
 ;; Part A. Keys and the invariant
@@ -3203,6 +3204,59 @@
   (simp only [g10k hR hC (And.right (And.right hr)) Bool.and_self])
   (exact (g10-intro gxz gkz _ (inv-comp-upd w cid (comp-make-idle vs) (comp-make-idle-id vs) (comp-make-idle-pending vs) hs) hrest)))
 
+;; C1 Q6: the tombstone keeps C.run (stale), epoch and done-epoch; it is not idle
+(a/defn ck-tomb [k :- CK10] CK10 (CK10.mk (:id k) (:epoch k) (:done k) (:run k) false))
+(a/theorem comp-tomb-row-id [c :- CompRow] (= (comp-id (comp-tomb-row c)) (comp-id c)) (rfl))
+(a/theorem comp-tomb-row-pending [c :- CompRow] (= (:pending (comp-tomb-row c)) (:pending c)) (rfl))
+(a/theorem c10-tomb [n :- Nat, c :- CK10] (=> (= (c10 n c) true) (= (c10 n (ck-tomb c)) true))
+  (intro h) (exact h))
+(a/theorem rc-tomb [gxz :- (List Nat), gkz :- (List Nat), cid :- Nat, r :- RK10, k :- CK10]
+  (=> (= (rc-ok gxz gkz r k) true) (= (nc0 gkz cid r k) true) (= (Nat.beq (:id k) cid) true) (= (rc-ok gxz gkz r (ck-tomb k)) true))
+  (intros h hn hx)
+  (cases hk (reach-mem (:id r) gkz))
+  (case [true] (exact (rc-exempt gxz gkz r _ hk)))
+  (case [false]
+    (have pc := (rc-parts gxz gkz r k h hk))
+    (have hrof (= (rof-pair r (ck-tomb k)) true)) (exact (And.right pc))
+    (simp only [nc0 hx hk Bool.not_true Bool.false_or Bool.or_false] at hn)
+    (cases ho (Nat.beq (:of r) (:id k)))
+    (case [false]
+      (have ho2 (= (Nat.beq (:of r) (:id (ck-tomb k))) false)) (exact ho)
+      (simp only [rc-ok cur-pair cur-core ho2 hrof Bool.not_false Bool.true_or Bool.and_self Bool.or_true]))
+    (case [true]
+      (have ho2 (= (Nat.beq (:of r) (:id (ck-tomb k))) true)) (exact ho)
+      (simp only [ho Bool.not_true Bool.false_or Nat.blt_eq] at hn)
+      (have b1 (= (Nat.ble (:epoch r) (:epoch (ck-tomb k))) true)) (simp only [Nat.ble_eq ck-tomb]) (omega)
+      (have b2 (= (Nat.beq (:epoch r) (:epoch (ck-tomb k))) false)) (cases hb (Nat.beq (:epoch r) (:epoch (ck-tomb k)))) (rfl)
+      (have z := (Nat.eq_of_beq_eq_true hb)) (simp only [ck-tomb] at z) (omega)
+      (simp only [rc-ok cur-pair cur-core ho2 b1 b2 hrof Bool.not_true Bool.not_false Bool.false_or Bool.true_or Bool.true_and Bool.and_self Bool.or_true]))))
+(a/theorem g10-tomb [gxz :- (List Nat), gkz :- (List Nat), w :- World, cid :- Nat]
+  (=> (= (g10 gxz gkz w) true) (= (ncq gkz cid w) true) (= (g10 gxz gkz (comp-upd w cid comp-tomb-row)) true))
+  (intros h hn)
+  (have hs := (g10-sample gxz gkz w h))
+  (have nk := (nck-of-ncq gkz cid w hn)) (simp only [nck] at nk)
+  (have hr := (g10-rest-of gxz gkz w h)) (simp only [g10-rest g10k Bool.and_eq_true] at hr)
+  (have h1 (forall [r :- RK10] (=> (= (r10 gxz gkz (ck10s (:comps w)) (tk10s (:tasks w)) (:next-id w) r) true) (= (tbl-all (nc0 gkz cid r) (ck10s (:comps w))) true)
+                                   (= (r10 gxz gkz (tbl-upd ck10-id cid ck-tomb (ck10s (:comps w))) (tk10s (:tasks w)) (:next-id w) r) true))))
+  (intros r a1 a2)
+  (simp only [r10 Bool.and_eq_true] at a1)
+  (simp only [r10 Bool.and_eq_true (And.right a1) and_true])
+  (exact (tbl-all-upd CK10 ck10-id cid ck-tomb (both (rc-ok gxz gkz r) (nc0 gkz cid r)) (rc-ok gxz gkz r)
+           (fn [k :- CK10, p :- (= (both (rc-ok gxz gkz r) (nc0 gkz cid r) k) true), hx :- (= (Nat.beq (ck10-id k) cid) true)]
+             (rc-tomb gxz gkz cid r k (both-left _ _ _ _ p) (both-right _ _ _ _ p) hx))
+           (fn [k :- CK10, p :- (= (both (rc-ok gxz gkz r) (nc0 gkz cid r) k) true), hx :- (= (Nat.beq (ck10-id k) cid) false)] (both-left _ _ _ _ p))
+           _ (tbl-all-mono2 CK10 _ _ _ (fn [k :- CK10, b1 :- (= (rc-ok gxz gkz r k) true), b2 :- (= (nc0 gkz cid r k) true)] (both-mk _ _ _ _ b1 b2))
+               _ (And.left a1) a2)))
+  (have hR := (tbl-all-mono2 RK10 _ _ (r10 gxz gkz (tbl-upd ck10-id cid ck-tomb (ck10s (:comps w))) (tk10s (:tasks w)) (:next-id w)) h1 _ (And.left hr) nk))
+  (have hC (= (tbl-all (c10 (:next-id w)) (tbl-upd ck10-id cid ck-tomb (ck10s (:comps w)))) true))
+  (exact (tbl-all-upd CK10 ck10-id cid ck-tomb (c10 (:next-id w)) (c10 (:next-id w))
+           (fn [k :- CK10, p :- (= (c10 (:next-id w) k) true), hx :- (= (Nat.beq (ck10-id k) cid) true)] (c10-tomb (:next-id w) k p))
+           (fn [k :- CK10, p :- (= (c10 (:next-id w) k) true), hx :- (= (Nat.beq (ck10-id k) cid) false)] p) _ (And.left (And.right hr))))
+  (have hrest (= (g10-rest gxz gkz (comp-upd w cid comp-tomb-row)) true))
+  (simp only [g10-rest comp-upd set-comps (ck10s-upd cid comp-tomb-row ck-tomb (fn [k :- CompRow] (Eq.refl (ck10 (comp-tomb-row k)))) (:comps w))])
+  (simp only [g10k hR hC (And.right (And.right hr)) Bool.and_self])
+  (exact (g10-intro gxz gkz _ (inv-comp-upd w cid comp-tomb-row comp-tomb-row-id comp-tomb-row-pending hs) hrest)))
+
 (a/theorem ncq-del [gkz :- (List Nat), w :- World, cid :- Nat]
   (=> (= (inv-sample (comp-del w cid)) true) (= (ncq gkz cid (comp-del w cid)) true))
   (intro hs)
@@ -3231,7 +3285,12 @@
   (case [none] (simp only [demote-finish hf]) (exact (g10-drop gxz gkz cid _ h3 n3)))
   (case [some c3]
     (cases hk (demote-keep (end-basis (drop-edges w (not-dep-of cid)) cid) c3))
-    (case [true] (simp only [demote-finish hf hk]) (exact (g10-make-idle gxz gkz _ cid _ (g10-drop gxz gkz cid _ h3 n3) n3)))
+    (case [true]
+      (simp only [demote-finish hf hk])
+      (have s3 := (g10-sample _ gkz _ h3))
+      (cases hd (demote-idle c3))
+      (case [true] (rw [(demote-row-idle-upd _ cid c3 _ s3 hf hd)]) (exact (g10-make-idle gxz gkz _ cid _ (g10-drop gxz gkz cid _ h3 n3) n3)))
+      (case [false] (rw [(demote-row-tomb-upd _ cid c3 _ s3 hf hd)]) (exact (g10-tomb gxz gkz _ cid (g10-drop gxz gkz cid _ h3 n3) n3))))
     (case [false]
       (simp only [demote-finish hf hk])
       (have h4 := (g10-comp-del-unref (List.cons Nat cid gxz) gkz _ cid (drop-edges-avoids (end-basis (drop-edges w (not-dep-of cid)) cid) cid)
@@ -3338,9 +3397,10 @@
 ;; a stray run is no current run of a computation outside the stray computations (a computation
 ;; kept by live keeps its current run live)
 (a/theorem stray-pair [gxz :- (List Nat), gkz :- (List Nat), w :- World, r :- RunRow, q :- RunRow, k :- CompRow]
-  (=> (= (g10 gxz gkz w) true) (List.Mem r (:runs w)) (= (run-stray (live-list w) r) true) (List.Mem q (:runs w)) (List.Mem k (:comps w))
+  (=> (= (tbl-all (ta-one (:comps w)) (:runs w)) true)
+      (= (g10 gxz gkz w) true) (List.Mem r (:runs w)) (= (run-stray (live-list w) r) true) (List.Mem q (:runs w)) (List.Mem k (:comps w))
       (= (nc-run (List.append Nat (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) gxz) gkz (:id r) (rs10 q) (cs10 k)) true))
-  (intros h mr hr mq mk)
+  (intros hta h mr hr mq mk)
   (have hs := (g10-sample gxz gkz w h))
   (cases hx (Nat.beq (:id q) (:id r)))
   (case [false] (exact (nc-run-off _ gkz (:id r) (rs10 q) (cs10 k) hx)))
@@ -3371,7 +3431,15 @@
             (have hik (= (:idle k) false)) (exact (And.left (And.right ce)))
             (have hn2 (= (comp-norm (live-list w) k) true))
             (cases hcn (comp-norm (live-list w) k)) (simp [comp-stray hcn] at hst) (rfl)
-            (simp only [comp-norm hik Bool.false_or] at hn2)
+            ;; C1 Q6: k is no tombstone, its alive run q (the stray run r) says so (ta-one)
+            (have ua := (uniq-all RunRow run-id run-alive r (:runs w) (lit-runs-nodup w hs) mr (stray-run-alive _ r hr)))
+            (have qa := (tbl-all-mem RunRow (same-id-then run-id (run-id r) run-alive) q (:runs w) ua mq))
+            (have hx2 (= (Nat.beq (run-id q) (run-id r)) true)) (exact hx)
+            (simp only [same-id-then hx2 Bool.not_true Bool.false_or] at qa)
+            (have tq := (tbl-all-mem RunRow (ta-one (:comps w)) q (:runs w) hta mq))
+            (simp only [ta-one qa Bool.not_true Bool.false_or] at tq)
+            (have hkt := (untomb-mem (:comps w) k (:of q) tq mk (Eq.trans (beq-comm (:id k) (:of q)) ho)))
+            (simp only [comp-norm hik hkt Bool.false_or] at hn2)
             (cases hf (run-find w (:run k)))
             (case [none]
               (have z := (tbl-find-none-has RunRow run-id (:run k) (:runs w) hf))
@@ -3394,28 +3462,52 @@
               (have z := (And.right hr)) (simp only [in-live] at hl) (rw [hl] at z) (cases z))))))))
 
 (a/theorem stray-ncw [gxz :- (List Nat), gkz :- (List Nat), w :- World, r :- RunRow]
-  (=> (= (g10 gxz gkz w) true) (List.Mem r (:runs w)) (= (run-stray (live-list w) r) true)
+  (=> (= (tbl-all (ta-one (:comps w)) (:runs w)) true)
+      (= (g10 gxz gkz w) true) (List.Mem r (:runs w)) (= (run-stray (live-list w) r) true)
       (= (ncw (List.append Nat (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) gxz) gkz (:id r) w) true))
-  (intros h mr hr)
+  (intros hta h mr hr)
   (simp only [ncw])
   (exact (nqk-of-mem (nc-run (List.append Nat (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) gxz) gkz (:id r)) tt-c (:runs w) (:comps w)
-           (fn [q :- RunRow, k :- CompRow, mq :- (List.Mem q (:runs w)), mk :- (List.Mem k (:comps w))] (stray-pair gxz gkz w r q k h mr hr mq mk))
+           (fn [q :- RunRow, k :- CompRow, mq :- (List.Mem q (:runs w)), mk :- (List.Mem k (:comps w))] (stray-pair gxz gkz w r q k hta h mr hr mq mk))
            (fn [k :- CompRow, mk :- (List.Mem k (:comps w))] (Eq.refl true)))))
 
 (lcopy! G10 'inv-detach)
 (override! G10 'inv-norm-round '[inv-detach inv-demote]
   '(a/theorem g10-norm-round [gxz :- (List Nat), gkz :- (List Nat), w :- World]
-     (=> (= (g10 gxz gkz w) true) (= (g10 gxz gkz (norm-round w)) true))
-     (intro h)
+     (=> (= (tbl-all (ta-one (:comps w)) (:runs w)) true) (= (g10 gxz gkz w) true) (= (g10 gxz gkz (norm-round w)) true))
+     (intros hta h)
      (simp only [norm-round norm-round-lv])
      (have h1 := (g10-gx-app gkz (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) gxz w h))
      (have hj (= (tbl-all (job-ok (List.append Nat (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) gxz) gkz w)
                           (cancel-jobs (tbl-scan run-id (run-stray (live-list w)) (:runs w)))) true))
      (rw [jl-cancel-jobs])
      (exact (scan-all RunRow run-id (run-stray (live-list w)) (fn [x :- Nat] (ncw (List.append Nat (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) gxz) gkz x w))
-              (:runs w) (fn [r :- RunRow, m :- (List.Mem r (:runs w)), p :- (= (run-stray (live-list w) r) true)] (stray-ncw gxz gkz w r h m p))))
+              (:runs w) (fn [r :- RunRow, m :- (List.Mem r (:runs w)), p :- (= (run-stray (live-list w) r) true)] (stray-ncw gxz gkz w r hta h m p))))
      (have h2 := (g10-run-cascade _ gkz w (cancel-jobs (tbl-scan run-id (run-stray (live-list w)) (:runs w))) hj h1))
      (exact (g10-detach gxz gkz _ (g10-fold-demote gkz (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) gxz _ h2)))))
+
+;; C1 Q6: a round's stray runs are no current runs of tombstones (gy 0: tombstones are dormant)
+(a/theorem gy-ta [w :- World] (=> (= (gy 0 w) true) (= (tbl-all (ta-one (:comps w)) (:runs w)) true))
+  (intro h) (exact (And.left (gtk-parts _ _ _ (gy-gtk 0 w h)))))
+(override! G10 'inv-norm-loop '[inv-norm-round]
+  '(a/theorem g10-norm-loop [gxz :- (List Nat), gkz :- (List Nat), fuel :- (List Nat)]
+     (forall [w :- World] (=> (= (acts-alive w) true) (= (gy 0 w) true) (= (g10 gxz gkz w) true) (= (g10 gxz gkz (norm-loop fuel w)) true)))
+     (induction fuel)
+     (case' [cons h f ih])
+     (case' [nil])
+     (intros w ha hy hw) (simp only [norm-loop]) (exact hw)
+     (intros w ha hy hw)
+     (cases hn (normalized w))
+     (simp only [norm-loop hn])
+     (exact (ih (norm-round w) (And.right (bn-round w (g10-sample gxz gkz w hw) ha)) (gy-norm-round 0 w (rfl) ha hy)
+              (g10-norm-round gxz gkz w (gy-ta w hy) hw)))
+     (simp only [norm-loop hn]) (exact hw)))
+(override! G10 'inv-normalize '[inv-norm-loop inv-detach]
+  '(a/theorem g10-normalize [gxz :- (List Nat), gkz :- (List Nat), w :- World]
+     (=> (= (acts-alive w) true) (= (gy 0 w) true) (= (g10 gxz gkz w) true) (= (g10 gxz gkz (normalize w)) true))
+     (intros ha hy h)
+     (have b := (bn-detach (alive-cnt w) (act-cnt w) w (bn-intro (alive-cnt w) (act-cnt w) w (g10-sample gxz gkz w h) ha (Nat.le_refl _) (Nat.le_refl _))))
+     (exact (g10-norm-loop gxz gkz (norm-fuel (detach w)) (detach w) (And.left (And.right (bn-parts _ _ _ b))) (gy-detach 0 w hy) (g10-detach gxz gkz w h)))))
 (lcopy! G10 'inv-normalize)
 
 ;; ===========================================================================
@@ -3423,38 +3515,44 @@
 ;; ===========================================================================
 
 (a/theorem g10-rule-r-round [gxz :- (List Nat), gkz :- (List Nat), w :- World]
-  (=> (= (g10 gxz gkz w) true) (= (filter-safe (normalize w)) true) (= (g10 gxz gkz (rule-r-round w)) true))
-  (intros h hf)
+  (=> (= (acts-alive w) true) (= (gy 0 w) true) (= (g10 gxz gkz w) true) (= (filter-safe (normalize w)) true) (= (g10 gxz gkz (rule-r-round w)) true))
+  (intros ha hy h hf)
   (simp only [rule-r-round])
   (rw [rule-r-filter-eq])
-  (exact (g10-filter-world gxz gkz (normalize w) (keep-fn (normalize w)) (g10-normalize gxz gkz w h) hf)))
+  (exact (g10-filter-world gxz gkz (normalize w) (keep-fn (normalize w)) (g10-normalize gxz gkz w ha hy h) hf)))
 
 (a/theorem g10-rr-loop [gxz :- (List Nat), gkz :- (List Nat), fuel :- (List Nat)]
-  (forall [w0 :- World] (=> (= (g10 gxz gkz w0) true) (= (rr-safe fuel w0) true) (= (g10 gxz gkz (rr-loop fuel (rule-r-round w0))) true)))
+  (forall [w0 :- World] (=> (= (acts-alive w0) true) (= (gy 0 w0) true) (= (g10 gxz gkz w0) true) (= (rr-safe fuel w0) true)
+                            (= (g10 gxz gkz (rr-loop fuel (rule-r-round w0))) true)))
   (induction fuel)
-  (case [nil] (intros w0 h hs) (simp only [rr-safe] at hs) (simp only [rr-loop]) (exact (g10-rule-r-round gxz gkz w0 h hs)))
+  (case [nil] (intros w0 ha hy h hs) (simp only [rr-safe] at hs) (simp only [rr-loop]) (exact (g10-rule-r-round gxz gkz w0 ha hy h hs)))
   (case [cons x f ih]
-    (intros w0 h hs)
+    (intros w0 ha hy h hs)
     (simp only [rr-safe Bool.and_eq_true] at hs)
-    (have h1 := (g10-rule-r-round gxz gkz w0 h (And.left hs)))
+    (have h1 := (g10-rule-r-round gxz gkz w0 ha hy h (And.left hs)))
     (cases ho (no-orphans (rule-r-round w0)))
-    (case [false] (simp only [ho] at hs) (simp only [rr-loop ho]) (exact (ih (rule-r-round w0) h1 (And.right hs))))
+    (case [false]
+      (simp only [ho] at hs) (simp only [rr-loop ho])
+      (exact (ih (rule-r-round w0) (acts-alive-round w0 (g10-sample gxz gkz w0 h) ha) (gy-rule-r-round w0 ha hy (And.left hs)) h1 (And.right hs))))
     (case [true] (simp only [rr-loop ho]) (exact h1))))
 
 (a/theorem g10-rule-r [gxz :- (List Nat), gkz :- (List Nat), w :- World]
-  (=> (= (g10 gxz gkz w) true) (= (rule-r-safe w) true) (= (g10 gxz gkz (rule-r w)) true))
-  (intros h hs)
+  (=> (= (acts-alive w) true) (= (gy 0 w) true) (= (g10 gxz gkz w) true) (= (rule-r-safe w) true) (= (g10 gxz gkz (rule-r w)) true))
+  (intros ha hy h hs)
   (simp only [rule-r-safe] at hs) (simp only [rule-r])
-  (exact (g10-rr-loop gxz gkz (rr-fuel w) w h hs)))
+  (exact (g10-rr-loop gxz gkz (rr-fuel w) w ha hy h hs)))
 
 (a/theorem step-g10 [w :- World, it :- Item]
-  (=> (= (g10r w) true) (= (rule-r-safe (:world (raw w it))) true) (= (g10r (:world (world-step w it))) true))
-  (intros h hs)
+  (=> (= (p3b w) true) (= (g10r w) true) (= (rule-r-safe (:world (raw w it))) true) (= (g10r (:world (world-step w it))) true))
+  (intros hp h hs)
   (cases ha (:accepted (raw w it)))
   (case [false] (have e1 := (step-refuse w it ha)) (simp only [e1 refuse]) (exact h))
   (case [true]
     (have e2 := (step-accepted w it ha)) (rw [e2])
-    (exact (g10-rule-r (List.nil Nat) (List.nil Nat) (:world (raw w it)) (raw-g10r w it h) hs))))
+    (have pb := (p3b-parts w hp))
+    (have q := (ri-parts w (And.right (And.right (And.right (And.right pb))))))
+    (have hy := (raw-gy 0 w it (And.left q) (And.right (And.right (And.right (And.right q))))))
+    (exact (g10-rule-r (List.nil Nat) (List.nil Nat) (:world (raw w it)) (raw-acts-alive w it (And.left pb)) hy (raw-g10r w it h) hs))))
 
 (a/theorem g10r-empty [] (= (g10r empty-world) true) (rfl))
 
@@ -3522,8 +3620,8 @@
            (all-of-mem RunRow _ (:runs w) (fn [r :- RunRow, mr :- (List.Mem r (:runs w))] (g10r-current w c r h mc mr))))))
 
 (a/theorem step-lit-i10-current [w :- World, it :- Item]
-  (=> (= (g10r w) true) (= (rule-r-safe (:world (raw w it))) true) (= (lit-i10-current (:world (world-step w it))) true))
-  (intros h hs) (exact (g10r-lit-i10 _ (step-g10 w it h hs))))
+  (=> (= (p3b w) true) (= (g10r w) true) (= (rule-r-safe (:world (raw w it))) true) (= (lit-i10-current (:world (world-step w it))) true))
+  (intros hp h hs) (exact (g10r-lit-i10 _ (step-g10 w it hp h hs))))
 
 ;; ---- the combined bundle: P3's p3b and g10r
 
@@ -3535,7 +3633,7 @@
   (intro h)
   (have p := (p3c-parts w h))
   (have a1 := (step-p3b w it (And.left p)))
-  (have a2 := (step-g10 w it (And.right p) (step-rule-r-safe w it (And.left p))))
+  (have a2 := (step-g10 w it (And.left p) (And.right p) (step-rule-r-safe w it (And.left p))))
   (simp only [p3c a1 a2 Bool.and_self]))
 (a/theorem step-lit-i10-current-total [w :- World, it :- Item]
   (=> (= (p3c w) true) (= (lit-i10-current (:world (world-step w it))) true))

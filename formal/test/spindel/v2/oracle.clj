@@ -192,7 +192,10 @@
                                :adopt-basis (mapv #(s/->Created % 0) (get-in c [:adoption :basis]))
                                :adopt-baselines (mapv (fn [[at d base]] (s/->AdoptBase at d base 0))
                                                       (get-in c [:adoption :baselines]))
-                               :handles (:handles c)}))))
+                               :handles (:handles c)
+                               ;; C1 Q6: a demoted computation its run's cleanup entry keeps (§3.2)
+                               :tomb (boolean (and (not (:idle c)) (nil? (:result c)) (zero? (:handles c))
+                                                   (:run c) (contains? (:cleanup p) (:run c))))}))))
             :tasks (rows :tasks (fn [id k] (with-new-fields s/map->TaskRow
                                                   {:id id :owner (nil0 (:owner k)) :run (nil0 (:run k))
                                                    :result (edn->result (:result k)) :handles (:handles k)}
@@ -685,9 +688,6 @@
         ;; logs with `[:finally-enter st]`/`[:finally-exit st]` items (sample 4 on) need no
         ;; implicit finally regions or cleanup exits
         explicit-finally? (some #(#{:finally-enter :finally-exit} (first (:item %))) log)
-        ;; logs with finally exits but no `[:finally-leave r]` (before C1 A5, samples 4, 5, 7): the
-        ;; clause ends within the exit's commit (their clauses take no effect)
-        implicit-leave? (and explicit-finally? (not-any? #(= :finally-leave (first (:item %))) log))
         ;; logs with `[:slice-exit r]` items (Z#49, sample 7 on) need no implicit exits
         explicit-exits? (some #(= :slice-exit (first (:item %))) log)]
   (loop [i from
@@ -749,12 +749,6 @@
                 n0 (:next-id w0)
                 w0 (if (and family? main) (align w0 main proj) w0)
                 s1 (when main (step-checked w0 main))
-                lv (when (and s1 (:accepted s1) implicit-leave? (= :finally-exit (first item)))
-                     (:item (adapt fmt {:w (:world s1) :post proj :prev prev} (assoc (vec item) 0 :finally-leave))))
-                s1 (if lv (let [s2 (step-checked (:world s1) lv)]
-                            (assoc s2 :accepted (and (:accepted s1) (:accepted s2))
-                                      :failed-flags (vec (concat (:failed-flags s1) (:failed-flags s2)))))
-                       s1)
                 w1 (if s1 (:world s1) w0)
                 m-acc (if main (:accepted s1) true)
                 ;; a refused item carries no projection (oracle contract): only the accepted

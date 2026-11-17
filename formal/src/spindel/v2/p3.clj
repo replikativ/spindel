@@ -9,7 +9,8 @@
           rows; edges get fresh ids)
     aha   every activation's run exists and is alive (acts-alive plus `act-run-has`); companion
           na x (no activation names run x) carries a retire's precondition to its run-del
-    ri    the round invariant g7, mdb, esb, aha: every Rule R round is filter-safe (`ri-round`)
+    ri    the round invariant g7, mdb, esb, aha, gy 0 (C1 Q6: tombstones are dormant, spindel.v2.tomb):
+          every Rule R round is filter-safe (`ri-round`)
     p3b   ga, inv-rank, gl, g9 and ri: `step-p3b`, `step-rule-r-safe` and the step theorems with no
           honest hypothesis (`step-inv-total`, `step-acts-total`, `step-rank-total`, ...)
     svb   I5's observe part: an observe edge's seen is at most its debtor's version (versions only
@@ -32,7 +33,8 @@
             [spindel.v2.acts :refer :all]
             [spindel.v2.inv :refer :all]
             [spindel.v2.lit :refer :all]
-            [spindel.v2.idle :refer :all]))
+            [spindel.v2.idle :refer :all]
+            [spindel.v2.tomb :refer :all]))
 
 ;; ===========================================================================
 ;; Part A. Marked edges are dep edges
@@ -1947,28 +1949,30 @@
 
 ;; ---- the round invariant: every Rule R round is filter-safe
 
-(a/defn ri [w :- World] Bool (Bool.and (g7 w) (Bool.and (mdb w) (Bool.and (esb w) (aha w)))))
+(a/defn ri [w :- World] Bool (Bool.and (g7 w) (Bool.and (mdb w) (Bool.and (esb w) (Bool.and (aha w) (gy 0 w))))))
 (a/theorem ri-parts [w :- World]
-  (=> (= (ri w) true) (And (= (g7 w) true) (And (= (mdb w) true) (And (= (esb w) true) (= (aha w) true)))))
+  (=> (= (ri w) true) (And (= (g7 w) true) (And (= (mdb w) true) (And (= (esb w) true) (And (= (aha w) true) (= (gy 0 w) true))))))
   (intro h) (simp only [ri Bool.and_eq_true] at h) (exact h))
 (a/theorem ri-intro [w :- World]
-  (=> (= (g7 w) true) (= (mdb w) true) (= (esb w) true) (= (aha w) true) (= (ri w) true))
-  (intros h1 h2 h3 h4) (simp only [ri h1 h2 h3 h4 Bool.and_self]))
+  (=> (= (g7 w) true) (= (mdb w) true) (= (esb w) true) (= (aha w) true) (= (gy 0 w) true) (= (ri w) true))
+  (intros h1 h2 h3 h4 h5) (simp only [ri h1 h2 h3 h4 h5 Bool.and_self]))
 
 (a/theorem ri-round [w :- World]
   (=> (= (ri w) true) (And (= (filter-safe (normalize w)) true) (= (ri (rule-r-round w)) true)))
   (intro h)
   (have p := (ri-parts w h))
-  (have aa := (aha-acts-alive w (And.right (And.right (And.right p)))))
+  (have aa := (aha-acts-alive w (And.left (And.right (And.right (And.right p))))))
   (have n7 := (g7-normalize w aa (And.left p)))
   (have nm := (mdb-normalize w (And.left (And.right p))))
   (have ne := (esb-normalize w (And.left (And.right (And.right p)))))
-  (have na := (aha-normalize w (And.right (And.right (And.right p)))))
+  (have na := (aha-normalize w (And.left (And.right (And.right (And.right p))))))
+  (have ny := (gy-normalize 0 w (rfl) aa (And.right (And.right (And.right (And.right p))))))
   (have nn := (normalized-ok w (g7-sample w (And.left p)) aa))
-  (have fs := (filter-safe-of-refs (normalize w) (g7-sample _ n7) (aha-acts-alive _ na) nn (p3-refs-of _ n7 nm ne na)))
+  (have fs := (filter-safe-of-refs (normalize w) (g7-sample _ n7) (aha-acts-alive _ na) nn (p3-refs-of _ n7 nm ne na) (gy-refs-untomb _ ny)))
   (exact (And.intro fs
            (ri-intro _ (g7-rule-r-round w aa (And.left p) fs) (mdb-rule-r-round w (And.left (And.right p)) fs)
-             (esb-rule-r-round w (And.left (And.right (And.right p))) fs) (aha-rule-r-round w (And.right (And.right (And.right p))) fs)))))
+             (esb-rule-r-round w (And.left (And.right (And.right p))) fs) (aha-rule-r-round w (And.left (And.right (And.right (And.right p)))) fs)
+             (gy-rule-r-round w aa (And.right (And.right (And.right (And.right p)))) fs)))))
 
 (a/theorem rr-safe-ri [fuel :- (List Nat)]
   (forall [w0 :- World] (=> (= (ri w0) true) (= (rr-safe fuel w0) true)))
@@ -2014,7 +2018,8 @@
   (have p := (p3b-parts w h))
   (have q := (ri-parts w (And.right (And.right (And.right (And.right p))))))
   (exact (ri-intro _ (raw-g7 w it (And.left q)) (raw-mdb w it (And.left (And.right q))) (raw-esb w it (And.left (And.right (And.right q))))
-           (raw-aha w it (And.left p) (And.right (And.right (And.right q)))))))
+           (raw-aha w it (And.left p) (And.left (And.right (And.right (And.right q)))))
+           (raw-gy 0 w it (And.left q) (And.right (And.right (And.right (And.right q))))))))
 
 ;; Theorem (P3): Rule R's filter is edge-safe in every round of every step (rule-r-safe, the honest
 ;; hypothesis of step-inv and the other step theorems, holds)
@@ -2030,7 +2035,8 @@
   (exact (p3b-intro _ (step-acts w it (And.left p) hs) (step-rank w it (And.left (And.right p)) hs)
            (step-gl w it (And.left p) (And.left (And.right (And.right p))) hs) (step-g9 w it (And.left (And.right (And.right (And.right p)))) hs)
            (ri-intro _ (step-g7 w it (And.left p) (And.left q) hs) (step-mdb w it (And.left (And.right q)) hs)
-             (step-esb w it (And.left (And.right (And.right q))) hs) (step-aha w it (And.left p) (And.right (And.right (And.right q))) hs)))))
+             (step-esb w it (And.left (And.right (And.right q))) hs) (step-aha w it (And.left p) (And.left (And.right (And.right (And.right q)))) hs)
+             (step-gy w it (And.left p) (And.left q) (And.right (And.right (And.right (And.right q)))) hs)))))
 
 ;; the headline theorems of the earlier passes, with the bundle in place of the honest hypotheses
 (a/theorem step-inv-total [w :- World, it :- Item] (=> (= (p3b w) true) (= (inv-sample (:world (world-step w it))) true))
@@ -2044,7 +2050,7 @@
 (a/theorem step-p3-refs [w :- World, it :- Item] (=> (= (p3b w) true) (= (p3-refs (:world (world-step w it))) true))
   (intro h)
   (have q := (ri-parts _ (And.right (And.right (And.right (And.right (p3b-parts _ (step-p3b w it h))))))))
-  (exact (p3-refs-of _ (And.left q) (And.left (And.right q)) (And.left (And.right (And.right q))) (And.right (And.right (And.right q))))))
+  (exact (p3-refs-of _ (And.left q) (And.left (And.right q)) (And.left (And.right (And.right q))) (And.left (And.right (And.right (And.right q)))))))
 (a/theorem step-normalized-p3 [w :- World, it :- Item]
   (=> (= (:accepted (raw w it)) true) (= (p3b w) true) (= (normalized (:world (world-step w it))) true))
   (intros ha h) (exact (step-normalized-ga w it ha (And.left (p3b-parts w h)) (step-rule-r-safe w it h))))

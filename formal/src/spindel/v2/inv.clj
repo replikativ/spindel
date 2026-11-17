@@ -25,7 +25,7 @@
     i13-complete-raw-stale      I13 as guards of T9 (delivery) and T12 (result)
     step-l1, step-l1-comp, step-l1-run   L1: after an accepted step a row outside live is in a
                                 cleanup entry, admitted or in storage; a computation outside live is
-                                idle, a run outside live is done (honest flags of step-i3/-i4)
+                                idle or a tombstone (C1 Q6), a run outside live is done (honest flags of step-i3/-i4)
     step-i10-slice              inv-i10-slice w -> inv-i10-slice (world-step w it) (no hypothesis)
     i10-slice-count, step-d0    with unique run ids: at most one run holds the slice
     step-i9                     inv-sample w, inv-i9 w -> inv-i9 (world-step w it)
@@ -286,12 +286,14 @@
       (= (normalized (normalize (rule-r-pre (:world (raw w it))))) true)
       (List.Mem c (:comps (:world (world-step w it))))
       (= (in-live (:world (world-step w it)) (:id c)) false)
-      (= (:idle c) true))
+      (= (Bool.or (:idle c) (:tomb c)) true))
   (intros ha hc hc2 hn hm hl)
   (cases hi (:idle c))
-  (have hl2 := (normalized-comps (:world (world-step w it)) c (step-normalized w it ha hc hc2 hn) hm hi))
+  (cases ht (:tomb c))
+  (have hl2 := (normalized-comps (:world (world-step w it)) c (step-normalized w it ha hc hc2 hn) hm hi ht))
   (rw [hl] at hl2) (exact hl2)
-  (rfl))
+  (simp only [Bool.or_true])
+  (simp only [Bool.true_or]))
 
 (a/theorem step-l1-run [w :- World, it :- Item, r :- RunRow]
   (=> (= (:accepted (raw w it)) true)

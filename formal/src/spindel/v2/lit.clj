@@ -24,7 +24,8 @@
     step-lit-i9-res    ... -> lit-i9-res (world-step w it)      (literal I9, resources)
     filter-safe-of-refs   P3 core: inv-sample, acts-alive, normalized and `p3-refs` (dep edges have
                        non-idle creditors, activations' runs exist, marked edges are dep edges, no
-                       edge id is a cleanup row or storage ref) -> filter-safe. Their preservation
+                       edge id is a cleanup row or storage ref) and `refs-untomb` (C1 Q6: no dep
+                       edge's creditor is a tombstone) -> filter-safe. Their preservation
                        through the step is open (notes/ansatz-fixes.md P3); `p3-refs` runs as a
                        tripwire in lit-test.
   Model changes made for these proofs (spec-faithful, no reachable behaviour changes): `complete`
@@ -2671,6 +2672,13 @@
 (a/defn dep-active [cs :- (List CompRow), e :- EdgeRow] Bool
   (Bool.or (Bool.not (Nat.beq (:kind e) ek-dep)) (tbl-all (not-idle-if-id (:creditor e)) cs)))
 (a/defn act-run-has [rs :- (List RunRow), a :- ActRow] Bool (tbl-has run-id (:run a) rs))
+;; C1 Q6: a dep edge's creditor is no tombstone (spindel.v2.tomb carries it through the step), so a
+;; normalized world has it live
+(a/defn nt-if-id [x :- Nat, c :- CompRow] Bool (Bool.or (Bool.not (Nat.beq (:id c) x)) (Bool.not (:tomb c))))
+(a/defn untomb [cs :- (List CompRow), x :- Nat] Bool (tbl-all (nt-if-id x) cs))
+(a/defn dep-untomb [cs :- (List CompRow), e :- EdgeRow] Bool
+  (Bool.or (Bool.not (Nat.beq (:kind e) ek-dep)) (untomb cs (:creditor e))))
+(a/defn refs-untomb [w :- World] Bool (tbl-all (dep-untomb (:comps w)) (:edges w)))
 (a/defn marked-dep [e :- EdgeRow] Bool (Bool.or (Bool.not (:marked e)) (Nat.beq (:kind e) ek-dep)))
 (a/defn edge-sep [w :- World, e :- EdgeRow] Bool
   (Bool.and (Bool.not (reach-mem (:id e) (cleanup-rows w))) (Bool.not (reach-mem (:id e) (storage w)))))
@@ -2838,15 +2846,17 @@
   (intros h1 h2) (rw [h1] at h2) (cases h2))
 
 (a/theorem dep-cred-live [w :- World, e :- EdgeRow]
-  (=> (= (inv-sample w) true) (= (normalized w) true) (= (p3-refs w) true) (List.Mem e (:edges w))
+  (=> (= (inv-sample w) true) (= (normalized w) true) (= (p3-refs w) true) (= (refs-untomb w) true) (List.Mem e (:edges w))
       (= (Nat.beq (:kind e) ek-dep) true)
       (And (= (in-live w (:creditor e)) true)
            (forall [c :- CompRow] (=> (= (tbl-find comp-id (:creditor e) (:comps w)) (Option.some CompRow c))
                                       (And (List.Mem c (:comps w)) (And (= (:idle c) false) (= (:id c) (:creditor e))))))))
-  (intros h hn hp hm hk)
+  (intros h hn hp hu hm hk)
   (have ho := (tbl-all-mem EdgeRow (edge-ok (:comps w) (:tasks w) (:sources w) (:acts w) (:res w)) e (:edges w)
                 (And.left (And.right (inv-parts w h))) hm))
   (simp only [edge-ok cred-ok hk Bool.and_eq_true] at ho)
+  (have hut := (tbl-all-mem EdgeRow (dep-untomb (:comps w)) e (:edges w) hu hm))
+  (simp only [dep-untomb hk Bool.not_true Bool.false_or] at hut)
   (have hda := (tbl-all-mem EdgeRow (dep-active (:comps w)) e (:edges w) (And.left (p3-parts w hp)) hm))
   (simp only [dep-active hk Bool.not_true Bool.false_or] at hda)
   (have hc (forall [c :- CompRow] (=> (= (tbl-find comp-id (:creditor e) (:comps w)) (Option.some CompRow c))
@@ -2863,17 +2873,20 @@
   (case [none] (have hn2 := (tbl-find-none-has CompRow comp-id (:creditor e) (:comps w) hf)) (exact (False.elim (bool-contra _ (And.left ho) hn2))))
   (case [some c]
     (have p := (hc c hf))
-    (have hl := (normalized-comps w c hn (And.left p) (And.left (And.right p))))
+    (have nt := (tbl-all-mem CompRow (nt-if-id (:creditor e)) c (:comps w) hut (And.left p)))
+    (have ci3 (= (Nat.beq (:id c) (:creditor e)) true)) (rw [(And.right (And.right p))]) (exact (Nat.beq_refl (:creditor e)))
+    (simp only [nt-if-id ci3 Bool.not_true Bool.false_or] at nt)
+    (have hl := (normalized-comps w c hn (And.left p) (And.left (And.right p)) (bnot-true _ nt)))
     (exact (Eq.trans (congrArg (fn [x :- Nat] (in-live w x)) (Eq.symm (And.right (And.right p)))) hl)))
   (exact (And.intro hlive hc)))
 
 (a/theorem cred-kept [w :- World, e :- EdgeRow]
-  (=> (= (inv-sample w) true) (= (acts-alive w) true) (= (normalized w) true) (= (p3-refs w) true) (List.Mem e (:edges w))
+  (=> (= (inv-sample w) true) (= (acts-alive w) true) (= (normalized w) true) (= (p3-refs w) true) (= (refs-untomb w) true) (List.Mem e (:edges w))
       (= (Bool.or (host-cred e) (keep-fn w (:creditor e))) true))
-  (intros h ha hn hp hm)
+  (intros h ha hn hp hu hm)
   (cases hk (Nat.beq (:kind e) ek-dep))
   (case [true]
-    (simp only [(keep-of-live w (:creditor e) (And.left (dep-cred-live w e h hn hp hm hk))) Bool.or_true]))
+    (simp only [(keep-of-live w (:creditor e) (And.left (dep-cred-live w e h hn hp hu hm hk))) Bool.or_true]))
   (case [false]
     (cases hh (host-cred e))
     (case [true] (simp only [Bool.true_or]))
@@ -2903,13 +2916,13 @@
           (simp only [(keep-of-live w (:creditor e) al2) Bool.or_true]))))))
 
 (a/theorem fs-ref-ok [w :- World, e :- EdgeRow]
-  (=> (= (inv-sample w) true) (= (acts-alive w) true) (= (normalized w) true) (= (p3-refs w) true) (List.Mem e (:edges w))
+  (=> (= (inv-sample w) true) (= (acts-alive w) true) (= (normalized w) true) (= (p3-refs w) true) (= (refs-untomb w) true) (List.Mem e (:edges w))
       (= (fs-ref (keep-fn w) e) true))
-  (intros h ha hn hp hm)
+  (intros h ha hn hp hu hm)
   (cases hl (in-live w (:id e)))
   (case [true]
     (have dl := (live-close w (:id e) (:debtor e) hl (succ-edge w e hm (deb-nz w e h hm))))
-    (simp only [fs-ref (cred-kept w e h ha hn hp hm) (keep-of-live w (:debtor e) dl) Bool.and_self Bool.or_true]))
+    (simp only [fs-ref (cred-kept w e h ha hn hp hu hm) (keep-of-live w (:debtor e) dl) Bool.and_self Bool.or_true]))
   (case [false]
     (have hs := (tbl-all-mem EdgeRow (edge-sep w) e (:edges w) (And.right (And.right (And.right (p3-parts w hp)))) hm))
     (simp only [edge-sep Bool.and_eq_true] at hs)
@@ -2919,15 +2932,15 @@
     (simp only [fs-ref k0 Bool.not_false Bool.true_or])))
 
 (a/theorem fs-mark-ok [w :- World, e :- EdgeRow]
-  (=> (= (inv-sample w) true) (= (normalized w) true) (= (p3-refs w) true) (List.Mem e (:edges w))
+  (=> (= (inv-sample w) true) (= (normalized w) true) (= (p3-refs w) true) (= (refs-untomb w) true) (List.Mem e (:edges w))
       (= (fs-mark (keep-fn w) e) true))
-  (intros h hn hp hm)
+  (intros h hn hp hu hm)
   (cases hk (:marked e))
   (case [false] (simp only [fs-mark hk Bool.false_and Bool.not_false Bool.true_or]))
   (case [true]
     (have hd := (tbl-all-mem EdgeRow marked-dep e (:edges w) (And.left (And.right (And.right (p3-parts w hp)))) hm))
     (simp only [marked-dep hk Bool.not_true Bool.false_or] at hd)
-    (have q := (dep-cred-live w e h hn hp hm hd))
+    (have q := (dep-cred-live w e h hn hp hu hm hd))
     (cases hf (tbl-find comp-id (:creditor e) (:comps w)))
     (case [none]
       (have ho := (tbl-all-mem EdgeRow (edge-ok (:comps w) (:tasks w) (:sources w) (:acts w) (:res w)) e (:edges w)
@@ -2943,10 +2956,56 @@
 
 ;; Theorem (P3 core): in a normalized world with the reference invariants, the filter is edge-safe
 (a/theorem filter-safe-of-refs [w :- World]
-  (=> (= (inv-sample w) true) (= (acts-alive w) true) (= (normalized w) true) (= (p3-refs w) true)
+  (=> (= (inv-sample w) true) (= (acts-alive w) true) (= (normalized w) true) (= (p3-refs w) true) (= (refs-untomb w) true)
       (= (filter-safe w) true))
-  (intros h ha hn hp)
+  (intros h ha hn hp hu)
   (simp only [filter-safe filter-safe-k Bool.and_eq_true])
   (exact (And.intro
-           (all-of-mem EdgeRow (fs-ref (keep-fn w)) (:edges w) (fn [e :- EdgeRow, hm :- (List.Mem e (:edges w))] (fs-ref-ok w e h ha hn hp hm)))
-           (all-of-mem EdgeRow (fs-mark (keep-fn w)) (:edges w) (fn [e :- EdgeRow, hm :- (List.Mem e (:edges w))] (fs-mark-ok w e h hn hp hm))))))
+           (all-of-mem EdgeRow (fs-ref (keep-fn w)) (:edges w) (fn [e :- EdgeRow, hm :- (List.Mem e (:edges w))] (fs-ref-ok w e h ha hn hp hu hm)))
+           (all-of-mem EdgeRow (fs-mark (keep-fn w)) (:edges w) (fn [e :- EdgeRow, hm :- (List.Mem e (:edges w))] (fs-mark-ok w e h hn hp hu hm))))))
+
+;; ===========================================================================
+;; C1 Q6: the demotion's row is the idle row or the tombstone row (unique ids pick the one row)
+;; ===========================================================================
+
+(a/theorem tbl-upd-congr [A :- Type, idf :- (=> A Nat), x :- Nat, f :- (=> A A), g :- (=> A A), P :- (=> A Bool),
+                          hfg :- (forall [r :- A] (=> (= (P r) true) (= (f r) (g r)))), xs :- (List A)]
+  (=> (= (tbl-all (same-id-then idf x P) xs) true) (= (tbl-upd idf x f xs) (tbl-upd idf x g xs)))
+  (induction xs)
+  (case [nil] (intro hp) (rfl))
+  (case [cons h t ih]
+    (intro hp)
+    (simp only [tbl-all Bool.and_eq_true] at hp)
+    (have e := (ih (And.right hp)))
+    (cases hx (Nat.beq (idf h) x))
+    (case [false] (simp only [tbl-upd hx]) (rw [e]))
+    (case [true]
+      (have hq := (And.left hp))
+      (simp only [same-id-then hx Bool.not_true Bool.false_or] at hq)
+      (simp only [tbl-upd hx]) (rw [e (hfg h hq)]))))
+
+(a/theorem demote-row-idle-upd [w :- World, cid :- Nat, c :- CompRow, vs :- (List Valid)]
+  (=> (= (inv-sample w) true) (= (comp-find w cid) (Option.some CompRow c)) (= (demote-idle c) true)
+      (= (comp-upd w cid (comp-demote-row vs)) (comp-upd w cid (comp-make-idle vs))))
+  (intros h hf hd)
+  (have hm := (tbl-find-mem CompRow comp-id cid c (:comps w) hf))
+  (have ei (= (comp-id c) cid)) (exact (tbl-find-id CompRow comp-id cid c (:comps w) hf))
+  (have u := (uniq-all CompRow comp-id demote-idle c (:comps w) (comps-nodup w h) hm hd))
+  (rw [ei] at u)
+  (simp only [comp-upd])
+  (rw [(tbl-upd-congr CompRow comp-id cid (comp-demote-row vs) (comp-make-idle vs) demote-idle
+         (fn [r :- CompRow, hr :- (= (demote-idle r) true)] (comp-demote-row-idle vs r hr)) (:comps w) u)]))
+
+(a/defn demote-tomb [c :- CompRow] Bool (Bool.not (demote-idle c)))
+(a/theorem demote-row-tomb-upd [w :- World, cid :- Nat, c :- CompRow, vs :- (List Valid)]
+  (=> (= (inv-sample w) true) (= (comp-find w cid) (Option.some CompRow c)) (= (demote-idle c) false)
+      (= (comp-upd w cid (comp-demote-row vs)) (comp-upd w cid comp-tomb-row)))
+  (intros h hf hd)
+  (have hm := (tbl-find-mem CompRow comp-id cid c (:comps w) hf))
+  (have ei (= (comp-id c) cid)) (exact (tbl-find-id CompRow comp-id cid c (:comps w) hf))
+  (have hd2 (= (demote-tomb c) true)) (simp only [demote-tomb hd Bool.not_false])
+  (have u := (uniq-all CompRow comp-id demote-tomb c (:comps w) (comps-nodup w h) hm hd2))
+  (rw [ei] at u)
+  (simp only [comp-upd])
+  (rw [(tbl-upd-congr CompRow comp-id cid (comp-demote-row vs) comp-tomb-row demote-tomb
+         (fn [r :- CompRow, hr :- (= (demote-tomb r) true)] (comp-demote-row-tomb vs r (bnot-true _ hr))) (:comps w) u)]))

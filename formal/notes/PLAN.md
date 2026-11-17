@@ -32,6 +32,7 @@ Feasibility notes: `../ansatz/.internal/design/spindel-v2-feasibility.md`.
 | `spindel.v2.inv` | predicates for I1/I5/I7/I9/I10/I11a (tripwire `inv-all`), counterexamples to literal I1/I5/I7/I8/I9/I10, I13 guards, L1, I10 D0 (`step-i10-slice`), I9 (`step-i9`), I5 wait half (`step-i5-wait`) | in progress |
 | `spindel.v2.lit` | literal invariants through `world-step`: I10 task part (`step-lit-i10-task`, bundle `gl`), I9 resources (`step-lit-i9-res`, bundle `g9`); P3 core `filter-safe-of-refs`; copier `lcopy!` with source patches (`patch!`) | in progress |
 | `spindel.v2.idle` | I7 (idle shape) through the step: bundle `g7` (a7, dep/marked creditor awake, idle clean, slice-normal alive, observe host), companion `awo` (T6/T11/reactivation chains), cascade completeness for demote (`kdb`, `casc-kill`); `step-g7`, `step-lit-i7` | done (honest hyps ga, rule-r-safe) |
+| `spindel.v2.tomb` | C1 Q6: tombstones are dormant. Bundle `gy y` (copy of the raw step and of normalization): every alive run's computation and every dep edge's creditor is no tombstone (`ta-one`, `dep-untomb`), nor is computation y; `gy 0` is in P3's round invariant `ri` (`refs-untomb`, the new premise of `filter-safe-of-refs`); `trc` (acts-alive && gy 0) is the round context the i10/i14/hmk2/hm18 normalization chains take; `step-gy`, `gy-empty` | done |
 | `spindel.v2.p3` | P3 complete: bundles `mdb` (marked edges are dep), `esb` (edge-sep: references are non-edge ids), `aha` (activation runs exist and are alive), round invariant `ri` -> every round filter-safe (`rule-r-safe-ri`); combined bundle `p3b` (ga, inv-rank, gl, g9, g7, mdb, esb, aha) with `step-p3b` and the step theorems with no honest hypothesis (`step-rule-r-safe`, `step-inv-total`, `step-acts-total`, `step-rank-total`, ...) | done |
 | `spindel.v2.i10` | literal I10, computation part (one current run per computation) through the step: bundle `g10 gxz gkz` (E1 run epoch <= C.epoch, E2 a current run is C.run of an awake C and alive or C.done-epoch = C.epoch, run pointers name runs of their entity; computations gxz / runs gkz exempt), job condition for cascades (`job-ok`, transport bundle `nq`), bundle `g10r` = g10 [] [] for the raw transition (T5); `step-g10`, `step-lit-i10-current`, `p3c` = p3b && g10r with `step-p3c`, `p3c-empty`, `step-lit-i10-current-total` (no honest hypothesis) | done |
 | `spindel.v2.i11` | I11a through the step: bundle `gw` (id 2 is the root scope's, run scopes are not 2, no fork markers), `reach-roots-obl` (reach from the roots = the root scope or reach from the obligations), `i11a-of` (from I3); `p3d` = p3c && gw && inv-i11a with `step-p3d`, `p3d-empty`, `step-i11a-total` (no honest hypothesis) | done |
@@ -1337,3 +1338,40 @@ New (Stage B finding):
    refuse suspending items there too? Without it the refusal is invisible in the log and unneeded for replay.
 4. `cancel-task!` on a done, unretired run commits `[:cancel r]` (no row change in the model); confirm that is intended
    also when the run holds no op resource.
+
+### Engine PR #270 (Q7) and Q6 (2026-11-16)
+- Merged origin/engine-v2 65991b6 (spec Z#68). Q7: a Z#40 effect on a row Rule R removed is no item; the model needs
+  no change (it never sees the item). Samples 4 (43 commits) and 5 (41) regenerated with `[:finally-leave]`; sample 4
+  logs run 29's cleanup `[:slice-exit 29]`; sample 28 lost its write. The oracle's fallback that ended a clause at its
+  exit (logs without `[:finally-leave]`) is gone. Samples 4-28 replay with 0 divergences and every sidecar matches;
+  sample 28 is a normal C1 sample (`c1-samples`). Samples 1-3 keep their triaged lists (logs of older engines with no
+  generator: legacy epoch step at demand, settle/E granularity; not reproducible without a generator).
+- Q6 (spec §3.3 step 1.3, §3.2): the demotion keeps a computation idle only with a result or handles > 0; one with
+  neither whose run is in cleanup (in `cleanup-rows`) stays a **tombstone**: not idle, no validity, basis/adoption
+  released, C.run = its (stale, epoch-stepped) cancelled run; T13 clears C.run and the filter removes it (no reason).
+  Model: `CompRow.tomb` (model-only, not projected), set only by `comp-demote-row` (rule.clj; field-wise
+  `comp-make-idle` when `demote-idle`, else `comp-tomb-row`), cleared by every row that starts a run or wakes
+  (`comp-start-row`, `comp-set-run`, `comp-react-row`, `comp-demand-row`, `comp-replace-row`, `comp-h1`,
+  `comp-make-idle`); copied by every other row. Normalization leaves a tombstone alone (`comp-norm` = idle or tomb or
+  live; `comp-active` = neither idle nor tomb, the P2 measure). A re-demanded tombstone is dispatched (T11/T5) like
+  the engine (`needs-run?`), which clears the flag. Corner: handle-new on a tombstone (not released) clears the flag,
+  so the next Rule R idles it (the engine idles it at T13).
+- Proofs: the tombstone is dormant (spindel.v2.tomb, `gy`); P3 (`filter-safe-of-refs`) needs it for a dep edge's
+  creditor (`refs-untomb`), I10/I14/h-mark/h-mem2's normalization rounds for a stray run's or a dep edge's
+  computation (`trc`). Demotion proofs split on `demote-idle` (`demote-row-idle-upd`/`demote-row-tomb-upd`, lit.clj):
+  I10 `g10-tomb` (key `ck-tomb`), I14 `vrk-frame` with domination (`dom14-wake`).
+- **Changed statements** (premises added; every `step-p3x`/`*-total` headline theorem is unchanged):
+  `normalized-comps` (+ `(:tomb c) = false`: a tombstone may sit outside live); `step-l1-comp` (conclusion
+  `idle || tomb`: L1 for a computation outside live); casc `demote-lt` (+ not a tombstone: only strays are demoted);
+  lit `dep-cred-live`, `cred-kept`, `fs-ref-ok`, `fs-mark-ok`, `filter-safe-of-refs` (+ `refs-untomb w`); p3 `ri`
+  gains `gy 0` (so `ri-parts`/`ri-intro` have 5 parts); i10 `stray-pair`, `stray-ncw`, `g10-norm-round` (+ the
+  `ta-one` list), `g10-norm-loop`, `g10-normalize`, `g10-rule-r-round`, `g10-rr-loop`, `g10-rule-r` (+ acts-alive,
+  gy 0), `step-g10`, `step-lit-i10-current` (+ `p3b w`); i14 `vr-pass-start`, `vr-norm-round`, `vr-norm-loop`,
+  `vr-normalize`, `vr-rule-r-round`, `vr-rr-loop`, `vr-rule-r` (+ `trc w`), `step-v14` (+ ga, gy 0); hmk2
+  `hmk-norm-round`, `hmk-norm-loop`, `hmk-normalize-x`, `hmk-rule-r-round`, `hmk-rr-loop`, `hmk-rule-r` (+ `trc w`),
+  `step-hmk` (+ gy 0); hm18 `h18-norm-round`, `h18-norm-loop`, `h18-normalize`, `h18-rule-r-round`, `h18-rr-loop`,
+  `h18-rule-r` (+ `trc w`). Reason for all: a tombstone is a non-idle computation outside live, and the facts these
+  lemmas used ("not idle and normalized, hence live") need "and not a tombstone", which `gy 0` gives.
+- Released-world `[:append s v 0]` from a cleanup slice is logged as a refusal entry (engine session); the model
+  refuses it with the world unchanged (raw0's `root-shut`) and the oracle compares the accepted flag only.
+

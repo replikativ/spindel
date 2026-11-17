@@ -1358,7 +1358,7 @@
     (have i (= (:id c) cid)) (exact (tbl-find-id CompRow comp-id cid c (:comps w) hf))
     (cases hk (demote-keep w c))
     (case [true] (simp only [demote-finish hf hk])
-      (exact (grx-comp-upd (List.nil Nat) w cid (comp-make-idle vs) (comp-make-idle-id vs) (comp-make-idle-pending vs) h)))
+      (exact (grx-comp-upd (List.nil Nat) w cid (comp-demote-row vs) (comp-demote-row-id vs) (comp-demote-row-pending vs) h)))
     (case [false]
       (simp only [demote-finish hf hk])
       (have hd2 (= (tbl-all (not-alive-of (:id c)) (:runs w)) true)) (rw [i]) (exact hd)
