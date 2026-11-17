@@ -35,6 +35,7 @@ Feasibility notes: `../ansatz/.internal/design/spindel-v2-feasibility.md`.
 | `spindel.v2.qworld` | C1 quiet half: bundle `gc` (every cleanup entry's run is a run row; `step-gc-rest`), `qinv` = p3l && K && gc && I3 (`step-qinv`, `qinv-empty`), the closure lemma `quiet-rows` (a quiet world with qinv holds only scopes), the refusal lemma `quiet-refused`, `quiet-step`, `quiet-stays` | done |
 | `spindel.v2.ledger` | C1c stage A (Z#70): derived completion ledger, `task-held`, `task-complete` (not held and no run scope row k + 2), `scope-complete` (no row); layer-2 host joins in sys.clj (`Cell.joins`, `sys-join`, `sys-deliver`, `complete-cell` delivers the rest) | defs only (theorems: later stage) |
 | `spindel.v2.lstab` | C1c stage A proof stage, stability: parametric bundle `gst k s` (k below the allocator and task k not held, s below the allocator and no scope row s), copied over raw/normalize with T12/T13/T14 task-row overrides; `step-gst`, `task-complete-stable`, `scope-complete-stable` | done |
+| `spindel.v2.oscope` | C1c stage A proof stage (questions 10, 14): bundle `gos` (every open non-root scope has a run row whose run scope is it or on its parent chain), copied with overrides at run creation, open-scope (`cur-scope` cases), detach, Z#18 deletion (`parent-outside`), T13 (subtree convergence `sub-conv`, completeness `sub-within`, witness bundle `gox x` over the source closes) and Rule R (`run-kept`, kept parents); `step-gos`, `gos-empty` | done |
 | `spindel.v2.tomb` | C1 Q6: tombstones are dormant. Bundle `gy y` (copy of the raw step and of normalization): every alive run's computation and every dep edge's creditor is no tombstone (`ta-one`, `dep-untomb`), nor is computation y; `gy 0` is in P3's round invariant `ri` (`refs-untomb`, the new premise of `filter-safe-of-refs`); `trc` (acts-alive && gy 0) is the round context the i10/i14/hmk2/hm18 normalization chains take; `step-gy`, `gy-empty` | done |
 | `spindel.v2.acyc` | Z#69: scope parents are acyclic. Bundle `gcy` = inv-sample && `gcy-rest` (every scope's parent below the allocator, `cy-par-below`; no scope on its own `scope-ancestors`, `scopes-acyclic`, equivalently no `Reach (scope-up w) (scope-up w y) y`); generic graph lemmas (sub-graph, fresh node, re-parenting outside the subtree); copy as i1's G1 with overrides at run creation, open-scope and detach; `step-gcy`, `step-acyc` / `acyc-empty` (from p3b), `step-acyclic`, `step-acyclic-reach` | done |
 | `spindel.v2.p3` | P3 complete: bundles `mdb` (marked edges are dep), `esb` (edge-sep: references are non-edge ids), `aha` (activation runs exist and are alive), round invariant `ri` -> every round filter-safe (`rule-r-safe-ri`); combined bundle `p3b` (ga, inv-rank, gl, g9, g7, mdb, esb, aha) with `step-p3b` and the step theorems with no honest hypothesis (`step-rule-r-safe`, `step-inv-total`, `step-acts-total`, `step-rank-total`, ...) | done |
@@ -1676,3 +1677,34 @@ only by a child's cleanup chain) is therefore not complete, as in the engine (it
   -> task-complete after any step), `scope-complete-stable` (p3b w, s < next-id, scope-complete w s -> the same after
   any step; the bundle at k = 0, which is never a row). No counterexample. A collected task row with its run scope
   still present reads not held, so its completion is then "no scope row k + 2" (covered: the clauses are separate).
+
+### Step 3: a complete world has every task and every non-root scope complete (spindel.v2.oscope, qworld)
+- New invariant `gos-rest w`: every scope row that is open and not root-kind (`os-need`) has a run row whose run scope
+  is the row itself or on its parent chain (`hw`, via Z#69's `scope-within`). With no run, no open non-root scope;
+  then live is the root scope (roots: root scope and open explicit scopes; the root scope's parent is 0, gw), and
+  I3 + K leave only live rows.
+- Why it holds (bundle `gos` = inv-sample && gos-rest, copied over raw/normalize with spindel.v2.lit's copier):
+  frames for every table but scopes and runs; run updates keep `:scope` (extra argument, rfl); `run-ins` adds a
+  witness; scope closes remove obligations (`close-hk`); overrides:
+  `gos-add-run-scope` (the run scope's witness is the new run), `t-open-scope-gos` (`cur-scope` is the run scope or
+  an open explicit scope reached through open explicit children, `cur-cases`: the new scope inherits its witness),
+  `t-detach-gos` (the re-parented run scope is witnessed by its own run; a chain through it either survives or
+  reaches it, `rp-within`), `gos-remove-if-empty` (Z#18 deletes a subtree with `parent-outside`: kept chains are
+  unchanged, `keep-within`), `gos-retire-local` (T13: the run row goes after `close-local` closed its run scope's
+  whole subtree; `scope-subtree` converges, `sub-conv`, fuel 2 + #scopes against a deduplicated parent list, so it
+  holds every scope whose chain reaches the run scope, `sub-within`; between the close and the deletion a second
+  bundle `gox x` (every open non-root scope has a witness run whose id is not x) is copied over the source closes,
+  which update runs only id- and scope-preservingly; ids are unique, so the retiring run's row is the only one with
+  its id, `find-uniq`), Rule R's filter (`gos-filter`: every run is kept, i1r `run-kept` with gr0 and normalized;
+  every kept scope's parent is kept, `keep-parent`, i1's closure argument). `step-gos` (ga, gr0, gos, rule-r-safe
+  raw), `gos-empty`.
+- qworld: `qinv` gains the conjunct `gos-rest` (definition changed); `step-qinv` takes it from `step-gos`
+  (gr0 from p3l via p3h: `p3l-gr0`). New: `qinv-gos`, `quiet-no-open`, `roots-root`, `root-succ-none`, `keep-live`,
+  `live-root`, `quiet-root-only` (`qh w`, scope-has w y -> y = root-scope-id), `quiet-task-complete` (`qh w`,
+  t /= 0 -> task-complete w t), `quiet-scope-complete` (`qh w`, s /= 2 -> scope-complete w s).
+- Changed statements: `qinv-intro` (new premise `gos-rest w`: qinv has a fifth conjunct). `qinv-parts`, `step-qinv`,
+  `qinv-empty` and every sys.clj `cq`/`qsinv`/`qpinv` statement are unchanged in text (qinv is stronger). Task id 0
+  is excluded in `quiet-task-complete` (its "run scope" would be scope 2, the root, never removed).
+- Ansatz notes: constants are global by name (two namespaces may not define the same theorem name: `beq-comm`,
+  `ids-len`, `runs-nodup` renamed `os-*`); `(simp only ...)` that turns a hypothesis into False errors instead of
+  closing the goal (full `simp` closes); `cases` on `List.Mem` substitutes either variable (use an eliminator lemma).

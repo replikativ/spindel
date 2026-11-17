@@ -5,9 +5,11 @@
             [spindel.v2.engine :as en]
             [spindel.v2.quiet :as q]
             [spindel.v2.qworld :as qw]
+            [spindel.v2.oscope]
             [spindel.v2.engine-test :as et]))
 
-(def theorems '[step-gc step-gc-rest gc-empty step-qinv qinv-empty quiet-rows raw0-quiet quiet-refused quiet-step quiet-stays])
+(def theorems '[step-gc step-gc-rest gc-empty step-qinv qinv-empty quiet-rows raw0-quiet quiet-refused quiet-step quiet-stays
+                quiet-no-open live-root quiet-root-only quiet-task-complete quiet-scope-complete])
 
 (deftest theorems-kernel-checked
   (doseq [t theorems]
@@ -29,6 +31,8 @@
     (is (true? (q/gk-rest w)) "K")
     (is (true? (qw/gc-rest w)) "every cleanup entry has its run")
     (is (true? (qw/i3 w)) "I3")
+    (is (true? (spindel.v2.oscope/gos-rest w)) "C1c: every open non-root scope has a run (none open: no run)")
+    (is (= [s/root-scope-id] (map :id (:scopes w))) "C1c: the root scope only")
     (is (every? empty? ((juxt :comps :tasks :runs :sources :edges :acts :res :cleanup :pubs :forks) w)) "only scopes")
     (doseq [it [(et/start c (:next-id w)) (et/handle-new c) (et/close-scope et/root) (et/append* 3 1 0)
                 (et/create-comp-top et/root (:next-id w) 1 1) (et/schedule r) (et/release-world) (et/write 3 1)]]
