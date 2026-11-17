@@ -34,6 +34,7 @@ Feasibility notes: `../ansatz/.internal/design/spindel-v2-feasibility.md`.
 | `spindel.v2.idle` | I7 (idle shape) through the step: bundle `g7` (a7, dep/marked creditor awake, idle clean, slice-normal alive, observe host), companion `awo` (T6/T11/reactivation chains), cascade completeness for demote (`kdb`, `casc-kill`); `step-g7`, `step-lit-i7` | done (honest hyps ga, rule-r-safe) |
 | `spindel.v2.qworld` | C1 quiet half: bundle `gc` (every cleanup entry's run is a run row; `step-gc-rest`), `qinv` = p3l && K && gc && I3 (`step-qinv`, `qinv-empty`), the closure lemma `quiet-rows` (a quiet world with qinv holds only scopes), the refusal lemma `quiet-refused`, `quiet-step`, `quiet-stays` | done |
 | `spindel.v2.tomb` | C1 Q6: tombstones are dormant. Bundle `gy y` (copy of the raw step and of normalization): every alive run's computation and every dep edge's creditor is no tombstone (`ta-one`, `dep-untomb`), nor is computation y; `gy 0` is in P3's round invariant `ri` (`refs-untomb`, the new premise of `filter-safe-of-refs`); `trc` (acts-alive && gy 0) is the round context the i10/i14/hmk2/hm18 normalization chains take; `step-gy`, `gy-empty` | done |
+| `spindel.v2.acyc` | Z#69: scope parents are acyclic. Bundle `gcy` = inv-sample && `gcy-rest` (every scope's parent below the allocator, `cy-par-below`; no scope on its own `scope-ancestors`, `scopes-acyclic`, equivalently no `Reach (scope-up w) (scope-up w y) y`); generic graph lemmas (sub-graph, fresh node, re-parenting outside the subtree); copy as i1's G1 with overrides at run creation, open-scope and detach; `step-gcy`, `step-acyc` / `acyc-empty` (from p3b), `step-acyclic`, `step-acyclic-reach` | done |
 | `spindel.v2.p3` | P3 complete: bundles `mdb` (marked edges are dep), `esb` (edge-sep: references are non-edge ids), `aha` (activation runs exist and are alive), round invariant `ri` -> every round filter-safe (`rule-r-safe-ri`); combined bundle `p3b` (ga, inv-rank, gl, g9, g7, mdb, esb, aha) with `step-p3b` and the step theorems with no honest hypothesis (`step-rule-r-safe`, `step-inv-total`, `step-acts-total`, `step-rank-total`, ...) | done |
 | `spindel.v2.i10` | literal I10, computation part (one current run per computation) through the step: bundle `g10 gxz gkz` (E1 run epoch <= C.epoch, E2 a current run is C.run of an awake C and alive or C.done-epoch = C.epoch, run pointers name runs of their entity; computations gxz / runs gkz exempt), job condition for cascades (`job-ok`, transport bundle `nq`), bundle `g10r` = g10 [] [] for the raw transition (T5); `step-g10`, `step-lit-i10-current`, `p3c` = p3b && g10r with `step-p3c`, `p3c-empty`, `step-lit-i10-current-total` (no honest hypothesis) | done |
 | `spindel.v2.i11` | I11a through the step: bundle `gw` (id 2 is the root scope's, run scopes are not 2, no fork markers), `reach-roots-obl` (reach from the roots = the root scope or reach from the obligations), `i11a-of` (from I3); `p3d` = p3c && gw && inv-i11a with `step-p3d`, `p3d-empty`, `step-i11a-total` (no honest hypothesis) | done |
@@ -1483,3 +1484,33 @@ New (Stage B finding):
   No sorry.
 - Fresh-JVM `clojure -M:test` (2026-11-16, after step 4): 244 tests, 207,419 assertions, 0 failures, 0 errors. No sorry.
 
+### Z#69 detach acyclic (engine PR #272, c8829bf; 2026-11-16)
+- Merge of origin/engine-v2 c8829bf (a21b69e): spec Z#69, core.cljc `within?` + the `detach!` guard, task_test
+  `detach-into-own-subtree-is-refused`; nothing under formal/ changed. No new oracle sample.
+- Guard (engine.clj, 3544ef0): `scope-within w s a` = `s == a` or `a` on `scope-ancestors w s` (the worklist over the
+  parent fields Rule R's cleanup already uses; engine `within?` walks the same chain). `detach-ok` gains
+  `not (scope-within w s (task-run-scope w t))` as its innermost conjunct, so detach is refused (refusal entry, world
+  unchanged, `t-detach-refuse`) when the destination is the task's run scope or any scope below it. A task with no
+  run has run scope 0, which is never on a chain (scope-up drops parent 0), as the engine skips the check without
+  a run scope.
+- Proof repairs: the three bundle overrides that destructure `detach-ok` take the open-scope conjunct from its new
+  position (`t-detach-g1` i1, `t-detach-esb` p3, `t-detach-g8` i8; proof text only). Every other detach proof cases
+  on `detach-ok` only (refusing more is a refused case). **No theorem statement changed.** Definitions changed:
+  `detach-ok`; new: `scope-within`.
+- Invariant (spindel.v2.acyc, 97e634e): `scopes-acyclic w` = no scope is on its own `scope-ancestors` (executable),
+  equivalent to `forall y, Reach (scope-up w) (scope-up w y) y -> False` (`cy-acyc-of`, `cy-acyc-intro`). The
+  bundle `gcy-rest` adds `cy-par-below`: every scope's parent is below the allocator. That auxiliary fact is needed
+  for scope creation: a fresh scope (id next-id) is then nobody's parent, so no cycle passes through it; it holds
+  because new scopes get parent 0 or an existing scope (run creation: 0 or `task-scope-parent`; open-scope: the
+  current scope under `open-ok`), and detach's destination is an open (so existing) scope.
+  Generic lemmas over the parent function: a sub-graph keeps acyclicity (`cy-acyc-sub`: scope deletion,
+  `remove-if-empty`, Rule R's filter, parent-preserving scope edits), a fresh node no edge points to keeps it
+  (`cy-acyc-fresh`), re-parenting x under p keeps it when x is neither p nor above p (`cy-acyc-reparent`: every walk
+  either never uses x's new edge, or after it stays in p's chain, which avoids x). The guard is exactly the last
+  premise; without it detach is the only transition that breaks the invariant (no other path re-parents a scope).
+- Theorems: `step-gcy` (Rule R's honest hypothesis), `step-acyc` (p3b w, gcy-rest w -> gcy-rest after any step),
+  `acyc-empty`, `step-acyclic`, `step-acyclic-reach`. No counterexample: the invariant holds for every step.
+- Tests: engine_test `z69-detach-into-own-subtree-refused` (K0 opens O and spawns J; J opens S below its run scope;
+  detach J S and detach J (J's run scope) are refused with the world unchanged; the unguarded `detach-move` makes the
+  parent fields cyclic by a direct parent walk; detach J root is accepted, J and its run scope move under the root).
+  acyc_test: the theorems, and `scopes-acyclic` on the empty world and on a 2-cycle.
