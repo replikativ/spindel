@@ -1510,6 +1510,7 @@ New (Stage B finding):
   premise; without it detach is the only transition that breaks the invariant (no other path re-parents a scope).
 - Theorems: `step-gcy` (Rule R's honest hypothesis), `step-acyc` (p3b w, gcy-rest w -> gcy-rest after any step),
   `acyc-empty`, `step-acyclic`, `step-acyclic-reach`. No counterexample: the invariant holds for every step.
+- Cross-world destination: not expressible in layer 1 (ids are world-local); the engine refuses it (#273).
 - Tests: engine_test `z69-detach-into-own-subtree-refused` (K0 opens O and spawns J; J opens S below its run scope;
   detach J S and detach J (J's run scope) are refused with the world unchanged; the unguarded `detach-move` makes the
   parent fields cyclic by a direct parent walk; detach J root is accepted, J and its run scope move under the root).
