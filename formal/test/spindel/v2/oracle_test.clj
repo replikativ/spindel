@@ -422,8 +422,28 @@
    ;; is complete after the slice exit
    "28" {:w {:log (log "28-w") :kind :root}}})
 
+;; C1c stage A samples 29-32 (engine 1aac850, spec Z#70, generator oracle/gen/samples-c1c-a.clj): no new item;
+;; the sidecars add the completion ledger (per task :done? :retired? :srow-present? :complete?, per scope
+;; :open? :present? :complete?) and :pending-joins, compared exactly by `check-observations` (spindel.v2.ledger,
+;; sys.clj host joins). Host joins are no item: `:joins [[step target]]` per world, admitted before that checkpoint.
+;;   29  a run scope never materialized: task 3 is complete when it settles; await-joined fires at once
+;;   30  nested explicit scope: tasks 4, 8, 13 and scopes 6, 7, 10 complete only when the grandchild retires
+;;   31a a pending join, then release-world!: T21 cancels task 4, which completes; the join is delivered
+;;   31b abandonment: the unborn instance's copy of task 3 never runs; its join is delivered with the
+;;       instance's completion (E4)
+;;   32  on-joined after release on a complete task: delivered at once
+(def ^:private c1c-specs
+  {"29" {:w {:log (log "29-w") :kind :root :joins [[:joined 3]]}}
+   "30" {:w {:log (log "30-w") :kind :root :joins [[:grandchild-started 4]]}}
+   "31a" {:w {:log (log "31a-w") :kind :root :joins [[:join-pending 4]]}}
+   "31b" (let [p (log "31b-parent")]
+           {:parent {:log p :kind :root}
+            :instance {:log (log "31b-instance") :from :parent :kind :instance
+                       :at (c1-idx p #(= [:arm 4 :savepoint] (take 3 %))) :joins [[:join-pending-unborn 3]]}})
+   "32" {:w {:log (log "32-w") :kind :root :joins [[:joined-after-release 3]]}}})
+
 (deftest c1-samples
-  (doseq [[n spec] c1-specs]
+  (doseq [[n spec] (merge c1-specs c1c-specs)]
     (let [fam (o/replay-family spec)
           obs (o/read-observations (str "test/spindel/v2/oracle/log-sample-" n "-observations.edn"))]
       (is (seq obs) (str "sample " n ": sidecar"))
@@ -441,3 +461,17 @@
         "28: the clause ends, the slice returns (no write to the collected signal, Z#68)")
     (is (not-any? #(#{:observe :pin :host-await} (first %)) (drop-while #(not= [:release-world] %) l))
         "28: no root after the release (the cleanup slice's observe/pin are refused, no item)")))
+
+(deftest c1c-sample-shapes
+  (let [obs (fn [n] (o/read-observations (str "test/spindel/v2/oracle/log-sample-" n "-observations.edn")))
+        at (fn [n step k] (get-in (first (filter #(= step (:step %)) (obs n))) [:obs k]))]
+    (doseq [n ["29" "30" "31a" "31b" "32"] c (obs n) [k e] (:obs c)]
+      (is (every? #(contains? e %) [:tasks :scopes :pending-joins]) (str "sample " n " " (:step c) " " k ": C1c fields")))
+    (is (= [false false] (map #(get-in (at "30" :parent-settled :w) [:tasks % :complete?]) [4 8])) "30: the parent and the child wait")
+    (is (every? #(get-in (at "30" :grandchild-retired :w) [:tasks % :complete?]) [4 8 13]) "30: complete at the grandchild's retirement")
+    (is (every? #(get-in (at "30" :grandchild-retired :w) [:scopes % :complete?]) [6 7 10]))
+    (is (= 1 (:pending-joins (at "30" :parent-settled :w))) "30: the join waits for the grandchild")
+    (is (= [1 0] (map #(:pending-joins (at "31b" % :instance)) [:join-pending-unborn :instance-complete]))
+        "31b: the abandoned join is delivered with the instance's completion")
+    (is (false? (get-in (at "31b" :instance-complete :instance) [:tasks 3 :complete?])) "31b: task 3 itself never completes")
+    (is (= [[:release-world]] (map :item (log "31b-instance"))))))

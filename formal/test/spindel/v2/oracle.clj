@@ -33,7 +33,9 @@
             [spindel.v2.rule :as r]
             [spindel.v2.engine :as en]
             [spindel.v2.casc :as casc]
-            [spindel.v2.acts :as acts]))
+            [spindel.v2.acts :as acts]
+            [spindel.v2.ledger :as lg]
+            [spindel.v2.sys :as sys]))
 
 ;; ===========================================================================
 ;; Codes (state.clj)
@@ -821,41 +823,116 @@
         (recur (remove #{k} todo) (assoc out k {:res res :init init})))
       out)))
 
+
+;; ---------------------------------------------------------------------------
+;; C1c stage A (spec Z#70): the completion ledger and host joins, derived as well. Sidecar fields (when present):
+;;   :tasks  {id {:done? :retired? :srow-present? :complete?}}  every task seen at a checkpoint so far
+;;   :scopes {id {:open? :present? :complete?}}                  every scope seen so far
+;;   :pending-joins                                              host joins admitted and not yet delivered
+;; Model side: spindel.v2.ledger (`task-complete`, `scope-complete`; the run scope of task k is k + 2) and the
+;; layer-2 host joins of spindel.v2.sys (`join-ok`/`join-cell` admission, `deliver-cell`). A removed task or scope
+;; reads as the ledger says: no task row = done and retired (its completion then needs only its run scope gone),
+;; no scope row = complete. The engine materializes a run scope on first use (`run-scope!`) and registers it then;
+;; the model creates it with the run, so a run scope counts as seen only once it has owned something (a task, a
+;; source, a computation, a child scope or a fork marker) in some model world so far, and `srow-present?` likewise.
+;; Host joins are no log item: the family spec lists them as `:joins [[world step target] ...]`, admitted before
+;; checkpoint `step`.
+
+(defn- owned-ids [w]
+  (set (concat (map :owner (:tasks w)) (map :owner (:sources w)) (map :owner (:comps w))
+               (map :parent (:scopes w)) (map :owner (:forks w)))))
+
+(defn ledger-obs
+  "The model's ledger observation of world `w` given `mat` (run scopes materialized so far) and the ids seen
+  at earlier checkpoints `{:tasks #{} :scopes #{}}`: [obs seen']."
+  [w mat seen]
+  (let [scope-row (fn [s] (first (s/scope-find w s)))
+        shown? (fn [x] (or (not= 1 (:kind x)) (contains? mat (:id x))))
+        seen {:tasks (into (:tasks seen) (map :id (:tasks w)))
+              :scopes (into (:scopes seen) (map :id (filter shown? (:scopes w))))}
+        task (fn [k] (let [t (first (s/task-find w k))
+                           sr (scope-row (lg/task-srow k))]
+                       {:done? (if t (not= s/res-none (:tag (:result t))) true)
+                        :retired? (if t (zero? (:run t)) true)
+                        :srow-present? (boolean (and sr (contains? mat (:id sr))))
+                        :complete? (lg/task-complete w k)}))
+        scope (fn [x] (let [r (scope-row x)]
+                        {:open? (boolean (and r (:open r))) :present? (some? r) :complete? (lg/scope-complete w x)}))]
+    [{:tasks (into (sorted-map) (map (juxt identity task)) (:tasks seen))
+      :scopes (into (sorted-map) (map (juxt identity scope)) (:scopes seen))}
+     seen]))
+
 (defn check-observations
   "Mismatches of the model's derived C1 state against the sidecar `obs` for the replayed family
-  `fam` (replay-family of `spec`): a vector of {:step :world :field :engine :model}."
+  `fam` (replay-family of `spec`): a vector of {:step :world :field :engine :model}. C1c fields
+  (`:tasks`, `:scopes`, `:pending-joins`) are compared when the sidecar has them."
   [spec fam obs]
-  (vec
-   (for [[idx {:keys [step log-length] eo :obs}] (map-indexed vector obs)
-         :let [step-idx (fn [s] (first (keep-indexed (fn [i o] (when (= s (:step o)) i)) obs)))
-               accepted? (fn [c] (let [a (:accepted-from (spec c))]
-                                   (and (or (nil? a) (>= idx (step-idx a)))
-                                        ;; an instance is accepted at its activation (activate!)
-                                        (or (not= :instance (:kind (spec c)))
-                                            (some #(= :resource-fire (first (:item %)))
-                                                  (take (get log-length c 0) (:log (spec c))))))))
-               at (fn [k] (let [{:keys [res init]} (fam k) n (get log-length k 0)]
-                            (if (zero? n) init (nth (:worlds res) (dec n)))))
-               exists? (fn [k] (let [{:keys [at] parent :from} (spec k)]
-                                 (or (nil? parent) (> (get log-length parent 0) at))))
-               unborn? (fn [k] (and (= :instance (:kind (spec k)))
-                                    (not-any? #(= :resource-fire (first (:item %)))
-                                              (take (get log-length k 0) (:log (spec k))))))
-               owner (fn [c] (let [x (spec c)] (get x :owner (:from x))))
-               children (fn [k] (filter #(and (= k (owner %)) (exists? %) (accepted? %)) (keys spec)))
-               complete? (fn complete? [k]
-                           (let [w (at k)]
-                             (boolean (and (:released w)
-                                           (or (unborn? k)
-                                               (and (empty? (:runs w)) (every? complete? (children k))))))))
-               model (fn [k] {:runs (count (:runs (at k))) :released? (boolean (:released (at k)))
-                              :complete? (complete? k)
-                              :open-kids (count (remove complete? (children k)))})]
-         [k e] eo
-         :let [m (model k)]
-         d (concat
-            (for [f [:runs :released? :complete?] :when (not= (get e f) (get m f))]
-              {:step step :world k :field f :engine (get e f) :model (get m f)})
-            (when (not= (or (:kids e) 0) (:open-kids m))
-              [{:step step :world k :field :kids :engine (:kids e) :model (:open-kids m)}]))]
-     d)))
+  (let [step-idx (fn [s] (first (keep-indexed (fn [i o] (when (= s (:step o)) i)) obs)))
+        at* (fn [k n] (let [{:keys [res init]} (fam k)] (if (zero? n) init (nth (:worlds res) (dec n)))))
+        unborn-at? (fn [k n] (and (= :instance (:kind (spec k)))
+                                  (not-any? #(= :resource-fire (first (:item %))) (take n (:log (spec k))))))
+        joins (vec (mapcat (fn [[k x]] (map (fn [[step t]] [k step t]) (:joins x))) spec))
+        c1 (fn [idx log-length]
+             (let [accepted? (fn [c] (let [a (:accepted-from (spec c))]
+                                       (and (or (nil? a) (>= idx (step-idx a)))
+                                            ;; an instance is accepted at its activation (activate!)
+                                            (or (not= :instance (:kind (spec c)))
+                                                (some #(= :resource-fire (first (:item %)))
+                                                      (take (get log-length c 0) (:log (spec c))))))))
+                   at (fn [k] (at* k (get log-length k 0)))
+                   exists? (fn [k] (let [{:keys [at] parent :from} (spec k)]
+                                     (or (nil? parent) (> (get log-length parent 0) at))))
+                   unborn? (fn [k] (unborn-at? k (get log-length k 0)))
+                   owner (fn [c] (let [x (spec c)] (get x :owner (:from x))))
+                   children (fn [k] (filter #(and (= k (owner %)) (exists? %) (accepted? %)) (keys spec)))
+                   complete? (fn complete? [k]
+                               (let [w (at k)]
+                                 (boolean (and (:released w)
+                                               (or (unborn? k)
+                                                   (and (empty? (:runs w)) (every? complete? (children k))))))))]
+               {:at at :unborn? unborn? :complete? complete?
+                :model (fn [k] {:runs (count (:runs (at k))) :released? (boolean (:released (at k)))
+                                :complete? (complete? k)
+                                :open-kids (count (remove complete? (children k)))})}))
+        ;; C1c: per checkpoint and world, the ledger observation and the pending host joins (state carried
+        ;; across checkpoints: the ids seen, the run scopes materialized, the cell's joins)
+        c1c (first
+             (reduce
+              (fn [[out st] [idx {:keys [step log-length] eo :obs}]]
+                (let [{:keys [at unborn? complete?]} (c1 idx log-length)]
+                  (reduce
+                   (fn [[out st] k]
+                     (let [n (get log-length k 0)
+                           {:keys [seen mat js] :or {seen {:tasks #{} :scopes #{}} mat #{} js []}} (st k)
+                           mat (into mat (comp (map (partial at* k)) (mapcat owned-ids)) (range (inc n)))
+                           w (at k)
+                           [lo seen] (ledger-obs w mat seen)
+                           cell (fn [js] (sys/->Cell w true 0 0 [] (unborn? k) 0 [] (complete? k) js))
+                           admitted (reduce (fn [c [_ _ t]] (if (sys/join-ok c t) (sys/join-cell c t) c))
+                                            (cell js) (filter (fn [[jk js _]] (and (= jk k) (= js step))) joins))
+                           js (vec (:joins (sys/deliver-cell admitted)))]
+                       [(assoc out [idx k] (assoc lo :pending-joins (count js)))
+                        (assoc st k {:seen seen :mat mat :js js})]))
+                   [out st] (keys eo))))
+              [{} {}] (map-indexed vector obs)))]
+    (vec
+     (for [[idx {:keys [step log-length] eo :obs}] (map-indexed vector obs)
+           :let [{:keys [model]} (c1 idx log-length)]
+           [k e] eo
+           :let [m (model k)
+                 l (c1c [idx k])]
+           d (concat
+              (for [f [:runs :released? :complete?] :when (not= (get e f) (get m f))]
+                {:step step :world k :field f :engine (get e f) :model (get m f)})
+              (when (not= (or (:kids e) 0) (:open-kids m))
+                [{:step step :world k :field :kids :engine (:kids e) :model (:open-kids m)}])
+              (for [t [:tasks :scopes] :when (contains? e t)
+                    :let [et (get e t) mt (get l t)]
+                    d (if (not= (set (keys et)) (set (keys mt)))
+                        [{:step step :world k :field [t :ids] :engine (sort (keys et)) :model (sort (keys mt))}]
+                        (for [[id er] et [f v] er :when (not= v (get-in mt [id f]))]
+                          {:step step :world k :field [t id f] :engine v :model (get-in mt [id f])}))]
+                d)
+              (when (and (contains? e :pending-joins) (not= (:pending-joins e) (:pending-joins l)))
+                [{:step step :world k :field :pending-joins :engine (:pending-joins e) :model (:pending-joins l)}]))]
+       d))))
