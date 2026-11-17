@@ -46,6 +46,11 @@
   host's withdraw fn, question 12), `complete-cell` delivers the rest (abandonment); a fork, fork effect or
   instance starts with none. System operations, not Items.
 
+  C1c stage B (Z#71, spindel.v2.owned): owned forks. `sys-own` (the count at the `(fork)` effect: a fork marker in the
+  parent's world), `sys-owned-done` (`[:owned-done s child]`), `Cell.norm` (the inherited markers, W-NORMALIZE) and
+  `sys-drain` (`[:normalize]`); both end with `sys-complete`, and `complete-ready` requires no marker (questions 15,
+  16). Their invariants are the proof stage's.
+
   Not here: following mode (not in the engine either), sealing, sources created in the child (not merged)."
   (:require [ansatz.core :as a]
             [spindel.v2.state :refer :all]
@@ -56,7 +61,8 @@
             [spindel.v2.cow :refer [fupd]]
             [spindel.v2.quiet]
             [spindel.v2.qworld]
-            [spindel.v2.ledger :refer [task-complete]]))
+            [spindel.v2.ledger :refer [task-complete]]
+            [spindel.v2.owned :refer :all]))
 
 (a/defn err-forked [] Nat 1)
 ;; layer 1 arms timers and offloads only (`arm-kind-ok`): a savepoint is an offload-kind resource,
@@ -89,7 +95,7 @@
 (a/defn pending-joins [js :- (List Join)] Nat (tbl-count jpend js))
 
 (a/structure Cell [] (world World) (live Bool) (parent Nat) (owner Nat) (dormant (List Nat))
-  (unborn Bool) (pending Nat) (kids (List Nat)) (complete Bool) (joins (List Join)))
+  (unborn Bool) (pending Nat) (kids (List Nat)) (complete Bool) (joins (List Join)) (norm (List Nat)))
 
 ;; a publication: the cell and run that published, the savepoint's resource, the frozen basis
 (a/structure Pub [] (cell Nat) (res Nat) (run Nat) (basis World) (live Bool))
@@ -129,7 +135,7 @@
 
 (a/defn cell-step [c :- Cell, it :- Item] Cell
   (Cell.mk (:world (world-step (:world c) it)) (:live c) (:parent c) (:owner c) (:dormant c)
-           (:unborn c) (:pending c) (:kids c) (:complete c) (:joins c)))
+           (:unborn c) (:pending c) (:kids c) (:complete c) (:joins c) (:norm c)))
 
 (a/defn sys-step [cells :- (=> Nat Cell), k :- Nat, it :- Item] (=> Nat Cell)
   (fupd cells k (cell-step (cells k) it)))
@@ -169,7 +175,7 @@
   (match rs [nil (List.nil Nat)] [(cons r t) (List.cons Nat (:id r) (res-ids t))]))
 
 (a/defn fork-cell [c :- Cell, k :- Nat, owner :- Nat] Cell
-  (Cell.mk (:world c) true k owner (nat-app (res-ids (:res (:world c))) (:dormant c)) false 0 (List.nil Nat) false (List.nil Join)))
+  (Cell.mk (:world c) true k owner (nat-app (res-ids (:res (:world c))) (:dormant c)) false 0 (List.nil Nat) false (List.nil Join) (marker-ids (:world c))))
 
 (a/defn sys-fork [cells :- (=> Nat Cell), k :- Nat, m :- Nat, owner :- Nat] (=> Nat Cell)
   (if (:unborn (cells k)) cells (fupd cells m (fork-cell (cells k) k owner))))
@@ -248,7 +254,7 @@
 
 (a/defn wake-cell [c :- Cell] Cell
   (Cell.mk (wake-all (:world c) (:dormant c)) (:live c) (:parent c) (:owner c) (List.nil Nat)
-           (:unborn c) (:pending c) (:kids c) (:complete c) (:joins c)))
+           (:unborn c) (:pending c) (:kids c) (:complete c) (:joins c) (:norm c)))
 
 ;; an unborn instance is not woken: its inherited work waits for `activate` (S3)
 (a/defn sys-wake [cells :- (=> Nat Cell), k :- Nat] (=> Nat Cell)
@@ -276,20 +282,22 @@
 ;; until m completes or is collected; a complete owner takes none
 (a/defn accept-cell [c :- Cell, m :- Nat] Cell
   (Cell.mk (:world c) (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c)
-           (List.cons Nat m (:kids c)) (:complete c) (:joins c)))
+           (List.cons Nat m (:kids c)) (:complete c) (:joins c) (:norm c)))
 (a/defn sys-accept [cells :- (=> Nat Cell), k :- Nat, m :- Nat] (=> Nat Cell)
   (if (:complete (cells k)) cells (fupd cells k (accept-cell (cells k) m))))
 
 ;; W1: complete once released with no unretired run and every accepted child complete or collected
-;; (a dropped cell); an unborn instance released before its activation at once (nothing in it runs)
+;; (a dropped cell); an unborn instance released before its activation at once (nothing in it runs).
+;; C1c stage B (questions 15, 16): and no fork marker, i.e. W-OWNED-N all zero and W-NORMALIZE empty
 (a/defn kid-done [cells :- (=> Nat Cell), m :- Nat] Bool (Bool.or (Bool.not (:live (cells m))) (:complete (cells m))))
 (a/defn complete-ready [cells :- (=> Nat Cell), k :- Nat] Bool
   (Bool.and (:released (:world (cells k)))
             (Bool.or (:unborn (cells k))
-                     (Bool.and (Nat.beq (world-runs (:world (cells k))) 0) (tbl-all (kid-done cells) (:kids (cells k)))))))
+                     (Bool.and (Nat.beq (world-runs (:world (cells k))) 0)
+                               (Bool.and (tbl-all (kid-done cells) (:kids (cells k))) (no-markers (:world (cells k))))))))
 (a/defn complete-cell [c :- Cell] Cell
   (Cell.mk (:world c) (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c) (:kids c) true
-           (joins-map hj-done (:joins c))))
+           (joins-map hj-done (:joins c)) (:norm c)))
 (a/defn sys-complete [cells :- (=> Nat Cell), k :- Nat] (=> Nat Cell)
   (if (complete-ready cells k) (fupd cells k (complete-cell (cells k))) cells))
 
@@ -297,7 +305,7 @@
 ;; `release-unborn`); `sys-complete` then completes it. Its invariant: `sinv-release-unborn`.
 (a/defn release-unborn-cell [c :- Cell] Cell
   (Cell.mk (release-unborn (:world c)) (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c)
-           (:kids c) (:complete c) (:joins c)))
+           (:kids c) (:complete c) (:joins c) (:norm c)))
 (a/defn sys-release-unborn [cells :- (=> Nat Cell), k :- Nat] (=> Nat Cell)
   (if (Bool.and (:unborn (cells k)) (Bool.not (:released (:world (cells k)))))
       (fupd cells k (release-unborn-cell (cells k))) cells))
@@ -322,7 +330,7 @@
            (if (Bool.or (:complete c) (task-complete (:world c) t)) js-delivered js-pending)))
 (a/defn join-cell [c :- Cell, t :- Nat] Cell
   (Cell.mk (:world c) (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c) (:kids c)
-           (:complete c) (List.cons Join (join-new c t) (:joins c))))
+           (:complete c) (List.cons Join (join-new c t) (:joins c)) (:norm c)))
 ;; the target is a task id the host holds a handle to: allocated (`t < next-id`) and not 0 (none)
 (a/defn join-ok [c :- Cell, t :- Nat] Bool
   (Bool.and (:live c) (Bool.and (Nat.blt 0 t) (Nat.blt t (:next-id (:world c))))))
@@ -332,14 +340,14 @@
 (a/defn hj-due [w :- World, j :- Join] Join (if (task-complete w (:target j)) (hj-done j) j))
 (a/defn deliver-cell [c :- Cell] Cell
   (Cell.mk (:world c) (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c) (:kids c)
-           (:complete c) (if (:complete c) (joins-map hj-done (:joins c)) (joins-map (hj-due (:world c)) (:joins c)))))
+           (:complete c) (if (:complete c) (joins-map hj-done (:joins c)) (joins-map (hj-due (:world c)) (:joins c))) (:norm c)))
 (a/defn sys-deliver [cells :- (=> Nat Cell), k :- Nat] (=> Nat Cell)
   (fupd cells k (deliver-cell (cells k))))
 ;; withdrawal (question 12): the withdraw fn `on-joined` returns, a host-side mark on join j (no gate, no item);
 ;; it acts on a pending join only (a delivered join stays delivered)
 (a/defn withdraw-cell [c :- Cell, j :- Nat] Cell
   (Cell.mk (:world c) (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c) (:kids c)
-           (:complete c) (tbl-upd join-id j hj-drop (:joins c))))
+           (:complete c) (tbl-upd join-id j hj-drop (:joins c)) (:norm c)))
 (a/defn sys-withdraw [cells :- (=> Nat Cell), k :- Nat, j :- Nat] (=> Nat Cell)
   (fupd cells k (withdraw-cell (cells k) j)))
 
@@ -376,10 +384,33 @@
   (case [true] (simp only [sys-complete hc fupd-same complete-cell])))
 
 ;; ---------------------------------------------------------------------------
+;; C1c stage B (Z#71, spindel.v2.owned): owned forks. `norm` is the cell's inherited markers (W-NORMALIZE): a
+;; fork, fork effect or instance starts with every marker its copied world holds; `[:normalize]` drains them.
+;;   sys-own         own-child!'s count at the `(fork)` effect of cell k for the child cell m, owned by the forking
+;;                   run's current scope s (`cur-scope`): a marker in k's world, in the counting branch only. With
+;;                   sys-fork-effect (taken before it: the child does not inherit its own marker) and sys-accept.
+;;   sys-owned-done  `[:owned-done s child]` in the owner k: the marker `child` goes, then maybe-complete!.
+;;   sys-drain       `[:normalize]` in a born cell k (first turn or activation): its inherited markers go, then
+;;                   maybe-complete!. An unborn cell does not drain (an E4-released one completes abandoned).
+;; System operations; the engine logs the last two as items of the cell's world.
+(a/defn world-cell [c :- Cell, w :- World] Cell
+  (Cell.mk w (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c) (:kids c) (:complete c) (:joins c)
+           (:norm c)))
+(a/defn sys-own [cells :- (=> Nat Cell), k :- Nat, s :- Nat, m :- Nat] (=> Nat Cell)
+  (fupd cells k (world-cell (cells k) (own-world (:world (cells k)) s m))))
+(a/defn sys-owned-done [cells :- (=> Nat Cell), k :- Nat, s :- Nat, c :- Nat] (=> Nat Cell)
+  (sys-complete (fupd cells k (world-cell (cells k) (owned-done-world (:world (cells k)) s c))) k))
+(a/defn drain-cell [c :- Cell] Cell
+  (Cell.mk (drain-world (:world c) (:norm c)) (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c)
+           (:kids c) (:complete c) (:joins c) (List.nil Nat)))
+(a/defn sys-drain [cells :- (=> Nat Cell), k :- Nat] (=> Nat Cell)
+  (if (:unborn (cells k)) cells (sys-complete (fupd cells k (drain-cell (cells k))) k)))
+
+;; ---------------------------------------------------------------------------
 ;; L10/L11: a world leaves the system
 
 (a/defn drop-cell [c :- Cell] Cell
-  (Cell.mk (:world c) false (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c) (:kids c) (:complete c) (:joins c)))
+  (Cell.mk (:world c) false (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c) (:kids c) (:complete c) (:joins c) (:norm c)))
 
 (a/defn sys-drop [cells :- (=> Nat Cell), k :- Nat] (=> Nat Cell)
   (fupd cells k (drop-cell (cells k))))
@@ -412,7 +443,7 @@
 
 (a/defn fork-effect-cell [c :- Cell, k :- Nat, owner :- Nat, st :- Nat, kont :- Nat, v :- Nat] Cell
   (Cell.mk (fork-effect-world (:world c) st kont v) true k owner
-           (nat-app (res-ids (:res (:world c))) (:dormant c)) false 0 (List.nil Nat) false (List.nil Join)))
+           (nat-app (res-ids (:res (:world c))) (:dormant c)) false 0 (List.nil Nat) false (List.nil Join) (marker-ids (:world c))))
 
 (a/defn sys-fork-effect [cells :- (=> Nat Cell), k :- Nat, m :- Nat, owner :- Nat, st :- Nat, kont :- Nat, v :- Nat]
   (=> Nat Cell)
@@ -481,7 +512,7 @@
 
 (a/defn resume-cell [c :- Cell, z :- Nat, v :- Nat] Cell
   (Cell.mk (fire-ack (:world c) z res-ok v) (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c)
-           (:kids c) (:complete c) (:joins c)))
+           (:kids c) (:complete c) (:joins c) (:norm c)))
 
 (a/defn sys-resume [cells :- (=> Nat Cell), pubs :- (=> Nat Pub), p :- Nat, v :- Nat] (=> Nat Cell)
   (fupd cells (:cell (pubs p)) (resume-cell (cells (:cell (pubs p))) (:res (pubs p)) v)))
@@ -503,7 +534,7 @@
 ;; activation is the savepoint's resource.
 
 (a/defn inst-cell [b :- Pub, owner :- Nat] Cell
-  (Cell.mk (:basis b) true (:cell b) owner (res-ids (:res (:basis b))) true (:res b) (List.nil Nat) false (List.nil Join)))
+  (Cell.mk (:basis b) true (:cell b) owner (res-ids (:res (:basis b))) true (:res b) (List.nil Nat) false (List.nil Join) (marker-ids (:basis b))))
 
 (a/defn sys-instantiate [cells :- (=> Nat Cell), pubs :- (=> Nat Pub), p :- Nat, m :- Nat, owner :- Nat] (=> Nat Cell)
   (fupd cells m (inst-cell (pubs p) owner)))
@@ -542,7 +573,7 @@
 
 (a/defn act-cell [c :- Cell, v :- Nat] Cell
   (Cell.mk (wake-all (fire-ack (:world c) (:pending c) res-ok v) (:dormant c)) (:live c) (:parent c) (:owner c)
-           (List.nil Nat) false 0 (:kids c) (:complete c) (:joins c)))
+           (List.nil Nat) false 0 (:kids c) (:complete c) (:joins c) (:norm c)))
 
 (a/defn sys-activate [cells :- (=> Nat Cell), m :- Nat, v :- Nat] (=> Nat Cell)
   (if (act-ok (cells m)) (fupd cells m (act-cell (cells m) v)) cells))
@@ -678,7 +709,7 @@
   (case [true] (simp only [merge-world hm diff diff-ids-self apply-diff])))
 
 (a/defn merge-cell [c :- Cell, w :- World] Cell
-  (Cell.mk w (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c) (:kids c) (:complete c) (:joins c)))
+  (Cell.mk w (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c) (:kids c) (:complete c) (:joins c) (:norm c)))
 
 (a/defn sys-merge [cells :- (=> Nat Cell), k :- Nat, m :- Nat, b :- World] (=> Nat Cell)
   (fupd cells k (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b))))
@@ -824,6 +855,10 @@
   (case [false] (simp only [merge-world hm]) (exact (wq-refl p)))
   (case [true] (simp only [merge-world hm]) (exact (wq-apply-diff hq c (diff c b) p h))))
 
+;; C1c stage B: a layer-1 world has no fork marker (gw, spindel.v2.qworld `p3l-forks-nil`)
+(a/theorem p3l-no-markers [w :- World] (=> (= (p3l w) true) (= (no-markers w) true))
+  (intro h) (simp only [no-markers (p3l-forks-nil w h)]))
+
 ;; ---- the invariant
 (a/defn cinv [cells :- (=> Nat Cell)] Prop
   (forall [k :- Nat] (=> (= (:live (cells k)) true) (= (:complete (cells k)) true) (= (complete-ready cells k) true))))
@@ -873,8 +908,8 @@
     (cases r1)
     (case [inl u] (simp only [(And.left r0) u Bool.true_or Bool.and_self]))
     (case [inr q]
-      (have k2 := (kids-mono cells (fupd cells k c2) hm (:kids (cells j)) (And.right q)))
-      (simp only [(And.left r0) (And.left q) k2 Bool.and_self Bool.or_true]))))
+      (have k2 := (kids-mono cells (fupd cells k c2) hm (:kids (cells j)) (And.left (And.right q))))
+      (simp only [(And.left r0) (And.left q) k2 (And.right (And.right q)) Bool.and_self Bool.or_true]))))
 
 (a/theorem kd-put-mono [cells :- (=> Nat Cell), k :- Nat, c2 :- Cell]
   (=> (=> (= (kid-done-c (cells k)) true) (= (kid-done-c c2) true))
@@ -894,8 +929,9 @@
   (=> (= (complete-ready cells k) true) (wq (:world (cells k)) (:world c2))
       (= (:unborn c2) (:unborn (cells k))) (= (:kids c2) (:kids (cells k)))
       (=> (= (kid-done-c (cells k)) true) (= (kid-done-c c2) true))
+      (=> (= (no-markers (:world (cells k))) true) (= (no-markers (:world c2)) true))
       (= (complete-ready (fupd cells k c2) k) true))
-  (intros r0 hw hu hk hd)
+  (intros r0 hw hu hk hd hn)
   (simp only [wq] at hw)
   (simp only [complete-ready Bool.and_eq_true Bool.or_eq_true] at r0)
   (have rel := ((And.left hw) (And.left r0)))
@@ -907,16 +943,17 @@
     (have hq0 (= (world-quiet (:world (cells k))) true)) (simp only [world-quiet (And.left r0) (And.left q) Bool.and_self])
     (have hq2 := ((And.right hw) hq0))
     (simp only [world-quiet Bool.and_eq_true] at hq2)
-    (have k2 := (kids-mono cells (fupd cells k c2) (kd-put-mono cells k c2 hd) (:kids (cells k)) (And.right q)))
-    (simp only [(And.right hq2) k2 Bool.and_self Bool.or_true])))
+    (have k2 := (kids-mono cells (fupd cells k c2) (kd-put-mono cells k c2 hd) (:kids (cells k)) (And.left (And.right q))))
+    (simp only [(And.right hq2) k2 (hn (And.right (And.right q))) Bool.and_self Bool.or_true])))
 
 ;; a world change of a cell that keeps its other fields
 (a/theorem cinv-world [cells :- (=> Nat Cell), k :- Nat, c2 :- Cell]
   (=> (cinv cells) (= (:live c2) (:live (cells k))) (= (:complete c2) (:complete (cells k)))
       (= (:unborn c2) (:unborn (cells k))) (= (:kids c2) (:kids (cells k)))
       (=> (= (:live (cells k)) true) (wq (:world (cells k)) (:world c2)))
+      (=> (= (:live (cells k)) true) (= (no-markers (:world (cells k))) true) (= (no-markers (:world c2)) true))
       (cinv (fupd cells k c2)))
-  (intros hc hl hcp hu hk hw)
+  (intros hc hl hcp hu hk hw hn)
   (have hd (=> (= (kid-done-c (cells k)) true) (= (kid-done-c c2) true)))
   (intro h) (simp only [kid-done-c hl hcp]) (simp only [kid-done-c] at h) (exact h)
   (apply (cinv-put cells k c2 hc hd))
@@ -924,7 +961,7 @@
   (have l1 (= (:live (cells k)) true)) (rw [← hl]) (exact l2)
   (have c1 (= (:complete (cells k)) true)) (rw [← hcp]) (exact c2t)
   (have hc2 := hc) (simp only [cinv] at hc2)
-  (exact (ready-put cells k c2 (hc2 k l1 c1) (hw l1) hu hk hd)))
+  (exact (ready-put cells k c2 (hc2 k l1 c1) (hw l1) hu hk hd (hn l1))))
 
 (a/theorem kids-fresh [cells :- (=> Nat Cell), m :- Nat, c2 :- Cell, xs :- (List Nat)]
   (=> (= (tbl-all (nat-ne m) xs) true) (= (tbl-all (kid-done cells) xs) true) (= (tbl-all (kid-done (fupd cells m c2)) xs) true))
@@ -958,8 +995,8 @@
     (cases r1)
     (case [inl u] (simp only [(And.left r0) u Bool.true_or Bool.and_self]))
     (case [inr q]
-      (have k2 := (kids-fresh cells m c2 (:kids (cells j)) (hf j) (And.right q)))
-      (simp only [(And.left r0) (And.left q) k2 Bool.and_self Bool.or_true]))))
+      (have k2 := (kids-fresh cells m c2 (:kids (cells j)) (hf j) (And.left (And.right q))))
+      (simp only [(And.left r0) (And.left q) k2 (And.right (And.right q)) Bool.and_self Bool.or_true]))))
 
 ;; ---- every system operation keeps cinv (HQ: a layer-1 step keeps a released world released and a
 ;; quiet one quiet; fork, fork effect and instance take an id no cell has accepted)
@@ -968,7 +1005,8 @@
   (intros hs hc)
   (simp only [sys-step])
   (exact (cinv-world cells k (cell-step (cells k) it) hc (rfl) (rfl) (rfl) (rfl)
-           (fn [hl :- (= (:live (cells k)) true)] (hq (:world (cells k)) it (sinv-live cells k hs hl))))))
+           (fn [hl :- (= (:live (cells k)) true)] (hq (:world (cells k)) it (sinv-live cells k hs hl)))
+           (fn [hl :- (= (:live (cells k)) true), hn0 :- (= (no-markers (:world (cells k))) true)] (p3l-no-markers _ (step-p3l (:world (cells k)) it (sinv-live cells k hs hl)))))))
 
 (a/theorem cinv-wake [hq :- (forall [w :- World, it :- Item] (=> (= (p3l w) true) (wq w (:world (world-step w it))))), cells :- (=> Nat Cell), k :- Nat]
   (=> (sinv cells) (cinv cells) (cinv (sys-wake cells k)))
@@ -978,7 +1016,8 @@
   (case [false]
     (simp only [sys-wake hu])
     (exact (cinv-world cells k (wake-cell (cells k)) hc (rfl) (rfl) (rfl) (rfl)
-             (fn [hl :- (= (:live (cells k)) true)] (wq-wake-all hq (:dormant (cells k)) (:world (cells k)) (sinv-live cells k hs hl)))))))
+             (fn [hl :- (= (:live (cells k)) true)] (wq-wake-all hq (:dormant (cells k)) (:world (cells k)) (sinv-live cells k hs hl)))
+             (fn [hl :- (= (:live (cells k)) true), hn0 :- (= (no-markers (:world (cells k))) true)] (p3l-no-markers _ (p3l-wake-all (:dormant (cells k)) (:world (cells k)) (sinv-live cells k hs hl))))))))
 
 (a/theorem cinv-resume [hq :- (forall [w :- World, it :- Item] (=> (= (p3l w) true) (wq w (:world (world-step w it))))), cells :- (=> Nat Cell), pubs :- (=> Nat Pub), p :- Nat, v :- Nat]
   (=> (sinv cells) (cinv cells) (cinv (sys-resume cells pubs p v)))
@@ -986,14 +1025,16 @@
   (simp only [sys-resume])
   (exact (cinv-world cells (:cell (pubs p)) (resume-cell (cells (:cell (pubs p))) (:res (pubs p)) v) hc (rfl) (rfl) (rfl) (rfl)
            (fn [hl :- (= (:live (cells (:cell (pubs p)))) true)]
-             (wq-fire-ack hq (:world (cells (:cell (pubs p)))) (:res (pubs p)) res-ok v (sinv-live cells (:cell (pubs p)) hs hl))))))
+             (wq-fire-ack hq (:world (cells (:cell (pubs p)))) (:res (pubs p)) res-ok v (sinv-live cells (:cell (pubs p)) hs hl)))
+           (fn [hl :- (= (:live (cells (:cell (pubs p)))) true), hn0 :- (= (no-markers (:world (cells (:cell (pubs p))))) true)] (p3l-no-markers _ (p3l-fire-ack (:world (cells (:cell (pubs p)))) (:res (pubs p)) res-ok v (sinv-live cells (:cell (pubs p)) hs hl)))))))
 
 (a/theorem cinv-merge [hq :- (forall [w :- World, it :- Item] (=> (= (p3l w) true) (wq w (:world (world-step w it))))), cells :- (=> Nat Cell), k :- Nat, m :- Nat, b :- World]
   (=> (sinv cells) (cinv cells) (cinv (sys-merge cells k m b)))
   (intros hs hc)
   (simp only [sys-merge])
   (exact (cinv-world cells k (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b)) hc (rfl) (rfl) (rfl) (rfl)
-           (fn [hl :- (= (:live (cells k)) true)] (wq-merge-world hq (:world (cells k)) (:world (cells m)) b (sinv-live cells k hs hl))))))
+           (fn [hl :- (= (:live (cells k)) true)] (wq-merge-world hq (:world (cells k)) (:world (cells m)) b (sinv-live cells k hs hl)))
+           (fn [hl :- (= (:live (cells k)) true), hn0 :- (= (no-markers (:world (cells k))) true)] (p3l-no-markers _ (p3l-merge-world (:world (cells k)) (:world (cells m)) b (sinv-live cells k hs hl)))))))
 
 (a/theorem cinv-publish [hq :- (forall [w :- World, it :- Item] (=> (= (p3l w) true) (wq w (:world (world-step w it))))), cells :- (=> Nat Cell), k :- Nat, st :- Nat, kont :- Nat, fresh :- Nat]
   (=> (sinv cells) (cinv cells) (cinv (sys-publish cells k st kont fresh)))
@@ -1040,7 +1081,7 @@
     (intro h) (simp only [kid-done-c complete-cell Bool.or_true])
     (apply (cinv-put cells k (complete-cell (cells k)) hc hd))
     (intros hl hj)
-    (exact (ready-put cells k (complete-cell (cells k)) hr (wq-refl (:world (cells k))) (rfl) (rfl) hd))))
+    (exact (ready-put cells k (complete-cell (cells k)) hr (wq-refl (:world (cells k))) (rfl) (rfl) hd (self-imp _)))))
 
 ;; a complete cell is released (cinv), so the E4 release and an activation never touch one
 (a/theorem complete-released [cells :- (=> Nat Cell), k :- Nat]
@@ -1287,8 +1328,9 @@
   (=> (= (complete-ready cells k) true) (wqc (cells k) (:world c2))
       (= (:unborn c2) (:unborn (cells k))) (= (:kids c2) (:kids (cells k)))
       (=> (= (kid-done-c (cells k)) true) (= (kid-done-c c2) true))
+      (=> (= (no-markers (:world (cells k))) true) (= (no-markers (:world c2)) true))
       (= (complete-ready (fupd cells k c2) k) true))
-  (intros r0 hw hu hk hd)
+  (intros r0 hw hu hk hd hn)
   (simp only [wqc] at hw)
   (simp only [complete-ready Bool.and_eq_true Bool.or_eq_true] at r0)
   (have rel := ((And.left hw) (And.left r0)))
@@ -1303,15 +1345,16 @@
       (have hq0 (= (world-quiet (:world (cells k))) true)) (simp only [world-quiet (And.left r0) (And.left q) Bool.and_self])
       (have hq2 := ((And.right hw) hub hq0))
       (simp only [world-quiet Bool.and_eq_true] at hq2)
-      (have k2 := (kids-mono cells (fupd cells k c2) (kd-put-mono cells k c2 hd) (:kids (cells k)) (And.right q)))
-      (simp only [(And.right hq2) k2 Bool.and_self Bool.or_true]))))
+      (have k2 := (kids-mono cells (fupd cells k c2) (kd-put-mono cells k c2 hd) (:kids (cells k)) (And.left (And.right q))))
+      (simp only [(And.right hq2) k2 (hn (And.right (And.right q))) Bool.and_self Bool.or_true]))))
 
 (a/theorem cinv-world-q [cells :- (=> Nat Cell), k :- Nat, c2 :- Cell]
   (=> (cinv cells) (= (:live c2) (:live (cells k))) (= (:complete c2) (:complete (cells k)))
       (= (:unborn c2) (:unborn (cells k))) (= (:kids c2) (:kids (cells k)))
       (=> (= (:live (cells k)) true) (wqc (cells k) (:world c2)))
+      (=> (= (:live (cells k)) true) (= (no-markers (:world (cells k))) true) (= (no-markers (:world c2)) true))
       (cinv (fupd cells k c2)))
-  (intros hc hl hcp hu hk hw)
+  (intros hc hl hcp hu hk hw hn)
   (have hd (=> (= (kid-done-c (cells k)) true) (= (kid-done-c c2) true)))
   (intro h) (simp only [kid-done-c hl hcp]) (simp only [kid-done-c] at h) (exact h)
   (apply (cinv-put cells k c2 hc hd))
@@ -1319,7 +1362,7 @@
   (have l1 (= (:live (cells k)) true)) (rw [← hl]) (exact l2)
   (have c1 (= (:complete (cells k)) true)) (rw [← hcp]) (exact c2t)
   (have hc2 := hc) (simp only [cinv] at hc2)
-  (exact (ready-put-q cells k c2 (hc2 k l1 c1) (hw l1) hu hk hd)))
+  (exact (ready-put-q cells k c2 (hc2 k l1 c1) (hw l1) hu hk hd (hn l1))))
 
 ;; ---- completion stability with no premise beyond the system invariants sinv and qsinv
 (a/theorem cinv-step-q [cells :- (=> Nat Cell), k :- Nat, it :- Item]
@@ -1329,7 +1372,8 @@
   (exact (cinv-world-q cells k (cell-step (cells k) it) hc (rfl) (rfl) (rfl) (rfl)
            (fn [hl :- (= (:live (cells k)) true)]
              (wqc-of (cells k) _ (qsinv-live cells k hq hl) (rel-step (:world (cells k)) it (sinv-live cells k hs hl))
-               (fn [h :- (= (qh (:world (cells k))) true)] (quiet-step (:world (cells k)) it h)))))))
+               (fn [h :- (= (qh (:world (cells k))) true)] (quiet-step (:world (cells k)) it h))))
+           (fn [hl :- (= (:live (cells k)) true), hn0 :- (= (no-markers (:world (cells k))) true)] (p3l-no-markers _ (step-p3l (:world (cells k)) it (sinv-live cells k hs hl)))))))
 
 (a/theorem cinv-wake-q [cells :- (=> Nat Cell), k :- Nat]
   (=> (sinv cells) (qsinv cells) (cinv cells) (cinv (sys-wake cells k)))
@@ -1341,7 +1385,8 @@
     (exact (cinv-world-q cells k (wake-cell (cells k)) hc (rfl) (rfl) (rfl) (rfl)
              (fn [hl :- (= (:live (cells k)) true)]
                (wqc-of (cells k) _ (qsinv-live cells k hq hl) (rel-wake-all (:dormant (cells k)) (:world (cells k)) (sinv-live cells k hs hl))
-                 (fn [h :- (= (qh (:world (cells k))) true)] (qid-wake-all (:dormant (cells k)) (:world (cells k)) h))))))))
+                 (fn [h :- (= (qh (:world (cells k))) true)] (qid-wake-all (:dormant (cells k)) (:world (cells k)) h))))
+             (fn [hl :- (= (:live (cells k)) true), hn0 :- (= (no-markers (:world (cells k))) true)] (p3l-no-markers _ (p3l-wake-all (:dormant (cells k)) (:world (cells k)) (sinv-live cells k hs hl))))))))
 
 (a/theorem cinv-resume-q [cells :- (=> Nat Cell), pubs :- (=> Nat Pub), p :- Nat, v :- Nat]
   (=> (sinv cells) (qsinv cells) (cinv cells) (cinv (sys-resume cells pubs p v)))
@@ -1351,7 +1396,8 @@
            (fn [hl :- (= (:live (cells (:cell (pubs p)))) true)]
              (wqc-of (cells (:cell (pubs p))) _ (qsinv-live cells (:cell (pubs p)) hq hl)
                (rel-fire-ack (:world (cells (:cell (pubs p)))) (:res (pubs p)) res-ok v (sinv-live cells (:cell (pubs p)) hs hl))
-               (fn [h :- (= (qh (:world (cells (:cell (pubs p))))) true)] (qid-fire-ack (:world (cells (:cell (pubs p)))) (:res (pubs p)) res-ok v h)))))))
+               (fn [h :- (= (qh (:world (cells (:cell (pubs p))))) true)] (qid-fire-ack (:world (cells (:cell (pubs p)))) (:res (pubs p)) res-ok v h))))
+           (fn [hl :- (= (:live (cells (:cell (pubs p)))) true), hn0 :- (= (no-markers (:world (cells (:cell (pubs p))))) true)] (p3l-no-markers _ (p3l-fire-ack (:world (cells (:cell (pubs p)))) (:res (pubs p)) res-ok v (sinv-live cells (:cell (pubs p)) hs hl)))))))
 
 (a/theorem cinv-merge-q [cells :- (=> Nat Cell), k :- Nat, m :- Nat, b :- World]
   (=> (sinv cells) (qsinv cells) (cinv cells) (cinv (sys-merge cells k m b)))
@@ -1360,7 +1406,8 @@
   (exact (cinv-world-q cells k (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b)) hc (rfl) (rfl) (rfl) (rfl)
            (fn [hl :- (= (:live (cells k)) true)]
              (wqc-of (cells k) _ (qsinv-live cells k hq hl) (rel-merge-world (:world (cells k)) (:world (cells m)) b (sinv-live cells k hs hl))
-               (fn [h :- (= (qh (:world (cells k))) true)] (qid-merge-world (:world (cells k)) (:world (cells m)) b h)))))))
+               (fn [h :- (= (qh (:world (cells k))) true)] (qid-merge-world (:world (cells k)) (:world (cells m)) b h))))
+           (fn [hl :- (= (:live (cells k)) true), hn0 :- (= (no-markers (:world (cells k))) true)] (p3l-no-markers _ (p3l-merge-world (:world (cells k)) (:world (cells m)) b (sinv-live cells k hs hl)))))))
 
 (a/theorem cinv-publish-q [cells :- (=> Nat Cell), k :- Nat, st :- Nat, kont :- Nat, fresh :- Nat]
   (=> (sinv cells) (qsinv cells) (cinv cells) (cinv (sys-publish cells k st kont fresh)))
@@ -1849,13 +1896,16 @@
   (cases hj (join-ok (cells k) t))
   (case [false] (simp only [sys-join hj]) (exact h))
   (case [true] (simp only [sys-join hj])
-    (exact (cinv-world cells k (join-cell (cells k) t) h (rfl) (rfl) (rfl) (rfl) (fn [hl :- (= (:live (cells k)) true)] (wq-refl (:world (cells k))))))))
+    (exact (cinv-world cells k (join-cell (cells k) t) h (rfl) (rfl) (rfl) (rfl) (fn [hl :- (= (:live (cells k)) true)] (wq-refl (:world (cells k))))
+             (fn [hl :- (= (:live (cells k)) true)] (self-imp _))))))
 (a/theorem cinv-deliver [cells :- (=> Nat Cell), k :- Nat] (=> (cinv cells) (cinv (sys-deliver cells k)))
   (intro h) (simp only [sys-deliver])
-  (exact (cinv-world cells k (deliver-cell (cells k)) h (rfl) (rfl) (rfl) (rfl) (fn [hl :- (= (:live (cells k)) true)] (wq-refl (:world (cells k)))))))
+  (exact (cinv-world cells k (deliver-cell (cells k)) h (rfl) (rfl) (rfl) (rfl) (fn [hl :- (= (:live (cells k)) true)] (wq-refl (:world (cells k))))
+             (fn [hl :- (= (:live (cells k)) true)] (self-imp _)))))
 (a/theorem cinv-withdraw [cells :- (=> Nat Cell), k :- Nat, x :- Nat] (=> (cinv cells) (cinv (sys-withdraw cells k x)))
   (intro h) (simp only [sys-withdraw])
-  (exact (cinv-world cells k (withdraw-cell (cells k) x) h (rfl) (rfl) (rfl) (rfl) (fn [hl :- (= (:live (cells k)) true)] (wq-refl (:world (cells k)))))))
+  (exact (cinv-world cells k (withdraw-cell (cells k) x) h (rfl) (rfl) (rfl) (rfl) (fn [hl :- (= (:live (cells k)) true)] (wq-refl (:world (cells k))))
+             (fn [hl :- (= (:live (cells k)) true)] (self-imp _)))))
 
 ;; ---- delivery at most once: a join that is not pending stays as it is, and join ids are distinct
 (a/defn jkeep [js :- (List Join), js2 :- (List Join)] Prop

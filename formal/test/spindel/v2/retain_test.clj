@@ -105,7 +105,12 @@
                                   (concat [(:scope run) (:of run)] (:resources run) (fin-refs run))))
                       y (cons x (ref-ancestors w x))]
                   y))
-        st (set (for [run (:runs w) :when (lv (:id run)) y (fin-refs run)] y))
+        ;; storage: the finalizer refs of the live runs and (C1c stage B) every fork marker with its owner scope,
+        ;; closed upward over the scope parents
+        st (set (for [x (concat (for [run (:runs w) :when (lv (:id run)) y (fin-refs run)] y)
+                                (mapcat (fn [f] [(:id f) (:owner f)]) (:forks w)))
+                      y (cons x (ref-ancestors w x))]
+                  y))
         adm (set (concat (for [c (:comps w) :when (and (or (:idle c) (zero? (:done-epoch c))) (pos? (:handles c)))] (:id c))
                          (for [x (:sources w) :when (pos? (:handles x))] (:id x))
                          (for [t (:tasks w) :when (and (not= s/res-none (:tag (:result t))) (pos? (:handles t)))] (:id t))

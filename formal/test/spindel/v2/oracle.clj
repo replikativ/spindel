@@ -35,7 +35,8 @@
             [spindel.v2.casc :as casc]
             [spindel.v2.acts :as acts]
             [spindel.v2.ledger :as lg]
-            [spindel.v2.sys :as sys]))
+            [spindel.v2.sys :as sys]
+            [spindel.v2.owned :as ow]))
 
 ;; ===========================================================================
 ;; Codes (state.clj)
@@ -364,7 +365,10 @@
      :released (boolean (:released p))
      :next-id (:next-id p)}))
 
-(def row-tables [:scopes :comps :tasks :runs :sources :edges :acts :res :pubs :forks])
+;; C1c stage B: the fork markers (the model's W-OWNED-N / W-NORMALIZE) are not compared row by row: the engine keeps
+;; counts, not rows, and projects `:forks {}`. The sidecar's `:owned`/`:normalize` are compared instead
+;; (check-observations).
+(def row-tables [:scopes :comps :tasks :runs :sources :edges :acts :res :pubs])
 
 (defn diff
   "Precise differences between two projections (engine first): a vector of
@@ -527,8 +531,12 @@
       ;; table of the parent (the marker is the child cell's, notes/LAYER2.md §3)
       (= tag :fork-host) {:bump (first args)}
       ;; `[:fork r c]` (the effect): the delivery carrier's id and the child's, no table change
-      ;; in the parent, whose run keeps its slice
-      (= tag :fork) {:bump (second args)}
+      ;; in the parent, whose run keeps its slice, but the count (C1c stage B): a marker c owned by the
+      ;; run's current scope, in own-child!'s counting branch
+      (= tag :fork) {:bump (second args) :fork-run (first args)}
+      ;; C1c stage B (spindel.v2.owned): `[:owned-done s child]` and the drain `[:normalize]`
+      (= tag :owned-done) {:owned-done (vec args)}
+      (= tag :normalize) {:normalize true}
       :else {:skip tag})))
 
 ;; The `(fork)` effect, child side (notes/LAYER2.md L3): the forking run's copy is parked at the
@@ -673,6 +681,8 @@
 
 (defn- cells [ds] (set (map (juxt :table :id :field) ds)))
 
+(defn stage-b-log? [log] (boolean (some #(#{:owned-done :normalize} (first (:item %))) log)))
+
 (defn replay
   "Replays `log` through the model. Options: :format (default `log-format`), :strict? (no
   `pending-deviations`), :from (first commit index, default 0: start at
@@ -684,14 +694,19 @@
   :unborn? (an instance's log: a `[:release-world]` before its activation, the first
   `:resource-fire`, is E4's release of an unborn instance, engine.clj `release-unborn`).
   Returns the summary map."
-  [log & {:keys [format from resync-on-divergence? max-diffs strict? init family? worlds? unborn?] :or {from 0 max-diffs 8}}]
+  [log & {:keys [format from resync-on-divergence? max-diffs strict? init family? worlds? unborn? owned?] :or {from 0 max-diffs 8}}]
   (binding [*deviations* (if strict? {} pending-deviations)]
   (let [fmt (or format (log-format log))
         ;; logs with `[:finally-enter st]`/`[:finally-exit st]` items (sample 4 on) need no
         ;; implicit finally regions or cleanup exits
         explicit-finally? (some #(#{:finally-enter :finally-exit} (first (:item %))) log)
         ;; logs with `[:slice-exit r]` items (Z#49, sample 7 on) need no implicit exits
-        explicit-exits? (some #(= :slice-exit (first (:item %))) log)]
+        explicit-exits? (some #(= :slice-exit (first (:item %))) log)
+        ;; C1c stage B: the inherited markers (W-NORMALIZE) are the markers of the world the log starts from
+        norm0 (mapv :id (:forks (or init s/empty-world)))
+        ;; a log of an engine with the stage B counts (it commits `[:owned-done]` / `[:normalize]` somewhere in the
+        ;; family: `replay-family` passes it); older logs count nothing at the fork effect
+        owned? (if (some? owned?) owned? (stage-b-log? log))]
   (loop [i from
          w (if (zero? from) (or init s/empty-world) (resync (:proj (nth log (dec from)))))
          prev (when (pos? from) (:proj (nth log (dec from))))
@@ -724,9 +739,21 @@
                      div? (update :divergences conj {:commit i :item item :model-items [:release-unborn] :class :real
                                                      :accepted {:engine accepted :model true}
                                                      :n-diffs (count ds) :diffs (vec (take max-diffs ds)) :diffs-all ds}))))
+          (or (:owned-done a) (:normalize a))
+          (let [w1 (if-let [[sc c] (:owned-done a)] (ow/owned-done-world w sc c) (ow/drain-world w norm0))
+                ds (if proj (diff proj (world->proj w1)) [])
+                div? (or (not= accepted true) (seq ds))]
+            (recur (inc i) w1 (or proj prev)
+                   (cond-> (keep (update acc :checked inc) w1)
+                     div? (update :divergences conj {:commit i :item item :model-items [] :class :real
+                                                     :accepted {:engine accepted :model true}
+                                                     :n-diffs (count ds) :diffs (vec (take max-diffs ds)) :diffs-all ds}))))
           (:bump a)
           (let [c (:bump a)
-                w1 (skip-to w (inc c))
+                rr (when-let [r (:fork-run a)] (first (s/run-find w r)))
+                sc (when rr (en/cur-scope w rr))
+                wc (skip-to w c)
+                w1 (if (and owned? rr (ow/own-ok wc sc)) (ow/own-world wc sc c) (skip-to w (inc c)))
                 ds (if proj (diff proj (world->proj w1)) [])
                 div? (or (< c (:next-id w)) (seq ds))]
             (recur (inc i) w1 (or proj prev)
@@ -819,7 +846,8 @@
                    :root s/empty-world
                    (:fork-host :instance) (pw (inc at))
                    :fork (:world (fork-child (pw at) (second (:item (nth (:log (spec parent)) at))))))
-            res (replay log :family? true :init init :worlds? true :format :table :unborn? (= kind :instance))]
+            res (replay log :family? true :init init :worlds? true :format :table :unborn? (= kind :instance)
+                        :owned? (boolean (some (comp stage-b-log? :log) (vals spec))))]
         (recur (remove #{k} todo) (assoc out k {:res res :init init})))
       out)))
 
@@ -895,7 +923,8 @@
                                (let [w (at k)]
                                  (boolean (and (:released w)
                                                (or (unborn? k)
-                                                   (and (empty? (:runs w)) (every? complete? (children k))))))))]
+                                                   ;; C1c stage B (questions 15, 16): no marker (W-OWNED-N, W-NORMALIZE)
+                                                   (and (empty? (:runs w)) (empty? (:forks w)) (every? complete? (children k))))))))]
                {:at at :unborn? unborn? :complete? complete?
                 :model (fn [k] {:runs (count (:runs (at k))) :released? (boolean (:released (at k)))
                                 :complete? (complete? k)
@@ -919,7 +948,7 @@
                            [lo seen] (ledger-obs w (into smat (remove task-scope?) mat) seen)
                            ;; cross-check of question 11: the sidecar's :materialized? is the model's "owned something"
                            lo (update lo :tasks (fn [m] (into (sorted-map) (map (fn [[t o]] [t (assoc o :materialized? (contains? mat (lg/task-srow t)))])) m)))
-                           cell (fn [js] (sys/->Cell w true 0 0 [] (unborn? k) 0 [] (complete? k) js))
+                           cell (fn [js] (sys/->Cell w true 0 0 [] (unborn? k) 0 [] (complete? k) js []))
                            admitted (reduce (fn [c [_ _ t]] (if (sys/join-ok c t) (sys/join-cell c t) c))
                                             (cell js) (filter (fn [[jk js _]] (and (= jk k) (= js step))) joins))
                            withdrawn (reduce (fn [c [_ _ j]] (sys/withdraw-cell c j))
@@ -931,10 +960,16 @@
               [{} {}] (map-indexed vector obs)))]
     (vec
      (for [[idx {:keys [step log-length] eo :obs}] (map-indexed vector obs)
-           :let [{:keys [model]} (c1 idx log-length)]
+           :let [{:keys [model at]} (c1 idx log-length)]
            [k e] eo
            :let [m (model k)
-                 l (c1c [idx k])]
+                 l (c1c [idx k])
+                 ;; C1c stage B: the markers the world started with are its W-NORMALIZE (until `[:normalize]` drains
+                 ;; them); the others are its own counts W-OWNED-N
+                 mw (at k)
+                 norm (set (map :id (:forks (:init (fam k)))))
+                 mo (frequencies (keep #(when-not (norm (:id %)) (:owner %)) (:forks mw)))
+                 mn (set (keep #(when (norm (:id %)) (:owner %)) (:forks mw)))]
            d (concat
               (for [f [:runs :released? :complete?] :when (not= (get e f) (get m f))]
                 {:step step :world k :field f :engine (get e f) :model (get m f)})
@@ -948,5 +983,9 @@
                           {:step step :world k :field [t id f] :engine v :model (get-in mt [id f])}))]
                 d)
               (when (and (contains? e :pending-joins) (not= (:pending-joins e) (:pending-joins l)))
-                [{:step step :world k :field :pending-joins :engine (:pending-joins e) :model (:pending-joins l)}]))]
+                [{:step step :world k :field :pending-joins :engine (:pending-joins e) :model (:pending-joins l)}])
+              (when (and (contains? e :owned) (not= (into {} (:owned e)) mo))
+                [{:step step :world k :field :owned :engine (:owned e) :model mo}])
+              (when (and (contains? e :normalize) (not= (set (:normalize e)) mn))
+                [{:step step :world k :field :normalize :engine (:normalize e) :model mn}]))]
        d))))

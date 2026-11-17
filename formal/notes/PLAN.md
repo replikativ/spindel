@@ -36,6 +36,7 @@ Feasibility notes: `../ansatz/.internal/design/spindel-v2-feasibility.md`.
 | `spindel.v2.ledger` | C1c stage A (Z#70): derived completion ledger, `task-held`, `task-complete` (not held and no run scope row k + 2), `scope-complete` (no row); layer-2 host joins in sys.clj (`Cell.joins` of `Join` records, `sys-join`, `sys-deliver`, `sys-withdraw`, `complete-cell` delivers the rest) | done (theorems in lstab, oscope, qworld, sys) |
 | `spindel.v2.lstab` | C1c stage A proof stage, stability: parametric bundle `gst k s` (k below the allocator and task k not held, s below the allocator and no scope row s), copied over raw/normalize with T12/T13/T14 task-row overrides; `step-gst`, `task-complete-stable`, `scope-complete-stable` | done |
 | `spindel.v2.oscope` | C1c stage A proof stage (questions 10, 14): bundle `gos` (every open non-root scope has a run row whose run scope is it or on its parent chain), copied with overrides at run creation, open-scope (`cur-scope` cases), detach, Z#18 deletion (`parent-outside`), T13 (subtree convergence `sub-conv`, completeness `sub-within`, witness bundle `gox x` over the source closes) and Rule R (`run-kept`, kept parents); `step-gos`, `gos-empty` | done |
+| `spindel.v2.owned` | C1c stage B (Z#71, v4 L2): owned forks as layer-1 world operations. The count W-OWNED-N is the fork markers (`ForkRow`: id = the child world's id, owner = the forking run's current scope; one per counted child), the inherited markers of a fork are its W-NORMALIZE (`Cell.norm` in sys.clj); `own-world` (+1, counting branch `own-ok`), `owned-done-world` (`[:owned-done s child]`), `drain-world` (`[:normalize]`), `no-markers` (completion); retention: retain.clj `fork-keep` (a marker keeps itself and its owner's ancestor chain, storage) | model (theorems: proof stage) |
 | `spindel.v2.tomb` | C1 Q6: tombstones are dormant. Bundle `gy y` (copy of the raw step and of normalization): every alive run's computation and every dep edge's creditor is no tombstone (`ta-one`, `dep-untomb`), nor is computation y; `gy 0` is in P3's round invariant `ri` (`refs-untomb`, the new premise of `filter-safe-of-refs`); `trc` (acts-alive && gy 0) is the round context the i10/i14/hmk2/hm18 normalization chains take; `step-gy`, `gy-empty` | done |
 | `spindel.v2.acyc` | Z#69: scope parents are acyclic. Bundle `gcy` = inv-sample && `gcy-rest` (every scope's parent below the allocator, `cy-par-below`; no scope on its own `scope-ancestors`, `scopes-acyclic`, equivalently no `Reach (scope-up w) (scope-up w y) y`); generic graph lemmas (sub-graph, fresh node, re-parenting outside the subtree); copy as i1's G1 with overrides at run creation, open-scope and detach; `step-gcy`, `step-acyc` / `acyc-empty` (from p3b), `step-acyclic`, `step-acyclic-reach` | done |
 | `spindel.v2.p3` | P3 complete: bundles `mdb` (marked edges are dep), `esb` (edge-sep: references are non-edge ids), `aha` (activation runs exist and are alive), round invariant `ri` -> every round filter-safe (`rule-r-safe-ri`); combined bundle `p3b` (ga, inv-rank, gl, g9, g7, mdb, esb, aha) with `step-p3b` and the step theorems with no honest hypothesis (`step-rule-r-safe`, `step-inv-total`, `step-acts-total`, `step-rank-total`, ...) | done |
@@ -1735,3 +1736,80 @@ only by a child's cleanup chain) is therefore not complete, as in the engine (it
 - Merge of #278 (f09aa35): its `:materialized?` line in `ledger-obs` is dropped in favour of the step-1 version
   (the model's "owned something" inference for the task's run scope, compared with the sidecar's value; the
   sidecar's value itself feeds the scope key set and `:srow-present?`). Every sample, 33 included, replays exactly.
+
+### Engine session answers after the proof stage (2026-11-17)
+- A host join's target 0 is unreachable (`join-ok` refuses it; no handle names id 0).
+- The oracle's "owned something" inference is exact for computation run scopes too: no sidecar flag is needed for them.
+- Pruning withdrawn or delivered joins is unobservable: keeping them forever (the model) is sound.
+
+## C1c stage B (2026-11-17, branch `formal/c1c-b-model`): owned forks, model stage
+
+Design `c1c-task-joins-design.md` v4 L2 (owned-fork counts, `[:owned-done s child]`, W-NORMALIZE), model first: the
+engine follows this model. Mapping and questions 15-18 agreed with the engine session (answers below).
+
+### Mapping
+- **Count.** W-OWNED-N {scope -> n} is the layer-1 fork markers (`ForkRow {id child owner}`, empty before stage B):
+  one marker per counted child; `id` = the child world's id (`alloc-id!` of the parent in fork-world*, the id
+  `[:fork r child]` logs), `owner` = the forking run's current scope (`current-scope!` = `cur-scope`: an open explicit
+  scope or the run scope, never the root). Counted only in own-child!'s counting branch of the `(fork)` effect (the
+  world is not released, the owner is open): `own-world`, system operation `sys-own` (with `sys-fork-effect`, which
+  copies the world first, so the child does not inherit its own marker, and `sys-accept`). A host fork and an
+  activated instance are owned weakly by the root and never counted (question 18a).
+- **Keep reason.** Z#18's `subtree-empty` already refused a subtree owning a marker (`fork-owned-in`). Rule R's filter
+  keeps a marker and its owner's ancestor chain: retain.clj `fork-keep`, part of storage (`storage-gather` =
+  `storage-gather0` ++ `fork-keep`). The engine has no filter over scope rows (question 17): scopes go only by
+  remove-scope-if-empty!, which gains `W-OWNED-N[s] = 0` and `s ∉ W-NORMALIZE`; the filter is the model's encoding.
+- **`[:owned-done s child]`** (internal item of the owner, accepted after release; posted by kid-done! for a counted
+  child, on completion or collection, question 18b): `owned-done-world` drops the marker, then Z#18 at s
+  (`remove-empty-at`) and Rule R; without that marker the world is unchanged. `sys-owned-done` ends with
+  `sys-complete` (maybe-complete!).
+- **W-NORMALIZE.** A fork, fork effect, savepoint basis and instance copy their source's world, so they hold its
+  markers: its counts and its own undrained inherited markers, which is v4's union. `Cell.norm` = the marker ids the
+  cell's world started with (`fork-cell`, `fork-effect-cell`: the source world's markers; `inst-cell`: the basis's).
+  `[:normalize]` (logged once, only when W-NORMALIZE is non-empty; engine sites: run-turn!'s first-turn entry and
+  activate!, next to activate-dormant!, condition `(seq W-NORMALIZE)`): `drain-world` drops them, Z#18 at each owner,
+  Rule R; `sys-drain` (born cells only; an E4-released unborn instance completes abandoned) ends with `sys-complete`.
+  Engine: fork-world* sets the child's W-NORMALIZE := source W-NORMALIZE ∪ {s | W-OWNED-N[s] > 0} and W-OWNED-N :=
+  nil; instance-world* copies the basis's.
+- **Completion (questions 15, 16).** `complete-ready` (born branch) also requires `no-markers`: W-OWNED-N all zero and
+  W-NORMALIZE empty (engine maybe-complete!). The fast path may run a host item before the first-turn drain (as for
+  activate-dormant!): a release there does not complete the world; the drain that follows does.
+- **Oracle.** `[:fork r c]`: bump to c, then `own-world` with the run's `cur-scope` (else bump past c);
+  `[:owned-done s c]`, `[:normalize]`: the world operations (the replay's `norm0` = the markers of the world the log
+  starts from). Marker rows are not compared (the engine projects `:forks {}`); the sidecar's per-world
+  `:owned {s n}` (counts > 0) and `:normalize #{s}` are (question 18c), against the markers outside / inside `norm0`.
+  The oracle's world completion also requires no marker. Logs of an engine before stage B (no `[:owned-done]` or
+  `[:normalize]` anywhere in the family, `stage-b-log?`; option `:owned?`) count nothing at the fork effect: samples
+  15 and 22 replay as before. Samples with fork effects should be regenerated with the stage B engine.
+- **Tests.** sys_test `c1c-owned-fork-holds-its-scope` (the run scope stays after the task retires, the task is not
+  complete and a host join waits; owned-done removes the scope and completes the task), `c1c-owned-fork-early-branch-not-counted`
+  (released world, no open scope), `c1c-completion-waits-for-the-count` (question 16: the collected child leaves
+  W-KIDS empty, the count holds completion, owned-done completes), `c1c-normalization` (a fork inherits the marker as
+  `norm`; question 15: released before the drain it is not complete; the drain removes the scope, completes the task
+  and the world; the parent keeps its count; a fork of the undrained child inherits it; an unborn cell does not drain).
+
+### Questions (engine session), C1c stage B, and answers (2026-11-17, engine c8e2ac6)
+15. The fast path (ingress-body runs the host item before run-turn!) lets a release complete a fresh fork before its
+    first-turn drain, with a scope still kept by W-NORMALIZE (Q10 broken). Answer: maybe-complete! also requires
+    W-OWNED-N empty and W-NORMALIZE empty; the drain and owned-done end with maybe-complete!. The fast-path order
+    stays (the drain follows in run-turn!).
+16. kid-done! decrements W-KIDS outside the gate before the owner runs `[:owned-done]`: a run retiring in between
+    completes the world with a count left. Answer: the same fix as 15.
+17. Answer: no filter over scopes in the engine; scope rows go only by remove-scope-if-empty! (close-scope!,
+    release-ownership!, detach!); ancestors are kept by S-CHILDREN. remove-scope-if-empty! gains `W-OWNED-N[s] = 0`
+    and `s ∉ W-NORMALIZE` (the second for a task in an inherited s retiring before the drain).
+18. (a) no count on root: counted iff strong? and not the early branch; (b) kid-done! posts `[:owned-done s child]`
+    for counted children only (the kid token carries s), also on collection (kid-collected! goes through kid-done!);
+    the owner is never complete then; (c) sidecar per world `:owned {s n}` (n > 0) and `:normalize #{s}`; (d) `child`
+    is the child world's id. Additions: owned-done commits `[:owned-done s child]`; the drain commits `[:normalize]`.
+
+### Changed statements (model stage)
+- retain.clj `storage-gather` (now `storage-gather0` ++ `fork-keep`); `storage-filter` (new premise use:
+  `fork-keep-filter`). p3.clj `esk` takes the markers (`frow-ok`: id and owner are references) and every esb lemma
+  carries them (`esk-fparts`, `frow-mono`, `fork-keep-ok`); i11 `storage-obl` splits the marker half. sys.clj
+  `Cell` gains `norm`; `complete-ready` gains `no-markers`.
+- Unchanged: `p3l` still contains gw's `forks-nil` (layer 1 creates no marker). Worlds with markers arise only from the
+  new system operations, whose invariants are the proof stage: generalize gw (markers: ids below the allocator,
+  owners are scopes), `sinv-own`/`-owned-done`/`-drain`, cinv with markers, Q10 (complete born world -> every scope
+  but the root complete) with markers, and normalization: after the drain every inherited scope is complete or kept.
+
