@@ -10,7 +10,8 @@
             [spindel.v2.sys :as sys]))
 
 (def theorems
-  '[sinv-put step-frame sinv-step fork-frame fork-copy sinv-fork p3l-fork-effect-world fork-effect-frame sinv-fork-effect
+  '[sinv-put step-frame sinv-step fork-refused fork-effect-refused fork-frame fork-copy sinv-fork p3l-fork-effect-world
+    fork-effect-frame sinv-fork-effect
     p3l-fire-ack p3l-wake-one p3l-wake-all sinv-wake
     sinv-drop sinv-init pinv-publish sinv-resume instantiate-frame instantiate-copy instantiate-indep
     sinv-instantiate sinv-activate activate-born activate-once pinv-abandon
@@ -215,3 +216,26 @@
     (is (some #{z} (:dormant (cells 2))) "inherited by the fork")
     (is (empty? (:res (:world (woken 2)))) "acknowledged at the fork's first turn (R1)")
     (is (= (:res w) (:res (:world (woken 1)))) "never touching the parent")))
+
+;; question 9 (engine-v2 54e3df1): neither fork form is taken from an unborn instance, E4-released or
+;; not (host `fork!` throws while W-UNBORN is set; the `(fork)` effect needs a run in a slice, and an
+;; unborn instance drains none). The model refuses both: the system is unchanged.
+(deftest c1-fork-of-unborn-refused
+  (let [w (prefix-world-c1)
+        r (first (:runs w))
+        unborn (c1-cells {3 (c1-cell w :parent 1 :unborn true :pending 99)})
+        e4 (sys/sys-release-unborn unborn 3)
+        born (c1-cells {3 (c1-cell w :parent 1)})]
+    (is (true? (:unborn (e4 3)))) (is (true? (:released (:world (e4 3)))) "E4: released, still unborn")
+    (doseq [[label cells] [["an unborn instance" unborn] ["an E4-released instance" e4]]]
+      (testing label
+        (let [f (sys/sys-fork cells 3 4 s/root-scope-id)
+              fe (sys/sys-fork-effect cells 3 4 s/root-scope-id (:stamp r) 0 7)]
+          (is (= [(cells 3) (cells 4)] [(f 3) (f 4)]) "host fork refused: no child, the source unchanged")
+          (is (= [(cells 3) (cells 4)] [(fe 3) (fe 4)]) "fork effect refused"))))
+    (testing "a born cell forks (both forms)"
+      (let [f (sys/sys-fork born 3 4 s/root-scope-id)
+            fe (sys/sys-fork-effect born 3 4 s/root-scope-id (:stamp r) 0 7)]
+        (is (= w (:world (f 4))) "the child starts from the parent's world")
+        (is (= [3 3] [(:parent (f 4)) (:parent (fe 4))]))
+        (is (= (born 3) (f 3) (fe 3)) "the parent unchanged")))))

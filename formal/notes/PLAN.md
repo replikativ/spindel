@@ -1452,11 +1452,32 @@ New (Stage B finding):
   stays false of an arbitrary p3l world: quiet stability needs qinv).
 - Premise of `qsinv-fork`/`qsinv-fork-effect`: the forked cell is not an E4-released unborn instance (its world need
   not have K: handles may be > 0, so a born copy could start an admitted computation after completing). Question 9.
+  Gone since question 9 was answered (below): both fork forms are refused from an unborn cell.
 
 ### Questions (engine session), C1 quiet half
 9. May a fork (host `fork!` or the fork effect) be taken from an unborn instance, in particular one released by E4?
    The model's `sys-fork`/`sys-fork-effect` have no guard; the completion invariant for the child assumes the parent
    is not an E4-released instance (a released world with handles > 0 copied into a born cell could, after its runs
    retire and it completes, start a computation admitted by a handle).
+   Answered (engine-v2 54e3df1, core.cljc): no, neither form, E4-released or not. Host `fork!` throws "fork! of an
+   unactivated instance" while W-UNBORN is set (host-fork-call!); an E4 release keeps the instance unborn (`born?`
+   requires not released); the `(fork)` effect needs a valid run inside a slice, and an unborn instance drains no
+   slice (E4: its inherited work waits).
+
+### Question 9 answered: fork guard (sys.clj, 2026-11-16)
+- `sys-fork` and `sys-fork-effect` are guarded by "the source cell is born" (`(:unborn (cells k)) = false`); otherwise
+  the operation is refused with the system unchanged (the `sys-wake`/`sys-activate` convention): `fork-refused`,
+  `fork-effect-refused` (new). This is LAYER2.md L2's guard "not unborn", now in the model.
+- `qsinv-fork`/`qsinv-fork-effect` hold for every live source cell: the refused case keeps qsinv, the accepted case
+  is born, so its cq is qinv (`cq-born`). Completion stability (`qsinv`, `qpinv`) is kept by every system operation
+  with no premise beyond liveness of the source.
+- **Changed statements**: `qsinv-fork`, `qsinv-fork-effect`: premise `(:unborn (cells k)) && (:released ...) = false`
+  removed (discharged by the guard). `fork-copy`: premise `(:unborn (cells k)) = false` added (a refused fork leaves
+  cell m as it was, so the child's world is the parent's only when the fork is taken). Unchanged statements, proofs
+  split on the guard: `fork-frame`, `fork-effect-frame`, `sinv-fork`, `sinv-fork-effect`, `cinv-fork`,
+  `cinv-fork-effect`.
+- sys_test: no existing case forked an unborn cell (`c1-fork-discharge` forks a born, released world). New
+  `c1-fork-of-unborn-refused`: both forms are refused from an unborn and from an E4-released instance (system
+  unchanged at the source and the target id), and both are taken from the same world as a born cell.
 - Fresh-JVM `clojure -M:test` (2026-11-16, after step 4): 244 tests, 207,419 assertions, 0 failures, 0 errors. No sorry.
 

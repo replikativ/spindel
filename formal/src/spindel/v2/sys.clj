@@ -20,8 +20,9 @@
     F5      sinv-put (generic), sinv-step, sinv-fork, sinv-wake, sinv-drop, sinv-resume,
             sinv-instantiate, sinv-activate, sinv-init; pinv-publish, pinv-abandon
     frames  step-frame, fork-frame, fork-effect-frame, instantiate-frame
-    copies  fork-copy (the child starts from the parent's world), instantiate-copy and
+    copies  fork-copy (the child of a born cell starts from the parent's world), instantiate-copy and
             instantiate-indep (every instance of a publication starts from its basis)
+    guard   fork-refused, fork-effect-refused (a fork of an unborn cell changes nothing)
     S4      activate-born, activate-once (a second activation changes nothing)
     merge   sinv-merge, merge-frame, merge-refused (a refused merge changes nothing), merge-unchanged
             (a child that wrote no inherited source merges to the same parent)
@@ -37,8 +38,8 @@
             `cinv-resume-q`, `cinv-merge-q`, `cinv-publish-q`, `cinv-abandon-q`): under `qsinv` (every
             live cell is an E4-released unborn instance or holds spindel.v2.qworld's `qinv`) and
             `qpinv` (every live publication's basis is released or holds qinv), both kept by every
-            operation (`qsinv-*`, `qpinv-*`; a fork or fork effect from a cell that is not an
-            E4-released instance).
+            operation (`qsinv-*`, `qpinv-*`). A fork or fork effect of an unborn cell (E4-released
+            or not) is refused (`fork-refused`, `fork-effect-refused`): question 9, engine 54e3df1.
 
   Not here: following mode (not in the engine either), sealing, sources created in the child (not merged)."
   (:require [ansatz.core :as a]
@@ -126,6 +127,12 @@
 
 ;; ---------------------------------------------------------------------------
 ;; L2/L3: fork of world k into the fresh cell m (a value copy)
+;;
+;; Guard (question 9, engine-v2 54e3df1): the source cell is born. Host `fork!` throws "fork! of an
+;; unactivated instance" while the instance is unborn, and an E4 release keeps it unborn (`born?`
+;; requires not released); the `(fork)` effect needs a run inside a slice, and an unborn instance
+;; drains no slice (E4: its inherited work waits). So a fork of an unborn cell is refused: no
+;; item, the system unchanged (`fork-refused`, `fork-effect-refused`).
 
 (a/defn armed-ids [rs :- (List ResRow)] (List Nat)
   (match rs [nil (List.nil Nat)]
@@ -140,26 +147,37 @@
   (Cell.mk (:world c) true k owner (nat-app (res-ids (:res (:world c))) (:dormant c)) false 0 (List.nil Nat) false))
 
 (a/defn sys-fork [cells :- (=> Nat Cell), k :- Nat, m :- Nat, owner :- Nat] (=> Nat Cell)
-  (fupd cells m (fork-cell (cells k) k owner)))
+  (if (:unborn (cells k)) cells (fupd cells m (fork-cell (cells k) k owner))))
+
+;; a fork of an unborn cell (E4-released or not) is refused
+(a/theorem fork-refused [cells :- (=> Nat Cell), k :- Nat, m :- Nat, owner :- Nat]
+  (=> (= (:unborn (cells k)) true) (= (sys-fork cells k m owner) cells))
+  (intro hu) (simp only [sys-fork hu]))
 
 (a/theorem fork-frame [cells :- (=> Nat Cell), k :- Nat, m :- Nat, owner :- Nat, j :- Nat]
   (=> (Not (= j m)) (= (sys-fork cells k m owner j) (cells j)))
   (intro hne)
-  (simp only [sys-fork fupd (nbeq-ne j m hne)]))
+  (cases hu (:unborn (cells k)))
+  (case [true] (simp only [sys-fork hu]))
+  (case [false] (simp only [sys-fork hu fupd (nbeq-ne j m hne)])))
 
 (a/theorem fork-copy [cells :- (=> Nat Cell), k :- Nat, m :- Nat, owner :- Nat]
-  (= (:world (sys-fork cells k m owner m)) (:world (cells k)))
-  (simp only [sys-fork fupd-same fork-cell]))
+  (=> (= (:unborn (cells k)) false) (= (:world (sys-fork cells k m owner m)) (:world (cells k))))
+  (intro hu)
+  (simp only [sys-fork hu fupd-same fork-cell]))
 
 (a/theorem sinv-fork [cells :- (=> Nat Cell), k :- Nat, m :- Nat, owner :- Nat]
   (=> (sinv cells) (= (:live (cells k)) true) (sinv (sys-fork cells k m owner)))
   (intros hs hlk)
-  (have hc (=> (= (:live (fork-cell (cells k) k owner)) true) (= (p3l (:world (fork-cell (cells k) k owner))) true)))
-  (intro hl)
-  (simp only [fork-cell])
-  (exact (sinv-live cells k hs hlk))
-  (simp only [sys-fork])
-  (exact (sinv-put cells m (fork-cell (cells k) k owner) hs hc)))
+  (cases hu (:unborn (cells k)))
+  (case [true] (simp only [sys-fork hu]) (exact hs))
+  (case [false]
+    (have hc (=> (= (:live (fork-cell (cells k) k owner)) true) (= (p3l (:world (fork-cell (cells k) k owner))) true)))
+    (intro hl)
+    (simp only [fork-cell])
+    (exact (sinv-live cells k hs hlk))
+    (simp only [sys-fork hu])
+    (exact (sinv-put cells m (fork-cell (cells k) k owner) hs hc))))
 
 ;; ---------------------------------------------------------------------------
 ;; L4: the fix-up of a fork's inherited resources, as layer-1 items
@@ -331,24 +349,34 @@
 
 (a/defn sys-fork-effect [cells :- (=> Nat Cell), k :- Nat, m :- Nat, owner :- Nat, st :- Nat, kont :- Nat, v :- Nat]
   (=> Nat Cell)
-  (fupd cells m (fork-effect-cell (cells k) k owner st kont v)))
+  (if (:unborn (cells k)) cells (fupd cells m (fork-effect-cell (cells k) k owner st kont v))))
+
+;; the fork effect in an unborn cell (E4-released or not) is refused
+(a/theorem fork-effect-refused [cells :- (=> Nat Cell), k :- Nat, m :- Nat, owner :- Nat, st :- Nat, kont :- Nat, v :- Nat]
+  (=> (= (:unborn (cells k)) true) (= (sys-fork-effect cells k m owner st kont v) cells))
+  (intro hu) (simp only [sys-fork-effect hu]))
 
 (a/theorem fork-effect-frame [cells :- (=> Nat Cell), k :- Nat, m :- Nat, owner :- Nat, st :- Nat, kont :- Nat, v :- Nat,
                               j :- Nat]
   (=> (Not (= j m)) (= (sys-fork-effect cells k m owner st kont v j) (cells j)))
   (intro hne)
-  (simp only [sys-fork-effect fupd (nbeq-ne j m hne)]))
+  (cases hu (:unborn (cells k)))
+  (case [true] (simp only [sys-fork-effect hu]))
+  (case [false] (simp only [sys-fork-effect hu fupd (nbeq-ne j m hne)])))
 
 (a/theorem sinv-fork-effect [cells :- (=> Nat Cell), k :- Nat, m :- Nat, owner :- Nat, st :- Nat, kont :- Nat, v :- Nat]
   (=> (sinv cells) (= (:live (cells k)) true) (sinv (sys-fork-effect cells k m owner st kont v)))
   (intros hs hlk)
-  (have hc (=> (= (:live (fork-effect-cell (cells k) k owner st kont v)) true)
-               (= (p3l (:world (fork-effect-cell (cells k) k owner st kont v))) true)))
-  (intro hl)
-  (simp only [fork-effect-cell])
-  (exact (p3l-fork-effect-world (:world (cells k)) st kont v (sinv-live cells k hs hlk)))
-  (simp only [sys-fork-effect])
-  (exact (sinv-put cells m (fork-effect-cell (cells k) k owner st kont v) hs hc)))
+  (cases hu (:unborn (cells k)))
+  (case [true] (simp only [sys-fork-effect hu]) (exact hs))
+  (case [false]
+    (have hc (=> (= (:live (fork-effect-cell (cells k) k owner st kont v)) true)
+                 (= (p3l (:world (fork-effect-cell (cells k) k owner st kont v))) true)))
+    (intro hl)
+    (simp only [fork-effect-cell])
+    (exact (p3l-fork-effect-world (:world (cells k)) st kont v (sinv-live cells k hs hlk)))
+    (simp only [sys-fork-effect hu])
+    (exact (sinv-put cells m (fork-effect-cell (cells k) k owner st kont v) hs hc))))
 
 ;; ---------------------------------------------------------------------------
 ;; L5 (S1): publish. The run with stamp `st` in world k arms a savepoint resource `fresh`;
@@ -990,12 +1018,20 @@
 
 (a/theorem cinv-fork [cells :- (=> Nat Cell), k :- Nat, m :- Nat, owner :- Nat]
   (=> (cinv cells) (forall [j :- Nat] (= (tbl-all (nat-ne m) (:kids (cells j))) true)) (cinv (sys-fork cells k m owner)))
-  (intros hc hf) (simp only [sys-fork]) (exact (cinv-fresh cells m (fork-cell (cells k) k owner) hc hf (rfl))))
+  (intros hc hf)
+  (cases hu (:unborn (cells k)))
+  (case [true] (simp only [sys-fork hu]) (exact hc))
+  (case [false] (simp only [sys-fork hu]) (exact (cinv-fresh cells m (fork-cell (cells k) k owner) hc hf (rfl)))))
 
 (a/theorem cinv-fork-effect [cells :- (=> Nat Cell), k :- Nat, m :- Nat, owner :- Nat, st :- Nat, kont :- Nat, v :- Nat]
   (=> (cinv cells) (forall [j :- Nat] (= (tbl-all (nat-ne m) (:kids (cells j))) true))
       (cinv (sys-fork-effect cells k m owner st kont v)))
-  (intros hc hf) (simp only [sys-fork-effect]) (exact (cinv-fresh cells m (fork-effect-cell (cells k) k owner st kont v) hc hf (rfl))))
+  (intros hc hf)
+  (cases hu (:unborn (cells k)))
+  (case [true] (simp only [sys-fork-effect hu]) (exact hc))
+  (case [false]
+    (simp only [sys-fork-effect hu])
+    (exact (cinv-fresh cells m (fork-effect-cell (cells k) k owner st kont v) hc hf (rfl)))))
 
 (a/theorem cinv-instantiate [cells :- (=> Nat Cell), pubs :- (=> Nat Pub), p :- Nat, m :- Nat, owner :- Nat]
   (=> (cinv cells) (forall [j :- Nat] (= (tbl-all (nat-ne m) (:kids (cells j))) true))
@@ -1384,28 +1420,31 @@
     (simp only [cq nr Bool.and_false Bool.false_or] at c)
     (simp only [cq act-cell Bool.false_and Bool.false_or])
     (exact (qinv-wake-all (:dormant (cells m)) _ (qinv-fire-ack (:world (cells m)) (:pending (cells m)) res-ok v c)))))
-;; a fork (value copy) or a fork effect of a cell that is not an E4-released instance
+;; a fork (value copy) or a fork effect: refused from an unborn cell (the guard), so the source is
+;; born and its cq is qinv (`cq-born`)
 (a/theorem qsinv-fork [cells :- (=> Nat Cell), k :- Nat, m :- Nat, owner :- Nat]
-  (=> (qsinv cells) (= (:live (cells k)) true) (= (Bool.and (:unborn (cells k)) (:released (:world (cells k)))) false)
-      (qsinv (sys-fork cells k m owner)))
-  (intros hq hlk he)
-  (simp only [sys-fork])
-  (apply (qsinv-put cells m (fork-cell (cells k) k owner) hq))
-  (intro hl)
-  (have c := (qsinv-live cells k hq hlk))
-  (simp only [cq he Bool.false_or] at c)
-  (simp only [cq fork-cell c Bool.false_and Bool.false_or]))
+  (=> (qsinv cells) (= (:live (cells k)) true) (qsinv (sys-fork cells k m owner)))
+  (intros hq hlk)
+  (cases hu (:unborn (cells k)))
+  (case [true] (simp only [sys-fork hu]) (exact hq))
+  (case [false]
+    (simp only [sys-fork hu])
+    (apply (qsinv-put cells m (fork-cell (cells k) k owner) hq))
+    (intro hl)
+    (have c := (cq-born (cells k) (qsinv-live cells k hq hlk) hu))
+    (simp only [cq fork-cell c Bool.false_and Bool.false_or])))
 (a/theorem qsinv-fork-effect [cells :- (=> Nat Cell), k :- Nat, m :- Nat, owner :- Nat, st :- Nat, kont :- Nat, v :- Nat]
-  (=> (qsinv cells) (= (:live (cells k)) true) (= (Bool.and (:unborn (cells k)) (:released (:world (cells k)))) false)
-      (qsinv (sys-fork-effect cells k m owner st kont v)))
-  (intros hq hlk he)
-  (simp only [sys-fork-effect])
-  (apply (qsinv-put cells m (fork-effect-cell (cells k) k owner st kont v) hq))
-  (intro hl)
-  (have c := (qsinv-live cells k hq hlk))
-  (simp only [cq he Bool.false_or] at c)
-  (simp only [cq fork-effect-cell Bool.false_and Bool.false_or])
-  (exact (qinv-fork-effect-world (:world (cells k)) st kont v c)))
+  (=> (qsinv cells) (= (:live (cells k)) true) (qsinv (sys-fork-effect cells k m owner st kont v)))
+  (intros hq hlk)
+  (cases hu (:unborn (cells k)))
+  (case [true] (simp only [sys-fork-effect hu]) (exact hq))
+  (case [false]
+    (simp only [sys-fork-effect hu])
+    (apply (qsinv-put cells m (fork-effect-cell (cells k) k owner st kont v) hq))
+    (intro hl)
+    (have c := (cq-born (cells k) (qsinv-live cells k hq hlk) hu))
+    (simp only [cq fork-effect-cell Bool.false_and Bool.false_or])
+    (exact (qinv-fork-effect-world (:world (cells k)) st kont v c))))
 (a/theorem qsinv-instantiate [cells :- (=> Nat Cell), pubs :- (=> Nat Pub), p :- Nat, m :- Nat, owner :- Nat]
   (=> (qsinv cells) (qpinv pubs) (= (:live (pubs p)) true) (qsinv (sys-instantiate cells pubs p m owner)))
   (intros hq hp hlp)
