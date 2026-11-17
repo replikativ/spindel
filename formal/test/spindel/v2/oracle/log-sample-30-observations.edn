@@ -11,16 +11,19 @@
     {4
      {:done? false,
       :retired? false,
+      :materialized? true,
       :srow-present? true,
       :complete? false},
      8
      {:done? false,
       :retired? false,
+      :materialized? true,
       :srow-present? true,
       :complete? false},
      13
      {:done? false,
       :retired? false,
+      :materialized? false,
       :srow-present? false,
       :complete? false}},
     :scopes
@@ -42,16 +45,19 @@
     {4
      {:done? true,
       :retired? true,
+      :materialized? true,
       :srow-present? true,
       :complete? false},
      8
      {:done? true,
       :retired? true,
+      :materialized? true,
       :srow-present? true,
       :complete? false},
      13
      {:done? true,
       :retired? false,
+      :materialized? false,
       :srow-present? false,
       :complete? false}},
     :scopes
@@ -73,16 +79,19 @@
     {4
      {:done? true,
       :retired? true,
+      :materialized? true,
       :srow-present? false,
       :complete? true},
      8
      {:done? true,
       :retired? true,
+      :materialized? true,
       :srow-present? false,
       :complete? true},
      13
      {:done? true,
       :retired? true,
+      :materialized? false,
       :srow-present? false,
       :complete? true}},
     :scopes
