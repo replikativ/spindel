@@ -1,0 +1,34 @@
+[{:step :settled,
+  :log-length {:w 4},
+  :obs
+  {:w
+   {:complete? false,
+    :released? false,
+    :runs 0,
+    :kids nil,
+    :token nil,
+    :tasks
+    {3
+     {:done? true,
+      :retired? true,
+      :srow-present? false,
+      :complete? true}},
+    :scopes {2 {:open? true, :present? true, :complete? false}},
+    :pending-joins 0}}}
+ {:step :joined,
+  :log-length {:w 4},
+  :obs
+  {:w
+   {:complete? false,
+    :released? false,
+    :runs 0,
+    :kids nil,
+    :token nil,
+    :tasks
+    {3
+     {:done? true,
+      :retired? true,
+      :srow-present? false,
+      :complete? true}},
+    :scopes {2 {:open? true, :present? true, :complete? false}},
+    :pending-joins 0}}}]
