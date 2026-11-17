@@ -33,7 +33,9 @@ Feasibility notes: `../ansatz/.internal/design/spindel-v2-feasibility.md`.
 | `spindel.v2.lit` | literal invariants through `world-step`: I10 task part (`step-lit-i10-task`, bundle `gl`), I9 resources (`step-lit-i9-res`, bundle `g9`); P3 core `filter-safe-of-refs`; copier `lcopy!` with source patches (`patch!`) | in progress |
 | `spindel.v2.idle` | I7 (idle shape) through the step: bundle `g7` (a7, dep/marked creditor awake, idle clean, slice-normal alive, observe host), companion `awo` (T6/T11/reactivation chains), cascade completeness for demote (`kdb`, `casc-kill`); `step-g7`, `step-lit-i7` | done (honest hyps ga, rule-r-safe) |
 | `spindel.v2.qworld` | C1 quiet half: bundle `gc` (every cleanup entry's run is a run row; `step-gc-rest`), `qinv` = p3l && K && gc && I3 (`step-qinv`, `qinv-empty`), the closure lemma `quiet-rows` (a quiet world with qinv holds only scopes), the refusal lemma `quiet-refused`, `quiet-step`, `quiet-stays` | done |
-| `spindel.v2.ledger` | C1c stage A (Z#70): derived completion ledger, `task-held`, `task-complete` (not held and no run scope row k + 2), `scope-complete` (no row); layer-2 host joins in sys.clj (`Cell.joins`, `sys-join`, `sys-deliver`, `complete-cell` delivers the rest) | defs only (theorems: later stage) |
+| `spindel.v2.ledger` | C1c stage A (Z#70): derived completion ledger, `task-held`, `task-complete` (not held and no run scope row k + 2), `scope-complete` (no row); layer-2 host joins in sys.clj (`Cell.joins` of `Join` records, `sys-join`, `sys-deliver`, `sys-withdraw`, `complete-cell` delivers the rest) | done (theorems in lstab, oscope, qworld, sys) |
+| `spindel.v2.lstab` | C1c stage A proof stage, stability: parametric bundle `gst k s` (k below the allocator and task k not held, s below the allocator and no scope row s), copied over raw/normalize with T12/T13/T14 task-row overrides; `step-gst`, `task-complete-stable`, `scope-complete-stable` | done |
+| `spindel.v2.oscope` | C1c stage A proof stage (questions 10, 14): bundle `gos` (every open non-root scope has a run row whose run scope is it or on its parent chain), copied with overrides at run creation, open-scope (`cur-scope` cases), detach, Z#18 deletion (`parent-outside`), T13 (subtree convergence `sub-conv`, completeness `sub-within`, witness bundle `gox x` over the source closes) and Rule R (`run-kept`, kept parents); `step-gos`, `gos-empty` | done |
 | `spindel.v2.tomb` | C1 Q6: tombstones are dormant. Bundle `gy y` (copy of the raw step and of normalization): every alive run's computation and every dep edge's creditor is no tombstone (`ta-one`, `dep-untomb`), nor is computation y; `gy 0` is in P3's round invariant `ri` (`refs-untomb`, the new premise of `filter-safe-of-refs`); `trc` (acts-alive && gy 0) is the round context the i10/i14/hmk2/hm18 normalization chains take; `step-gy`, `gy-empty` | done |
 | `spindel.v2.acyc` | Z#69: scope parents are acyclic. Bundle `gcy` = inv-sample && `gcy-rest` (every scope's parent below the allocator, `cy-par-below`; no scope on its own `scope-ancestors`, `scopes-acyclic`, equivalently no `Reach (scope-up w) (scope-up w y) y`); generic graph lemmas (sub-graph, fresh node, re-parenting outside the subtree); copy as i1's G1 with overrides at run creation, open-scope and detach; `step-gcy`, `step-acyc` / `acyc-empty` (from p3b), `step-acyclic`, `step-acyclic-reach` | done |
 | `spindel.v2.p3` | P3 complete: bundles `mdb` (marked edges are dep), `esb` (edge-sep: references are non-edge ids), `aha` (activation runs exist and are alive), round invariant `ri` -> every round filter-safe (`rule-r-safe-ri`); combined bundle `p3b` (ga, inv-rank, gl, g9, g7, mdb, esb, aha) with `step-p3b` and the step theorems with no honest hypothesis (`step-rule-r-safe`, `step-inv-total`, `step-acts-total`, `step-rank-total`, ...) | done |
@@ -1594,7 +1596,7 @@ only by a child's cleanup chain) is therefore not complete, as in the engine (it
   `c1c-sample-shapes`.
 - Fresh-JVM `clojure -M:test` (2026-11-16, after C1c stage A): 254 tests, 207,529 assertions, 0 failures, 0 errors.
 
-### Theorems for the proof stage (not started)
+### Theorems for the proof stage (done: see "C1c stage A, proof stage" below)
 - Stability: `task-complete w k -> task-complete (step w it) k` for a task id k (k + 2 < next-id): a scope id is never
   re-inserted (scope creation takes next-id; ids below the allocator), a task row with a result keeps it and run 0
   stays 0 (tasks never restart; re-spawn adoption creates no run), no task row reappears. Same for
@@ -1623,3 +1625,113 @@ only by a child's cleanup chain) is therefore not complete, as in the engine (it
 14. Pending joins at the completion of a born world: by the theorem above none should remain (every task complete).
     Is `complete-world!`'s delivery meant only for unborn instances (a tripwire candidate: assert nothing pending in a
     born world)?
+
+## C1c stage A, proof stage (2026-11-16, branch `formal/c1c-a-proofs`)
+
+### Engine session answers (questions 10-14)
+10. Intended: a complete world has every task and every NON-root scope complete. The root scope is never removed. A
+    computation run's scope (parent 0) is not the root and is included.
+11. The engine materializes a run scope only when it immediately owns something. Engine PR #275 adds `:materialized?`
+    per task to the sidecar; the oracle is to use it instead of inferring.
+12. Withdrawal is part of the contract: `on-joined` returns a withdraw fn (a host-side flag: no gate, no item).
+    Delivery is at most once (a CAS races withdrawal, the winner is final); a subscription withdrawn before delivery
+    never fires. #275 makes `:pending-joins` count only live joins and adds sample 33 (two joins, one withdrawn;
+    checkpoints 2, 1, 0; only the live one fires). Model: a host-side mark that delivery skips, a system operation,
+    not an Item.
+13. `on-joined` on a task of a collected world is unreachable in the engine; the model's refusal stays.
+14. For a BORN world nothing is pending at completion: once runs = 0 every task is done and every non-root scope
+    removed before completion, so only an unborn instance's copied tasks can be pending. To be a theorem.
+
+### Step 1: engine #275 folded in (engine-v2 3fa691a), withdrawal in layer 2
+- Merged origin/engine-v2 3fa691a (#275: sidecars of 29-32 add per task `:materialized?` and count live joins only,
+  logs byte-identical; sample 33, withdrawal).
+- Oracle: a task's run scope (k + 2) is materialized as the sidecar says (scope key set, `:srow-present?`); a run
+  scope of no task (a computation's) is still inferred ("owned something"). The model's `:materialized?` is that
+  inference for the task's run scope and is compared with the sidecar's: it agrees on every checkpoint of 29-33
+  (question 11 cross-checked). Withdrawals are listed in the family spec as `:withdraw [[step join-id]]`.
+  Sample 33 replays exactly: `:pending-joins` 2, 1, 0; without the withdrawal the model reads 2 at `:one-withdrawn`.
+- Layer 2 (sys.clj), definitions changed: `Cell.joins` is a `(List Join)`; `Join` = id (the number of joins the
+  cell admitted before it), target, state (`js-pending` / `js-delivered` / `js-withdrawn`). Entries are never
+  removed: `join-cell` records every admitted join (delivered at once when the target or the cell is complete);
+  `deliver-cell` and `complete-cell` mark pending joins delivered (`hj-done`), the new `sys-withdraw`
+  (`withdraw-cell`) marks a pending join withdrawn (`hj-drop`); both act on a pending join only, so the race's winner
+  is final. `pending-joins` counts the pending ones (the sidecar's `:pending-joins`). `join-ok` now also refuses
+  target 0 (none: no handle names it; without the guard a join on 0 would wait for scope 2, the root scope, which is
+  never removed). Removed: `join-pending`. Fork, fork effect and instance start with no joins.
+- Ansatz note: the elaborator failed with "Unknown constant: joinant" on a defn named `join-deliver` passed as a
+  value (renamed `hj-done`; not investigated further).
+- Tests: sys_test reads pending targets (`pj`), new `c1c-join-withdrawal` (2, then 1 live join; only the live one is
+  delivered; a delivered join stays delivered under withdraw and a second delivery; join on 0 refused); oracle_test
+  sample 33 in `c1c-specs`, `c1c-sample-shapes` checks `:materialized?` presence and the 2/1/0 counts.
+
+### Step 2: stability (spindel.v2.lstab)
+- Bundle `gst k s` = inv-sample && `gst-rest k s` (k < next-id, task k not held: no row, or result /= none and run 0;
+  s < next-id, no scope row s), parameters `tk9`/`sc9` (the copier puts parameters before the source binders, which
+  use `k` and `s`). Primitives: `*-ins-fresh` insert at next-id (> k, s), scope update/deletion/filter only keep or
+  remove rows, the allocator only grows. Task row updates take an extra argument (`th-row t = false -> th-row (f t)
+  = false`, rfl for every update that keeps result and run); the three that write them: `task-cancel-result`
+  (writes over none only, `gst-task-tcr`, patch of `inv-debtor-side`), `task-clear-run` (`gst-task-tcl`, patch of
+  `inv-clear-task-run`), and T12's `task-result-row res` (run kept, result tag ok/err from raw0's `complete-refused`
+  guard: overrides `gst-complete-body`, `gst-complete-raw`, `t12-gst` and the raw0 patch, as GL in spindel.v2.lit).
+- Theorems: `step-gst` (Rule R's honest hypothesis), `task-complete-stable` (p3b w, k + 2 < next-id, task-complete w k
+  -> task-complete after any step), `scope-complete-stable` (p3b w, s < next-id, scope-complete w s -> the same after
+  any step; the bundle at k = 0, which is never a row). No counterexample. A collected task row with its run scope
+  still present reads not held, so its completion is then "no scope row k + 2" (covered: the clauses are separate).
+
+### Step 3: a complete world has every task and every non-root scope complete (spindel.v2.oscope, qworld)
+- New invariant `gos-rest w`: every scope row that is open and not root-kind (`os-need`) has a run row whose run scope
+  is the row itself or on its parent chain (`hw`, via Z#69's `scope-within`). With no run, no open non-root scope;
+  then live is the root scope (roots: root scope and open explicit scopes; the root scope's parent is 0, gw), and
+  I3 + K leave only live rows.
+- Why it holds (bundle `gos` = inv-sample && gos-rest, copied over raw/normalize with spindel.v2.lit's copier):
+  frames for every table but scopes and runs; run updates keep `:scope` (extra argument, rfl); `run-ins` adds a
+  witness; scope closes remove obligations (`close-hk`); overrides:
+  `gos-add-run-scope` (the run scope's witness is the new run), `t-open-scope-gos` (`cur-scope` is the run scope or
+  an open explicit scope reached through open explicit children, `cur-cases`: the new scope inherits its witness),
+  `t-detach-gos` (the re-parented run scope is witnessed by its own run; a chain through it either survives or
+  reaches it, `rp-within`), `gos-remove-if-empty` (Z#18 deletes a subtree with `parent-outside`: kept chains are
+  unchanged, `keep-within`), `gos-retire-local` (T13: the run row goes after `close-local` closed its run scope's
+  whole subtree; `scope-subtree` converges, `sub-conv`, fuel 2 + #scopes against a deduplicated parent list, so it
+  holds every scope whose chain reaches the run scope, `sub-within`; between the close and the deletion a second
+  bundle `gox x` (every open non-root scope has a witness run whose id is not x) is copied over the source closes,
+  which update runs only id- and scope-preservingly; ids are unique, so the retiring run's row is the only one with
+  its id, `find-uniq`), Rule R's filter (`gos-filter`: every run is kept, i1r `run-kept` with gr0 and normalized;
+  every kept scope's parent is kept, `keep-parent`, i1's closure argument). `step-gos` (ga, gr0, gos, rule-r-safe
+  raw), `gos-empty`.
+- qworld: `qinv` gains the conjunct `gos-rest` (definition changed); `step-qinv` takes it from `step-gos`
+  (gr0 from p3l via p3h: `p3l-gr0`). New: `qinv-gos`, `quiet-no-open`, `roots-root`, `root-succ-none`, `keep-live`,
+  `live-root`, `quiet-root-only` (`qh w`, scope-has w y -> y = root-scope-id), `quiet-task-complete` (`qh w`,
+  t /= 0 -> task-complete w t), `quiet-scope-complete` (`qh w`, s /= 2 -> scope-complete w s).
+- Changed statements: `qinv-intro` (new premise `gos-rest w`: qinv has a fifth conjunct). `qinv-parts`, `step-qinv`,
+  `qinv-empty` and every sys.clj `cq`/`qsinv`/`qpinv` statement are unchanged in text (qinv is stronger). Task id 0
+  is excluded in `quiet-task-complete` (its "run scope" would be scope 2, the root, never removed).
+- Ansatz notes: constants are global by name (two namespaces may not define the same theorem name: `beq-comm`,
+  `ids-len`, `runs-nodup` renamed `os-*`); `(simp only ...)` that turns a hypothesis into False errors instead of
+  closing the goal (full `simp` closes); `cases` on `List.Mem` substitutes either variable (use an eliminator lemma).
+
+### Step 4: layer-2 joins (sys.clj)
+- `jinv cells`: every live cell is `jok`: complete -> no pending join; join ids distinct and below the number of
+  joins admitted; targets not 0. Kept by every system operation: `jinv-join`, `-deliver`, `-withdraw`, `-complete`,
+  `-step`, `-publish`, `-abandon`, `-wake`, `-accept`, `-release-unborn`, `-drop`, `-idle-release`, `-resume`,
+  `-activate`, `-merge`, `-fork`, `-fork-effect`, `-instantiate`; start: `jinv-init` (live cells have no joins).
+- `deliver-pending`: every pending join after `sys-deliver` has an incomplete target.
+- Frames (the world and every flag but the joins untouched): `sinv-join/-deliver/-withdraw`,
+  `cinv-join/-deliver/-withdraw`, `qsinv-join/-deliver/-withdraw`; `qpinv` reads publications only, which none of
+  the three touches (no lemma needed).
+- Delivery at most once: `jkeep js js2` (every non-pending join of js is in js2 as it is); `once-deliver`,
+  `once-withdraw`, `once-complete`, `once-join`; with distinct ids (jinv), `final-stays`: a delivered or withdrawn
+  join is the only join with its id afterwards, so the race's winner is final (no second delivery, a withdrawn
+  join never fires).
+- Question 10, layer 2: `complete-born-ledger` (qsinv, cinv, a live complete born cell -> every task id /= 0 and every
+  scope /= 2 complete in its world). Question 14: `born-complete-delivered` (qsinv, jinv, a live born cell with
+  complete-ready -> after sys-deliver no join is pending: every target is complete) and `born-abandon-none` (then
+  `complete-cell` changes no join): abandonment delivery is only ever needed for an unborn instance.
+- No earlier statement changed in this step.
+
+### Suite (C1c stage A, proof stage)
+- Fresh-JVM `clojure -M:test` (2026-11-17, after steps 1-4 and the merge of engine-v2 f09aa35): 258 tests,
+  207,650 assertions, 0 failures, 0 errors. No sorry. (+4 tests: lstab_test, oscope_test's two, sys_test
+  `c1c-join-withdrawal`.)
+- Merge of #278 (f09aa35): its `:materialized?` line in `ledger-obs` is dropped in favour of the step-1 version
+  (the model's "owned something" inference for the task's run scope, compared with the sidecar's value; the
+  sidecar's value itself feeds the scope key set and `:srow-present?`). Every sample, 33 included, replays exactly.

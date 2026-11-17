@@ -12,8 +12,10 @@
       test). A task id with no row is not held: the model keeps no kind for a removed id, so the caller knows k is a
       task id (layer 2's host joins record the id they were admitted for; the oracle remembers the ids it saw);
     - the root scope is never removed (Z#56), so it is never complete.
-  Stability (once complete, complete forever) and \"a complete world has every task complete\" are theorems of a
-  later stage (notes/PLAN.md, C1c stage A)."
+  Theorems (proof stage, notes/PLAN.md): stability, spindel.v2.lstab (`task-complete-stable`,
+  `scope-complete-stable`); a quiet world has every task (id /= 0) and every non-root scope complete,
+  spindel.v2.qworld (`quiet-task-complete`, `quiet-scope-complete`, from spindel.v2.oscope); layer 2, sys.clj
+  (`complete-born-ledger`, `born-complete-delivered`)."
   (:require [ansatz.core :as a]
             [spindel.v2.state :refer :all]))
 

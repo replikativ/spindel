@@ -41,9 +41,10 @@
             operation (`qsinv-*`, `qpinv-*`). A fork or fork effect of an unborn cell (E4-released
             or not) is refused (`fork-refused`, `fork-effect-refused`): question 9, engine 54e3df1.
 
-  C1c stage A (Z#70): `Cell.joins`, the pending host joins; `sys-join` (admission), `sys-deliver` (delivery of
-  the joins on complete targets), `complete-cell` delivers the rest (abandonment); a fork, fork effect or
-  instance starts with none. System operations, not Items. No theorem about them yet (notes/PLAN.md).
+  C1c stage A (Z#70): `Cell.joins`, the host joins (`Join`: id, target, state pending / delivered / withdrawn);
+  `sys-join` (admission), `sys-deliver` (delivery of the pending joins on complete targets), `sys-withdraw` (the
+  host's withdraw fn, question 12), `complete-cell` delivers the rest (abandonment); a fork, fork effect or
+  instance starts with none. System operations, not Items.
 
   Not here: following mode (not in the engine either), sealing, sources created in the child (not merged)."
   (:require [ansatz.core :as a]
@@ -70,8 +71,25 @@
 ;; child complete or collected; an unborn instance released before activation at once).
 ;; C1c stage A (Z#70): `joins` the pending host joins (`on-joined` / `await-joined`), one target task id per
 ;; subscription; never inherited (a fork, fork effect or instance starts with none)
+;; C1c (question 12): a host join is one `on-joined` subscription: its id (the number of joins the cell admitted
+;; before it), its target task id and its state, pending, delivered or withdrawn. Delivery and withdrawal race
+;; (a CAS in the engine) and the winner is final: both act on a pending join only, so a join is delivered at
+;; most once and a withdrawn one never. Entries are never removed (the engine prunes withdrawn ones lazily).
+(a/structure Join [] (id Nat) (target Nat) (st Nat))
+(a/defn js-pending [] Nat 0)
+(a/defn js-delivered [] Nat 1)
+(a/defn js-withdrawn [] Nat 2)
+(a/defn join-id [j :- Join] Nat (:id j))
+(a/defn jpend [j :- Join] Bool (Nat.beq (:st j) js-pending))
+(a/defn hj-done [j :- Join] Join (if (jpend j) (Join.mk (:id j) (:target j) js-delivered) j))
+(a/defn hj-drop [j :- Join] Join (if (jpend j) (Join.mk (:id j) (:target j) js-withdrawn) j))
+(a/defn joins-map [f :- (=> Join Join), js :- (List Join)] (List Join)
+  (match js [nil (List.nil Join)] [(cons h t) (List.cons Join (f h) (joins-map f t))]))
+;; the live (pending) joins: the sidecar's `:pending-joins`
+(a/defn pending-joins [js :- (List Join)] Nat (tbl-count jpend js))
+
 (a/structure Cell [] (world World) (live Bool) (parent Nat) (owner Nat) (dormant (List Nat))
-  (unborn Bool) (pending Nat) (kids (List Nat)) (complete Bool) (joins (List Nat)))
+  (unborn Bool) (pending Nat) (kids (List Nat)) (complete Bool) (joins (List Join)))
 
 ;; a publication: the cell and run that published, the savepoint's resource, the frozen basis
 (a/structure Pub [] (cell Nat) (res Nat) (run Nat) (basis World) (live Bool))
@@ -151,7 +169,7 @@
   (match rs [nil (List.nil Nat)] [(cons r t) (List.cons Nat (:id r) (res-ids t))]))
 
 (a/defn fork-cell [c :- Cell, k :- Nat, owner :- Nat] Cell
-  (Cell.mk (:world c) true k owner (nat-app (res-ids (:res (:world c))) (:dormant c)) false 0 (List.nil Nat) false (List.nil Nat)))
+  (Cell.mk (:world c) true k owner (nat-app (res-ids (:res (:world c))) (:dormant c)) false 0 (List.nil Nat) false (List.nil Join)))
 
 (a/defn sys-fork [cells :- (=> Nat Cell), k :- Nat, m :- Nat, owner :- Nat] (=> Nat Cell)
   (if (:unborn (cells k)) cells (fupd cells m (fork-cell (cells k) k owner))))
@@ -271,7 +289,7 @@
                      (Bool.and (Nat.beq (world-runs (:world (cells k))) 0) (tbl-all (kid-done cells) (:kids (cells k)))))))
 (a/defn complete-cell [c :- Cell] Cell
   (Cell.mk (:world c) (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c) (:kids c) true
-           (List.nil Nat)))
+           (joins-map hj-done (:joins c))))
 (a/defn sys-complete [cells :- (=> Nat Cell), k :- Nat] (=> Nat Cell)
   (if (complete-ready cells k) (fupd cells k (complete-cell (cells k))) cells))
 
@@ -290,26 +308,40 @@
 ;; inherited. Delivered once the target task is complete (spindel.v2.ledger `task-complete`), or once the
 ;; world is (abandonment: an unborn instance's copied tasks never run, so they never complete).
 ;;   sys-join      admission. The target is a task id the host holds a handle to, so an allocated id
-;;                 (`t < next-id`; an id no handle can name is refused: the system unchanged). Delivered at
-;;                 once (nothing recorded) when the target or the cell is complete, else pending.
+;;                 (`0 < t < next-id`; an id no handle can name is refused: the system unchanged). Recorded with
+;;                 the next join id, delivered at once when the target or the cell is complete, else pending.
 ;;   sys-deliver   delivers every pending join whose target is complete (the engine runs it inside the
 ;;                 commit that completes the target, `task-complete!`).
+;;   sys-withdraw  the withdraw fn `on-joined` returns (question 12): a pending join becomes withdrawn, delivery
+;;                 skips it; a delivered one stays delivered.
 ;;   complete-cell delivers every pending join with the world's completion (`complete-world!`).
-;; Both operations are system operations, not Items.
-(a/defn join-pending [w :- World, t :- Nat] Bool (Bool.not (task-complete w t)))
+;; All of them are system operations, not Items.
+;; admission: the join's id is the number admitted so far; delivered at once when the target or the cell is complete
+(a/defn join-new [c :- Cell, t :- Nat] Join
+  (Join.mk (List.length (:joins c)) t
+           (if (Bool.or (:complete c) (task-complete (:world c) t)) js-delivered js-pending)))
 (a/defn join-cell [c :- Cell, t :- Nat] Cell
-  (if (Bool.or (:complete c) (task-complete (:world c) t))
-      c
-      (Cell.mk (:world c) (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c) (:kids c)
-               (:complete c) (List.cons Nat t (:joins c)))))
-(a/defn join-ok [c :- Cell, t :- Nat] Bool (Bool.and (:live c) (Nat.blt t (:next-id (:world c)))))
+  (Cell.mk (:world c) (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c) (:kids c)
+           (:complete c) (List.cons Join (join-new c t) (:joins c))))
+;; the target is a task id the host holds a handle to: allocated (`t < next-id`) and not 0 (none)
+(a/defn join-ok [c :- Cell, t :- Nat] Bool
+  (Bool.and (:live c) (Bool.and (Nat.blt 0 t) (Nat.blt t (:next-id (:world c))))))
 (a/defn sys-join [cells :- (=> Nat Cell), k :- Nat, t :- Nat] (=> Nat Cell)
   (if (join-ok (cells k) t) (fupd cells k (join-cell (cells k) t)) cells))
+;; delivery: every pending join on a complete target (every pending join, once the cell is complete)
+(a/defn hj-due [w :- World, j :- Join] Join (if (task-complete w (:target j)) (hj-done j) j))
 (a/defn deliver-cell [c :- Cell] Cell
   (Cell.mk (:world c) (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c) (:kids c)
-           (:complete c) (if (:complete c) (List.nil Nat) (tbl-filter (join-pending (:world c)) (:joins c)))))
+           (:complete c) (if (:complete c) (joins-map hj-done (:joins c)) (joins-map (hj-due (:world c)) (:joins c)))))
 (a/defn sys-deliver [cells :- (=> Nat Cell), k :- Nat] (=> Nat Cell)
   (fupd cells k (deliver-cell (cells k))))
+;; withdrawal (question 12): the withdraw fn `on-joined` returns, a host-side mark on join j (no gate, no item);
+;; it acts on a pending join only (a delivered join stays delivered)
+(a/defn withdraw-cell [c :- Cell, j :- Nat] Cell
+  (Cell.mk (:world c) (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c) (:kids c)
+           (:complete c) (tbl-upd join-id j hj-drop (:joins c))))
+(a/defn sys-withdraw [cells :- (=> Nat Cell), k :- Nat, j :- Nat] (=> Nat Cell)
+  (fupd cells k (withdraw-cell (cells k) j)))
 
 (a/theorem sinv-accept [cells :- (=> Nat Cell), k :- Nat, m :- Nat]
   (=> (sinv cells) (sinv (sys-accept cells k m)))
@@ -380,7 +412,7 @@
 
 (a/defn fork-effect-cell [c :- Cell, k :- Nat, owner :- Nat, st :- Nat, kont :- Nat, v :- Nat] Cell
   (Cell.mk (fork-effect-world (:world c) st kont v) true k owner
-           (nat-app (res-ids (:res (:world c))) (:dormant c)) false 0 (List.nil Nat) false (List.nil Nat)))
+           (nat-app (res-ids (:res (:world c))) (:dormant c)) false 0 (List.nil Nat) false (List.nil Join)))
 
 (a/defn sys-fork-effect [cells :- (=> Nat Cell), k :- Nat, m :- Nat, owner :- Nat, st :- Nat, kont :- Nat, v :- Nat]
   (=> Nat Cell)
@@ -471,7 +503,7 @@
 ;; activation is the savepoint's resource.
 
 (a/defn inst-cell [b :- Pub, owner :- Nat] Cell
-  (Cell.mk (:basis b) true (:cell b) owner (res-ids (:res (:basis b))) true (:res b) (List.nil Nat) false (List.nil Nat)))
+  (Cell.mk (:basis b) true (:cell b) owner (res-ids (:res (:basis b))) true (:res b) (List.nil Nat) false (List.nil Join)))
 
 (a/defn sys-instantiate [cells :- (=> Nat Cell), pubs :- (=> Nat Pub), p :- Nat, m :- Nat, owner :- Nat] (=> Nat Cell)
   (fupd cells m (inst-cell (pubs p) owner)))
@@ -1517,3 +1549,444 @@
     (have e (= q p)) (exact (Nat.eq_of_beq_eq_true hqp))
     (rw [e] at hl) (simp only [pubs-abandon fupd-same] at hl) (simp at hl)))
 
+
+;; ===========================================================================
+;; C1c stage A, the proof stage: host joins (Z#70, questions 10, 12, 14)
+;; ===========================================================================
+;;   jinv       every live cell: complete -> no pending join; join ids distinct and below the number admitted;
+;;              targets are not 0. Kept by every system operation (`jinv-*`), from `jinv-init`.
+;;   delivery   after sys-deliver every pending join's target is incomplete (`deliver-pending`).
+;;   frames     sys-join / sys-deliver / sys-withdraw keep sinv, cinv, qsinv (the world is untouched; qpinv reads
+;;              only publications, which they do not touch).
+;;   once       a join that is not pending stays in the list as it is through sys-deliver, sys-withdraw,
+;;              sys-complete and sys-join (`once-*`), and join ids are distinct (jinv), so it is delivered at
+;;              most once and a withdrawn join never (`final-stays`).
+;;   Q10/Q14    a complete born cell has every task (id /= 0) and every non-root scope complete
+;;              (`complete-born-ledger`); at a born cell's completion every join is delivered already by
+;;              sys-deliver, so abandonment (`complete-cell`) changes no join (`born-complete-delivered`,
+;;              `born-abandon-none`): abandonment is only ever needed for an unborn instance.
+
+(a/theorem sx-not-intro [b :- Bool] (=> (= b false) (= (Bool.not b) true)) (intro h) (rw [h]))
+(a/theorem sx-not-of [b :- Bool] (=> (= (Bool.not b) true) (= b false)) (intro h) (cases b) (rfl) (simp at h))
+(a/defn jnp [j :- Join] Bool (Bool.not (jpend j)))
+(a/defn jids [js :- (List Join)] (List Nat) (tbl-ids join-id js))
+(a/defn jl-one [n :- Nat, j :- Join] Bool (Bool.and (Nat.blt (:id j) n) (Nat.blt 0 (:target j))))
+(a/defn jl-ok [js :- (List Join)] Bool (Bool.and (nat-nodup (jids js)) (tbl-all (jl-one (List.length js)) js)))
+(a/defn jok [c :- Cell] Bool (Bool.and (Bool.or (Bool.not (:complete c)) (tbl-all jnp (:joins c))) (jl-ok (:joins c))))
+(a/defn jinv [cells :- (=> Nat Cell)] Prop (forall [k :- Nat] (=> (= (:live (cells k)) true) (= (jok (cells k)) true))))
+
+(a/theorem jinv-live [cells :- (=> Nat Cell), k :- Nat] (=> (jinv cells) (= (:live (cells k)) true) (= (jok (cells k)) true))
+  (intros h hl) (simp only [jinv] at h) (exact (h k hl)))
+(a/theorem jinv-put [cells :- (=> Nat Cell), k :- Nat, c2 :- Cell]
+  (=> (jinv cells) (=> (= (:live c2) true) (= (jok c2) true)) (jinv (fupd cells k c2)))
+  (intros hs hc)
+  (simp only [jinv] at hs) (simp only [jinv])
+  (intros j hl)
+  (cases hjk (Nat.beq j k))
+  (case [false] (simp only [fupd hjk] at hl) (simp only [fupd hjk]) (exact (hs j hl)))
+  (case [true]
+    (have e (= j k)) (exact (Nat.eq_of_beq_eq_true hjk))
+    (rw [e] at hl) (rw [e]) (simp only [fupd-same] at hl) (simp only [fupd-same]) (exact (hc hl))))
+(a/theorem jinv-same [cells :- (=> Nat Cell), k :- Nat, c2 :- Cell]
+  (=> (jinv cells) (= (:live c2) (:live (cells k))) (= (:complete c2) (:complete (cells k))) (= (:joins c2) (:joins (cells k)))
+      (jinv (fupd cells k c2)))
+  (intros h hl hc hj)
+  (apply (jinv-put cells k c2 h))
+  (intro l2) (rw [hl] at l2)
+  (have o := (jinv-live cells k h l2))
+  (simp only [jok hc hj]) (simp only [jok] at o) (exact o))
+(a/theorem jok-nil [c :- Cell] (=> (= (:joins c) (List.nil Join)) (= (jok c) true))
+  (intro h) (simp only [jok jl-ok jids h tbl-ids tbl-all nat-nodup Bool.or_true Bool.and_self]))
+(a/theorem jinv-init [cells :- (=> Nat Cell)]
+  (=> (forall [k :- Nat] (=> (= (:live (cells k)) true) (= (:joins (cells k)) (List.nil Join)))) (jinv cells))
+  (intro h0) (simp only [jinv]) (intros k hl) (exact (jok-nil (cells k) (h0 k hl))))
+
+;; ---- the join list transformers
+(a/theorem jmap-len [f :- (=> Join Join), js :- (List Join)] (= (List.length (joins-map f js)) (List.length js))
+  (induction js) (case [nil] (simp only [joins-map List.length])) (case [cons h t ih] (simp only [joins-map List.length ih])))
+(a/theorem jmap-ids [f :- (=> Join Join), hf :- (forall [j :- Join] (= (:id (f j)) (:id j))), js :- (List Join)]
+  (= (jids (joins-map f js)) (jids js))
+  (induction js)
+  (case [nil] (simp only [joins-map jids tbl-ids]))
+  (case [cons h t ih] (simp only [jids] at ih) (simp only [joins-map jids tbl-ids join-id (hf h) ih])))
+(a/theorem jmap-all [f :- (=> Join Join), P :- (=> Join Bool), Q :- (=> Join Bool),
+                     hpq :- (forall [j :- Join] (=> (= (P j) true) (= (Q (f j)) true))), js :- (List Join)]
+  (=> (= (tbl-all P js) true) (= (tbl-all Q (joins-map f js)) true))
+  (induction js)
+  (case [nil] (intro h) (simp only [joins-map tbl-all]))
+  (case [cons h t ih]
+    (intro hp) (simp only [tbl-all Bool.and_eq_true] at hp)
+    (simp only [joins-map tbl-all (hpq h (And.left hp)) (ih (And.right hp)) Bool.and_self])))
+(a/theorem jl-ok-map [f :- (=> Join Join), hid :- (forall [j :- Join] (= (:id (f j)) (:id j))),
+                      htg :- (forall [j :- Join] (= (:target (f j)) (:target j))), js :- (List Join)]
+  (=> (= (jl-ok js) true) (= (jl-ok (joins-map f js)) true))
+  (intro h)
+  (simp only [jl-ok Bool.and_eq_true] at h)
+  (simp only [jl-ok (jmap-ids f hid js) (jmap-len f js) (And.left h) Bool.true_and])
+  (apply (jmap-all f (jl-one (List.length js)) (jl-one (List.length js)) _ js (And.right h)))
+  (intros j q) (simp only [jl-one (hid j) (htg j)]) (simp only [jl-one] at q) (exact q))
+
+(a/theorem hj-done-id [j :- Join] (= (:id (hj-done j)) (:id j)) (cases hp (jpend j)) (all_goals (simp only [hj-done hp])))
+(a/theorem hj-done-tg [j :- Join] (= (:target (hj-done j)) (:target j)) (cases hp (jpend j)) (all_goals (simp only [hj-done hp])))
+(a/theorem hj-drop-id [j :- Join] (= (join-id (hj-drop j)) (join-id j)) (cases hp (jpend j)) (all_goals (simp only [hj-drop join-id hp])))
+(a/theorem hj-drop-tg [j :- Join] (= (:target (hj-drop j)) (:target j)) (cases hp (jpend j)) (all_goals (simp only [hj-drop hp])))
+(a/theorem hj-due-id [w :- World, j :- Join] (= (:id (hj-due w j)) (:id j))
+  (cases ht (task-complete w (:target j))) (all_goals (simp only [hj-due ht hj-done-id])))
+(a/theorem hj-due-tg [w :- World, j :- Join] (= (:target (hj-due w j)) (:target j))
+  (cases ht (task-complete w (:target j))) (all_goals (simp only [hj-due ht hj-done-tg])))
+(a/theorem done-np [j :- Join] (= (jnp (hj-done j)) true)
+  (cases hp (jpend j))
+  (case [true] (simp only [jnp hj-done hp jpend js-delivered js-pending]))
+  (case [false] (simp only [jnp hj-done hp Bool.not_false])))
+(a/theorem done-fix [j :- Join] (=> (= (jpend j) false) (= (hj-done j) j)) (intro hp) (simp only [hj-done hp]))
+(a/theorem drop-fix [j :- Join] (=> (= (jpend j) false) (= (hj-drop j) j)) (intro hp) (simp only [hj-drop hp]))
+(a/theorem due-fix [w :- World, j :- Join] (=> (= (jpend j) false) (= (hj-due w j) j))
+  (intro hp) (cases ht (task-complete w (:target j))) (all_goals (simp only [hj-due ht (done-fix j hp)])))
+(a/theorem np-of [j :- Join] (=> (= (jnp j) true) (= (jpend j) false))
+  (intro h) (cases hp (jpend j)) (rfl) (simp only [jnp hp Bool.not_true] at h) (cases h))
+(a/theorem jall-done [js :- (List Join)] (= (tbl-all jnp (joins-map hj-done js)) true)
+  (induction js) (case [nil] (simp only [joins-map tbl-all])) (case [cons h t ih] (simp only [joins-map tbl-all done-np ih Bool.and_self])))
+(a/theorem upd-len [A :- Type, idf :- (=> A Nat), x :- Nat, f :- (=> A A), xs :- (List A)] (= (List.length (tbl-upd idf x f xs)) (List.length xs))
+  (induction xs)
+  (case [nil] (simp only [tbl-upd List.length]))
+  (case [cons h t ih] (cases hx (Nat.beq (idf h) x)) (all_goals (simp only [tbl-upd hx List.length ih]))))
+(a/theorem lt-mem [n :- Nat, js :- (List Join)] (=> (= (tbl-all (jl-one n) js) true) (= (nat-mem n (jids js)) false))
+  (induction js)
+  (case [nil] (intro h) (simp only [jids tbl-ids nat-mem]))
+  (case [cons h t ih]
+    (intro hp) (simp only [tbl-all jl-one Bool.and_eq_true Nat.blt_eq] at hp)
+    (have hb (= (Nat.beq (:id h) n) false))
+    (cases e (Nat.beq (:id h) n)) (rfl) (have e2 := (Nat.eq_of_beq_eq_true e)) (have l := (And.left (And.left hp))) (omega)
+    (have i := (ih (tbl-all-mono Join _ _ (fn [j :- Join, q :- (= (jl-one n j) true)] q) t (And.right hp))))
+    (simp only [jids] at i)
+    (simp only [jids tbl-ids nat-mem join-id hb i])))
+(a/theorem jl-one-up [n :- Nat, j :- Join] (=> (= (jl-one n j) true) (= (jl-one (+ n 1) j) true))
+  (intro h) (simp only [jl-one Bool.and_eq_true Nat.blt_eq] at h) (simp only [jl-one Bool.and_eq_true Nat.blt_eq])
+  (have l := (And.left h)) (have l2 (< (:id j) (+ n 1))) (omega) (exact (And.intro l2 (And.right h))))
+
+;; ---- jinv through every system operation
+(a/theorem jinv-join [cells :- (=> Nat Cell), k :- Nat, t :- Nat] (=> (jinv cells) (jinv (sys-join cells k t)))
+  (intro h)
+  (cases hj (join-ok (cells k) t))
+  (case [false] (simp only [sys-join hj]) (exact h))
+  (case [true]
+    (simp only [sys-join hj])
+    (apply (jinv-put cells k _ h))
+    (intro hl)
+    (have hl0 (= (:live (cells k)) true)) (exact hl)
+    (have o := (jinv-live cells k h hl0))
+    (simp only [jok jl-ok Bool.and_eq_true] at o)
+    (have ht (= (Nat.blt 0 t) true)) (simp only [join-ok Bool.and_eq_true] at hj) (exact (And.left (And.right hj)))
+    (have nm := (lt-mem (List.length (:joins (cells k))) (:joins (cells k)) (And.right (And.right o))))
+    (have a1 (= (jl-ok (List.cons Join (join-new (cells k) t) (:joins (cells k)))) true))
+    (simp only [jl-ok jids tbl-ids nat-nodup tbl-all List.length join-id join-new Bool.and_eq_true])
+    (simp only [jids] at nm)
+    (apply And.intro)
+    (exact (And.intro (sx-not-intro _ nm) (And.left (And.right o))))
+    (apply And.intro)
+    (simp only [jl-one ht Nat.blt_eq Bool.and_true]) (try (omega))
+    (exact (tbl-all-mono Join _ _ (jl-one-up (List.length (:joins (cells k)))) _ (And.right (And.right o))))
+    (have a0 (= (Bool.or (Bool.not (:complete (cells k))) (tbl-all jnp (List.cons Join (join-new (cells k) t) (:joins (cells k))))) true))
+    (cases hc (:complete (cells k)))
+    (case [false] (simp only [Bool.not_false Bool.true_or]))
+    (case [true]
+      (have a2 := (And.left o)) (simp only [hc Bool.not_true Bool.false_or] at a2)
+      (simp only [tbl-all jnp join-new hc Bool.true_or jpend js-delivered js-pending a2 Bool.not_true Bool.false_or Bool.and_true])
+      (try (rfl)))
+    (simp only [jok join-cell a0 a1 Bool.and_self])))
+(a/theorem jinv-deliver [cells :- (=> Nat Cell), k :- Nat] (=> (jinv cells) (jinv (sys-deliver cells k)))
+  (intro h)
+  (simp only [sys-deliver])
+  (apply (jinv-put cells k _ h))
+  (intro hl)
+  (have hl0 (= (:live (cells k)) true)) (exact hl)
+  (have o := (jinv-live cells k h hl0))
+  (simp only [jok Bool.and_eq_true] at o)
+  (cases hc (:complete (cells k)))
+  (case [true]
+    (simp only [jok deliver-cell hc jall-done Bool.not_true Bool.false_or Bool.true_and])
+    (exact (jl-ok-map hj-done hj-done-id hj-done-tg _ (And.right o))))
+  (case [false]
+    (simp only [jok deliver-cell hc Bool.not_false Bool.true_or Bool.true_and])
+    (exact (jl-ok-map (hj-due (:world (cells k))) (hj-due-id (:world (cells k))) (hj-due-tg (:world (cells k))) _ (And.right o)))))
+(a/theorem jinv-withdraw [cells :- (=> Nat Cell), k :- Nat, x :- Nat] (=> (jinv cells) (jinv (sys-withdraw cells k x)))
+  (intro h)
+  (simp only [sys-withdraw])
+  (apply (jinv-put cells k _ h))
+  (intro hl)
+  (have hl0 (= (:live (cells k)) true)) (exact hl)
+  (have o := (jinv-live cells k h hl0))
+  (simp only [jok jl-ok Bool.and_eq_true] at o)
+  (have a0 (= (Bool.or (Bool.not (:complete (cells k))) (tbl-all jnp (tbl-upd join-id x hj-drop (:joins (cells k))))) true))
+  (cases hc (:complete (cells k)))
+  (case [false] (simp only [Bool.not_false Bool.true_or]))
+  (case [true]
+    (have a2 := (And.left o)) (simp only [hc Bool.not_true Bool.false_or] at a2)
+    (simp only [Bool.not_true Bool.false_or])
+    (apply (tbl-all-upd Join join-id x hj-drop jnp jnp _ _ _ a2))
+    (intros j q e) (rw [(drop-fix j (np-of j q))]) (exact q)
+    (intros j q e) (exact q))
+  (have nd := (And.left (And.right o))) (simp only [jids] at nd)
+  (have a1 (= (jl-ok (tbl-upd join-id x hj-drop (:joins (cells k)))) true))
+  (simp only [jl-ok jids (tbl-ids-upd Join join-id x hj-drop hj-drop-id (:joins (cells k))) (upd-len Join join-id x hj-drop (:joins (cells k)))
+              nd Bool.true_and])
+  (apply (tbl-all-upd Join join-id x hj-drop (jl-one (List.length (:joins (cells k)))) (jl-one (List.length (:joins (cells k)))) _ _ _ (And.right (And.right o))))
+  (intros j q e) (simp only [jl-one hj-drop-tg]) (have i := (hj-drop-id j)) (simp only [join-id] at i) (rw [i]) (simp only [jl-one] at q) (exact q)
+  (intros j q e) (exact q)
+  (simp only [jok withdraw-cell a0 a1 Bool.and_self]))
+(a/theorem jinv-complete [cells :- (=> Nat Cell), k :- Nat] (=> (jinv cells) (jinv (sys-complete cells k)))
+  (intro h)
+  (cases hr (complete-ready cells k))
+  (case [false] (simp only [sys-complete hr]) (exact h))
+  (case [true]
+    (simp only [sys-complete hr])
+    (apply (jinv-put cells k _ h))
+    (intro hl)
+    (have hl0 (= (:live (cells k)) true)) (exact hl)
+    (have o := (jinv-live cells k h hl0))
+    (simp only [jok Bool.and_eq_true] at o)
+    (simp only [jok complete-cell jall-done Bool.not_true Bool.false_or Bool.true_and])
+    (exact (jl-ok-map hj-done hj-done-id hj-done-tg _ (And.right o)))))
+(a/theorem jinv-step [cells :- (=> Nat Cell), k :- Nat, it :- Item] (=> (jinv cells) (jinv (sys-step cells k it)))
+  (intro h) (simp only [sys-step]) (exact (jinv-same cells k (cell-step (cells k) it) h (rfl) (rfl) (rfl))))
+(a/theorem jinv-publish [cells :- (=> Nat Cell), k :- Nat, st :- Nat, kont :- Nat, fresh :- Nat]
+  (=> (jinv cells) (jinv (sys-publish cells k st kont fresh)))
+  (intro h) (simp only [sys-publish]) (exact (jinv-step cells k _ h)))
+(a/theorem jinv-abandon [cells :- (=> Nat Cell), pubs :- (=> Nat Pub), p :- Nat] (=> (jinv cells) (jinv (sys-abandon cells pubs p)))
+  (intro h) (simp only [sys-abandon]) (exact (jinv-step cells _ _ h)))
+(a/theorem jinv-wake [cells :- (=> Nat Cell), k :- Nat] (=> (jinv cells) (jinv (sys-wake cells k)))
+  (intro h)
+  (cases hu (:unborn (cells k)))
+  (case [true] (simp only [sys-wake hu]) (exact h))
+  (case [false] (simp only [sys-wake hu]) (exact (jinv-same cells k (wake-cell (cells k)) h (rfl) (rfl) (rfl)))))
+(a/theorem jinv-accept [cells :- (=> Nat Cell), k :- Nat, m :- Nat] (=> (jinv cells) (jinv (sys-accept cells k m)))
+  (intro h)
+  (cases hc (:complete (cells k)))
+  (case [true] (simp only [sys-accept hc]) (exact h))
+  (case [false] (simp only [sys-accept hc]) (exact (jinv-same cells k (accept-cell (cells k) m) h (rfl) (rfl) (rfl)))))
+(a/theorem jinv-release-unborn [cells :- (=> Nat Cell), k :- Nat] (=> (jinv cells) (jinv (sys-release-unborn cells k)))
+  (intro h)
+  (cases hr (Bool.and (:unborn (cells k)) (Bool.not (:released (:world (cells k))))))
+  (case [false] (simp only [sys-release-unborn hr]) (exact h))
+  (case [true] (simp only [sys-release-unborn hr]) (exact (jinv-same cells k (release-unborn-cell (cells k)) h (rfl) (rfl) (rfl)))))
+(a/theorem jinv-drop [cells :- (=> Nat Cell), k :- Nat] (=> (jinv cells) (jinv (sys-drop cells k)))
+  (intro h) (simp only [sys-drop]) (apply (jinv-put cells k _ h)) (intro hl) (simp only [drop-cell] at hl) (cases hl))
+(a/theorem jinv-idle-release [cells :- (=> Nat Cell), m :- Nat] (=> (jinv cells) (jinv (sys-idle-release cells m)))
+  (intro h)
+  (cases hi (idle-cell (cells m)))
+  (case [false] (simp only [sys-idle-release hi]) (exact h))
+  (case [true] (simp only [sys-idle-release hi]) (exact (jinv-drop cells m h))))
+(a/theorem jinv-resume [cells :- (=> Nat Cell), pubs :- (=> Nat Pub), p :- Nat, v :- Nat] (=> (jinv cells) (jinv (sys-resume cells pubs p v)))
+  (intro h) (simp only [sys-resume]) (exact (jinv-same cells (:cell (pubs p)) (resume-cell (cells (:cell (pubs p))) (:res (pubs p)) v) h (rfl) (rfl) (rfl))))
+(a/theorem jinv-activate [cells :- (=> Nat Cell), m :- Nat, v :- Nat] (=> (jinv cells) (jinv (sys-activate cells m v)))
+  (intro h)
+  (cases ha (act-ok (cells m)))
+  (case [false] (simp only [sys-activate ha]) (exact h))
+  (case [true] (simp only [sys-activate ha]) (exact (jinv-same cells m (act-cell (cells m) v) h (rfl) (rfl) (rfl)))))
+(a/theorem jinv-merge [cells :- (=> Nat Cell), k :- Nat, m :- Nat, b :- World] (=> (jinv cells) (jinv (sys-merge cells k m b)))
+  (intro h) (simp only [sys-merge]) (exact (jinv-same cells k (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b)) h (rfl) (rfl) (rfl))))
+(a/theorem jinv-fork [cells :- (=> Nat Cell), k :- Nat, m :- Nat, owner :- Nat] (=> (jinv cells) (jinv (sys-fork cells k m owner)))
+  (intro h)
+  (cases hu (:unborn (cells k)))
+  (case [true] (simp only [sys-fork hu]) (exact h))
+  (case [false] (simp only [sys-fork hu]) (apply (jinv-put cells m _ h)) (intro hl) (exact (jok-nil (fork-cell (cells k) k owner) (rfl)))))
+(a/theorem jinv-fork-effect [cells :- (=> Nat Cell), k :- Nat, m :- Nat, owner :- Nat, st :- Nat, kont :- Nat, v :- Nat]
+  (=> (jinv cells) (jinv (sys-fork-effect cells k m owner st kont v)))
+  (intro h)
+  (cases hu (:unborn (cells k)))
+  (case [true] (simp only [sys-fork-effect hu]) (exact h))
+  (case [false] (simp only [sys-fork-effect hu]) (apply (jinv-put cells m _ h)) (intro hl) (exact (jok-nil (fork-effect-cell (cells k) k owner st kont v) (rfl)))))
+(a/theorem jinv-instantiate [cells :- (=> Nat Cell), pubs :- (=> Nat Pub), p :- Nat, m :- Nat, owner :- Nat]
+  (=> (jinv cells) (jinv (sys-instantiate cells pubs p m owner)))
+  (intro h) (simp only [sys-instantiate]) (apply (jinv-put cells m _ h)) (intro hl) (exact (jok-nil (inst-cell (pubs p) owner) (rfl))))
+
+;; ---- delivery: after sys-deliver every pending join waits on an incomplete target
+(a/defn jdp [w :- World, j :- Join] Bool (Bool.or (jnp j) (Bool.not (task-complete w (:target j)))))
+(a/theorem due-jdp [w :- World, j :- Join] (= (jdp w (hj-due w j)) true)
+  (cases ht (task-complete w (:target j)))
+  (case [true] (simp only [jdp hj-due ht done-np Bool.true_or]))
+  (case [false] (simp only [jdp hj-due ht Bool.not_false Bool.or_true])))
+(a/theorem jall-of [f :- (=> Join Join), Q :- (=> Join Bool), hq :- (forall [j :- Join] (= (Q (f j)) true)), js :- (List Join)]
+  (= (tbl-all Q (joins-map f js)) true)
+  (induction js) (case [nil] (simp only [joins-map tbl-all])) (case [cons h t ih] (simp only [joins-map tbl-all (hq h) ih Bool.and_self])))
+(a/theorem deliver-pending [cells :- (=> Nat Cell), k :- Nat, j :- Join]
+  (=> (List.Mem j (:joins ((sys-deliver cells k) k))) (= (jpend j) true)
+      (= (task-complete (:world (cells k)) (:target j)) false))
+  (intros m hp)
+  (simp only [sys-deliver fupd-same deliver-cell] at m)
+  (cases hc (:complete (cells k)))
+  (case [true]
+    (simp only [hc] at m)
+    (have a := (tbl-all-mem Join jnp j _ (jall-done (:joins (cells k))) m))
+    (simp only [jnp hp Bool.not_true] at a) (cases a))
+  (case [false]
+    (simp only [hc] at m)
+    (have a := (tbl-all-mem Join (jdp (:world (cells k))) j _ (jall-of (hj-due (:world (cells k))) _ (due-jdp (:world (cells k))) (:joins (cells k))) m))
+    (simp only [jdp jnp hp Bool.not_true Bool.false_or] at a)
+    (exact (sx-not-of _ a))))
+
+;; ---- frames: the world and every flag but the joins are untouched
+(a/theorem sinv-join [cells :- (=> Nat Cell), k :- Nat, t :- Nat] (=> (sinv cells) (sinv (sys-join cells k t)))
+  (intro h)
+  (cases hj (join-ok (cells k) t))
+  (case [false] (simp only [sys-join hj]) (exact h))
+  (case [true] (simp only [sys-join hj]) (exact (sinv-put cells k _ h (fn [hl :- (= (:live (join-cell (cells k) t)) true)] (sinv-live cells k h hl))))))
+(a/theorem sinv-deliver [cells :- (=> Nat Cell), k :- Nat] (=> (sinv cells) (sinv (sys-deliver cells k)))
+  (intro h) (simp only [sys-deliver]) (exact (sinv-put cells k _ h (fn [hl :- (= (:live (deliver-cell (cells k))) true)] (sinv-live cells k h hl)))))
+(a/theorem sinv-withdraw [cells :- (=> Nat Cell), k :- Nat, x :- Nat] (=> (sinv cells) (sinv (sys-withdraw cells k x)))
+  (intro h) (simp only [sys-withdraw]) (exact (sinv-put cells k _ h (fn [hl :- (= (:live (withdraw-cell (cells k) x)) true)] (sinv-live cells k h hl)))))
+(a/theorem qsinv-join [cells :- (=> Nat Cell), k :- Nat, t :- Nat] (=> (qsinv cells) (qsinv (sys-join cells k t)))
+  (intro h)
+  (cases hj (join-ok (cells k) t))
+  (case [false] (simp only [sys-join hj]) (exact h))
+  (case [true] (simp only [sys-join hj]) (exact (qsinv-put cells k _ h (fn [hl :- (= (:live (join-cell (cells k) t)) true)] (qsinv-live cells k h hl))))))
+(a/theorem qsinv-deliver [cells :- (=> Nat Cell), k :- Nat] (=> (qsinv cells) (qsinv (sys-deliver cells k)))
+  (intro h) (simp only [sys-deliver]) (exact (qsinv-put cells k _ h (fn [hl :- (= (:live (deliver-cell (cells k))) true)] (qsinv-live cells k h hl)))))
+(a/theorem qsinv-withdraw [cells :- (=> Nat Cell), k :- Nat, x :- Nat] (=> (qsinv cells) (qsinv (sys-withdraw cells k x)))
+  (intro h) (simp only [sys-withdraw]) (exact (qsinv-put cells k _ h (fn [hl :- (= (:live (withdraw-cell (cells k) x)) true)] (qsinv-live cells k h hl)))))
+(a/theorem cinv-join [cells :- (=> Nat Cell), k :- Nat, t :- Nat] (=> (cinv cells) (cinv (sys-join cells k t)))
+  (intro h)
+  (cases hj (join-ok (cells k) t))
+  (case [false] (simp only [sys-join hj]) (exact h))
+  (case [true] (simp only [sys-join hj])
+    (exact (cinv-world cells k (join-cell (cells k) t) h (rfl) (rfl) (rfl) (rfl) (fn [hl :- (= (:live (cells k)) true)] (wq-refl (:world (cells k))))))))
+(a/theorem cinv-deliver [cells :- (=> Nat Cell), k :- Nat] (=> (cinv cells) (cinv (sys-deliver cells k)))
+  (intro h) (simp only [sys-deliver])
+  (exact (cinv-world cells k (deliver-cell (cells k)) h (rfl) (rfl) (rfl) (rfl) (fn [hl :- (= (:live (cells k)) true)] (wq-refl (:world (cells k)))))))
+(a/theorem cinv-withdraw [cells :- (=> Nat Cell), k :- Nat, x :- Nat] (=> (cinv cells) (cinv (sys-withdraw cells k x)))
+  (intro h) (simp only [sys-withdraw])
+  (exact (cinv-world cells k (withdraw-cell (cells k) x) h (rfl) (rfl) (rfl) (rfl) (fn [hl :- (= (:live (cells k)) true)] (wq-refl (:world (cells k)))))))
+
+;; ---- delivery at most once: a join that is not pending stays as it is, and join ids are distinct
+(a/defn jkeep [js :- (List Join), js2 :- (List Join)] Prop
+  (forall [j :- Join] (=> (List.Mem j js) (= (jpend j) false) (List.Mem j js2))))
+(a/theorem jmem-cases [a :- Join, b :- Join, l :- (List Join), P :- Prop]
+  (=> (List.Mem a (List.cons Join b l)) (=> (= a b) P) (=> (List.Mem a l) P) P)
+  (intros m h1 h2)
+  (cases m)
+  (case [head] (exact (h1 (rfl))))
+  (case [tail m2] (exact (h2 m2))))
+(a/theorem map-keep [f :- (=> Join Join), hf :- (forall [j :- Join] (=> (= (jpend j) false) (= (f j) j))), js :- (List Join)]
+  (jkeep js (joins-map f js))
+  (simp only [jkeep])
+  (induction js)
+  (case [nil] (intros j m p) (cases m))
+  (case [cons h t ih]
+    (intros j m p)
+    (apply (jmem-cases j h t _ m))
+    (intro e) (rw [e] at p) (rw [e]) (simp only [joins-map (hf h p)]) (exact (List.Mem.head _))
+    (intro m2) (simp only [joins-map]) (exact (List.Mem.tail _ (ih j m2 p)))))
+(a/theorem upd-keep-head [x :- Nat, f :- (=> Join Join), hf :- (forall [j :- Join] (=> (= (jpend j) false) (= (f j) j))),
+                          h :- Join, t :- (List Join)]
+  (=> (= (jpend h) false) (List.Mem h (tbl-upd join-id x f (List.cons Join h t))))
+  (intro p)
+  (cases hx (Nat.beq (join-id h) x))
+  (all_goals (simp only [tbl-upd hx (hf h p)]))
+  (all_goals (exact (List.Mem.head _))))
+(a/theorem upd-keep [x :- Nat, f :- (=> Join Join), hf :- (forall [j :- Join] (=> (= (jpend j) false) (= (f j) j))), js :- (List Join)]
+  (jkeep js (tbl-upd join-id x f js))
+  (simp only [jkeep])
+  (induction js)
+  (case [nil] (intros j m p) (cases m))
+  (case [cons h t ih]
+    (intros j m p)
+    (apply (jmem-cases j h t _ m))
+    (intro e) (rw [e] at p) (rw [e]) (exact (upd-keep-head x f hf h t p))
+    (intro m2) (cases hx (Nat.beq (join-id h) x)) (all_goals (simp only [tbl-upd hx])) (all_goals (exact (List.Mem.tail _ (ih j m2 p))))))
+(a/theorem once-deliver [cells :- (=> Nat Cell), k :- Nat] (jkeep (:joins (cells k)) (:joins ((sys-deliver cells k) k)))
+  (simp only [sys-deliver fupd-same deliver-cell])
+  (cases hc (:complete (cells k)))
+  (case [true] (simp only [hc]) (exact (map-keep hj-done done-fix _)))
+  (case [false] (simp only [hc]) (exact (map-keep (hj-due (:world (cells k))) (due-fix (:world (cells k))) _))))
+(a/theorem once-withdraw [cells :- (=> Nat Cell), k :- Nat, x :- Nat] (jkeep (:joins (cells k)) (:joins ((sys-withdraw cells k x) k)))
+  (simp only [sys-withdraw fupd-same withdraw-cell]) (exact (upd-keep x hj-drop drop-fix _)))
+(a/theorem once-complete [cells :- (=> Nat Cell), k :- Nat] (jkeep (:joins (cells k)) (:joins ((sys-complete cells k) k)))
+  (cases hr (complete-ready cells k))
+  (case [false] (simp only [sys-complete hr jkeep]) (intros j m p) (exact m))
+  (case [true] (simp only [sys-complete hr fupd-same complete-cell]) (exact (map-keep hj-done done-fix _))))
+(a/theorem once-join [cells :- (=> Nat Cell), k :- Nat, t :- Nat] (jkeep (:joins (cells k)) (:joins ((sys-join cells k t) k)))
+  (cases hj (join-ok (cells k) t))
+  (case [false] (simp only [sys-join hj jkeep]) (intros j m p) (exact m))
+  (case [true] (simp only [sys-join hj fupd-same join-cell jkeep]) (intros j m p) (exact (List.Mem.tail _ m))))
+(a/theorem jmem-uniq [js :- (List Join), j :- Join, j2 :- Join]
+  (=> (= (nat-nodup (jids js)) true) (List.Mem j js) (List.Mem j2 js) (= (:id j2) (:id j)) (= j2 j))
+  (intros hn m m2 e)
+  (cases hf (tbl-find join-id (:id j) js))
+  (case [none]
+    (have z := (tbl-find-none-has Join join-id (:id j) js hf))
+    (have hh := (mem-ids-has Join join-id j js m))
+    (rw [(nat-mem-ids Join join-id (:id j) js)] at hh)
+    (have hh2 (= (tbl-has join-id (:id j) js) true)) (exact hh)
+    (rw [z] at hh2) (cases hh2))
+  (case [some r]
+    (have a := (find-uniq Join join-id js j r hn m hf))
+    (have hf2 (= (tbl-find join-id (join-id j2) js) (Option.some Join r))) (simp only [join-id e]) (exact hf)
+    (have b := (find-uniq Join join-id js j2 r hn m2 hf2))
+    (rw [a b])))
+;; Theorem: a join that is not pending (delivered or withdrawn) is the only join with its id after any of the
+;; operations that change joins (the race's winner is final; no second delivery)
+(a/theorem final-stays [js :- (List Join), js2 :- (List Join), j :- Join, j2 :- Join]
+  (=> (jkeep js js2) (= (nat-nodup (jids js2)) true) (List.Mem j js) (= (jpend j) false)
+      (List.Mem j2 js2) (= (:id j2) (:id j)) (= j2 j))
+  (intros hk hn m p m2 e)
+  (simp only [jkeep] at hk)
+  (exact (jmem-uniq js2 j j2 hn (hk j m p) m2 e)))
+
+;; ---- questions 10 and 14: a complete born cell
+(a/theorem ready-born-quiet [cells :- (=> Nat Cell), k :- Nat]
+  (=> (qsinv cells) (= (:live (cells k)) true) (= (:unborn (cells k)) false) (= (complete-ready cells k) true)
+      (= (qh (:world (cells k))) true))
+  (intros hq hl hu hr)
+  (have qi := (cq-born (cells k) (qsinv-live cells k hq hl) hu))
+  (simp only [complete-ready hu Bool.false_or Bool.and_eq_true] at hr)
+  (apply (qh-of _ qi))
+  (simp only [world-quiet (And.left hr) (And.left (And.right hr)) Bool.and_self]))
+;; Theorem (question 10): a complete born world has every task (id /= 0) and every non-root scope complete
+(a/theorem complete-born-ledger [cells :- (=> Nat Cell), k :- Nat]
+  (=> (qsinv cells) (cinv cells) (= (:live (cells k)) true) (= (:complete (cells k)) true) (= (:unborn (cells k)) false)
+      (And (forall [t :- Nat] (=> (= (Nat.beq t 0) false) (= (task-complete (:world (cells k)) t) true)))
+           (forall [s :- Nat] (=> (= (Nat.beq s root-scope-id) false) (= (scope-complete (:world (cells k)) s) true)))))
+  (intros hq hc hl hk hu)
+  (simp only [cinv] at hc)
+  (have qh0 := (ready-born-quiet cells k hq hl hu (hc k hl hk)))
+  (exact (And.intro (fn [t :- Nat, ht :- (= (Nat.beq t 0) false)] (quiet-task-complete _ t qh0 ht))
+                    (fn [s :- Nat, hs :- (= (Nat.beq s root-scope-id) false)] (quiet-scope-complete _ s qh0 hs)))))
+(a/theorem due-all-done [w :- World, js :- (List Join)]
+  (=> (= (tbl-all (fn [j :- Join] (task-complete w (:target j))) js) true) (= (tbl-all jnp (joins-map (hj-due w) js)) true))
+  (induction js)
+  (case [nil] (intro h) (simp only [joins-map tbl-all]))
+  (case [cons h t ih]
+    (intro hp) (simp only [tbl-all Bool.and_eq_true] at hp)
+    (simp only [joins-map tbl-all hj-due (And.left hp) done-np (ih (And.right hp)) Bool.and_self])))
+;; Theorem (question 14): at a born cell's completion (complete-ready) every join target is complete, so after
+;; sys-deliver nothing is pending
+(a/theorem born-complete-delivered [cells :- (=> Nat Cell), k :- Nat]
+  (=> (qsinv cells) (jinv cells) (= (:live (cells k)) true) (= (:unborn (cells k)) false) (= (complete-ready cells k) true)
+      (= (tbl-all jnp (:joins ((sys-deliver cells k) k))) true))
+  (intros hq hj hl hu hr)
+  (have qh0 := (ready-born-quiet cells k hq hl hu hr))
+  (have o := (jinv-live cells k hj hl))
+  (simp only [jok jl-ok Bool.and_eq_true] at o)
+  (have tc (= (tbl-all (fn [j :- Join] (task-complete (:world (cells k)) (:target j))) (:joins (cells k))) true))
+  (apply (tbl-all-mono Join (jl-one (List.length (:joins (cells k)))) _ _ (:joins (cells k)) (And.right (And.right o))))
+  (intros j q)
+  (simp only [jl-one Bool.and_eq_true Nat.blt_eq] at q)
+  (have t0 (= (Nat.beq (:target j) 0) false)) (cases e (Nat.beq (:target j) 0)) (rfl) (have e2 := (Nat.eq_of_beq_eq_true e)) (have l := (And.right q)) (omega)
+  (exact (quiet-task-complete _ (:target j) qh0 t0))
+  (simp only [sys-deliver fupd-same deliver-cell])
+  (cases hc (:complete (cells k)))
+  (case [true] (simp only [hc jall-done]))
+  (case [false] (simp only [hc]) (exact (due-all-done _ _ tc))))
+;; ... so the abandonment delivery of complete-cell changes no join of a born cell
+(a/theorem all-np-fix [js :- (List Join)] (=> (= (tbl-all jnp js) true) (= (joins-map hj-done js) js))
+  (induction js)
+  (case [nil] (intro h) (simp only [joins-map]))
+  (case [cons h t ih]
+    (intro hp) (simp only [tbl-all Bool.and_eq_true] at hp)
+    (simp only [joins-map (done-fix h (np-of h (And.left hp))) (ih (And.right hp))])))
+(a/theorem born-abandon-none [cells :- (=> Nat Cell), k :- Nat]
+  (=> (qsinv cells) (jinv cells) (= (:live (cells k)) true) (= (:unborn (cells k)) false) (= (complete-ready cells k) true)
+      (= (:joins (complete-cell ((sys-deliver cells k) k))) (:joins ((sys-deliver cells k) k))))
+  (intros hq hj hl hu hr)
+  (simp only [complete-cell])
+  (exact (all-np-fix _ (born-complete-delivered cells k hq hj hl hu hr))))

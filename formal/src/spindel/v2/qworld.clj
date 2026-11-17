@@ -38,8 +38,10 @@
             [spindel.v2.p3 :refer :all]
             [spindel.v2.hmk2 :refer [p3l]]
             [spindel.v2.quiet :refer :all]
-            [spindel.v2.i11] [spindel.v2.i1] [spindel.v2.i5] [spindel.v2.i1o] [spindel.v2.i1r] [spindel.v2.i8]
-            [spindel.v2.hm] [spindel.v2.i14] [spindel.v2.i10]))
+            [spindel.v2.i11] [spindel.v2.i1] [spindel.v2.i5] [spindel.v2.i1o] [spindel.v2.i1r :refer [gr0]] [spindel.v2.i8]
+            [spindel.v2.hm] [spindel.v2.i14] [spindel.v2.i10]
+            [spindel.v2.oscope :refer [gos-rest gos os-need hw]]
+            [spindel.v2.ledger :refer [task-complete task-held task-srow scope-complete]]))
 
 ;; ===========================================================================
 ;; Part A. gc: every cleanup entry's run is a run row
@@ -273,7 +275,8 @@
 
 ;; I3 as a state fact: the filter keeps every id (after every accepted step, `step-i3-total`)
 (a/defn i3 [w :- World] Bool (tbl-all (keep-fn w) (all-ids w)))
-(a/defn qinv [w :- World] Bool (Bool.and (p3l w) (Bool.and (gk-rest w) (Bool.and (gc-rest w) (i3 w)))))
+;; C1c (question 10): and every open non-root scope lies in a run's run-scope subtree (spindel.v2.oscope `gos-rest`)
+(a/defn qinv [w :- World] Bool (Bool.and (p3l w) (Bool.and (gk-rest w) (Bool.and (gc-rest w) (Bool.and (i3 w) (gos-rest w))))))
 
 ;; p3l's parts the closure reads
 (a/theorem p3l-p3e [w :- World] (=> (= (p3l w) true) (= (p3e w) true))
@@ -293,10 +296,17 @@
 
 (a/theorem qinv-parts [w :- World]
   (=> (= (qinv w) true) (And (= (p3l w) true) (And (= (gk-rest w) true) (And (= (gc-rest w) true) (= (i3 w) true)))))
-  (intro h) (simp only [qinv Bool.and_eq_true] at h) (exact h))
+  (intro h) (simp only [qinv Bool.and_eq_true] at h)
+  (exact (And.intro (And.left h) (And.intro (And.left (And.right h)) (And.intro (And.left (And.right (And.right h)))
+           (And.left (And.right (And.right (And.right h)))))))))
+(a/theorem qinv-gos [w :- World] (=> (= (qinv w) true) (= (gos-rest w) true))
+  (intro h) (simp only [qinv Bool.and_eq_true] at h) (exact (And.right (And.right (And.right (And.right h))))))
 (a/theorem qinv-intro [w :- World]
-  (=> (= (p3l w) true) (= (gk-rest w) true) (= (gc-rest w) true) (= (i3 w) true) (= (qinv w) true))
-  (intros h1 h2 h3 h4) (simp only [qinv h1 h2 h3 h4 Bool.and_self]))
+  (=> (= (p3l w) true) (= (gk-rest w) true) (= (gc-rest w) true) (= (i3 w) true) (= (gos-rest w) true) (= (qinv w) true))
+  (intros h1 h2 h3 h4 h5) (simp only [qinv h1 h2 h3 h4 h5 Bool.and_self]))
+(a/theorem p3l-gr0 [w :- World] (=> (= (p3l w) true) (= (gr0 w) true))
+  (intro h)
+  (exact (And.right (p3h-parts _ (And.left (p3i-parts _ (And.left (p3j-parts _ (And.left (p3k-parts _ (And.left (p3l-parts w h))))))))))))
 
 (a/theorem step-i3-inv [w :- World, it :- Item] (=> (= (i3 w) true) (= (i3 (:world (world-step w it))) true))
   (intro h)
@@ -309,8 +319,11 @@
   (intro h)
   (have q := (qinv-parts w h))
   (have b := (p3l-p3b w (And.left q)))
+  (have g := (step-gos w it (And.left (p3b-parts w b)) (p3l-gr0 w (And.left q))
+                (gos-intro w (p3l-sample w (And.left q)) (qinv-gos w h)) (step-rule-r-safe w it b)))
   (exact (qinv-intro _ (step-p3l w it (And.left q)) (step-k w it b (And.left (And.right q)))
-           (step-gc-rest w it b (And.left (And.right (And.right q)))) (step-i3-inv w it (And.right (And.right (And.right q)))))))
+           (step-gc-rest w it b (And.left (And.right (And.right q)))) (step-i3-inv w it (And.right (And.right (And.right q))))
+           (gos-rest-of _ g))))
 (a/theorem qinv-empty [] (= (qinv empty-world) true) (rfl))
 
 ;; ---- uniqueness: a scope id is no other row's id
@@ -570,6 +583,170 @@
   (have cn := (cleanup-nil w (And.left (And.right (And.right qi))) (And.right (And.right q))))
   (exact (And.intro c1 (And.intro c2 (And.intro (And.right (And.right q)) (And.intro c4 (And.intro c5 (And.intro c6
            (And.intro c7 (And.intro cn (And.intro (And.left (And.right k)) ef)))))))))))
+
+;; root-ok: a root-kind scope is scope 2 with parent 0
+(a/theorem root-id-2 [s :- ScopeRow] (=> (= (root-ok (skw s)) true) (= (is-root-scope s) true) (= (:id s) root-scope-id))
+  (intros r k)
+  (have hk2 (= (Nat.beq (:kind (skw s)) scope-root) true)) (exact k)
+  (simp only [root-ok hk2 Bool.true_or Bool.not_true Bool.false_or Bool.and_eq_true] at r)
+  (exact (Nat.eq_of_beq_eq_true (And.left r))))
+(a/theorem oe-need-false [s :- ScopeRow] (=> (= (is-open-explicit s) true) (= (os-need s) false) False)
+  (intros p n)
+  (simp only [is-open-explicit Bool.and_eq_true] at p)
+  (have e (= (:kind s) scope-explicit)) (exact (Nat.eq_of_beq_eq_true (And.left p)))
+  (simp only [os-need e (And.right p)] at n) (cases n))
+(a/theorem root-parent-0 [w :- World, s :- ScopeRow, y :- Nat]
+  (=> (= (qh w) true) (List.Mem s (:scopes w)) (= (root-ok (skw s)) true) (= (id-is scope-id root-scope-id s) true)
+      (= (reach-mem y (scope-contrib w s)) true) False)
+  (intros h m r p hy)
+  (have q := (qh-parts w h))
+  (have qi := (qinv-parts w (And.left q)))
+  (have i2 (= (Nat.beq (:id (skw s)) 2) true)) (simp only [id-is scope-id] at p) (exact p)
+  (simp only [root-ok i2 Bool.or_true Bool.not_true Bool.false_or Bool.true_and Bool.and_eq_true] at r)
+  (have p0 (= (Nat.beq (:parent s) 0) true)) (exact (And.right r))
+  (have g := (p3l-gw w (And.left qi)))
+  (simp only [gw-rest gwk Bool.and_eq_true] at g)
+  (have fk := (And.left (And.right (And.right g))))
+  (have ef (= (:forks w) (List.nil ForkRow)))
+  (cases hf (:forks w)) (case [nil] (rfl)) (case [cons a t] (rw [hf] at fk) (simp [forks-nil] at fk))
+  (have t0 (= (reach-mem y (tbl-scan task-id (owned-running-task w (:id s)) (:tasks w))) false))
+  (cases hb (reach-mem y (tbl-scan task-id (owned-running-task w (:id s)) (:tasks w)))) (rfl)
+  (apply (False.elim (scan-prop TaskRow task-id (owned-running-task w (:id s)) (fn [z :- Nat] False) (:tasks w) _ y hb)))
+  (intros t mt pt)
+  (simp only [owned-running-task task-running run-find (And.right (And.right q)) tbl-find opt-test Bool.and_false] at pt)
+  (cases pt)
+  (have f0 (= (reach-mem y (tbl-scan fork-id (owned-fork (:id s)) (:forks w))) false))
+  (simp only [ef tbl-scan reach-mem])
+  (simp only [scope-contrib reach-mem-append t0 f0 Bool.or_false] at hy)
+  (simp only [nz p0] at hy)
+  (simp [reach-mem] at hy))
+
+;; ---- C1c (questions 10, 14): a quiet world holds the root scope only
+;; no open non-root scope: its witness would be a run (spindel.v2.oscope)
+(a/theorem quiet-no-open [w :- World, c :- ScopeRow]
+  (=> (= (qh w) true) (List.Mem c (:scopes w)) (= (os-need c) false))
+  (intros h m)
+  (have q := (qh-parts w h))
+  (cases hn (os-need c))
+  (case [false] (rfl))
+  (case [true]
+    (have x := (gos-rest-mem w c (qinv-gos w (And.left q)) m hn))
+    (simp [hw (And.right (And.right q)) tbl-any] at x)))
+;; the roots of a quiet world: the root scope (no open explicit scope)
+(a/theorem roots-root [w :- World, y :- Nat]
+  (=> (= (qh w) true) (= (reach-mem y (roots w)) true) (= y root-scope-id))
+  (intros h hm)
+  (have q := (qh-parts w h))
+  (have qi := (qinv-parts w (And.left q)))
+  (have k := (k-parts w (And.left (And.right qi)) (And.left (And.right q))))
+  (have ne (= (reach-mem y (tbl-scan edge-id is-observe (:edges w))) false))
+  (cases hb (reach-mem y (tbl-scan edge-id is-observe (:edges w)))) (rfl)
+  (apply (False.elim (scan-prop EdgeRow edge-id is-observe (fn [z :- Nat] False) (:edges w) _ y hb)))
+  (intros e me pe)
+  (have t := (tbl-all-mem EdgeRow not-host e (:edges w) (And.left (And.right (And.right (And.right k)))) me))
+  (simp only [is-observe] at pe) (simp [not-host pe] at t)
+  (simp only [roots reach-mem-append (And.left (And.right (And.right k))) (And.left k) (And.left (And.right k)) ne
+              nz Nat.beq_refl tbl-scan reach-mem Bool.or_false Bool.false_or] at hm)
+  (have g := (p3l-gw w (And.left qi)))
+  (simp only [gw-rest gwk Bool.and_eq_true] at g)
+  (have ro := (And.left g)) (rw [all-skws] at ro)
+  (cases hm1 (reach-mem y (tbl-scan scope-id is-root-scope (:scopes w))))
+  (case [true]
+    (exact (scan-prop ScopeRow scope-id is-root-scope (fn [z :- Nat] (= z root-scope-id)) (:scopes w)
+             (fn [s :- ScopeRow, ms :- (List.Mem s (:scopes w)), ps :- (= (is-root-scope s) true)]
+               (root-id-2 s (tbl-all-mem ScopeRow _ s _ ro ms) ps))
+             y hm1)))
+  (case [false]
+    (simp only [hm1 Bool.false_or] at hm)
+    (exact (False.elim (scan-prop ScopeRow scope-id is-open-explicit (fn [z :- Nat] False) (:scopes w)
+             (fn [s :- ScopeRow, ms :- (List.Mem s (:scopes w)), ps :- (= (is-open-explicit s) true)]
+               (oe-need-false s ps (quiet-no-open w s h ms)))
+             y hm)))))
+;; the root scope retains nothing in a quiet world: its parent is 0, no running task, no fork marker
+(a/theorem root-succ-none [w :- World, z :- Nat]
+  (=> (= (qh w) true) (= (scope-has w root-scope-id) true) (= (reach-mem z (retain-succ w root-scope-id)) true) False)
+  (intros h hx hm)
+  (have qi := (qinv-parts w (And.left (qh-parts w h))))
+  (have o := (scope-only w root-scope-id (p3l-sample w (And.left qi)) hx))
+  (simp only [other-has Bool.or_eq_false_iff] at o)
+  (simp only [retain-succ reach-mem-append
+              (gather-off CompRow comp-id root-scope-id (comp-contrib w) (:comps w) z (And.left o))
+              (gather-off TaskRow task-id root-scope-id task-contrib (:tasks w) z (And.left (And.right o)))
+              (gather-off RunRow run-id root-scope-id (run-contrib w) (:runs w) z (And.left (And.right (And.right o))))
+              (gather-off EdgeRow edge-id root-scope-id edge-contrib (:edges w) z (And.left (And.right (And.right (And.right (And.right o))))))
+              (gather-off ActRow act-id root-scope-id act-contrib (:acts w) z (And.left (And.right (And.right (And.right (And.right (And.right o)))))))
+              (gather-off PubRow pub-id root-scope-id pub-contrib (:pubs w) z (And.right (And.right (And.right (And.right (And.right (And.right (And.right o))))))))
+              Bool.or_false] at hm)
+  (have g := (p3l-gw w (And.left qi)))
+  (simp only [gw-rest gwk Bool.and_eq_true] at g)
+  (have ro := (And.left g)) (rw [all-skws] at ro)
+  (exact (gather-prop ScopeRow (id-is scope-id root-scope-id) (scope-contrib w) (fn [y :- Nat] False) (:scopes w)
+           (fn [s :- ScopeRow, y :- Nat, m :- (List.Mem s (:scopes w)), p :- (= (id-is scope-id root-scope-id s) true),
+                hy :- (= (reach-mem y (scope-contrib w s)) true)]
+             (root-parent-0 w s y h m (tbl-all-mem ScopeRow _ s _ ro m) p hy))
+           z hm)))
+;; a kept id of a quiet world is live (no cleanup entry, nothing admitted, no storage)
+(a/theorem keep-live [w :- World, y :- Nat]
+  (=> (= (qh w) true) (= (keep-fn w y) true) (Reach (retain-succ w) (roots w) y))
+  (intros h hk)
+  (have q := (qh-parts w h))
+  (have qi := (qinv-parts w (And.left q)))
+  (have k := (k-parts w (And.left (And.right qi)) (And.left (And.right q))))
+  (have hz := (And.right (And.right (And.right (And.right k)))))
+  (simp only [hz-all Bool.and_eq_true] at hz)
+  (have cn := (cleanup-nil w (And.left (And.right (And.right qi))) (And.right (And.right q))))
+  (have a1 := (any-none CompRow h0-c (adm-comp y) (:comps w) (adm-comp-h0 y) (And.left hz)))
+  (have a2 := (any-none TaskRow h0-t (adm-task y) (:tasks w) (adm-task-h0 y) (And.left (And.right hz))))
+  (have a3 := (any-none SourceRow h0-s (adm-source y) (:sources w) (adm-source-h0 y) (And.right (And.right hz))))
+  (have rn := (And.right (And.right q)))
+  (have pn := (And.left (And.right k)))
+  (simp only [keep-fn keep-with Bool.or_eq_true] at hk)
+  (cases hk)
+  (case [inl a] (exact (Iff.mp (in-live-iff w y (live-converged-all w)) a)))
+  (case [inr b]
+    (simp [cleanup-rows cn cleanup-rows-in admitted a1 a2 a3 pn tbl-any storage storage-with storage-gather rn
+           tbl-gather anc-close anc-all reach-mem] at b)))
+;; live is the root scope
+(a/theorem live-root [w :- World, y :- Nat]
+  (=> (= (qh w) true) (Reach (retain-succ w) (roots w) y) (= y root-scope-id))
+  (intros h r)
+  (induction r)
+  (case [root x hx] (exact (roots-root w x h (Iff.mpr (reach-mem-iff x (roots w)) hx))))
+  (case [step p x hp hx ih]
+    (have hp2 := (reach-scope w p h hp))
+    (rw [ih] at hp2)
+    (rw [ih] at hx)
+    (exact (False.elim (root-succ-none w x h hp2 (Iff.mpr (reach-mem-iff x (retain-succ w root-scope-id)) hx))))))
+;; Theorem (questions 10, 14): a quiet world with qinv holds the root scope only
+(a/theorem quiet-root-only [w :- World, y :- Nat]
+  (=> (= (qh w) true) (= (scope-has w y) true) (= y root-scope-id))
+  (intros h hy)
+  (have qi := (qinv-parts w (And.left (qh-parts w h))))
+  (have hm (= (nat-mem y (tbl-ids scope-id (:scopes w))) true)) (rw [nat-mem-ids]) (exact hy)
+  (have m2 (= (nat-mem y (all-ids w)) true)) (simp only [all-ids nat-mem-app hm Bool.true_or])
+  (have kk := (all-nat-mem (keep-fn w) y (all-ids w) (And.right (And.right (And.right qi))) m2))
+  (exact (live-root w y h (keep-live w y h kk))))
+
+;; Theorem (question 10): in a quiet world with qinv every task (id /= 0) and every non-root scope is complete
+;; (spindel.v2.ledger): no task row (quiet-rows), and no scope row but the root scope's (quiet-root-only)
+(a/theorem quiet-task-complete [w :- World, t :- Nat]
+  (=> (= (qh w) true) (= (Nat.beq t 0) false) (= (task-complete w t) true))
+  (intros h ht)
+  (have o := (quiet-rows w h))
+  (simp only [only-scopes] at o)
+  (have et := (And.left (And.right o)))
+  (have hs (= (scope-has w (+ t 2)) false))
+  (cases hb (scope-has w (+ t 2)))
+  (case [false] (rfl))
+  (case [true] (have e := (quiet-root-only w (+ t 2) h hb)) (simp only [root-scope-id] at e) (have z (= t 0)) (omega) (rw [z] at ht) (cases ht))
+  (simp only [task-complete task-held task-srow task-find et tbl-find hs
+              Bool.not_false Bool.and_self]))
+(a/theorem quiet-scope-complete [w :- World, s :- Nat]
+  (=> (= (qh w) true) (= (Nat.beq s root-scope-id) false) (= (scope-complete w s) true))
+  (intros h hs)
+  (cases hb (scope-has w s))
+  (case [false] (simp only [scope-complete hb Bool.not_false]))
+  (case [true] (have e := (quiet-root-only w s h hb)) (rw [e] at hs) (simp at hs)))
 
 ;; ===========================================================================
 ;; Part C. The refusal lemma: every item is refused in a quiet world

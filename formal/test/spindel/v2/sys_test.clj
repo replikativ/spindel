@@ -21,7 +21,13 @@
     cinv-step-q cinv-wake-q cinv-resume-q cinv-merge-q cinv-publish-q cinv-abandon-q
     qsinv-init qpinv-none qsinv-step qsinv-wake qsinv-resume qsinv-merge qsinv-publish qsinv-abandon qsinv-accept
     qsinv-complete qsinv-drop qsinv-idle-release qsinv-release-unborn qsinv-activate qsinv-fork qsinv-fork-effect
-    qsinv-instantiate qpinv-publish qpinv-abandon])
+    qsinv-instantiate qpinv-publish qpinv-abandon
+    ;; C1c stage A, proof stage
+    jinv-init jinv-join jinv-deliver jinv-withdraw jinv-complete jinv-step jinv-publish jinv-abandon jinv-wake jinv-accept
+    jinv-release-unborn jinv-drop jinv-idle-release jinv-resume jinv-activate jinv-merge jinv-fork jinv-fork-effect
+    jinv-instantiate deliver-pending sinv-join sinv-deliver sinv-withdraw qsinv-join qsinv-deliver qsinv-withdraw
+    cinv-join cinv-deliver cinv-withdraw once-deliver once-withdraw once-complete once-join final-stays
+    complete-born-ledger born-complete-delivered born-abandon-none])
 
 (deftest theorems-kernel-checked
   (doseq [t theorems]
@@ -255,19 +261,22 @@
         d (:id (first (filter #(= s/sk-deferred (:kind %)) (:sources w))))]
     [k [(it :deliver d 5) (it :schedule r) (it :complete (:stamp (first (filter #(= r (:id %)) (:runs w)))) s/res-ok 1)]]))
 
+;; the targets of a cell's live (pending) joins
+(defn- pj [c] (mapv :target (filter #(= sys/js-pending (:st %)) (:joins c))))
+
 (deftest c1c-join-delivered-at-target-completion
   (let [w (prefix-world-c1)
         [k items] (finish-task w)
         cells (sys/sys-join (c1-cells {1 (c1-cell w)}) 1 k)
         stepped (reduce (fn [cs i] (sys/sys-step cs 1 i)) cells items)
         w2 (:world (stepped 1))]
-    (is (= [k] (:joins (cells 1))) "pending: the task is running")
+    (is (= [k] (pj (cells 1))) "pending: the task is running")
     (is (= (:world (cells 1)) w) "admission changes no row (no edge, handle or id)")
-    (is (= [k] (:joins ((sys/sys-deliver cells 1) 1))) "not delivered before the target completes")
+    (is (= [k] (pj ((sys/sys-deliver cells 1) 1))) "not delivered before the target completes")
     (is (true? (lg/task-complete w2 k)) "done, retired, its run scope removed")
-    (is (= [k] (:joins (stepped 1))) "a layer-1 step delivers nothing by itself")
-    (is (= [] (vec (:joins ((sys/sys-deliver stepped 1) 1)))) "delivered once the target is complete")
-    (is (= [] (vec (:joins ((sys/sys-join (sys/sys-deliver stepped 1) 1 k) 1)))) "a join on a complete target is delivered at once")))
+    (is (= [k] (pj (stepped 1))) "a layer-1 step delivers nothing by itself")
+    (is (= [] (pj ((sys/sys-deliver stepped 1) 1))) "delivered once the target is complete")
+    (is (= [] (pj ((sys/sys-join (sys/sys-deliver stepped 1) 1 k) 1))) "a join on a complete target is delivered at once")))
 
 ;; sample 31b: an unborn instance's copy of a task never runs; a join on it is delivered with the instance's
 ;; completion (E4: released before its activation, complete at once)
@@ -277,11 +286,11 @@
         c0 (sys/sys-join (c1-cells {3 (c1-cell w :parent 1 :unborn true :pending 99)}) 3 k)
         c1 (sys/sys-deliver (sys/sys-release-unborn c0 3) 3)
         c2 (sys/sys-complete c1 3)]
-    (is (= [k] (:joins (c0 3))))
-    (is (= [k] (:joins (c1 3))) "released, not complete: the target never completes")
+    (is (= [k] (pj (c0 3))))
+    (is (= [k] (pj (c1 3))) "released, not complete: the target never completes")
     (is (false? (lg/task-complete (:world (c2 3)) k)))
     (is (true? (:complete (c2 3))))
-    (is (= [] (vec (:joins (c2 3)))) "delivered with the completion (abandonment)")))
+    (is (= [] (pj (c2 3))) "delivered with the completion (abandonment)")))
 
 ;; sample 32 and the released half: admission has no released guard
 (deftest c1c-join-after-release
@@ -294,12 +303,12 @@
         cd (sys/sys-complete (c1-cells {1 (c1-cell done)}) 1)]
     (is (true? (:released busy)))
     (is (false? (lg/task-complete busy kb)) "cancelled, its run still in cleanup (the offload)")
-    (is (= [kb] (:joins (cb 1))) "admitted after release, pending")
+    (is (= [kb] (pj (cb 1))) "admitted after release, pending")
     (is (true? (lg/task-complete done k)))
-    (is (= [] (vec (:joins ((sys/sys-join (c1-cells {1 (c1-cell done)}) 1 k) 1)))) "after release, complete target: at once")
+    (is (= [] (pj ((sys/sys-join (c1-cells {1 (c1-cell done)}) 1 k) 1))) "after release, complete target: at once")
     (is (true? (:complete (cd 1))))
-    (is (= [] (vec (:joins ((sys/sys-join cd 1 k) 1)))) "on a complete world: at once")
-    (is (= [] (vec (:joins ((sys/sys-join cd 1 kb) 1)))) "on a complete world, whatever the target")
+    (is (= [] (pj ((sys/sys-join cd 1 k) 1))) "on a complete world: at once")
+    (is (= [] (pj ((sys/sys-join cd 1 kb) 1))) "on a complete world, whatever the target")
     (testing "refused (unchanged): an id no handle names, a collected world"
       (is (= (cb 1) ((sys/sys-join cb 1 (:next-id busy)) 1)))
       (let [dropped (sys/sys-drop (c1-cells {1 (c1-cell w)}) 1)]
@@ -313,7 +322,26 @@
         f (sys/sys-fork cells 1 2 s/root-scope-id)
         fe (sys/sys-fork-effect cells 1 2 s/root-scope-id (:stamp r) 0 7)
         inst (sys/sys-instantiate cells (fn [_] (sys/->Pub 1 99 (:id r) w true)) 0 2 s/root-scope-id)]
-    (is (= [k] (:joins (cells 1))))
-    (is (= [[] [] []] (map #(vec (:joins (% 2))) [f fe inst])) "a fork, a fork effect and an instance start with none")
-    (is (= [[k] [k] [k]] (map #(:joins (% 1)) [f fe inst])) "the parent keeps its own")
+    (is (= [k] (pj (cells 1))))
+    (is (= [0 0 0] (map #(count (:joins (% 2))) [f fe inst])) "a fork, a fork effect and an instance start with none")
+    (is (= [[k] [k] [k]] (map #(pj (% 1)) [f fe inst])) "the parent keeps its own")
     (is (= w (:world (f 2))) "the fork copies the rows (the task with them)")))
+
+;; question 12 / sample 33: withdrawal is a host-side mark on a pending join; delivery skips it, and a delivered join
+;; stays delivered (the race's winner is final). Join ids count the admitted joins.
+(deftest c1c-join-withdrawal
+  (let [w (prefix-world-c1)
+        [k items] (finish-task w)
+        st (fn [c] (into {} (map (juxt :id :st) (:joins c))))
+        c2 (-> (c1-cells {1 (c1-cell w)}) (sys/sys-join 1 k) (sys/sys-join 1 k))
+        c1 (sys/sys-withdraw c2 1 0)
+        stepped (reduce (fn [cs i] (sys/sys-step cs 1 i)) c1 items)
+        done (sys/sys-deliver stepped 1)]
+    (is (= [2 1] (map #(sys/pending-joins (:joins (% 1))) [c2 c1])) "2, then 1 live join")
+    (is (= {0 sys/js-withdrawn 1 sys/js-pending} (st (c1 1))))
+    (is (= (:world (c1 1)) w) "withdrawal changes no row")
+    (is (= {0 sys/js-withdrawn 1 sys/js-delivered} (st (done 1))) "only the live join is delivered")
+    (is (= 0 (sys/pending-joins (:joins (done 1)))))
+    (is (= (st (done 1)) (st ((sys/sys-withdraw done 1 1) 1))) "a delivered join stays delivered")
+    (is (= (st (done 1)) (st ((sys/sys-deliver done 1) 1))) "delivered at most once")
+    (is (= (c2 1) ((sys/sys-join c2 1 0) 1)) "a join on id 0 (none) is refused")))
