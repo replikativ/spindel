@@ -1,12 +1,14 @@
-;; C1c stage A log samples for the oracle (samples 29-32, spec Z#70): task and scope
+;; C1c stage A log samples for the oracle (samples 29-33, spec Z#70): task and scope
 ;; completion is derived state, never a log item. Each world's own log plus a
 ;; `log-sample-N-observations.edn` sidecar, [{:step kw :log-length {world n} :obs {world {...}}}],
 ;; recorded at host checkpoints. Per world:
 ;;   :complete? :released? :runs :kids :token       as in samples-c1.clj
-;;   :tasks  {id {:done? :retired? :srow-present? :complete?}}  every task seen so far
-;;           (:retired? = no unretired run; :srow-present? = its run scope row exists)
+;;   :tasks  {id {:done? :retired? :materialized? :srow-present? :complete?}}  every task seen
+;;           so far (:retired? = no unretired run; :materialized? = its run scope was ever made;
+;;           :srow-present? = that row still exists)
 ;;   :scopes {id {:open? :present? :complete?}}     every scope seen so far
-;;   :pending-joins                                 host joins registered and not yet delivered
+;;   :pending-joins                                 live host joins: registered, not yet
+;;                                                  delivered, not withdrawn
 ;; From the repository root: clojure -M:bench -i formal/test/spindel/v2/oracle/gen/samples-c1c-a.clj
 (ns samples-c1c-a
   (:refer-clojure :exclude [await])
@@ -45,6 +47,7 @@
                      (for [[id row] rows :when (= rw/T-TASK (f row rw/TYPE))]
                        [id {:done? (boolean (f row rw/K-DONE))
                             :retired? (nil? (f row rw/K-RUN))
+                            :materialized? (some? (f row rw/K-SROW))
                             :srow-present? (boolean (when-let [s (f row rw/K-SROW)] (present? s)))
                             :complete? (boolean (f row rw/K-COMPLETE))}]))
         :scopes (into (sorted-map)
@@ -52,7 +55,7 @@
                         [id {:open? (boolean (f row rw/S-OPEN))
                              :present? (present? row)
                              :complete? (boolean (f row rw/S-COMPLETE))}]))
-        :pending-joins (reduce + 0 (map count (vals (f w rw/W-JOIN-SUBS))))}))))
+        :pending-joins (count (filter (comp hs/flag? first) (mapcat val (f w rw/W-JOIN-SUBS))))}))))
 
 (defn checkpoint! [sidecar seen worlds step]
   (Thread/sleep 60)
@@ -163,6 +166,25 @@
         (prn :sample-32-joined (deref joined 2000 :timeout)))
       (checkpoint! sc seen ws :joined-after-release)
       (finish! 32 ws sc acc))))
+
+;; 33: withdrawal. Two host joins on a parked task; one is withdrawn (a host-side flag, no
+;; item, no gate). :pending-joins counts live joins only; completion delivers the live one, and
+;; the withdrawn one never fires.
+(let [acc (atom []) sc (atom []) seen (atom {}) w (vworld acc) ws {:w w}]
+  (binding [v2/*world* w]
+    (let [d (v2/deferred)
+          t (task (await d))
+          kept (promise)
+          dropped (atom 0)
+          withdraw (v2/on-joined t #(swap! dropped inc))]
+      (v2/on-joined t #(deliver kept true))
+      (checkpoint! sc seen ws :two-joins)
+      (withdraw)
+      (checkpoint! sc seen ws :one-withdrawn)
+      (v2/deliver! d :d)
+      (prn :sample-33 (deref kept 2000 :timeout) :withdrawn-fired @dropped)
+      (checkpoint! sc seen ws :complete)
+      (finish! 33 ws sc acc))))
 
 (shutdown-agents)
 (System/exit 0)

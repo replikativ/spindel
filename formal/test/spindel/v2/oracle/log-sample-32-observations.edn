@@ -11,6 +11,7 @@
     {3
      {:done? true,
       :retired? true,
+      :materialized? false,
       :srow-present? false,
       :complete? true}},
     :scopes {2 {:open? true, :present? true, :complete? false}},
@@ -28,6 +29,7 @@
     {3
      {:done? true,
       :retired? true,
+      :materialized? false,
       :srow-present? false,
       :complete? true}},
     :scopes {2 {:open? false, :present? true, :complete? false}},
@@ -45,6 +47,7 @@
     {3
      {:done? true,
       :retired? true,
+      :materialized? false,
       :srow-present? false,
       :complete? true}},
     :scopes {2 {:open? false, :present? true, :complete? false}},
