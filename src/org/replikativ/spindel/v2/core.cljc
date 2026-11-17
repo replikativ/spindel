@@ -419,12 +419,24 @@
         (when-not (cell-live? (anth l i)) (hs/remove-at! l i))
         (recur (dec i))))))
 
+(defn- prune-later!
+  "Prunes cell `c` of `w` under its gate, on the metadata thread: never an
+   ingress item, so it is not work (W6, L12) and no quiescence check sees it.
+   A busy gate retries later, as the other metadata jobs."
+  [w c]
+  (let [lk (g w rw/W-LOCK)]
+    (if (hs/try-lock! lk)
+      (do (let [prev (enter-world! w)]
+            (try (prune-cell! w c) (finally (hs/unlock! lk) (leave-world! prev))))
+          (handoff! w))
+      (hs/metadata-later! #(prune-later! w c) 1))))
+
 (defn- cell-ended!
-  "Cell `c` is dead: its owner prunes, as a completion item scheduled off the
-   calling thread (a Cleaner thread, or the finishing fork's)."
+  "Cell `c` is dead: its owner prunes, off the calling thread (a Cleaner
+   thread, or the finishing fork's)."
   [^objects c]
   (when-let [w (hs/deref-weak (aget c 3))]
-    (hs/metadata-later! #(internal! w (fn [] (prune-cell! w c))))))
+    (hs/metadata-later! #(prune-later! w c))))
 
 (defn- register-token!
   "A fork of `w` at ordinal `o`: its token and cell."
@@ -4605,23 +4617,29 @@
    released. Refused, changing neither world, unless the child is quiescent
    and each changed source is still an open signal the parent has not
    written since the fork. Sources created in the child are not merged.
-   True when merged (when the item ran before return, as every host item)."
+   True when merged. The caller waits for the item (as `host-call!`, B7:
+   not from a thread processing another world), and the item waits out a
+   turn or metadata job holding the child's gate: neither is a refusal."
   [parent child]
-  (let [res (volatile! false)]
-    (gated parent
-           (let [lk (g child rw/W-LOCK)]
-             (when (and (not (active-run)) (not (identical? parent child))
-                        (not (hs/held? lk)) (hs/try-lock! lk))
-               (let [es (try (merge-entries parent child)
-                             (finally (hs/unlock! lk) (handoff! child)))]
-                 (when es
-                   (doseq [[basis v] es]
-                     (let [x (rv parent basis)
-                           ref (let [r (g x rw/HREF)] (if (instance? Handle r) r (some-> r hs/deref-weak)))]
-                       (write-row! parent x ref v)))
-                   (release-child! parent child)
-                   (vreset! res true))))))
-    @res))
+  (host-call!
+   parent
+   (fn []
+     (let [lk (g child rw/W-LOCK)]
+       (if (or (active-run) (identical? parent child) (hs/held? lk))
+         false
+         ;; deadlock-free: a holder of the child's gate never waits for another
+         ;; gate (B7), and metadata jobs only try
+         (do (hs/lock! lk)
+             (let [es (try (merge-entries parent child)
+                           (finally (hs/unlock! lk) (handoff! child)))]
+               (if-not es
+                 false
+                 (do (doseq [[basis v] es]
+                       (let [x (rv parent basis)
+                             ref (let [r (g x rw/HREF)] (if (instance? Handle r) r (some-> r hs/deref-weak)))]
+                         (write-row! parent x ref v)))
+                     (release-child! parent child)
+                     true)))))))))
 
 (defn fork-effect!
   "D3/Q4 `(fork)` in a task body: the fork boundary is this effect's commit.
