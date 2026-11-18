@@ -761,27 +761,70 @@
                 (recur (inc i))))
             true)))))
 
+(defn- parked-members
+  "The member edges of `x`'s current run when it is parked, else nil."
+  [w x]
+  (let [r (cond (comp? x) (let [r (rv w (g x rw/C-RUN))] (when (current? x r) r))
+                (task? x) (rv w (g x rw/K-RUN)))]
+    (when (and r (== rw/ACT-PARKED (gl r rw/R-ACT)))
+      (when-let [a (rv w (g r rw/R-ACTV))] (g a rw/A-MEMBERS)))))
+
+(defn- blocked-walk?
+  "§4.5.6 exactly, without recursion: a depth-first walk keeping a result per
+   entity. An entity met while still on the walk closes a cycle; it is not
+   derivable, nor is anything that needs it (all members must be blocked)."
+  [w x0]
+  (let [memo (volatile! {})                       ; id -> true, false or :open
+        frame (fn [x] (vswap! memo assoc (g x rw/ID) :open)
+                (object-array [x (parked-members w x) 0 false]))]
+    (loop [stack [(frame x0)]]
+      (let [^objects f (peek stack)
+            x (aget f 0) ^objects ms (aget f 1) i (long (aget f 2))]
+        (if (and ms (< i (alength ms)))
+          (let [e (rv w (aget ms i))
+                d (when e (rv w (g e rw/E-DEBTOR)))
+                known (when (and d (not (source? d)) (not (res? d))) (get @memo (g d rw/ID) ::none))]
+            (cond
+              (nil? e) (do (aset f 2 (inc i)) (recur stack))
+              (or (source? d) (res? d) (true? known)) (do (aset f 2 (inc i)) (aset f 3 true) (recur stack))
+              (= ::none known) (recur (conj stack (frame d)))   ; resumes at i with d's result
+              :else (do (aset f 1 nil) (aset f 3 false) (recur stack))))   ; false or a cycle
+          ;; done: blocked iff it had members and all were blocked
+          (let [ok (boolean (and ms (aget f 3)))
+                stack (pop stack)]
+            (vswap! memo assoc (g x rw/ID) ok)
+            (if (empty? stack)
+              ok
+              (let [^objects p (peek stack)]
+                (if ok
+                  (do (aset p 2 (inc (long (aget p 2)))) (aset p 3 true))
+                  (do (aset p 1 nil) (aset p 3 false)))
+                (recur stack)))))))))
+
 (defn- blocked?
   "§4.5.6, the least predicate: the entity's current run is parked and every
    unfilled member's debtor is a source or a blocked entity. A cycle is not
-   blocked (a user deadlock)."
+   blocked (a user deadlock). Shallow chains recurse without allocating;
+   from depth 64 on, the exact walk takes over (no depth bound, no deep
+   stack)."
   [w x depth]
-  (and (< (long depth) 64)
-       (let [r (cond (comp? x) (let [r (rv w (g x rw/C-RUN))] (when (current? x r) r))
-                     (task? x) (rv w (g x rw/K-RUN)))]
-         (and r (== rw/ACT-PARKED (gl r rw/R-ACT))
-              (let [a (rv w (g r rw/R-ACTV))
-                    ^objects ms (when a (g a rw/A-MEMBERS))]
-                (and ms
-                     (loop [i 0 any? false]
-                       (if (< i (alength ms))
-                         (if-let [e (rv w (aget ms i))]
-                           (let [d (rv w (g e rw/E-DEBTOR))]
-                             (if (or (source? d) (res? d) (blocked? w d (inc (long depth))))
-                               (recur (inc i) true)
-                               false))
-                           (recur (inc i) any?))
-                         any?))))))))
+  (if (>= (long depth) 64)
+    (blocked-walk? w x)
+    (let [r (cond (comp? x) (let [r (rv w (g x rw/C-RUN))] (when (current? x r) r))
+                  (task? x) (rv w (g x rw/K-RUN)))]
+      (and r (== rw/ACT-PARKED (gl r rw/R-ACT))
+           (let [a (rv w (g r rw/R-ACTV))
+                 ^objects ms (when a (g a rw/A-MEMBERS))]
+             (and ms
+                  (loop [i 0 any? false]
+                    (if (< i (alength ms))
+                      (if-let [e (rv w (aget ms i))]
+                        (let [d (rv w (g e rw/E-DEBTOR))]
+                          (if (or (source? d) (res? d) (blocked? w d (inc (long depth))))
+                            (recur (inc i) true)
+                            false))
+                        (recur (inc i) any?))
+                      any?))))))))
 
 (defn- maybe-schedule!
   "§4.5.7: a hot needs-run computation that is eligible is queued for
@@ -1733,6 +1776,25 @@
 
 (defn- invalid-op [op msg] (ex-info msg {:spindel/invalid op}))
 
+(defn- kind-ok?
+  "The kinds a host source operation applies to (the model's writable,
+   deliverable, open-kind, takeable and t20-pin guards)."
+  [x op]
+  (case op
+    :write (and (source? x) (<= (gl x rw/X-KIND) rw/SRC-CELL))
+    :deliver (and (source? x) (== rw/SRC-DEFERRED (gl x rw/X-KIND)))
+    :post (and (source? x) (== rw/SRC-MAILBOX (gl x rw/X-KIND)))
+    :release (and (source? x) (== rw/SRC-SEMAPHORE (gl x rw/X-KIND)))
+    :take (and (source? x) (<= rw/SRC-MAILBOX (gl x rw/X-KIND) rw/SRC-SEMAPHORE))
+    ;; tasks too (a pin keeps a task's row and result, e.g. tooling); the
+    ;; model's t20-pin takes computations and sources only (to be widened)
+    :pin (or (comp? x) (source? x) (task? x))))
+
+(def ^:private kind-msg
+  {:write "write! is for signals and cells" :deliver "deliver! is for deferreds"
+   :post "post! is for mailboxes" :release "release is for semaphores"
+   :take "take!/acquire! are for mailboxes and semaphores" :pin "pin! is for computations, tasks and sources"})
+
 (defn track-effect!
   "T7, on signals and cells (Z#54)."
   [x k ek]
@@ -1829,11 +1891,14 @@
     (when-not (g a rw/A-INLINE)
       (aadd! (g w rw/W-RESUME) a))))
 
+(declare notify-blocked-walk!)
+
 (defn- notify-blocked!
   "§4.5.6-7: `x` parked. Creditors with a marked edge from it may now be
    eligible, and entities parked on it may now be blocked in turn."
   [x depth]
-  (when (< (long depth) 64)
+  (if (>= (long depth) 64)
+    (notify-blocked-walk! x)
     (let [w (cw)
           outs (g x rw/OUTS)]
       (dotimes [i (acount outs)]
@@ -1852,6 +1917,39 @@
                   a (rv w (g e rw/E-CRED))]
               (when (and (some? a) (not (fn? a)) (act? a))
                 (notify-blocked! (rv w (g (rv w (g a rw/A-RUN)) rw/R-OF)) (inc (long depth)))))))))))
+
+(defn- notify-blocked-walk!
+  "notify-blocked! from depth 64 on: the same propagation as a worklist,
+   each entity once (a cycle of waits ends it)."
+  [x0]
+  (let [w (cw)]
+    (loop [todo [x0] seen #{}]
+      (when-let [x (peek todo)]
+        (let [todo (pop todo)
+              id (g x rw/ID)]
+          (if (contains? seen id)
+            (recur todo seen)
+            (let [outs (g x rw/OUTS)
+                  todo (loop [i 0 todo todo]
+                         (if (< i (acount outs))
+                           (let [e0 (anth outs i)
+                                 k (gl e0 rw/E-KIND)]
+                             (recur (inc i)
+                                    (cond
+                                      (== k rw/EK-DEP)
+                                      (let [e (peek-row w e0)
+                                            c (rv w (g e rw/E-CRED))]
+                                        (when (g e rw/E-MARKED) (maybe-schedule! w c))
+                                        (if (g e rw/E-ACT) (conj todo c) todo))
+                                      (== k rw/EK-WAIT)
+                                      (let [e (peek-row w e0)
+                                            a (rv w (g e rw/E-CRED))]
+                                        (if (and (some? a) (not (fn? a)) (act? a))
+                                          (conj todo (rv w (g (rv w (g a rw/A-RUN)) rw/R-OF)))
+                                          todo))
+                                      :else todo)))
+                           todo))]
+              (recur todo (conj seen id)))))))))
 
 (defn- mine-of
   "The `any` loser candidates of an await (T6): member tasks the run created
@@ -1987,7 +2085,9 @@
 
 (defn- group-effect! [ds mode k ek]
   (let [ds (vec ds)]
-    (if-let [refusal (or (unwinding-finalizer-refusal)
+    (if-let [refusal (or (when (and (= mode :any) (empty? ds))
+                           (invalid-op :any "await-any needs at least one input"))
+                         (unwinding-finalizer-refusal)
                          (when-not (if (= mode :any)
                                      (some #(settled-now? (row-of %)) ds)
                                      (every? #(settled-now? (row-of %)) ds))
@@ -2283,7 +2383,7 @@
                (aadd! basis x)   ; the adoption reference moves to the basis
                x))))
 
-(declare admit-change! admitting host-sealed? sealed-ex)
+(declare admit-change! admitting host-sealed? host-released? sealed-ex)
 
 (defn create-comp!
   "T3. `site` is a macro-time int, `inputs` the captured values."
@@ -2337,11 +2437,15 @@
       ;; C2: no new host work in a sealed world
       (admitting w
                  #(gated w
-                         (let [c (new-comp! w (rv w (g w rw/W-ROOT)) 0 0 inputs body 1)]
-                           (s! c rw/C-BIND fr)
-                           (bind-handle! h c)
-                           (aadd! (g w rw/W-RQ) c)   ; outside live: Rule R makes it idle (§3.4)
-                           (commit! w [:create-comp-top (g (rv w (g w rw/W-ROOT)) rw/ID) (g c rw/ID) [:opaque-seq inputs] [:opaque body]]))))
+                         ;; admitted before T21, processed after it: refused, the handle
+                         ;; stays unbound (its operations fail with ::released)
+                         (if (host-released? w)
+                           (refuse! w [:create-comp-top (g (rv w (g w rw/W-ROOT)) rw/ID) 0 [:opaque-seq inputs] [:opaque body]])
+                           (let [c (new-comp! w (rv w (g w rw/W-ROOT)) 0 0 inputs body 1)]
+                             (s! c rw/C-BIND fr)
+                             (bind-handle! h c)
+                             (aadd! (g w rw/W-RQ) c)   ; outside live: Rule R makes it idle (§3.4)
+                             (commit! w [:create-comp-top (g (rv w (g w rw/W-ROOT)) rw/ID) (g c rw/ID) [:opaque-seq inputs] [:opaque body]])))))
       h)))
 
 (defn- new-task! [w owner key at inputs body handles]
@@ -2408,13 +2512,17 @@
       ;; C2: no new host work in a sealed world
       (admitting w
                  #(gated w
-                         (let [s (rv w (g w rw/W-ROOT))
-                               k (new-task! w s 0 0 inputs body 1)]
-                           (bind-handle! h k)
-                           (hs/oset-add! (gm s rw/S-TASKS) (id-of k) k)
-                           (ref-inc! k)
-                           (start-task! w k fr)
-                           (commit! w [:spawn-top (g s rw/ID) [:opaque body] (g k rw/ID) [:opaque-seq inputs]]))))
+                         (let [s (rv w (g w rw/W-ROOT))]
+                           ;; admitted before T21, processed after it: refused, the handle
+                           ;; stays unbound (its operations fail with ::released)
+                           (if (host-released? w)
+                             (refuse! w [:spawn-top (g s rw/ID) [:opaque body] 0 [:opaque-seq inputs]])
+                             (let [k (new-task! w s 0 0 inputs body 1)]
+                               (bind-handle! h k)
+                               (hs/oset-add! (gm s rw/S-TASKS) (id-of k) k)
+                               (ref-inc! k)
+                               (start-task! w k fr)
+                               (commit! w [:spawn-top (g s rw/ID) [:opaque body] (g k rw/ID) [:opaque-seq inputs]]))))))
       h)))
 
 ;; ---------------------------------------------------------------------------
@@ -2439,8 +2547,11 @@
         (doseq [[d ver at base] (when (sequential? vs) vs)]
           ;; Z#51: a final debtor whose version still matches keeps the value
           ;; valid but takes no edge (consumed, as T6/T10/Z#48)
+          ;; I12: a live computation debtor may have been raised while `c`
+          ;; was idle (I14): raise `c` above it as T6 does; a raise that
+          ;; meets `c` again would close a cycle, so that edge is dropped
           (let [d (rv w d)]
-            (when-not (final? d)
+            (when-not (or (final? d) (and (comp? d) (not (raise-rank! w c d))))
               (let [e (link! w rw/EK-DEP c d at)]
                 (s! e rw/E-SEEN ver)
                 (s! e rw/E-BASE base)
@@ -2708,6 +2819,28 @@
   [w]
   (and (hs/flag? (g w rw/W-SEALED)) (not (and (identical? w (cw)) (active-run)))))
 
+(defn- admit-kind!
+  "API misuse is refused to the caller at once when the handle's row is
+   known (it is bound; kinds never change). An unbound handle (its creating
+   item still queued) is checked in the item."
+  [h op]
+  (when-let [x (when (instance? Handle h) (aget ^objects (.-cell ^Handle h) 0))]
+    (when-not (kind-ok? x op) (throw (invalid-op op (kind-msg op))))))
+
+(defn- host-released?
+  "C1 Q5/Q8 (model root-shut/host-shut): `w` was released and the operation
+   is the host's. Host items are refused at admission after T21; one
+   admitted before it but processed after it is refused in its item, except
+   a run's own slice (Z#40: a finalizer may still write, deliver, post,
+   release and close)."
+  [w]
+  (and (g w rw/W-RELEASED) (not (and (identical? w (cw)) (active-run)))))
+
+(defn- host-shut?
+  "A host source change refused in its item: sealed (C2) or released."
+  [w]
+  (or (host-sealed? w) (host-released? w)))
+
 (defn- admit-change!
   "C2: a host source change or admission is refused at once in a sealed
    world. An item admitted before the seal but processed after it is
@@ -2852,7 +2985,9 @@
     (if (comp? x)
       (let [key (creation-key! r -1)
             old (adopt! w x key)]
-        (if (and old (source? old))
+        ;; readoption by ordinal needs the same kind (a run that creates a
+        ;; signal where the last one created a mailbox makes a new source)
+        (if (and old (source? old) (== (long kind) (gl old rw/X-KIND)))
           (do (s! old rw/AT at)
               (let [h (handle! w old)]
                 (commit! w [:create-source (g r rw/ID) (rw/kind-names kind)
@@ -2917,7 +3052,8 @@
   "`take!` (mailbox) or `acquire!` (semaphore): a consuming operation, always
    a wait edge, never a dependency (§4.3). Waiters are served FIFO."
   [x k ek]
-  (if-let [refusal (or (unwinding-finalizer-refusal) (when-not (let [x (row-of x)] (or (available? x) (closed? x))) (finalizer-refusal)))] (ek refusal)
+  (if-let [refusal (or (when-not (kind-ok? (row-of x) :take) (invalid-op :take (kind-msg :take)))
+                       (unwinding-finalizer-refusal) (when-not (let [x (row-of x)] (or (available? x) (closed? x))) (finalizer-refusal)))] (ek refusal)
           (if-let [r (valid-run)]
             (let [w (cw)
                   at (next-at! r)
@@ -2973,10 +3109,11 @@
 (defn post!
   "Appends `v`, or hands it to the first waiter, atomically (§4.3)."
   [h v]
+  (admit-kind! h :post)
   (admit-change! (world-of h))
   (gated (world-of h)
          (let [x (row-of h) w (cw)]
-           (if (or (closed? x) (host-sealed? w))
+           (if (or (closed? x) (not (kind-ok? x :post)) (host-shut? w))
              (refuse! w [:post (g x rw/ID) [:opaque v]])
              (do (s! x rw/VERSION (inc (gl x rw/VERSION)))
                  (when-not (serve-waiter! w x v)
@@ -2997,12 +3134,13 @@
   "Gives the permit to the first armed waiter, or returns it (§4.3). A
    release at the maximum is refused and throws (Z#62, old over-release)."
   [h]
+  (admit-kind! h :release)
   (admit-change! (world-of h))
   (let [over? (host-call! (world-of h)
                           #(let [x (row-of h) w (cw)]
                              (cond
-                               (closed? x) (do (refuse! w [:release (g x rw/ID)]) false)
-                               (host-sealed? w) (do (refuse! w [:release (g x rw/ID)]) false)
+                               (or (closed? x) (not (kind-ok? x :release))) (do (refuse! w [:release (g x rw/ID)]) false)
+                               (host-shut? w) (do (refuse! w [:release (g x rw/ID)]) false)
                                (and (some? (g x rw/X-MAX)) (>= (gl x rw/X-VALUE) (gl x rw/X-MAX)))
                                (do (refuse! w [:release (g x rw/ID)]) true)
                                :else
@@ -3030,10 +3168,11 @@
   "Delivers a deferred once: fires its edges and finalizes it (§4.3, T10).
    A second delivery is refused."
   [h v]
+  (admit-kind! h :deliver)
   (admit-change! (world-of h))
   (gated (world-of h)
          (let [x (row-of h) w (cw)]
-           (if (or (final? x) (link? x) (host-sealed? w))
+           (if (or (final? x) (not (kind-ok? x :deliver)) (host-shut? w))
              (refuse! w [:deliver (g x rw/ID) [:opaque v]])
              (do (s! x rw/X-VALUE v)
                  (s! x rw/VERSION 1)
@@ -3214,7 +3353,7 @@
          (let [x (row-of h) w (cw)]
            (cond
              (not (stream? x)) (throw (invalid-op :append "append! is for streams"))
-             (host-sealed? w) (refuse! w [:append (g x rw/ID) [:opaque v] 0])
+             (host-shut? w) (refuse! w [:append (g x rw/ID) [:opaque v] 0])
              ;; a released world's root scope is closed: no new root-owned
              ;; link (an append from a cleanup finalizer is refused like one
              ;; to a closed stream)
@@ -3239,7 +3378,7 @@
    (gated (world-of h)
           (let [x (row-of h) w (cw)]
             (when-not (stream? x) (throw (invalid-op :close "close! is for streams")))
-            (if (host-sealed? w)
+            (if (host-shut? w)
               (refuse! w [:close (g x rw/ID) (if err 2 0) [:opaque err]])
               (when (g x rw/X-OPEN)
                 (end-stream! w x err)
@@ -3298,10 +3437,11 @@
 (defn- write-d!
   "T2 with the write's deltas (nil when unknown)."
   [h v ds]
+  (admit-kind! h :write)
   (admit-change! (world-of h))
   (gated (world-of h)
          (let [x (row-of h) w (cw)]
-           (if (or (closed? x) (host-sealed? w))
+           (if (or (closed? x) (not (kind-ok? x :write)) (host-shut? w))
              (refuse! w [:write (g x rw/ID) [:opaque v]])
              (write-row! w x h v ds))))
   v)
@@ -3403,10 +3543,14 @@
 (defn pin!
   "T20: a row is a root while its pin count is positive (Z#16)."
   [h]
+  (admit-kind! h :pin)
   (let [m (calling-frame)]
     (try
       (gated (world-of h)
-             (when-not (shut-roots! (cw) m)
+             (when-not (or (shut-roots! (cw) m)
+                           (when-not (kind-ok? (row-of h) :pin)
+                             (refuse! (cw) [:pin (g (row-of h) rw/ID)])
+                             true))
                (let [x (row-of h) w (cw)
                      pins (g w rw/W-PINS)
                      n (long (or (second (hs/mget pins (id-of x))) 0))]
@@ -4919,6 +5063,15 @@
                           (if (:spindel/released (ex-data e)) false (do (kid-done! t2) (throw e)))))]
             (when-not moved (kid-done! t2))
             (boolean moved)))))))
+
+(defn world-id
+  "The world's id: unique within its family (a world, its forks and
+   instances share one allocator), stable for the world's life. A fork
+   copies its parent's state but has its own id, so state keyed by the id
+   (e.g. a wallet) does not carry over to forks (resource authority stays
+   outside the engine, user decision 2026-11-17)."
+  [w]
+  (g w rw/ID))
 
 (defn descendant?
   "R2: whether `w` descends from `ancestor` (a fork, a fork of a fork, an

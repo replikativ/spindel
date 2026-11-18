@@ -304,6 +304,21 @@ prototypes are not acceptance evidence for this smaller operation API.
     complete, or `k2` = `m` or a world `m` owns (a cycle). The token move is
     no log item. `descendant?(w, a)` is the lineage test; transfers change
     no answer.
+  - Z#75 (I12, I14, §4.5.6, C1 Q5/Q8, T1/T2/T20; found by the ansatz formal
+    review): (1) reactivation (validate) raises the creditor above each
+    computation debtor as T6 does, and drops an edge whose raise would close
+    a cycle: a debtor may be raised while its creditor is idle. (2) A host
+    source change or host start admitted before T21 and processed after it is
+    refused in its item (a refused log entry; a start allocates no id, its
+    handle stays unbound), except a run's own slice (Z#40). (3) The blocked
+    predicate and its propagation have no depth bound: from depth 64 on an
+    exact iterative walk replaces recursion (a cycle is not blocked).
+    (4) Kinds: write on signals and cells, deliver on deferreds, post on
+    mailboxes, semaphore release on semaphores, take/acquire on mailboxes and
+    semaphores, pin on computations, tasks and sources; misuse throws to the
+    caller, or is a refused item when only the item sees it. Readoption by
+    ordinal needs the same kind. `await-any` of no input is an error.
+    `world-id` is public (unique within a family).
 
 Once approved, this document is the normative contract for the v2 engine. It
 supersedes `engine-formalism.md` Part 4 and `engine-memory-v2.md`. Parts 1–3
