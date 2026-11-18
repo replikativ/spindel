@@ -698,7 +698,7 @@
 (a/theorem sl-t20-pin [x :- Nat, w :- World, y :- Nat]
   (=> (= (i10-slice-at x w) true) (= (i10-slice-at x (:world (t20-pin w y))) true))
   (intro h)
-  (cases hg (Bool.or (comp-has w y) (source-has w y)))
+  (cases hg (pin-target w y))
   (all_goals (simp only [t20-pin hg refuse accept sl-set-pins]))
   (all_goals (exact h)))
 
@@ -1444,7 +1444,7 @@
   (intro h)
   (cases hf (source-find w s)) (case' [some sr]) (case' [none])
   (simp only [t-release hf refuse]) (exact h)
-  (cases hk (open-kind sk-semaphore sr))
+  (cases hk (releasable sr))
   (simp only [t-release hf hk refuse]) (exact h)
   (simp only [t-release hf hk accept release-raw]) (exact (sl-serve-or x _ s _ _ (Eq.trans (sl-source-upd x w s _) h))))
 
@@ -2632,7 +2632,7 @@
 (a/theorem s9-t20-pin [w :- World, y :- Nat]
   (=> (= (inv-i9 w) true) (= (inv-i9 (:world (t20-pin w y))) true))
   (intro h)
-  (cases hg (Bool.or (comp-has w y) (source-has w y)))
+  (cases hg (pin-target w y))
   (all_goals (simp only [t20-pin hg refuse accept s9-set-pins]))
   (all_goals (exact h)))
 
@@ -3383,7 +3383,7 @@
   (intro h)
   (cases hf (source-find w s)) (case' [some sr]) (case' [none])
   (simp only [t-release hf refuse]) (exact h)
-  (cases hk (open-kind sk-semaphore sr))
+  (cases hk (releasable sr))
   (simp only [t-release hf hk refuse]) (exact h)
   (simp only [t-release hf hk accept release-raw]) (exact (s9-serve-or _ s _ _ (Eq.trans (s9-source-upd w s _) h))))
 

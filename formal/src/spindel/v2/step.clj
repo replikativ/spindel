@@ -323,10 +323,10 @@
 
 (a/defn source-write [v :- Nat, s :- SourceRow] SourceRow
   (SourceRow.mk (:id s) (:owner s) (:kind s) v (+ (:version s) 1) (:open s) (:handles s) (:queue s)
-                (:rtask s) (:next s) (:tail s) (:fail s)))
+                (:rtask s) (:next s) (:tail s) (:fail s) (:max s)))
 (a/defn source-dec-handles [s :- SourceRow] SourceRow
   (SourceRow.mk (:id s) (:owner s) (:kind s) (:state s) (:version s) (:open s) (- (:handles s) 1) (:queue s)
-                (:rtask s) (:next s) (:tail s) (:fail s)))
+                (:rtask s) (:next s) (:tail s) (:fail s) (:max s)))
 (a/defn task-dec-handles [t :- TaskRow] TaskRow
   (TaskRow.mk (:id t) (:owner t) (:run t) (:result t) (- (:handles t) 1) (:inputs t)))
 (a/defn pub-dec-handles [p :- PubRow] PubRow
@@ -657,7 +657,7 @@
 ;; §5.2: inside a computation run the owner is the computation, inside a task run its run scope
 (a/defn src-owner [w :- World, r :- RunRow] Nat (if (in-comp w r) (:of r) (:scope r)))
 (a/defn new-source [id :- Nat, owner :- Nat, kind :- Nat, v :- Nat] SourceRow
-  (SourceRow.mk id owner kind v 0 true 1 (List.nil Nat) 0 0 0 false))
+  (SourceRow.mk id owner kind v 0 true 1 (List.nil Nat) 0 0 0 false v))
 ;; §5.2: a computation run records the creation in its basis, with at = effect-index
 (a/defn record-basis [w :- World, r :- RunRow, id :- Nat] World
   (if (in-comp w r) (comp-upd w (:of r) (comp-add-basis (Created.mk id (:effect-index r)))) w))
@@ -1289,8 +1289,12 @@
 (a/defn nat-del1 [x :- Nat, xs :- (List Nat)] (List Nat)
   (match xs [nil (List.nil Nat)] [(cons h t) (if (Nat.beq h x) t (List.cons Nat h (nat-del1 x t)))]))
 
+;; a pin names a computation, a source or a task (engine `kind-ok?` :pin; a pinned task keeps
+;; its row as a root, like any pin)
+(a/defn pin-target [w :- World, x :- Nat] Bool
+  (Bool.or (comp-has w x) (Bool.or (source-has w x) (task-has w x))))
 (a/defn t20-pin [w :- World, x :- Nat] Outcome
-  (if (Bool.or (comp-has w x) (source-has w x))
+  (if (pin-target w x)
       (accept (set-pins w (List.cons Nat x (:pins w))))
       (refuse w)))
 
@@ -1311,14 +1315,14 @@
 (a/theorem t20-pin-inv [w :- World, x :- Nat]
   (=> (= (inv-sample w) true) (= (inv-sample (:world (t20-pin w x))) true))
   (intro h)
-  (cases hg (Bool.or (comp-has w x) (source-has w x)))
+  (cases hg (pin-target w x))
   (simp only [t20-pin hg refuse]) (exact h)
   (simp only [t20-pin hg accept]) (exact (inv-set-pins w (List.cons Nat x (:pins w)) h)))
 
 (a/theorem t20-pin-refuse [w :- World, x :- Nat]
   (=> (= (:accepted (t20-pin w x)) false) (= (:world (t20-pin w x)) w))
   (intro ha)
-  (cases hg (Bool.or (comp-has w x) (source-has w x)))
+  (cases hg (pin-target w x))
   (simp only [t20-pin hg refuse])
   (simp [t20-pin hg accept] at ha))
 

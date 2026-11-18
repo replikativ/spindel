@@ -1719,7 +1719,7 @@
               (:adopt-basis c) (:adopt-baselines c) 1 (:tomb c)))
 (a/defn task-h1 [t :- TaskRow] TaskRow (TaskRow.mk (:id t) (:owner t) (:run t) (:result t) 1 (:inputs t)))
 (a/defn source-h1 [s :- SourceRow] SourceRow
-  (SourceRow.mk (:id s) (:owner s) (:kind s) (:state s) (:version s) (:open s) 1 (:queue s) (:rtask s) (:next s) (:tail s) (:fail s)))
+  (SourceRow.mk (:id s) (:owner s) (:kind s) (:state s) (:version s) (:open s) 1 (:queue s) (:rtask s) (:next s) (:tail s) (:fail s) (:max s)))
 (a/defn pub-h1 [p :- PubRow] PubRow (PubRow.mk (:id p) (:edge p) (:basis p) 1))
 (a/theorem comp-h1-id [c :- CompRow] (= (comp-id (comp-h1 c)) (comp-id c)) (rfl))
 (a/theorem comp-h1-pending [c :- CompRow] (= (:pending (comp-h1 c)) (:pending c)) (rfl))
@@ -1853,14 +1853,14 @@
 ;; ---- source rows
 (a/defn source-bump [s :- SourceRow] SourceRow
   (SourceRow.mk (:id s) (:owner s) (:kind s) (:state s) (+ (:version s) 1) (:open s) (:handles s) (:queue s)
-                (:rtask s) (:next s) (:tail s) (:fail s)))
+                (:rtask s) (:next s) (:tail s) (:fail s) (:max s)))
 (a/defn source-enqueue [v :- Nat, s :- SourceRow] SourceRow
   (SourceRow.mk (:id s) (:owner s) (:kind s) (:state s) (:version s) (:open s) (:handles s)
                 (List.append Nat (:queue s) (List.cons Nat v (List.nil Nat)))
-                (:rtask s) (:next s) (:tail s) (:fail s)))
+                (:rtask s) (:next s) (:tail s) (:fail s) (:max s)))
 (a/defn source-permit [s :- SourceRow] SourceRow
   (SourceRow.mk (:id s) (:owner s) (:kind s) (+ (:state s) 1) (:version s) (:open s) (:handles s) (:queue s)
-                (:rtask s) (:next s) (:tail s) (:fail s)))
+                (:rtask s) (:next s) (:tail s) (:fail s) (:max s)))
 (a/defn nat-tail [xs :- (List Nat)] (List Nat) (match xs [nil (List.nil Nat)] [(cons h t) t]))
 ;; take's immediate path: a mailbox drops its head message, a semaphore one permit; version + 1 (as the
 ;; engine). Nothing left (reached only on a closed source, Z#57: the take fails with err ::closed): unchanged.
@@ -1870,9 +1870,9 @@
   (if (src-available s)
       (if (Nat.beq (:kind s) sk-mailbox)
           (SourceRow.mk (:id s) (:owner s) (:kind s) (:state s) (+ (:version s) 1) (:open s) (:handles s) (nat-tail (:queue s))
-                       (:rtask s) (:next s) (:tail s) (:fail s))
+                       (:rtask s) (:next s) (:tail s) (:fail s) (:max s))
           (SourceRow.mk (:id s) (:owner s) (:kind s) (- (:state s) 1) (+ (:version s) 1) (:open s) (:handles s) (:queue s)
-                (:rtask s) (:next s) (:tail s) (:fail s)))
+                (:rtask s) (:next s) (:tail s) (:fail s) (:max s)))
       s))
 (a/theorem source-bump-id [s :- SourceRow] (= (source-id (source-bump s)) (source-id s)) (rfl))
 (a/theorem source-enqueue-id [v :- Nat, s :- SourceRow] (= (source-id (source-enqueue v s)) (source-id s)) (rfl))
@@ -1952,10 +1952,16 @@
   (match (source-find w x)
     [none (refuse w)]
     [(some s) (if (open-kind sk-mailbox s) (accept (post-raw w x v)) (refuse w))]))
+;; Z#62: a release at the semaphore's maximum (`max`, its permit count at creation) is refused
+;; (engine `sem-release!`: logged `[:release x]` refused, and the host call throws)
+(a/defn releasable [s :- SourceRow] Bool
+  (Bool.and (open-kind sk-semaphore s) (Nat.blt (:state s) (:max s))))
+(a/theorem releasable-open [s :- SourceRow] (=> (= (releasable s) true) (= (open-kind sk-semaphore s) true))
+  (intro h) (simp only [releasable Bool.and_eq_true] at h) (exact (And.left h)))
 (a/defn t-release [w :- World, x :- Nat] Outcome
   (match (source-find w x)
     [none (refuse w)]
-    [(some s) (if (open-kind sk-semaphore s) (accept (release-raw w x)) (refuse w))]))
+    [(some s) (if (releasable s) (accept (release-raw w x)) (refuse w))]))
 
 (a/theorem inv-serve-or [w :- World, x :- Nat, res :- RunResult, keep :- (=> SourceRow SourceRow),
                          hk :- (forall [s :- SourceRow] (= (source-id (keep s)) (source-id s)))]
@@ -1989,7 +1995,7 @@
   (intro h)
   (cases hs (source-find w x)) (case' [some s]) (case' [none])
   (simp only [t-release hs refuse]) (exact h)
-  (cases hg (open-kind sk-semaphore s))
+  (cases hg (releasable s))
   (simp only [t-release hs hg refuse]) (exact h)
   (simp only [t-release hs hg accept release-raw])
   (exact (inv-serve-or _ x _ source-permit source-permit-id (inv-source-upd w x source-bump source-bump-id h))))
@@ -1999,7 +2005,7 @@
   (intro ha)
   (cases hs (source-find w x)) (case' [some s]) (case' [none])
   (simp only [t-release hs refuse])
-  (cases hg (open-kind sk-semaphore s))
+  (cases hg (releasable s))
   (simp only [t-release hs hg refuse])
   (simp [t-release hs hg accept] at ha))
 
@@ -2475,7 +2481,7 @@
               (:adopt-basis c) (:adopt-baselines c) 0 (:tomb c)))
 (a/defn task-h0 [t :- TaskRow] TaskRow (TaskRow.mk (:id t) (:owner t) (:run t) (:result t) 0 (:inputs t)))
 (a/defn source-h0 [s :- SourceRow] SourceRow
-  (SourceRow.mk (:id s) (:owner s) (:kind s) (:state s) (:version s) (:open s) 0 (:queue s) (:rtask s) (:next s) (:tail s) (:fail s)))
+  (SourceRow.mk (:id s) (:owner s) (:kind s) (:state s) (:version s) (:open s) 0 (:queue s) (:rtask s) (:next s) (:tail s) (:fail s) (:max s)))
 (a/defn pub-h0 [p :- PubRow] PubRow (PubRow.mk (:id p) (:edge p) (:basis p) 0))
 (a/theorem comp-h0-id [c :- CompRow] (= (comp-id (comp-h0 c)) (comp-id c)) (rfl))
 (a/theorem comp-h0-pending [c :- CompRow] (= (:pending (comp-h0 c)) (:pending c)) (rfl))

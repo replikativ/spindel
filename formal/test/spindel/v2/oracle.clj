@@ -174,10 +174,15 @@
     engine's loser rule), since the item's `mine` list is not projected;
   - cleanup rows := `rule/cleanup-rows-of` for each projected cleanup key (the engine keeps the
     storage implicitly);
-  - edge `cont` of observe edges = restart (the callback is not projected; cb 0 in the adapter).
+  - edge `cont` of observe edges = restart (the callback is not projected; cb 0 in the adapter);
+  - source `max` (Z#62, not projected): the row's in `prev` (the model world before the re-sync)
+    when it has one, else the projected state (a semaphore's permits, its maximum while none is
+    held).
   Rows are listed newest (largest id) first, the order `tbl-ins` produces."
-  [p]
-  (let [rows (fn [t f] (map (fn [[id x]] (f id x)) (newest-first (get p t))))
+  ([p] (proj->world p nil))
+  ([p prev]
+  (let [prev-max (fn [id] (some #(when (= id (:id %)) (:max %)) (:sources prev)))
+        rows (fn [t f] (map (fn [[id x]] (f id x)) (newest-first (get p t))))
         w (s/map->World
            {:scopes (rows :scopes (fn [id x] (s/map->ScopeRow {:id id :parent (nil0 (:parent x)) :kind (code-of scope-kinds (:kind x)) :open (boolean (:open x))})))
             :comps (rows :comps
@@ -223,7 +228,8 @@
                                                            (when (= :link (:kind x))
                                                              (some (fn [[sid y]] (when (= id (:tail y)) sid)) (:sources p)))
                                                            0)
-                                                 :fail false})))
+                                                 :fail false
+                                                 :max (or (prev-max id) (nil0 (:state x)))})))
             :edges (rows :edges
                          (fn [id e]
                            (let [[bv _] (:baseline e)
@@ -261,7 +267,7 @@
         w (assoc w :acts (map #(assoc % :spawned (spawned %)) (:acts w)))]
     (assoc w :cleanup (for [rid (sort > (keys (:cleanup p)))
                             :let [run (some #(when (= rid (:id %)) %) (:runs w))]]
-                        (s/map->CleanupRow {:run rid :rows (if run (vec (r/cleanup-rows-of w run)) [])})))))
+                        (s/map->CleanupRow {:run rid :rows (if run (vec (r/cleanup-rows-of w run)) [])}))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Quiescing an engine state: the engine commits some items before steps the model folds into
@@ -295,8 +301,10 @@
     (if (or (seq full) (seq exits) (seq idle)) (r/rule-r w4) w)))
 
 (defn resync
-  "The model world to continue from after an item the model cannot replay."
-  [p] (quiesce (proj->world p)))
+  "The model world to continue from after an item the model cannot replay (`prev`: the model world
+  before it, for the fields the projection lacks)."
+  ([p] (quiesce (proj->world p)))
+  ([p prev] (quiesce (proj->world p prev))))
 
 ;; ===========================================================================
 ;; Comparison: canonical form (agreed deviations) and the diff
@@ -765,7 +773,7 @@
                      div? (update :divergences conj {:commit i :item item :model-items [] :class :real
                                                      :n-diffs (count ds) :diffs (vec (take max-diffs ds)) :diffs-all ds}))))
           (:skip a)
-          (let [w1 (if proj (resync proj) w)]
+          (let [w1 (if proj (resync proj w) w)]
             (recur (inc i) w1 (or proj prev)
                    (-> acc (update-in [:skipped (:skip a)] (fnil inc 0)) (update :resyncs inc) (keep w1))))
           :else
@@ -811,7 +819,7 @@
                                     :n-diffs-quiesced (count dq) :diffs-quiesced (vec (take max-diffs dq))
                                     :diffs-all ds}))]
             (if (and div? resync-on-divergence? proj)
-              (recur (inc i) (resync proj) proj (update acc :resyncs inc))
+              (recur (inc i) (resync proj w1) proj (update acc :resyncs inc))
               (recur (inc i) w1 (or proj prev) acc))))))))))
 
 (defn summary

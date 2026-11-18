@@ -261,10 +261,10 @@
               (List.nil Created) (List.nil AdoptBase) (:handles c) (Bool.not (demote-idle c))))
 (a/defn source-close-row [s :- SourceRow] SourceRow
   (SourceRow.mk (:id s) (:owner s) (:kind s) (:state s) (:version s) false (:handles s) (:queue s)
-                (:rtask s) (:next s) (:tail s) (:fail s)))
+                (:rtask s) (:next s) (:tail s) (:fail s) (:max s)))
 (a/defn source-detach-row [s :- SourceRow] SourceRow
   (SourceRow.mk (:id s) 0 (:kind s) (:state s) (:version s) false (:handles s) (:queue s)
-                (:rtask s) (:next s) (:tail s) (:fail s)))
+                (:rtask s) (:next s) (:tail s) (:fail s) (:max s)))
 (a/defn task-detach-row [t :- TaskRow] TaskRow (TaskRow.mk (:id t) 0 (:run t) (:result t) (:handles t) (:inputs t)))
 ;; a cancelled task that has no result completes with err ::cancelled (reading 4)
 (a/defn task-cancel-result [t :- TaskRow] TaskRow

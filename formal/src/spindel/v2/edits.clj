@@ -1444,23 +1444,23 @@
 ;; a new link: version 0 (unrealized), open, handles 1 (the creator's position); `tail` is its
 ;; stream for a push link, 0 for a pull link (spindel.v2.state docstring)
 (a/defn new-link [id :- Nat, owner :- Nat, tail :- Nat] SourceRow
-  (SourceRow.mk id owner sk-link 0 0 true 1 (List.nil Nat) 0 0 tail false))
+  (SourceRow.mk id owner sk-link 0 0 true 1 (List.nil Nat) 0 0 tail false 0))
 ;; a new stream: its first tail link is the next id (allocated right after it, in the same item)
 (a/defn new-stream [id :- Nat, owner :- Nat, v :- Nat] SourceRow
-  (SourceRow.mk id owner sk-stream v 0 true 1 (List.nil Nat) 0 0 (+ id 1) false))
+  (SourceRow.mk id owner sk-stream v 0 true 1 (List.nil Nat) 0 0 (+ id 1) false 0))
 ;; demand starts the realizer task k
 (a/defn link-set-rtask [k :- Nat, s :- SourceRow] SourceRow
   (SourceRow.mk (:id s) (:owner s) (:kind s) (:state s) (:version s) (:open s) (:handles s) (:queue s)
-                k (:next s) (:tail s) (:fail s)))
+                k (:next s) (:tail s) (:fail s) (:max s)))
 ;; a realization's row part (value and version are deliver's `source-write`): no realizer, the
 ;; next link n (0: the end or an error), the error flag
 (a/defn link-done-row [fl :- Bool, n :- Nat, s :- SourceRow] SourceRow
   (SourceRow.mk (:id s) (:owner s) (:kind s) (:state s) (:version s) (:open s) (:handles s) (:queue s)
-                0 n (:tail s) fl))
+                0 n (:tail s) fl (:max s)))
 ;; append: the stream's new tail t, version + 1 (as the engine)
 (a/defn stream-set-tail [t :- Nat, s :- SourceRow] SourceRow
   (SourceRow.mk (:id s) (:owner s) (:kind s) (:state s) (+ (:version s) 1) (:open s) (:handles s) (:queue s)
-                (:rtask s) (:next s) t (:fail s)))
+                (:rtask s) (:next s) t (:fail s) (:max s)))
 
 (a/theorem link-set-rtask-id [k :- Nat, s :- SourceRow] (= (source-id (link-set-rtask k s)) (source-id s)) (rfl))
 (a/theorem link-done-row-id [fl :- Bool, n :- Nat, s :- SourceRow] (= (source-id (link-done-row fl n s)) (source-id s)) (rfl))

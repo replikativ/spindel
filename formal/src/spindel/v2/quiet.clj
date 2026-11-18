@@ -662,7 +662,7 @@
   '(a/theorem t20-pin-gk [w :- World, x :- Nat]
      (=> (= (root-shut w) false) (= (gk w) true) (= (gk (:world (t20-pin w x))) true))
      (intros hr0 h)
-     (cases hg (Bool.or (comp-has w x) (source-has w x)))
+     (cases hg (pin-target w x))
      (simp only [t20-pin hg refuse]) (exact h)
      (simp only [t20-pin hg accept])
      (exact (gk-intro _ (inv-set-pins w (List.cons Nat x (:pins w)) (gk-sample w h)) (gk-set-pins-cons w x hr0 (gk-rest-of w h))))))

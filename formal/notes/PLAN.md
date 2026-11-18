@@ -2026,3 +2026,19 @@ Option C (decided): the engine owns the mechanism, not the policy. Modelled in s
 - Tests: `z61_test` (act-fill, the loser modes, the four engine probes `oracle/log-probe-z61-1..4`, generator
   `oracle/gen/probe-z61.clj`, replay with no divergence); hm10/hm11/hm12 tests that pinned the old invalidating
   fast path now expect the engine's behaviour (no epoch step, the run current, the later edges armed or finalized).
+
+## Correctness stage 1, item 2: Z#62 semaphore maximum; pins on tasks (2026-11-18, branch `formal/z62`)
+- Engine: `semaphore` creates the row with X-VALUE = X-MAX = n (in a run too: `create-source-in-run!` runs the same
+  init; a readopted row keeps its own); `sem-release!` refuses (logs `[:release x]` refused, then throws) when
+  X-VALUE >= X-MAX, after the closed and sealed checks.
+- Model: `SourceRow.max` (a new last field), set to `v` by every T1 row (`new-source`; read only for a semaphore;
+  links and streams 0); `engine/releasable` = open semaphore with state < max, the guard of `t-release`. The
+  release-raw edit and every row update copy `max`. No invariant reads it; the guard is a case split in the
+  existing proofs (`releasable` in place of `open-kind sk-semaphore`).
+- Oracle: the engine does not project X-MAX. `proj->world p prev` (re-sync) takes `max` from the model world
+  before the re-sync, else the projected state (a semaphore's permit count; its maximum while none is held).
+- Item 7 (engine `kind-ok?` :pin = comp, source or task): `t20-pin` accepts a task (`step/pin-target`). No proof
+  used "pinned => comp or source": the guard is only case-split (step, quiet's `t20-pin-gk`, inv's `sl-t20-pin`,
+  `s9-t20-pin`); pins enter retention as generic roots.
+- Tests: `z62_test` (release at and below the maximum, refused for other kinds; a pinned task is accepted and a
+  retention root).
