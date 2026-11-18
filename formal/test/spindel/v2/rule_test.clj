@@ -48,7 +48,7 @@
 (defn add-comp [w owner & {:keys [handles result] :or {handles 1 result no-result}}]
   (add-row w s/comp-ins #(s/->CompRow % owner [] 0 0 1 (if (= s/res-none (:tag result)) 0 1) 0 0 0
                                       result false [] [] [] [] handles false)))
-(defn add-task [w owner] (add-row w s/task-ins #(s/->TaskRow % owner 0 no-result 1 [])))
+(defn add-task [w owner] (add-row w s/task-ins #(s/->TaskRow % owner 0 no-result 1 [] false)))
 (defn add-run [w of scope & {:keys [slice act epoch] :or {slice false act s/act-active epoch 1}}]
   (add-row w s/run-ins #(s/->RunRow % of (+ 1000 %) epoch scope act s/mode-normal slice 0 [] [])))
 (defn add-act [w run] (add-row w s/act-ins #(s/->ActRow % run s/am-one [] [(s/->RunResult s/res-none 0)] 1 77 [])))

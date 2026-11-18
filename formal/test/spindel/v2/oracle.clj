@@ -938,15 +938,17 @@
   (let [scope-row (fn [s] (first (s/scope-find w s)))
         shown? (fn [x] (or (not= 1 (:kind x)) (contains? mat (:id x))))
         seen {:tasks (into (:tasks seen) (map :id (:tasks w)))
-              :scopes (into (:scopes seen) (map :id (filter shown? (:scopes w))))}
+              :scopes (into (:scopes seen) (map :id (filter shown? (:scopes w))))
+              ;; Z#77: the mark of every task seen so far (a removed task keeps the one it had)
+              :local-of (into (or (:local-of seen) {}) (map (juxt :id #(boolean (:local %))) (:tasks w)))}
         task (fn [k] (let [t (first (s/task-find w k))
                            sr (scope-row (lg/task-srow k))]
                        {:done? (if t (not= s/res-none (:tag (:result t))) true)
                         :retired? (if t (zero? (:run t)) true)
                         :srow-present? (boolean (and sr (contains? mat (:id sr))))
                         :complete? (lg/task-complete w k)
-                        ;; Z#77: the task's fork-local mark (a removed task reads false)
-                        :local (boolean (and t (:local t)))}))
+                        ;; Z#77: the task's fork-local mark (fixed at creation; a removed task keeps it)
+                        :local (boolean (get (:local-of seen) k))}))
         scope (fn [x] (let [r (scope-row x)]
                         {:open? (boolean (and r (:open r))) :present? (some? r) :complete? (lg/scope-complete w x)}))]
     [{:tasks (into (sorted-map) (map (juxt identity task)) (:tasks seen))

@@ -682,3 +682,34 @@
 (deftest projection-roundtrip-refusals
   (doseq [n ["43-root" "43-hostfork" "43-effect" "44-w" "45-w" "46-w" "47-w" "48-w" "49-w" "50-w"]]
     (is (= [] (o/roundtrip (log n))) (str "sample " n))))
+
+;; Z#77 fork-local samples 51-56 (engine feat/v2-fork-local 869bf29+, generator oracle/gen/samples-fork-local.clj;
+;; 57-60 of the design's table are not generated yet). Each family: the root and the derived world; the child's
+;; first item is `[:retire-local]`; the sidecars add per task :local (the mark, kept after the row goes).
+;;   51  a local task parked on a deferred, an unmarked awaiter; the child entered by a write
+;;   52  a local clock on a timer      53  a local and an unmarked run mid-offload
+;;   54  an untouched child released   55  the (fork) effect of an unmarked run beside a local sibling (the
+;;       sibling's own (fork) was refused, no item)   56  an unmarked and a local task on one deferred
+(def ^:private fork-local-specs
+  (into {}
+        (for [[n kind tag] [["51" :fork-host :fork-host] ["52" :fork-host :fork-host] ["53" :fork-host :fork-host]
+                            ["54" :fork-host :fork-host] ["55" :fork :fork] ["56" :fork-host :fork-host]]]
+          [n (let [r (log (str n "-root"))]
+               {:root {:log r :kind :root}
+                :child {:log (log (str n "-child")) :from :root :kind kind :at (c1-idx r #(= tag (first %)))}})])))
+
+(deftest fork-local-samples
+  (doseq [[n spec] fork-local-specs]
+    (let [fam (o/replay-family spec)
+          obs (o/read-observations (str "test/spindel/v2/oracle/log-sample-" n "-observations.edn"))]
+      (is (seq obs) (str "sample " n ": sidecar"))
+      (doseq [[k {:keys [res]}] fam]
+        (is (= [(count (:log (spec k))) 0 0] ((juxt :checked :n-divergences :resyncs) res)) (str "sample " n " " k)))
+      (is (= [] (o/check-observations spec fam obs)) (str "sample " n ": host observations")))))
+
+(deftest fork-local-sample-shapes
+  (doseq [n ["51" "52" "53" "54" "55" "56"]]
+    (is (= :retire-local (first (:item (first (log (str n "-child")))))) (str n ": the child's first item is [:retire-local]"))
+    (is (some #(= [true] (drop 5 (:item %))) (filter #(#{:spawn :spawn-top} (first (:item %))) (log (str n "-root"))))
+        (str n ": a fork-local spawn carries the trailing true")))
+  (is (= [:retire-local :release-world] (map (comp first :item) (log "54-child"))) "54: the untouched child retires, then releases"))

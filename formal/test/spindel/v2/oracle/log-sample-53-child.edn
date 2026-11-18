@@ -1,0 +1,279 @@
+[{:item [:retire-local],
+  :accepted true,
+  :proj
+  {:scopes
+   {12 {:parent 2, :kind :run, :open true},
+    2 {:parent nil, :kind :root, :open true}},
+   :pubs {},
+   :pins {},
+   :next-id 17,
+   :sources
+   {3
+    {:owner 2,
+     :kind :signal,
+     :state 3,
+     :version 0,
+     :open true,
+     :handles 1}},
+   :pending-act nil,
+   :tasks
+   {4 {:owner 2, :run nil, :inputs [], :result [:err 8], :handles 1},
+    10 {:owner 2, :run 11, :inputs [], :result nil, :handles 1}},
+   :comps {},
+   :released false,
+   :forks {},
+   :res {13 {:owner 11, :kind :offload, :at 0, :phase :armed}},
+   :runs
+   {11
+    {:effect-index 1,
+     :epoch 0,
+     :stamp 11,
+     :mode :normal,
+     :scope 12,
+     :act :parked,
+     :finalizers [],
+     :slice false,
+     :resources [13],
+     :of 10}},
+   :acts
+   {14
+    {:run 11,
+     :mode :one,
+     :members [[15 0]],
+     :slots [nil],
+     :remaining 1,
+     :cont 7}},
+   :edges
+   {15
+    {:baseline nil,
+     :marked false,
+     :cont :restart,
+     :phase :armed,
+     :creditor 14,
+     :seen nil,
+     :kind :wait,
+     :at 0,
+     :debtor 13}},
+   :cleanup {}}}
+ {:item [:write 3 9],
+  :accepted true,
+  :proj
+  {:scopes
+   {12 {:parent 2, :kind :run, :open true},
+    2 {:parent nil, :kind :root, :open true}},
+   :pubs {},
+   :pins {},
+   :next-id 17,
+   :sources
+   {3
+    {:owner 2,
+     :kind :signal,
+     :state 9,
+     :version 1,
+     :open true,
+     :handles 1}},
+   :pending-act nil,
+   :tasks
+   {4 {:owner 2, :run nil, :inputs [], :result [:err 8], :handles 1},
+    10 {:owner 2, :run 11, :inputs [], :result nil, :handles 1}},
+   :comps {},
+   :released false,
+   :forks {},
+   :res {13 {:owner 11, :kind :offload, :at 0, :phase :armed}},
+   :runs
+   {11
+    {:effect-index 1,
+     :epoch 0,
+     :stamp 11,
+     :mode :normal,
+     :scope 12,
+     :act :parked,
+     :finalizers [],
+     :slice false,
+     :resources [13],
+     :of 10}},
+   :acts
+   {14
+    {:run 11,
+     :mode :one,
+     :members [[15 0]],
+     :slots [nil],
+     :remaining 1,
+     :cont 7}},
+   :edges
+   {15
+    {:baseline nil,
+     :marked false,
+     :cont :restart,
+     :phase :armed,
+     :creditor 14,
+     :seen nil,
+     :kind :wait,
+     :at 0,
+     :debtor 13}},
+   :cleanup {}}}
+ {:item [:resource-fire 13 2 10],
+  :accepted true,
+  :proj
+  {:scopes
+   {12 {:parent 2, :kind :run, :open true},
+    2 {:parent nil, :kind :root, :open true}},
+   :pubs {},
+   :pins {},
+   :next-id 17,
+   :sources
+   {3
+    {:owner 2,
+     :kind :signal,
+     :state 9,
+     :version 1,
+     :open true,
+     :handles 1}},
+   :pending-act nil,
+   :tasks
+   {4 {:owner 2, :run nil, :inputs [], :result [:err 8], :handles 1},
+    10 {:owner 2, :run 11, :inputs [], :result nil, :handles 1}},
+   :comps {},
+   :released false,
+   :forks {},
+   :res {13 {:owner 11, :kind :offload, :at 0, :phase :fired}},
+   :runs
+   {11
+    {:effect-index 1,
+     :epoch 0,
+     :stamp 11,
+     :mode :normal,
+     :scope 12,
+     :act :active,
+     :finalizers [],
+     :slice false,
+     :resources [13],
+     :of 10}},
+   :acts {},
+   :edges {},
+   :cleanup {}}}
+ {:item [:resource-ack 13],
+  :accepted true,
+  :proj
+  {:scopes
+   {12 {:parent 2, :kind :run, :open true},
+    2 {:parent nil, :kind :root, :open true}},
+   :pubs {},
+   :pins {},
+   :next-id 17,
+   :sources
+   {3
+    {:owner 2,
+     :kind :signal,
+     :state 9,
+     :version 1,
+     :open true,
+     :handles 1}},
+   :pending-act nil,
+   :tasks
+   {4 {:owner 2, :run nil, :inputs [], :result [:err 8], :handles 1},
+    10 {:owner 2, :run 11, :inputs [], :result nil, :handles 1}},
+   :comps {},
+   :released false,
+   :forks {},
+   :res {},
+   :runs
+   {11
+    {:effect-index 1,
+     :epoch 0,
+     :stamp 11,
+     :mode :normal,
+     :scope 12,
+     :act :active,
+     :finalizers [],
+     :slice false,
+     :resources [],
+     :of 10}},
+   :acts {},
+   :edges {},
+   :cleanup {}}}
+ {:item [:schedule 11],
+  :accepted true,
+  :proj
+  {:scopes
+   {12 {:parent 2, :kind :run, :open true},
+    2 {:parent nil, :kind :root, :open true}},
+   :pubs {},
+   :pins {},
+   :next-id 17,
+   :sources
+   {3
+    {:owner 2,
+     :kind :signal,
+     :state 9,
+     :version 1,
+     :open true,
+     :handles 1}},
+   :pending-act nil,
+   :tasks
+   {4 {:owner 2, :run nil, :inputs [], :result [:err 8], :handles 1},
+    10 {:owner 2, :run 11, :inputs [], :result nil, :handles 1}},
+   :comps {},
+   :released false,
+   :forks {},
+   :res {},
+   :runs
+   {11
+    {:effect-index 1,
+     :epoch 0,
+     :stamp 11,
+     :mode :normal,
+     :scope 12,
+     :act :active,
+     :finalizers [],
+     :slice true,
+     :resources [],
+     :of 10}},
+   :acts {},
+   :edges {},
+   :cleanup {}}}
+ {:item [:complete 11 1 13],
+  :accepted true,
+  :proj
+  {:scopes {2 {:parent nil, :kind :root, :open true}},
+   :pubs {},
+   :pins {},
+   :next-id 17,
+   :sources
+   {3
+    {:owner 2,
+     :kind :signal,
+     :state 9,
+     :version 1,
+     :open true,
+     :handles 1}},
+   :pending-act nil,
+   :tasks
+   {4 {:owner 2, :run nil, :inputs [], :result [:err 8], :handles 1},
+    10 {:owner 2, :run nil, :inputs [], :result [:ok 13], :handles 1}},
+   :comps {},
+   :released false,
+   :forks {},
+   :res {},
+   :runs {},
+   :acts {},
+   :edges {},
+   :cleanup {}}}
+ {:item [:release-world],
+  :accepted true,
+  :proj
+  {:scopes {2 {:parent nil, :kind :root, :open false}},
+   :pubs {},
+   :pins {},
+   :next-id 17,
+   :sources {},
+   :pending-act nil,
+   :tasks {},
+   :comps {},
+   :released true,
+   :forks {},
+   :res {},
+   :runs {},
+   :acts {},
+   :edges {},
+   :cleanup {}}}]
