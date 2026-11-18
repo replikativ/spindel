@@ -3030,12 +3030,18 @@
 (defn- create-source-top-host! [w kind v init]
   (let [h (top-handle w)]
     (gated w
-           (let [x (new-source! w kind v (rv w (g w rw/W-ROOT)) 0 0)]
-             (when init (init x))
-             (bind-handle! h x)
-             (commit! w [:create-source-top (g (rv w (g w rw/W-ROOT)) rw/ID)
+           ;; admitted before T21, processed after it: refused (model root-shut),
+           ;; the handle stays unbound
+           (if (host-released? w)
+             (refuse! w [:create-source-top (g (rv w (g w rw/W-ROOT)) rw/ID)
                          (rw/kind-names kind)
-                         [:opaque (when-not (== kind rw/SRC-MAILBOX) v)] (g x rw/ID)])))
+                         [:opaque (when-not (== kind rw/SRC-MAILBOX) v)] 0])
+             (let [x (new-source! w kind v (rv w (g w rw/W-ROOT)) 0 0)]
+               (when init (init x))
+               (bind-handle! h x)
+               (commit! w [:create-source-top (g (rv w (g w rw/W-ROOT)) rw/ID)
+                           (rw/kind-names kind)
+                           [:opaque (when-not (== kind rw/SRC-MAILBOX) v)] (g x rw/ID)]))))
     h))
 
 (defn signal
@@ -3292,8 +3298,12 @@
      (let [w (or *world* (throw (ex-info "no world: bind v2/*world*" {})))
            h (top-handle w)
            fr (thread-frame)]
-       (gated w (new-link! w [f init fr id 0] h)
-              (commit! w [:create-link-top (g (rv w (g w rw/W-ROOT)) rw/ID) (handle-id h)]))
+       (gated w
+              ;; admitted before T21, processed after it: refused (root-shut)
+              (if (host-released? w)
+                (refuse! w [:create-link-top (g (rv w (g w rw/W-ROOT)) rw/ID) 0])
+                (do (new-link! w [f init fr id 0] h)
+                    (commit! w [:create-link-top (g (rv w (g w rw/W-ROOT)) rw/ID) (handle-id h)]))))
        h))))
 
 (defn new-aseq-at
