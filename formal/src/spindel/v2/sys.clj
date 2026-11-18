@@ -54,7 +54,8 @@
   C2 (merge layer, option C): `Cell.sealed`, `sys-seal` (a sealed cell refuses host admissions and host source
   changes outside a slice, `cstep`); merge with an opaque per-source resolver (`pick`, `merge-writes`; `refuse-all`
   is today's L12: `merge-default`), guarded by sealed and quiescent; `sys-merge-release` (merge!: the child is
-  released); `sys-transfer` (R6: the token and the count move to the new owner); `descendant` (R2, lineage).
+  released); `sys-xfer-reserve`/`sys-xfer-move`
+  (R6: a root-owned fork's token moves to the new owner, uncounted); `sys-unseal`; `descendant` (R2, lineage).
 
   Not here: following mode (not in the engine either), sources created in the child (not merged), stream append
   on merge."
@@ -2430,18 +2431,11 @@
   (case [true] (simp only [sys-drain hu sys-complete hr fupd-same complete-cell drain-cell true_and]) (exact c)))
 
 ;; ---------------------------------------------------------------------------
-;; C2 R6: transfer of a fork to another owner (dvergr `transfer-fork!` re-owns a fork after its creation).
-;; The fork m keeps its lineage (`parent`: merge still targets its parent, `descendant` is unchanged) and
-;; changes its owner: the old owner k1 returns m's completion token (m leaves `kids`) and its marker (the
-;; scope s1 the kid token names: `[:owned-done s1 m]`, nothing when m was not counted); the new owner k2
-;; accepts the token, and counts m under scope s2 (`[:own s2 m]`) unless s2 is a root scope (a host or
-;; durable owner holds a fork weakly, uncounted, as a host fork). So the count moves with the token, and
-;; m's own `[:owned-done]` goes to k2 at s2. The transfer is refused, the system unchanged, unless m is live,
-;; not complete, not released; k1 and k2 are live and not complete; k2 is not released, not m and not owned
-;; by m (within the fuel n: an owner in m's owned subtree is a cycle, and neither world could complete);
-;; and k2 accepts the count. Atomic here; in the engine the old side and the token's retarget go under
-;; the old owner's and m's gates, and the acceptance is an item queued to k2 before m can complete (FIFO
-;; ingress puts m's acknowledgement after it).
+;; C2 R6: transfer of a fork to another owner (dvergr `transfer-fork!`): its kid token moves; its lineage
+;; (`parent`) stays, so merge still targets its parent and `descendant` is unchanged. Only a root-owned fork
+;; (a host fork or one with `:owner`, uncounted) transfers, into the new owner's root scope (uncounted): a
+;; counted `(fork)`-effect child never leaves its scope. The engine's protocol, `sys-xfer-reserve` then
+;; `sys-xfer-move`, is below; these are its parts.
 (a/defn disown-cell [c :- Cell, m :- Nat] Cell
   (Cell.mk (:world c) (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c) (nat-del m (:kids c))
            (:complete c) (:joins c) (:norm c) (:sealed c)))
@@ -2456,29 +2450,8 @@
   (match n [nil (Nat.beq x m)]
          [(cons h t) (Bool.or (Nat.beq x m) (owned-under cells m (:owner (cells x)) t))]))
 
-(a/defn counted [s :- Nat] Bool (Bool.not (Nat.beq s root-scope-id)))
 (a/defn live-open [c :- Cell] Bool
   (Bool.and (:live c) (Bool.and (Bool.not (:complete c)) (Bool.not (:released (:world c))))))
-;; the old side: the token and the marker go, then maybe-complete! of k1
-(a/defn xfer-old [cells :- (=> Nat Cell), m :- Nat, s1 :- Nat] (=> Nat Cell)
-  (sys-owned-done (sys-disown cells (:owner (cells m)) m) (:owner (cells m)) s1 m))
-(a/defn xfer-ok [cells :- (=> Nat Cell), m :- Nat, s1 :- Nat, k2 :- Nat, s2 :- Nat, n :- (List Nat)] Bool
-  (Bool.and (live-open (cells m))
-    (Bool.and (live-open (cells k2))
-      (Bool.and (:live (cells (:owner (cells m))))
-        (Bool.and (Bool.not (:complete (cells (:owner (cells m)))))
-          (Bool.and (Bool.not (owned-under cells m k2 n))
-            (Bool.or (Bool.not (counted s2))
-                     (:accepted (world-step (:world (xfer-old cells m s1 k2)) (Item.own s2 m))))))))))
-(a/defn xfer-new [cells :- (=> Nat Cell), m :- Nat, k2 :- Nat, s2 :- Nat] (=> Nat Cell)
-  (sys-accept (sys-reown (if (counted s2) (sys-own cells k2 s2 m) cells) m k2) k2 m))
-(a/defn sys-transfer [cells :- (=> Nat Cell), m :- Nat, s1 :- Nat, k2 :- Nat, s2 :- Nat, n :- (List Nat)] (=> Nat Cell)
-  (if (xfer-ok cells m s1 k2 s2 n) (xfer-new (xfer-old cells m s1) m k2 s2) cells))
-
-(a/theorem transfer-refused [cells :- (=> Nat Cell), m :- Nat, s1 :- Nat, k2 :- Nat, s2 :- Nat, n :- (List Nat)]
-  (=> (= (xfer-ok cells m s1 k2 s2 n) false) (= (sys-transfer cells m s1 k2 s2 n) cells))
-  (intro h) (simp only [sys-transfer h]))
-
 ;; ---- invariants of the parts
 (a/theorem sinv-disown [cells :- (=> Nat Cell), k :- Nat, m :- Nat] (=> (sinv cells) (sinv (sys-disown cells k m)))
   (intro hs)
@@ -2518,62 +2491,6 @@
   (intro h) (simp only [sys-disown]) (exact (jinv-same cells k (disown-cell (cells k) m) h (rfl) (rfl) (rfl))))
 (a/theorem jinv-reown [cells :- (=> Nat Cell), m :- Nat, k :- Nat] (=> (jinv cells) (jinv (sys-reown cells m k)))
   (intro h) (simp only [sys-reown]) (exact (jinv-same cells m (reown-cell (cells m) k) h (rfl) (rfl) (rfl))))
-
-;; ---- the transfer keeps every system invariant
-(a/theorem sinv-transfer [cells :- (=> Nat Cell), m :- Nat, s1 :- Nat, k2 :- Nat, s2 :- Nat, n :- (List Nat)]
-  (=> (sinv cells) (sinv (sys-transfer cells m s1 k2 s2 n)))
-  (intro hs)
-  (cases ho (xfer-ok cells m s1 k2 s2 n))
-  (case [false] (simp only [sys-transfer ho]) (exact hs))
-  (case [true]
-    (simp only [sys-transfer ho xfer-new xfer-old])
-    (have h1 := (sinv-owned-done _ (:owner (cells m)) s1 m (sinv-disown cells (:owner (cells m)) m hs)))
-    (cases hc (counted s2))
-    (case [false] (simp only [hc]) (exact (sinv-accept _ k2 m (sinv-reown _ m k2 h1))))
-    (case [true] (simp only [hc]) (exact (sinv-accept _ k2 m (sinv-reown _ m k2 (sinv-own _ k2 s2 m h1)))))))
-
-(a/theorem cinv-transfer [cells :- (=> Nat Cell), m :- Nat, s1 :- Nat, k2 :- Nat, s2 :- Nat, n :- (List Nat)]
-  (=> (sinv cells) (cinv cells) (cinv (sys-transfer cells m s1 k2 s2 n)))
-  (intros hs hc)
-  (cases ho (xfer-ok cells m s1 k2 s2 n))
-  (case [false] (simp only [sys-transfer ho]) (exact hc))
-  (case [true]
-    (cases hk1 (:complete (cells (:owner (cells m)))))
-    (case [true] (simp only [xfer-ok live-open hk1 Bool.not_true Bool.false_and Bool.and_false] at ho) (cases ho))
-    (case [false]
-    (simp only [sys-transfer ho xfer-new xfer-old])
-    (have h1 := (cinv-owned-done _ (:owner (cells m)) s1 m (sinv-disown cells (:owner (cells m)) m hs)
-                  (cinv-disown cells (:owner (cells m)) m hc hk1)))
-    (have s1h := (sinv-owned-done _ (:owner (cells m)) s1 m (sinv-disown cells (:owner (cells m)) m hs)))
-    (cases hct (counted s2))
-    (case [false] (simp only [hct]) (exact (cinv-accept _ k2 m (cinv-reown _ m k2 h1))))
-    (case [true] (simp only [hct]) (exact (cinv-accept _ k2 m (cinv-reown _ m k2 (cinv-own _ k2 s2 m h1))))))))
-
-(a/theorem qsinv-transfer [cells :- (=> Nat Cell), m :- Nat, s1 :- Nat, k2 :- Nat, s2 :- Nat, n :- (List Nat)]
-  (=> (sinv cells) (qsinv cells) (qsinv (sys-transfer cells m s1 k2 s2 n)))
-  (intros hs hq)
-  (cases ho (xfer-ok cells m s1 k2 s2 n))
-  (case [false] (simp only [sys-transfer ho]) (exact hq))
-  (case [true]
-    (simp only [sys-transfer ho xfer-new xfer-old])
-    (have s0 := (sinv-disown cells (:owner (cells m)) m hs))
-    (have h1 := (qsinv-owned-done _ (:owner (cells m)) s1 m s0 (qsinv-disown cells (:owner (cells m)) m hq)))
-    (have s1h := (sinv-owned-done _ (:owner (cells m)) s1 m s0))
-    (cases hct (counted s2))
-    (case [false] (simp only [hct]) (exact (qsinv-accept _ k2 m (qsinv-reown _ m k2 h1))))
-    (case [true] (simp only [hct]) (exact (qsinv-accept _ k2 m (qsinv-reown _ m k2 (qsinv-own _ k2 s2 m s1h h1)))))))
-
-(a/theorem jinv-transfer [cells :- (=> Nat Cell), m :- Nat, s1 :- Nat, k2 :- Nat, s2 :- Nat, n :- (List Nat)]
-  (=> (jinv cells) (jinv (sys-transfer cells m s1 k2 s2 n)))
-  (intro hj)
-  (cases ho (xfer-ok cells m s1 k2 s2 n))
-  (case [false] (simp only [sys-transfer ho]) (exact hj))
-  (case [true]
-    (simp only [sys-transfer ho xfer-new xfer-old])
-    (have h1 := (jinv-owned-done _ (:owner (cells m)) s1 m (jinv-disown cells (:owner (cells m)) m hj)))
-    (cases hct (counted s2))
-    (case [false] (simp only [hct]) (exact (jinv-accept _ k2 m (jinv-reown _ m k2 h1))))
-    (case [true] (simp only [hct]) (exact (jinv-accept _ k2 m (jinv-reown _ m k2 (jinv-own _ k2 s2 m h1)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; C2 R2: `descendant?` over lineage: d is a or a fork (transitively) of a, within the fuel (one parent
@@ -2627,33 +2544,6 @@
   (intro j) (simp only [sys-disown]) (exact (par-put cells k (disown-cell (cells k) m) (rfl) j)))
 (a/theorem par-reown [cells :- (=> Nat Cell), m :- Nat, k :- Nat] (forall [j :- Nat] (= (:parent (sys-reown cells m k j)) (:parent (cells j))))
   (intro j) (simp only [sys-reown]) (exact (par-put cells m (reown-cell (cells m) k) (rfl) j)))
-(a/theorem par-own [cells :- (=> Nat Cell), k :- Nat, s :- Nat, m :- Nat] (forall [j :- Nat] (= (:parent (sys-own cells k s m j)) (:parent (cells j))))
-  (intro j) (simp only [sys-own]) (exact (par-put cells k (world-cell (cells k) (own-world (:world (cells k)) s m)) (rfl) j)))
-(a/theorem par-owned-done [cells :- (=> Nat Cell), k :- Nat, s :- Nat, c :- Nat] (forall [j :- Nat] (= (:parent (sys-owned-done cells k s c j)) (:parent (cells j))))
-  (intro j) (simp only [sys-owned-done])
-  (rw [(par-complete _ k j)])
-  (exact (par-put cells k (world-cell (cells k) (owned-done-world (:world (cells k)) s c)) (rfl) j)))
-
-(a/theorem par-transfer [cells :- (=> Nat Cell), m :- Nat, s1 :- Nat, k2 :- Nat, s2 :- Nat, n :- (List Nat)]
-  (forall [j :- Nat] (= (:parent (sys-transfer cells m s1 k2 s2 n j)) (:parent (cells j))))
-  (intro j)
-  (cases ho (xfer-ok cells m s1 k2 s2 n))
-  (case [false] (simp only [sys-transfer ho]))
-  (case [true]
-    (simp only [sys-transfer ho xfer-new xfer-old])
-    (cases hct (counted s2))
-    (case [false]
-      (simp only [hct])
-      (rw [(par-accept _ k2 m j) (par-reown _ m k2 j) (par-owned-done _ _ s1 m j) (par-disown cells _ m j)]))
-    (case [true]
-      (simp only [hct])
-      (rw [(par-accept _ k2 m j) (par-reown _ m k2 j) (par-own _ k2 s2 m j) (par-owned-done _ _ s1 m j) (par-disown cells _ m j)]))))
-
-;; Theorem (R2 x R6): a transfer changes no lineage answer
-(a/theorem descendant-transfer [cells :- (=> Nat Cell), m :- Nat, s1 :- Nat, k2 :- Nat, s2 :- Nat, n :- (List Nat), a :- Nat, d :- Nat, f :- (List Nat)]
-  (= (descendant (sys-transfer cells m s1 k2 s2 n) a d f) (descendant cells a d f))
-  (exact (descendant-par cells (sys-transfer cells m s1 k2 s2 n) a f (par-transfer cells m s1 k2 s2 n) d)))
-
 ;; ---------------------------------------------------------------------------
 ;; C2: seal and merge! keep every system invariant
 (a/theorem cinv-seal [cells :- (=> Nat Cell), k :- Nat] (=> (cinv cells) (cinv (sys-seal cells k)))
@@ -2688,3 +2578,176 @@
   (cases h (merge-acc cells k m b rv))
   (case [false] (simp only [sys-merge-release h]) (exact hj))
   (case [true] (simp only [sys-merge-release h]) (exact (jinv-step _ m _ (jinv-merge cells k m b rv hj)))))
+
+;; ---------------------------------------------------------------------------
+;; C2 R6, the engine's protocol: reserve in the new owner first, then move. Each is its own operation, so
+;; anything may run between them (the fork's completion included); each keeps every system invariant.
+;;   sys-xfer-reserve  the new owner k2 takes the token (kids +1, into its root scope: uncounted), refused unless
+;;                     k2 is live, open, not the current owner (with a token list, reserve then move into the same
+;;                     owner would drop it) and not owned by m (a cycle: neither world could complete).
+;;   sys-xfer-move     under the old owner's and m's gates: if m is live, open and not counted in k1 (no marker),
+;;                     k1 live and not complete, and the reservation holds, k1 gives its token back (then
+;;                     maybe-complete!) and m's owner is k2; otherwise the reservation is undone (k2 gives the
+;;                     token back, complete or not: a token of a complete child is done anyway).
+;; No layer-1 item: the move is layer-2 state (owner, kids), as an acceptance is.
+(a/defn marks-child [m :- Nat, f :- ForkRow] Bool (Nat.beq (:child f) m))
+(a/defn counted-in [w :- World, m :- Nat] Bool (tbl-any (marks-child m) (:forks w)))
+(a/defn xfer-reserve-ok [cells :- (=> Nat Cell), m :- Nat, k2 :- Nat, n :- (List Nat)] Bool
+  (Bool.and (live-open (cells k2))
+            (Bool.and (Bool.not (Nat.beq k2 (:owner (cells m)))) (Bool.not (owned-under cells m k2 n)))))
+(a/defn sys-xfer-reserve [cells :- (=> Nat Cell), m :- Nat, k2 :- Nat, n :- (List Nat)] (=> Nat Cell)
+  (if (xfer-reserve-ok cells m k2 n) (sys-accept cells k2 m) cells))
+(a/defn xfer-move-ok [cells :- (=> Nat Cell), m :- Nat, k2 :- Nat] Bool
+  (Bool.and (live-open (cells m))
+    (Bool.and (:live (cells (:owner (cells m))))
+      (Bool.and (Bool.not (:complete (cells (:owner (cells m)))))
+        (Bool.and (Bool.not (Nat.beq k2 (:owner (cells m))))
+          (Bool.and (Bool.not (counted-in (:world (cells (:owner (cells m)))) m)) (nat-mem m (:kids (cells k2)))))))))
+;; the old side: k1 gives the token back, then maybe-complete!
+(a/defn xfer-old [cells :- (=> Nat Cell), m :- Nat] (=> Nat Cell)
+  (sys-complete (sys-disown cells (:owner (cells m)) m) (:owner (cells m))))
+(a/defn sys-xfer-move [cells :- (=> Nat Cell), m :- Nat, k2 :- Nat] (=> Nat Cell)
+  (if (xfer-move-ok cells m k2) (sys-reown (xfer-old cells m) m k2) (sys-disown cells k2 m)))
+
+(a/theorem tbl-all-nat-del [p :- (=> Nat Bool), m :- Nat, xs :- (List Nat)]
+  (=> (= (tbl-all p xs) true) (= (tbl-all p (nat-del m xs)) true))
+  (induction xs)
+  (case [nil] (intro h) (simp only [nat-del tbl-all]))
+  (case [cons x t ih]
+    (intro h)
+    (simp only [tbl-all Bool.and_eq_true] at h)
+    (cases hx (Nat.beq x m))
+    (case [true] (simp only [nat-del hx]) (exact (ih (And.right h))))
+    (case [false] (simp only [nat-del hx tbl-all (And.left h) (ih (And.right h)) Bool.and_self]))))
+
+;; giving a token back keeps cinv, also in a complete owner (its other children are still done)
+(a/theorem cinv-disown-any [cells :- (=> Nat Cell), k :- Nat, m :- Nat]
+  (=> (cinv cells) (cinv (sys-disown cells k m)))
+  (intro hc)
+  (simp only [sys-disown])
+  (have hd (=> (= (kid-done-c (cells k)) true) (= (kid-done-c (disown-cell (cells k) m)) true)))
+  (intro h) (simp only [kid-done-c disown-cell]) (simp only [kid-done-c] at h) (exact h)
+  (apply (cinv-put cells k (disown-cell (cells k) m) hc hd))
+  (intros hl hj)
+  (simp only [disown-cell] at hl hj)
+  (have hc2 := hc) (simp only [cinv] at hc2)
+  (have r0 := (hc2 k hl hj))
+  (simp only [complete-ready Bool.and_eq_true Bool.or_eq_true] at r0)
+  (simp only [complete-ready fupd-same disown-cell (And.left r0) Bool.true_and])
+  (have r1 := (And.right r0))
+  (cases r1)
+  (case [inl u] (simp only [u Bool.true_or]))
+  (case [inr q]
+    (have k2 := (kids-mono cells (fupd cells k (disown-cell (cells k) m)) (kd-put-mono cells k (disown-cell (cells k) m) hd)
+                  (nat-del m (:kids (cells k))) (tbl-all-nat-del (kid-done cells) m (:kids (cells k)) (And.left (And.right q)))))
+    (simp only [disown-cell] at k2)
+    (simp only [(And.left q) k2 (And.right (And.right q)) Bool.and_self Bool.or_true])))
+
+(a/theorem sinv-xfer-reserve [cells :- (=> Nat Cell), m :- Nat, k2 :- Nat, n :- (List Nat)]
+  (=> (sinv cells) (sinv (sys-xfer-reserve cells m k2 n)))
+  (intro hs) (cases h (xfer-reserve-ok cells m k2 n))
+  (case [false] (simp only [sys-xfer-reserve h]) (exact hs))
+  (case [true] (simp only [sys-xfer-reserve h]) (exact (sinv-accept cells k2 m hs))))
+(a/theorem cinv-xfer-reserve [cells :- (=> Nat Cell), m :- Nat, k2 :- Nat, n :- (List Nat)]
+  (=> (cinv cells) (cinv (sys-xfer-reserve cells m k2 n)))
+  (intro hc) (cases h (xfer-reserve-ok cells m k2 n))
+  (case [false] (simp only [sys-xfer-reserve h]) (exact hc))
+  (case [true] (simp only [sys-xfer-reserve h]) (exact (cinv-accept cells k2 m hc))))
+(a/theorem qsinv-xfer-reserve [cells :- (=> Nat Cell), m :- Nat, k2 :- Nat, n :- (List Nat)]
+  (=> (qsinv cells) (qsinv (sys-xfer-reserve cells m k2 n)))
+  (intro hq) (cases h (xfer-reserve-ok cells m k2 n))
+  (case [false] (simp only [sys-xfer-reserve h]) (exact hq))
+  (case [true] (simp only [sys-xfer-reserve h]) (exact (qsinv-accept cells k2 m hq))))
+(a/theorem jinv-xfer-reserve [cells :- (=> Nat Cell), m :- Nat, k2 :- Nat, n :- (List Nat)]
+  (=> (jinv cells) (jinv (sys-xfer-reserve cells m k2 n)))
+  (intro hj) (cases h (xfer-reserve-ok cells m k2 n))
+  (case [false] (simp only [sys-xfer-reserve h]) (exact hj))
+  (case [true] (simp only [sys-xfer-reserve h]) (exact (jinv-accept cells k2 m hj))))
+
+(a/theorem sinv-xfer-move [cells :- (=> Nat Cell), m :- Nat, k2 :- Nat]
+  (=> (sinv cells) (sinv (sys-xfer-move cells m k2)))
+  (intro hs) (cases h (xfer-move-ok cells m k2))
+  (case [false] (simp only [sys-xfer-move h]) (exact (sinv-disown cells k2 m hs)))
+  (case [true] (simp only [sys-xfer-move h xfer-old])
+    (exact (sinv-reown _ m k2 (sinv-complete _ (:owner (cells m)) (sinv-disown cells (:owner (cells m)) m hs))))))
+(a/theorem cinv-xfer-move [cells :- (=> Nat Cell), m :- Nat, k2 :- Nat]
+  (=> (sinv cells) (cinv cells) (cinv (sys-xfer-move cells m k2)))
+  (intros hs hc) (cases h (xfer-move-ok cells m k2))
+  (case [false] (simp only [sys-xfer-move h]) (exact (cinv-disown-any cells k2 m hc)))
+  (case [true]
+    (simp only [sys-xfer-move h xfer-old])
+    (exact (cinv-reown _ m k2 (cinv-complete _ (:owner (cells m))
+             (cinv-disown-any cells (:owner (cells m)) m hc))))))
+(a/theorem qsinv-xfer-move [cells :- (=> Nat Cell), m :- Nat, k2 :- Nat]
+  (=> (sinv cells) (qsinv cells) (qsinv (sys-xfer-move cells m k2)))
+  (intros hs hq) (cases h (xfer-move-ok cells m k2))
+  (case [false] (simp only [sys-xfer-move h]) (exact (qsinv-disown cells k2 m hq)))
+  (case [true]
+    (simp only [sys-xfer-move h xfer-old])
+    (exact (qsinv-reown _ m k2 (qsinv-complete _ (:owner (cells m))
+             (qsinv-disown cells (:owner (cells m)) m hq))))))
+(a/theorem jinv-xfer-move [cells :- (=> Nat Cell), m :- Nat, k2 :- Nat]
+  (=> (jinv cells) (jinv (sys-xfer-move cells m k2)))
+  (intro hj) (cases h (xfer-move-ok cells m k2))
+  (case [false] (simp only [sys-xfer-move h]) (exact (jinv-disown cells k2 m hj)))
+  (case [true]
+    (simp only [sys-xfer-move h xfer-old])
+    (exact (jinv-reown _ m k2 (jinv-complete _ (:owner (cells m)) (jinv-disown cells (:owner (cells m)) m hj))))))
+
+;; R2 x R6: neither part changes a parent, so no lineage answer
+(a/theorem par-xfer-reserve [cells :- (=> Nat Cell), m :- Nat, k2 :- Nat, n :- (List Nat)]
+  (forall [j :- Nat] (= (:parent (sys-xfer-reserve cells m k2 n j)) (:parent (cells j))))
+  (intro j) (cases h (xfer-reserve-ok cells m k2 n))
+  (case [false] (simp only [sys-xfer-reserve h]))
+  (case [true] (simp only [sys-xfer-reserve h]) (exact (par-accept cells k2 m j))))
+(a/theorem par-xfer-move [cells :- (=> Nat Cell), m :- Nat, k2 :- Nat]
+  (forall [j :- Nat] (= (:parent (sys-xfer-move cells m k2 j)) (:parent (cells j))))
+  (intro j) (cases h (xfer-move-ok cells m k2))
+  (case [false] (simp only [sys-xfer-move h]) (exact (par-disown cells k2 m j)))
+  (case [true] (simp only [sys-xfer-move h xfer-old])
+    (rw [(par-reown _ m k2 j) (par-complete _ _ j) (par-disown cells _ m j)])))
+(a/theorem descendant-xfer-reserve [cells :- (=> Nat Cell), m :- Nat, k2 :- Nat, n :- (List Nat), a :- Nat, d :- Nat, f :- (List Nat)]
+  (= (descendant (sys-xfer-reserve cells m k2 n) a d f) (descendant cells a d f))
+  (exact (descendant-par cells (sys-xfer-reserve cells m k2 n) a f (par-xfer-reserve cells m k2 n) d)))
+(a/theorem descendant-xfer-move [cells :- (=> Nat Cell), m :- Nat, k2 :- Nat, a :- Nat, d :- Nat, f :- (List Nat)]
+  (= (descendant (sys-xfer-move cells m k2) a d f) (descendant cells a d f))
+  (exact (descendant-par cells (sys-xfer-move cells m k2) a f (par-xfer-move cells m k2) d)))
+
+;; C2 unseal (dvergr merge-room aborts on a conflict and keeps working in the fork): the flag only gates
+;; host items and merge, so clearing it keeps every invariant. Refused in a released world (a merged one
+;; is released).
+(a/defn unseal-cell [c :- Cell] Cell
+  (Cell.mk (:world c) (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c) (:kids c) (:complete c) (:joins c) (:norm c) false))
+(a/defn sys-unseal [cells :- (=> Nat Cell), k :- Nat] (=> Nat Cell)
+  (if (:released (:world (cells k))) cells (fupd cells k (unseal-cell (cells k)))))
+(a/theorem sinv-unseal [cells :- (=> Nat Cell), k :- Nat] (=> (sinv cells) (sinv (sys-unseal cells k)))
+  (intro hs) (cases h (:released (:world (cells k))))
+  (case [true] (simp only [sys-unseal h]) (exact hs))
+  (case [false]
+    (have hc (=> (= (:live (unseal-cell (cells k))) true) (= (p3l (:world (unseal-cell (cells k)))) true)))
+    (intro hl) (simp only [unseal-cell] at hl) (simp only [unseal-cell]) (exact (sinv-live cells k hs hl))
+    (simp only [sys-unseal h]) (exact (sinv-put cells k (unseal-cell (cells k)) hs hc))))
+(a/theorem cinv-unseal [cells :- (=> Nat Cell), k :- Nat] (=> (cinv cells) (cinv (sys-unseal cells k)))
+  (intro hc) (cases h (:released (:world (cells k))))
+  (case [true] (simp only [sys-unseal h]) (exact hc))
+  (case [false] (simp only [sys-unseal h])
+    (exact (cinv-world cells k (unseal-cell (cells k)) hc (rfl) (rfl) (rfl) (rfl) (fn [hl :- (= (:live (cells k)) true)] (wq-refl (:world (cells k))))))))
+(a/theorem qsinv-unseal [cells :- (=> Nat Cell), k :- Nat] (=> (qsinv cells) (qsinv (sys-unseal cells k)))
+  (intro hq) (cases h (:released (:world (cells k))))
+  (case [true] (simp only [sys-unseal h]) (exact hq))
+  (case [false] (simp only [sys-unseal h])
+    (apply (qsinv-put cells k (unseal-cell (cells k)) hq))
+    (intro hl) (simp only [unseal-cell] at hl) (simp only [cq unseal-cell]) (exact (qsinv-live cells k hq hl))))
+(a/theorem jinv-unseal [cells :- (=> Nat Cell), k :- Nat] (=> (jinv cells) (jinv (sys-unseal cells k)))
+  (intro hj) (cases h (:released (:world (cells k))))
+  (case [true] (simp only [sys-unseal h]) (exact hj))
+  (case [false] (simp only [sys-unseal h]) (exact (jinv-same cells k (unseal-cell (cells k)) hj (rfl) (rfl) (rfl)))))
+
+;; Q2: merge! sealing the child in its own item: the seal changes no world, so the merge reads the
+;; same child, as sealed
+(a/theorem merge-seal-same [cells :- (=> Nat Cell), k :- Nat, m :- Nat, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat))]
+  (=> (Not (= k m))
+      (= (merge-world (:world (sys-seal cells m k)) (:world (sys-seal cells m m)) b rv (:sealed (sys-seal cells m m)))
+         (merge-world (:world (cells k)) (:world (cells m)) b rv true)))
+  (intro hne)
+  (simp only [sys-seal fupd-same seal-cell fupd (nbeq-ne k m hne)]))
