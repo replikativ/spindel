@@ -1,0 +1,89 @@
+[{:step :pinned,
+  :log-length {:w 5},
+  :obs
+  {:w
+   {:scopes {2 {:open? true, :present? true, :complete? false}},
+    :owned-by nil,
+    :pending-joins 0,
+    :holders {},
+    :tasks {},
+    :token nil,
+    :comps {4 {:epoch 1, :done-epoch nil, :idle? true, :validity nil}},
+    :kids nil,
+    :complete? false,
+    :owned {},
+    :runs 0,
+    :normalize #{},
+    :released? false}}}
+ {:step :dropped,
+  :log-length {:w 14},
+  :obs
+  {:w
+   {:scopes {2 {:open? true, :present? true, :complete? false}},
+    :owned-by nil,
+    :pending-joins 0,
+    :holders {},
+    :tasks {},
+    :token nil,
+    :comps {4 {:epoch 1, :done-epoch nil, :idle? true, :validity nil}},
+    :kids nil,
+    :complete? false,
+    :owned {},
+    :runs 0,
+    :normalize #{},
+    :released? false}}}
+ {:step :inner-dropped,
+  :log-length {:w 38},
+  :obs
+  {:w
+   {:scopes {2 {:open? true, :present? true, :complete? false}},
+    :owned-by nil,
+    :pending-joins 0,
+    :holders {},
+    :tasks {},
+    :token nil,
+    :comps
+    {13 {:epoch 1, :done-epoch 1, :idle? false, :validity nil},
+     18 {:epoch 1, :done-epoch 1, :idle? false, :validity nil}},
+    :kids nil,
+    :complete? false,
+    :owned {},
+    :runs 0,
+    :normalize #{},
+    :released? false}}}
+ {:step :readopted,
+  :log-length {:w 46},
+  :obs
+  {:w
+   {:scopes {2 {:open? true, :present? true, :complete? false}},
+    :owned-by nil,
+    :pending-joins 0,
+    :holders {},
+    :tasks {},
+    :token nil,
+    :comps
+    {13 {:epoch 2, :done-epoch 2, :idle? false, :validity nil},
+     18 {:epoch 1, :done-epoch 1, :idle? false, :validity nil}},
+    :kids nil,
+    :complete? false,
+    :owned {},
+    :runs 0,
+    :normalize #{},
+    :released? false}}}
+ {:step :released,
+  :log-length {:w 48},
+  :obs
+  {:w
+   {:scopes {2 {:open? false, :present? true, :complete? false}},
+    :owned-by nil,
+    :pending-joins 0,
+    :holders {},
+    :tasks {},
+    :token nil,
+    :comps {},
+    :kids nil,
+    :complete? true,
+    :owned {},
+    :runs 0,
+    :normalize #{},
+    :released? true}}}]

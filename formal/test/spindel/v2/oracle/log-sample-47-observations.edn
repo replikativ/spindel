@@ -1,0 +1,48 @@
+[{:step :read,
+  :log-length {:w 48},
+  :obs
+  {:w
+   {:scopes {2 {:open? true, :present? true, :complete? false}},
+    :owned-by nil,
+    :pending-joins 0,
+    :holders {},
+    :tasks
+    {3
+     {:done? true,
+      :retired? true,
+      :materialized? true,
+      :srow-present? false,
+      :complete? true}},
+    :token nil,
+    :comps
+    {6 {:epoch 1, :done-epoch 1, :idle? true, :validity []},
+     37 {:epoch 1, :done-epoch 1, :idle? true, :validity []}},
+    :kids nil,
+    :complete? false,
+    :owned {},
+    :runs 0,
+    :normalize #{},
+    :released? false}}}
+ {:step :released,
+  :log-length {:w 49},
+  :obs
+  {:w
+   {:scopes {2 {:open? false, :present? true, :complete? false}},
+    :owned-by nil,
+    :pending-joins 0,
+    :holders {},
+    :tasks
+    {3
+     {:done? true,
+      :retired? true,
+      :materialized? true,
+      :srow-present? false,
+      :complete? true}},
+    :token nil,
+    :comps {},
+    :kids nil,
+    :complete? true,
+    :owned {},
+    :runs 0,
+    :normalize #{},
+    :released? true}}}]

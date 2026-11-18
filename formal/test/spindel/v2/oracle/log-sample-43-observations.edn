@@ -1,0 +1,169 @@
+[{:step :before,
+  :log-length {:effect 3, :hostfork 0, :root 18},
+  :obs
+  {:effect
+   {:scopes
+    {2 {:open? true, :present? true, :complete? false},
+     13 {:open? true, :present? true, :complete? false},
+     20 {:open? true, :present? true, :complete? false}},
+    :owned-by 1,
+    :pending-joins 0,
+    :holders {},
+    :tasks
+    {11
+     {:done? false,
+      :retired? false,
+      :materialized? true,
+      :srow-present? true,
+      :complete? false},
+     18
+     {:done? false,
+      :retired? false,
+      :materialized? true,
+      :srow-present? true,
+      :complete? false}},
+    :token :installed,
+    :comps
+    {10 {:epoch 1, :done-epoch nil, :idle? true, :validity nil}},
+    :kids nil,
+    :complete? false,
+    :owned {},
+    :runs 2,
+    :normalize #{},
+    :released? false},
+   :hostfork
+   {:scopes
+    {2 {:open? true, :present? true, :complete? false},
+     13 {:open? true, :present? true, :complete? false}},
+    :owned-by 1,
+    :pending-joins 0,
+    :holders {},
+    :tasks
+    {11
+     {:done? false,
+      :retired? false,
+      :materialized? true,
+      :srow-present? true,
+      :complete? false}},
+    :token :installed,
+    :comps
+    {10 {:epoch 1, :done-epoch nil, :idle? true, :validity nil}},
+    :kids nil,
+    :complete? false,
+    :owned {},
+    :runs 1,
+    :normalize #{},
+    :released? false},
+   :root
+   {:scopes
+    {2 {:open? true, :present? true, :complete? false},
+     13 {:open? true, :present? true, :complete? false},
+     20 {:open? true, :present? true, :complete? false}},
+    :owned-by nil,
+    :pending-joins 0,
+    :holders {2 1, 20 1},
+    :tasks
+    {11
+     {:done? false,
+      :retired? false,
+      :materialized? true,
+      :srow-present? true,
+      :complete? false},
+     18
+     {:done? false,
+      :retired? false,
+      :materialized? true,
+      :srow-present? true,
+      :complete? false}},
+    :token nil,
+    :comps
+    {10 {:epoch 1, :done-epoch nil, :idle? true, :validity nil}},
+    :kids 2,
+    :complete? false,
+    :owned {20 1},
+    :runs 2,
+    :normalize #{},
+    :released? false}}}
+ {:step :released,
+  :log-length {:effect 4, :hostfork 1, :root 31},
+  :obs
+  {:effect
+   {:scopes
+    {2 {:open? false, :present? true, :complete? false},
+     13 {:open? false, :present? false, :complete? true},
+     20 {:open? false, :present? false, :complete? true}},
+    :owned-by 1,
+    :pending-joins 0,
+    :holders {},
+    :tasks
+    {11
+     {:done? true,
+      :retired? true,
+      :materialized? true,
+      :srow-present? false,
+      :complete? true},
+     18
+     {:done? true,
+      :retired? true,
+      :materialized? true,
+      :srow-present? false,
+      :complete? true}},
+    :token :done,
+    :comps {},
+    :kids nil,
+    :complete? true,
+    :owned {},
+    :runs 0,
+    :normalize #{},
+    :released? true},
+   :hostfork
+   {:scopes
+    {2 {:open? false, :present? true, :complete? false},
+     13 {:open? false, :present? false, :complete? true}},
+    :owned-by 1,
+    :pending-joins 0,
+    :holders {},
+    :tasks
+    {11
+     {:done? true,
+      :retired? true,
+      :materialized? true,
+      :srow-present? false,
+      :complete? true}},
+    :token :done,
+    :comps {},
+    :kids nil,
+    :complete? true,
+    :owned {},
+    :runs 0,
+    :normalize #{},
+    :released? true},
+   :root
+   {:scopes
+    {2 {:open? false, :present? true, :complete? false},
+     13 {:open? false, :present? false, :complete? true},
+     20 {:open? false, :present? false, :complete? true}},
+    :owned-by nil,
+    :pending-joins 0,
+    :holders {},
+    :tasks
+    {11
+     {:done? true,
+      :retired? true,
+      :materialized? true,
+      :srow-present? false,
+      :complete? true},
+     18
+     {:done? true,
+      :retired? true,
+      :materialized? true,
+      :srow-present? false,
+      :complete? true}},
+    :token nil,
+    :comps {},
+    :kids 0,
+    :complete? true,
+    :owned {},
+    :runs 0,
+    :normalize #{},
+    :released? true}}}]
