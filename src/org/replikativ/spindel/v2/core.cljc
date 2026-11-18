@@ -2578,7 +2578,16 @@
     (comp? d)
     (do (when (g d rw/C-IDLE) (validate! w d))
         (when (and (needs-run? w d) (eligible? w d))
-          (dispatch! w d)))
+          (if (let [r (active-run)] (and r (identical? (cw) w) (g (rv w r) rw/R-SLICE)))
+            ;; D0: a host operation of this world inside a slice (observe!,
+            ;; value-async, pin!) leaves the world's one slice to the running
+            ;; run; the demanded run is dispatched at the next drain step. An
+            ;; await parks its run first (its slice is free), so it still runs
+            ;; the debtor on the host stack (I10).
+            (when-not (g d rw/C-QUEUED)
+              (s! d rw/C-QUEUED true)
+              (aadd! (g w rw/W-READY) d))
+            (dispatch! w d))))
     (task? d) nil
     ;; a released world's root scope is closed: no realizer starts there
     (link? d) (when (and (zero? (gl d rw/VERSION)) (g d rw/X-OPEN) (nil? (g d rw/X-RTASK))
