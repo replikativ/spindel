@@ -363,8 +363,8 @@
   (simp only [z Bool.and_false]))
 
 ;; C0: every fresh source row (new-source, new-link, new-stream) is open with version 0
-(a/theorem sfin-mk [id :- Nat, o :- Nat, k :- Nat, v :- Nat, hd :- Nat, q :- (List Nat), rt :- Nat, n :- Nat, t :- Nat, fl :- Bool]
-  (= (sfin (SourceRow.mk id o k v 0 true hd q rt n t fl)) false)
+(a/theorem sfin-mk [id :- Nat, o :- Nat, k :- Nat, v :- Nat, hd :- Nat, q :- (List Nat), rt :- Nat, n :- Nat, t :- Nat, fl :- Bool, mx :- Nat]
+  (= (sfin (SourceRow.mk id o k v 0 true hd q rt n t fl mx)) false)
   (simp only [sfin src-delivered Bool.not_true Bool.false_or])
   (have z (= (Nat.blt 0 0) false)) (rfl)
   (simp only [z Bool.and_false]))
@@ -423,7 +423,7 @@
           {'inv-edge-upd ['(fn [e :- EdgeRow] (Eq.refl (ek5 e))) 8]
            'inv-source-upd ['(fn [s :- SourceRow] (Eq.refl (sfin s))) 4]
            'inv-task-upd ['(fn [t :- TaskRow] (Eq.refl (task-done t))) 4]
-           'inv-source-ins-fresh ['(sfin-mk _ _ _ _ _ _ _ _ _ _) 2]
+           'inv-source-ins-fresh ['(sfin-mk _ _ _ _ _ _ _ _ _ _ _) 2]
            'inv-task-ins-fresh ['(Eq.refl false) 2]
            'insert-edge-fresh-inv-sample ['(Eq.refl true) 2]
            'inv-insert-edge-checked ['(Eq.refl true) 2]
@@ -691,11 +691,11 @@
      (intro h)
      (cases hs (source-find w x)) (case' [some s]) (case' [none])
      (simp only [t-release hs refuse]) (exact h)
-     (cases hg (open-kind sk-semaphore s))
+     (cases hg (releasable s))
      (simp only [t-release hs hg refuse]) (exact h)
      (simp only [t-release hs hg accept release-raw])
      (exact (g5-serve-or x5d (source-upd w x source-bump) x _ source-permit source-permit-id (fn [q :- SourceRow] (Eq.refl (sfin q)))
-              (g5-source-upd-at x5d w x source-bump s source-bump-id (sfin-bump sk-semaphore s hg (rfl)) hs h)))))
+              (g5-source-upd-at x5d w x source-bump s source-bump-id (sfin-bump sk-semaphore s (releasable-open s hg) (rfl)) hs h)))))
 
 (patch! G5 'inv-take-park
   (fn [form] (subst-forms (fn [y] (and (seq? y) (= 'inv-insert-edge-checked (first y)) (= '_ (second y))))
@@ -1420,7 +1420,7 @@
      (simp only [append-raw])
      (exact (g5-realize-link x5d _ old v false _
               (g5-source-ins x5d (source-upd w x (stream-set-tail (:next-id w))) (new-link (:next-id w) root-scope-id x)
-                (sfin-mk _ _ _ _ _ _ _ _ _ _) (rfl)
+                (sfin-mk _ _ _ _ _ _ _ _ _ _ _) (rfl)
                 (g5-source-upd-at x5d w x (stream-set-tail (:next-id w)) s (stream-set-tail-id _) (sfin-stream-tail _ s hk) hs h))))))
 (override! G5 't-append-inv '[inv-append-raw]
   '(a/theorem t-append-g5 [x5d :- (List Nat), w :- World, x :- Nat, v :- Nat, t :- Nat]

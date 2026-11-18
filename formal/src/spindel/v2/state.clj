@@ -22,6 +22,9 @@
     task exists without a result). `tail` is 0 on a pull link
     and the stream on a push link; a stream (`sk-stream`) keeps its tail link in `tail`. The
     other kinds keep rtask = next = tail = 0, fail = false.
+  - Z#62: `max` is a semaphore's maximum permit count, its `state` at creation (engine X-MAX);
+    a release at the maximum is refused. A T1 row sets max = v for every kind; only a
+    semaphore's is read (links and streams set 0).
   - Edge `cont`: `cont-restart` (0) is the reserved restart code; any other Nat is a k.
   - Edge `seen : Nat?` (Z#15): the pair (`has-seen`, `seen`), none = (false, 0).
   - Activation `members : [(E, i)]` (Z#7): `Member {edge, idx}`; `slots` has one RunResult per
@@ -118,7 +121,7 @@
   (slice Bool) (effect-index Nat) (finalizers (List Finalizer)) (resources (List Nat)))
 (a/structure SourceRow []
   (id Nat) (owner Nat) (kind Nat) (state Nat) (version Nat) (open Bool) (handles Nat) (queue (List Nat))
-  (rtask Nat) (next Nat) (tail Nat) (fail Bool))
+  (rtask Nat) (next Nat) (tail Nat) (fail Bool) (max Nat))
 (a/structure EdgeRow []
   (id Nat) (kind Nat) (creditor Nat) (debtor Nat) (cont Nat) (at Nat) (phase Nat)
   (marked Bool) (has-seen Bool) (seen Nat) (has-base Bool) (base-value Nat) (base-version Nat))

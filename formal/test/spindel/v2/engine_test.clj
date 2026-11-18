@@ -406,14 +406,17 @@
           (is (= [s/act-active true] ((juxt :act :slice) (find-row w :runs r2)))))))))
 
 (deftest semaphore-release
+  ;; Z#62: a semaphore starts with n > 0 permits, its maximum; a release at the maximum is refused
   (let [w s/empty-world
         x (:next-id w)
-        w (step! w (create-source-top root s/sk-semaphore 0 x))
-        w (step! w (release x))
-        _ (is (= [1 1] ((juxt :state :version) (src-row w x))) "no waiter: a permit")
+        w (step! w (create-source-top root s/sk-semaphore 1 x))
+        _ (step! w (release x) :refused)
         [k rk w] (task-with-slice w)
         w (step! w (take* (stamp w rk) x 1 (:next-id w)))
         _ (is (= [0 true] [(:state (src-row w x)) (:slice (find-row w :runs rk))]) "acquired at once")
+        w (step! w (release x))
+        _ (is (= 1 (:state (src-row w x))) "no waiter: the permit returns")
+        w (step! w (take* (stamp w rk) x 1 (:next-id w)))
         a (:next-id w)
         w (step! w (take* (stamp w rk) x 1 a))
         _ (is (= s/act-parked (:act (find-row w :runs rk))) "no permit: parks")
@@ -708,10 +711,10 @@
       (is (= (s/->RunResult s/res-err 2) (st/deb-result w y)) "err ::closed")
       (is (true? (inv/lit-i5-dep-final w))))
     (testing "a closed source with a value delivers it"
-      (is (= (s/->RunResult s/res-ok 7) (st/src-result (s/->SourceRow 1 0 s/sk-signal 7 3 false 1 [] 0 0 0 false))))
-      (is (= (s/->RunResult s/res-ok 7) (st/src-result (s/->SourceRow 1 0 s/sk-deferred 7 1 false 1 [] 0 0 0 false))))
-      (is (= (s/->RunResult s/res-err 2) (st/src-result (s/->SourceRow 1 0 s/sk-deferred 0 0 false 1 [] 0 0 0 false))))
-      (is (= (s/->RunResult s/res-ok 0) (st/src-result (s/->SourceRow 1 0 s/sk-mailbox 0 0 true 1 [] 0 0 0 false)))
+      (is (= (s/->RunResult s/res-ok 7) (st/src-result (s/->SourceRow 1 0 s/sk-signal 7 3 false 1 [] 0 0 0 false 0))))
+      (is (= (s/->RunResult s/res-ok 7) (st/src-result (s/->SourceRow 1 0 s/sk-deferred 7 1 false 1 [] 0 0 0 false 0))))
+      (is (= (s/->RunResult s/res-err 2) (st/src-result (s/->SourceRow 1 0 s/sk-deferred 0 0 false 1 [] 0 0 0 false 0))))
+      (is (= (s/->RunResult s/res-ok 0) (st/src-result (s/->SourceRow 1 0 s/sk-mailbox 0 0 true 1 [] 0 0 0 false 0)))
           "an open source: its state"))))
 
 (deftest blocked-least-fixpoint
