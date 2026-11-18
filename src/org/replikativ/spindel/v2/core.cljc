@@ -1674,30 +1674,37 @@
 
 (defn- raise-rank!
   "I12 by height adjustment: `c` must rank above `d`. Raising propagates to
-   c's creditors; reaching `d` again means the new edge closes a cycle."
+   c's creditors; reaching `d` again means the new edge closes a cycle. The
+   raise is planned first and written only when it closes no cycle: a
+   refused edge (::cycle) changes no rank."
   [w c d]
   (let [need (inc (gl d rw/C-RANK))]
     (if (>= (gl c rw/C-RANK) need)
       true
-      (loop [todo [[c need]] seen #{}]
-        (if-let [[x n] (peek todo)]
-          (let [todo (pop todo)]
-            (cond
-              (identical? x d) false
-              (>= (gl x rw/C-RANK) (long n)) (recur todo seen)
-              :else
-              (do (s! x rw/C-RANK n)
-                  (let [outs (g x rw/OUTS)]
-                    (recur (loop [i 0 todo todo]
-                             (if (< i (acount outs))
-                               (let [e (rv w (anth outs i))]
-                                 (recur (inc i)
-                                        (if (== rw/EK-DEP (gl e rw/E-KIND))
-                                          (conj todo [(rv w (g e rw/E-CRED)) (inc (long n))])
-                                          todo)))
-                               todo))
-                           seen)))))
-          true)))))
+      (let [plan (loop [todo [[c need]] plan {}]
+                   (if-let [[x n] (peek todo)]
+                     (let [todo (pop todo)
+                           id (g x rw/ID)
+                           cur (max (gl x rw/C-RANK) (long (or (second (get plan id)) 0)))]
+                       (cond
+                         (identical? x d) nil
+                         (>= cur (long n)) (recur todo plan)
+                         :else
+                         (let [outs (g x rw/OUTS)]
+                           (recur (loop [i 0 todo todo]
+                                    (if (< i (acount outs))
+                                      (let [e (rv w (anth outs i))]
+                                        (recur (inc i)
+                                               (if (== rw/EK-DEP (gl e rw/E-KIND))
+                                                 (conj todo [(rv w (g e rw/E-CRED)) (inc (long n))])
+                                                 todo)))
+                                      todo))
+                                  (assoc plan id [x n])))))
+                     plan))]
+        (if (nil? plan)
+          false
+          (do (doseq [[x n] (vals plan)] (s! x rw/C-RANK n))
+              true))))))
 
 (defn cycle-ex [c d]
   (ex-info "dependency cycle" {:spindel/cycle [(g c rw/ID) (g d rw/ID)]}))
@@ -2995,6 +3002,15 @@
     (s! x rw/X-OPEN false)
     (settle! w x)))
 
+(defn- source-item-value
+  "A creation item's initial value: opaque (interned in the log), except a
+   semaphore's permit count, which the model compares against its maximum
+   (Z#62), and a mailbox's, which is not a value (nil)."
+  [kind v]
+  (cond (== kind rw/SRC-SEMAPHORE) v
+        (== kind rw/SRC-MAILBOX) [:opaque nil]
+        :else [:opaque v]))
+
 (defn- create-source-in-run!
   "T1 inside a run: owned by the computation (in its basis, adopted by later
    runs in creation order) or by the task run's current scope, which retains
@@ -3013,7 +3029,7 @@
           (do (s! old rw/AT at)
               (let [h (handle! w old)]
                 (commit! w [:create-source (g r rw/ID) (rw/kind-names kind)
-                            [:opaque (when-not (== kind rw/SRC-MAILBOX) v)] (g old rw/ID)])
+                            (source-item-value kind v) (g old rw/ID)])
                 h))
           (let [s (new-source! w kind v x key at)]
             (s! s rw/HANDLES 0)
@@ -3022,7 +3038,7 @@
             (ref-inc! s)
             (let [h (handle! w s)]
               (commit! w [:create-source (g r rw/ID) (rw/kind-names kind)
-                          [:opaque (when-not (== kind rw/SRC-MAILBOX) v)] (g s rw/ID)])
+                          (source-item-value kind v) (g s rw/ID)])
               h))))
       (let [sc (current-scope! w r)
             s (new-source! w kind v sc 0 at)]
@@ -3032,7 +3048,7 @@
         (aadd! (g w rw/W-RQ) s)
         (let [h (handle! w s)]
           (commit! w [:create-source (g r rw/ID) (rw/kind-names kind)
-                      [:opaque (when-not (== kind rw/SRC-MAILBOX) v)] (g s rw/ID)])
+                      (source-item-value kind v) (g s rw/ID)])
           h)))))
 
 (defn- create-source-top! [w kind v init]
@@ -3048,13 +3064,13 @@
            (if (host-released? w)
              (refuse! w [:create-source-top (g (rv w (g w rw/W-ROOT)) rw/ID)
                          (rw/kind-names kind)
-                         [:opaque (when-not (== kind rw/SRC-MAILBOX) v)] 0])
+                         (source-item-value kind v) 0])
              (let [x (new-source! w kind v (rv w (g w rw/W-ROOT)) 0 0)]
                (when init (init x))
                (bind-handle! h x)
                (commit! w [:create-source-top (g (rv w (g w rw/W-ROOT)) rw/ID)
                            (rw/kind-names kind)
-                           [:opaque (when-not (== kind rw/SRC-MAILBOX) v)] (g x rw/ID)]))))
+                           (source-item-value kind v) (g x rw/ID)]))))
     h))
 
 (defn signal

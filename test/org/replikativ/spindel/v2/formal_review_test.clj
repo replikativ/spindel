@@ -197,3 +197,27 @@
            (is (every? (comp false? second) @seen) (str mk ": no handle " @seen))
            (is (not-any? #(#{:spawn :create-comp :create-source :create-link} (first (:item %)))
                          (drop-while #(not= :release-world (first (:item %))) (verify/log w))))))))))
+
+(deftest a-refused-cycle-changes-no-rank
+  ;; I12 (refusal sample 44): a's await of b would close a cycle (b awaits a). The raise is
+  ;; planned and refused as a whole: every live dep edge keeps rank(creditor) > rank(debtor)
+  (checked
+   (let [w (vworld)]
+     (binding [v2/*world* w]
+       (let [cell (atom nil)
+             a (spin (await (deref cell)))
+             b (spin (inc (await a)))
+             _ (reset! cell b)]
+         (is (vector? (try (v2/value a 1000 ::timeout) (catch clojure.lang.ExceptionInfo e [:err (ex-message e)]))))
+         (v2/call-in! w
+                      (fn []
+                        (doseq [row (hs/mvals (aget ^objects w rw/W-REG))
+                                :when (and (== rw/T-EDGE (aget ^objects row rw/TYPE))
+                                           (== rw/EK-DEP (aget ^objects row rw/E-KIND)))]
+                          (let [c (#'v2/rv w (aget ^objects row rw/E-CRED))
+                                d (#'v2/rv w (aget ^objects row rw/E-DEBTOR))]
+                            (when (and (== rw/T-COMP (aget ^objects c rw/TYPE)) (== rw/T-COMP (aget ^objects d rw/TYPE)))
+                              (is (> (long (aget ^objects c rw/C-RANK)) (long (aget ^objects d rw/C-RANK)))
+                                  "I12 on every live dep edge"))))))
+         (v2/release-world! w)
+         (is (true? (v2/await-complete w 2000 ::timeout))))))))

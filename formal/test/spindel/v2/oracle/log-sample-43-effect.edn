@@ -33,7 +33,7 @@
     6
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1},
@@ -171,7 +171,7 @@
     6
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1},
@@ -316,7 +316,7 @@
     6
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1},

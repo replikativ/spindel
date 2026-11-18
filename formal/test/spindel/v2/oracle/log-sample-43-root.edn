@@ -94,7 +94,7 @@
    :acts {},
    :edges {},
    :cleanup {}}}
- {:item [:create-source-top 2 :semaphore 3 6],
+ {:item [:create-source-top 2 :semaphore 1 6],
   :accepted true,
   :proj
   {:scopes {2 {:parent nil, :kind :root, :open true}},
@@ -126,7 +126,7 @@
     6
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1}},
@@ -172,7 +172,7 @@
     6
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1},
@@ -236,7 +236,7 @@
     6
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1},
@@ -307,7 +307,7 @@
     6
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1},
@@ -396,7 +396,7 @@
     6
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1},
@@ -497,7 +497,7 @@
     6
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1},
@@ -598,7 +598,7 @@
     6
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1},
@@ -706,7 +706,7 @@
     6
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1},
@@ -831,7 +831,7 @@
     6
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1},
@@ -957,7 +957,7 @@
     6
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1},
@@ -1095,7 +1095,7 @@
     6
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1},
@@ -1233,7 +1233,7 @@
     6
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1},
@@ -1371,7 +1371,7 @@
     6
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1},
@@ -1516,7 +1516,7 @@
     6
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1},
@@ -1678,7 +1678,7 @@
     6
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1},
