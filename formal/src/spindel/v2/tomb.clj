@@ -466,7 +466,7 @@
 
 (doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del
             inv-set-pins inv-resource-del inv-scope-del inv-cleanup-ins inv-act-upd inv-task-upd
-            inv-source-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-act-ins-fresh inv-task-ins-fresh inv-bump]]
+            inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-act-ins-fresh inv-task-ins-fresh inv-bump inv-fork-del]]
   (prim! GY o nil))
 (prim! GY 'inv-edge-upd '(gy-rest-edge-upd ty w x f hk hc R))
 (prim! GY 'inv-drop-cred '(gy-rest-drop-cred ty w a R))

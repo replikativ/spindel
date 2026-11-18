@@ -254,12 +254,12 @@
 
 (doseq [o '[inv-run-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-comp-upd
             inv-set-pins inv-resource-del inv-cleanup-ins inv-act-upd inv-edge-upd inv-drop-cred inv-drop-edges inv-drop-act
-            inv-comp-del-unref inv-run-del]]
+            inv-comp-del-unref inv-run-del inv-fork-del]]
   (prim! GST o nil))
 (prim! GST 'mark-edge-inv-sample '(Eq.trans (gst-rest-mark-edge tk9 sc9 w x) R))
 (prim! GST 'unmark-edge-inv-sample '(Eq.trans (gst-rest-unmark-edge tk9 sc9 w x) R))
 (prim! GST 'inv-remove-edge '(Eq.trans (gst-rest-remove-edge tk9 sc9 w x) R))
-(doseq [o '[inv-source-ins-fresh inv-resource-ins-fresh inv-act-ins-fresh inv-comp-ins-fresh inv-run-ins-fresh]]
+(doseq [o '[inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-act-ins-fresh inv-comp-ins-fresh inv-run-ins-fresh]]
   (prim! GST o (list 'gst-rest-bump 'tk9 'sc9 (list (symbol (str/replace (subs (name o) 4) "-fresh" "")) 'w 'r) (list 'Eq.trans '(rfl) 'R))))
 (prim! GST 'inv-task-ins-fresh '(gst-rest-task-ins tk9 sc9 w r h0 R))
 (prim! GST 'inv-scope-ins-fresh '(gst-rest-scope-ins tk9 sc9 w r h0 R))

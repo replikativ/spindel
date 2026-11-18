@@ -567,9 +567,9 @@
 (def GD (mk-bundle 'gd [] "gd-" {'inv-comp-ins-fresh ['(Eq.refl true) 2]}))
 (swap! (:renames GD) assoc 'inv-parts 'gd-parts 'inv-comp-ins-fresh 'gd-comp-ins)
 (doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-set-pins
-            inv-resource-del inv-scope-del inv-cleanup-ins inv-act-upd inv-task-upd inv-edge-upd]]
+            inv-resource-del inv-scope-del inv-cleanup-ins inv-act-upd inv-task-upd inv-edge-upd inv-fork-del]]
   (prim! GD o nil))
-(doseq [[o t] '[[inv-source-ins-fresh source-ins] [inv-resource-ins-fresh resource-ins] [inv-scope-ins-fresh scope-ins]
+(doseq [[o t] '[[inv-source-ins-fresh source-ins] [inv-fork-ins-fresh fork-ins] [inv-resource-ins-fresh resource-ins] [inv-scope-ins-fresh scope-ins]
                 [inv-act-ins-fresh act-ins] [inv-task-ins-fresh task-ins]]]
   (prim! GD o (list 'gd-rest-grow 'w (list 'bump (list t 'w 'r)) '(rfl) '(rfl) '(Nat.le_succ (:next-id w)) 'R)))
 (prim! GD 'inv-bump '(gd-rest-grow w (bump w) (rfl) (rfl) (Nat.le_succ (:next-id w)) R))
@@ -1012,8 +1012,8 @@
 (swap! (:renames HKW) assoc 'inv-parts 'hkw-parts)
 (doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-set-pins
             inv-resource-del inv-scope-del inv-cleanup-ins inv-act-upd inv-task-upd inv-edge-upd inv-run-upd inv-run-del
-            inv-source-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-act-ins-fresh inv-task-ins-fresh inv-run-ins-fresh
-            inv-bump insert-edge-fresh-inv-sample]]
+            inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-act-ins-fresh inv-task-ins-fresh inv-run-ins-fresh
+            inv-bump insert-edge-fresh-inv-sample inv-fork-del]]
   (prim! HKW o nil))
 (prim! HKW 'inv-insert-edge-checked '(hkwr-insert-edge-checked hkc hke w e R))
 (prim! HKW 'inv-remove-edge '(hkwr-remove-edge hkc hke w x R))

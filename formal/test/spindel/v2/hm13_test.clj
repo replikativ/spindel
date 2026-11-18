@@ -93,7 +93,10 @@
    [(link-realize l tag v n) false]
    [(append x v t) true]
    [(close x tag v) true]
-   [(finally-leave st) false])),
+   [(finally-leave st) false]
+   [(own s m) false]
+   [(owned-done s c) false]
+   [(drain ids) false])),
  loser-task
  (a/defn
   loser-task

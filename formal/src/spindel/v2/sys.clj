@@ -62,7 +62,8 @@
             [spindel.v2.quiet]
             [spindel.v2.qworld]
             [spindel.v2.ledger :refer [task-complete]]
-            [spindel.v2.owned :refer :all]))
+            [spindel.v2.owned :refer :all]
+            [spindel.v2.drained :refer [fork-out]]))
 
 (a/defn err-forked [] Nat 1)
 ;; layer 1 arms timers and offloads only (`arm-kind-ok`): a savepoint is an offload-kind resource,
@@ -2024,24 +2025,32 @@
   (exact (all-np-fix _ (born-complete-delivered cells k hq hj hl hu hr))))
 
 ;; ---------------------------------------------------------------------------
-;; C1c stage B, proof stage: the owned-fork operations at layer 2. HB is the layer-1 part (as HQ was for C1):
-;; own, owned-done and the drain keep p3l and qinv and keep a released world released. Its discharge is per
-;; bundle (notes/PLAN.md "C1c stage B, proof stage"); everything here holds under it.
+;; C1c stage B, proof stage: the owned-fork operations at layer 2. They are layer-1 items (spindel.v2.owned), so the
+;; layer-1 facts (`hb-world`: p3l, qinv and released kept) are those of every step: step-p3l, step-qinv, step-released.
 
 (a/defn hb-world [w :- World, w2 :- World] Prop
   (And (=> (= (p3l w) true) (= (p3l w2) true))
        (And (=> (= (qinv w) true) (= (qinv w2) true))
             (=> (= (p3l w) true) (= (:released w) true) (= (:released w2) true)))))
-(a/defn hb-ops [] Prop
-  (forall [w :- World, s :- Nat, c :- Nat, ids :- (List Nat)]
-    (And (hb-world w (own-world w s c)) (And (hb-world w (owned-done-world w s c)) (hb-world w (drain-world w ids))))))
-
-(a/theorem hb-own [hb :- (hb-ops), w :- World, s :- Nat, m :- Nat] (hb-world w (own-world w s m))
-  (have h := (hb w s m (List.nil Nat))) (exact (And.left h)))
-(a/theorem hb-owned-done [hb :- (hb-ops), w :- World, s :- Nat, c :- Nat] (hb-world w (owned-done-world w s c))
-  (have h := (hb w s c (List.nil Nat))) (exact (And.left (And.right h))))
-(a/theorem hb-drain [hb :- (hb-ops), w :- World, ids :- (List Nat)] (hb-world w (drain-world w ids))
-  (have h := (hb w 0 0 ids)) (exact (And.right (And.right h))))
+(a/theorem hb-step [w :- World, it :- Item] (hb-world w (:world (world-step w it)))
+  (simp only [hb-world]) (apply And.intro)
+  (intro h) (exact (step-p3l w it h))
+  (apply And.intro)
+  (intro h) (exact (step-qinv w it h))
+  (intros h r) (exact (step-released w it (p3l-p3b w h) r)))
+(a/theorem hb-own [w :- World, s :- Nat, m :- Nat] (hb-world w (own-world w s m))
+  (simp only [own-world]) (exact (hb-step w (Item.own s m))))
+(a/theorem hb-owned-done [w :- World, s :- Nat, c :- Nat] (hb-world w (owned-done-world w s c))
+  (simp only [owned-done-world]) (exact (hb-step w (Item.owned-done s c))))
+(a/theorem hb-drain [w :- World, ids :- (List Nat)] (hb-world w (drain-world w ids))
+  (simp only [drain-world]) (exact (hb-step w (Item.drain ids))))
+;; the owned-fork operations are system steps with the items (sys-owned-done and sys-drain then maybe-complete!)
+(a/theorem own-is-step [cells :- (=> Nat Cell), k :- Nat, s :- Nat, m :- Nat]
+  (= (sys-own cells k s m) (sys-step cells k (Item.own s m)))
+  (rfl))
+(a/theorem owned-done-is-step [cells :- (=> Nat Cell), k :- Nat, s :- Nat, c :- Nat]
+  (= (sys-owned-done cells k s c) (sys-complete (sys-step cells k (Item.owned-done s c)) k))
+  (rfl))
 (a/theorem hbw-p3l [w :- World, w2 :- World] (=> (hb-world w w2) (= (p3l w) true) (= (p3l w2) true))
   (intros h p) (simp only [hb-world] at h) (exact ((And.left h) p)))
 (a/theorem hbw-qinv [w :- World, w2 :- World] (=> (hb-world w w2) (= (qinv w) true) (= (qinv w2) true))
@@ -2061,16 +2070,16 @@
   (intros hs hw)
   (apply (sinv-put cells k (world-cell (cells k) w2) hs))
   (intro hl) (simp only [world-cell] at hl) (simp only [world-cell]) (exact (hw hl)))
-(a/theorem sinv-own [hb :- (hb-ops), cells :- (=> Nat Cell), k :- Nat, s :- Nat, m :- Nat]
+(a/theorem sinv-own [cells :- (=> Nat Cell), k :- Nat, s :- Nat, m :- Nat]
   (=> (sinv cells) (sinv (sys-own cells k s m)))
   (intro hs) (simp only [sys-own])
-  (exact (sinv-world-cell cells k _ hs (fn [hl :- (= (:live (cells k)) true)] (hbw-p3l _ _ (hb-own hb _ s m) (sinv-live cells k hs hl))))))
-(a/theorem sinv-owned-done [hb :- (hb-ops), cells :- (=> Nat Cell), k :- Nat, s :- Nat, c :- Nat]
+  (exact (sinv-world-cell cells k _ hs (fn [hl :- (= (:live (cells k)) true)] (hbw-p3l _ _ (hb-own _ s m) (sinv-live cells k hs hl))))))
+(a/theorem sinv-owned-done [cells :- (=> Nat Cell), k :- Nat, s :- Nat, c :- Nat]
   (=> (sinv cells) (sinv (sys-owned-done cells k s c)))
   (intro hs) (simp only [sys-owned-done])
   (exact (sinv-complete _ k (sinv-world-cell cells k _ hs
-           (fn [hl :- (= (:live (cells k)) true)] (hbw-p3l _ _ (hb-owned-done hb _ s c) (sinv-live cells k hs hl)))))))
-(a/theorem sinv-drain [hb :- (hb-ops), cells :- (=> Nat Cell), k :- Nat]
+           (fn [hl :- (= (:live (cells k)) true)] (hbw-p3l _ _ (hb-owned-done _ s c) (sinv-live cells k hs hl)))))))
+(a/theorem sinv-drain [cells :- (=> Nat Cell), k :- Nat]
   (=> (sinv cells) (sinv (sys-drain cells k)))
   (intro hs)
   (cases hu (:unborn (cells k)))
@@ -2080,7 +2089,7 @@
     (apply (sinv-complete _ k))
     (apply (sinv-put cells k (drain-cell (cells k)) hs))
     (intro hl) (simp only [drain-cell] at hl) (simp only [drain-cell])
-    (exact (hbw-p3l _ _ (hb-drain hb _ (:norm (cells k))) (sinv-live cells k hs hl)))))
+    (exact (hbw-p3l _ _ (hb-drain _ (:norm (cells k))) (sinv-live cells k hs hl)))))
 
 ;; ---- qsinv (with sinv: an unborn released cell's world stays released)
 (a/theorem cq-world [c :- Cell, c2 :- Cell]
@@ -2091,20 +2100,20 @@
   (cases hq)
   (case [inl a] (exact (Or.inl (And.intro (And.left a) (hbw-released _ _ hw hs (And.right a))))))
   (case [inr b] (exact (Or.inr (hbw-qinv _ _ hw b)))))
-(a/theorem qsinv-own [hb :- (hb-ops), cells :- (=> Nat Cell), k :- Nat, s :- Nat, m :- Nat]
+(a/theorem qsinv-own [cells :- (=> Nat Cell), k :- Nat, s :- Nat, m :- Nat]
   (=> (sinv cells) (qsinv cells) (qsinv (sys-own cells k s m)))
   (intros hs hq) (simp only [sys-own])
   (apply (qsinv-put cells k _ hq))
   (intro hl) (simp only [world-cell] at hl)
-  (exact (cq-world (cells k) (world-cell (cells k) (own-world (:world (cells k)) s m)) (sinv-live cells k hs hl) (qsinv-live cells k hq hl) (rfl) (hb-own hb _ s m))))
-(a/theorem qsinv-owned-done [hb :- (hb-ops), cells :- (=> Nat Cell), k :- Nat, s :- Nat, c :- Nat]
+  (exact (cq-world (cells k) (world-cell (cells k) (own-world (:world (cells k)) s m)) (sinv-live cells k hs hl) (qsinv-live cells k hq hl) (rfl) (hb-own _ s m))))
+(a/theorem qsinv-owned-done [cells :- (=> Nat Cell), k :- Nat, s :- Nat, c :- Nat]
   (=> (sinv cells) (qsinv cells) (qsinv (sys-owned-done cells k s c)))
   (intros hs hq) (simp only [sys-owned-done])
   (apply (qsinv-complete _ k))
   (apply (qsinv-put cells k _ hq))
   (intro hl) (simp only [world-cell] at hl)
-  (exact (cq-world (cells k) (world-cell (cells k) (owned-done-world (:world (cells k)) s c)) (sinv-live cells k hs hl) (qsinv-live cells k hq hl) (rfl) (hb-owned-done hb _ s c))))
-(a/theorem qsinv-drain [hb :- (hb-ops), cells :- (=> Nat Cell), k :- Nat]
+  (exact (cq-world (cells k) (world-cell (cells k) (owned-done-world (:world (cells k)) s c)) (sinv-live cells k hs hl) (qsinv-live cells k hq hl) (rfl) (hb-owned-done _ s c))))
+(a/theorem qsinv-drain [cells :- (=> Nat Cell), k :- Nat]
   (=> (sinv cells) (qsinv cells) (qsinv (sys-drain cells k)))
   (intros hs hq)
   (cases hu (:unborn (cells k)))
@@ -2114,7 +2123,7 @@
     (apply (qsinv-complete _ k))
     (apply (qsinv-put cells k _ hq))
     (intro hl) (simp only [drain-cell] at hl)
-    (exact (cq-world (cells k) (drain-cell (cells k)) (sinv-live cells k hs hl) (qsinv-live cells k hq hl) (rfl) (hb-drain hb _ (:norm (cells k)))))))
+    (exact (cq-world (cells k) (drain-cell (cells k)) (sinv-live cells k hs hl) (qsinv-live cells k hq hl) (rfl) (hb-drain _ (:norm (cells k)))))))
 
 ;; ---- cinv: own leaves a released world as it is; owned-done and the drain leave a world without markers (every
 ;; quiet world) as it is and keep a released one released (HB)
@@ -2122,24 +2131,24 @@
   (simp only [wq]) (apply And.intro)
   (intro h) (rw [(own-released w s m h)]) (exact h)
   (intro h) (rw [(own-released w s m (quiet-released w h))]) (exact h))
-(a/theorem wq-owned-done [hb :- (hb-ops), w :- World, s :- Nat, c :- Nat] (=> (= (p3l w) true) (wq w (owned-done-world w s c)))
+(a/theorem wq-owned-done [w :- World, s :- Nat, c :- Nat] (=> (= (p3l w) true) (wq w (owned-done-world w s c)))
   (intro hp) (simp only [wq]) (apply And.intro)
-  (intro h) (exact (hbw-released _ _ (hb-owned-done hb w s c) hp h))
+  (intro h) (exact (hbw-released _ _ (hb-owned-done w s c) hp h))
   (intro h) (rw [(owned-done-none w s c (quiet-forks-nil w h))]) (exact h))
-(a/theorem wq-drain [hb :- (hb-ops), w :- World, ids :- (List Nat)] (=> (= (p3l w) true) (wq w (drain-world w ids)))
+(a/theorem wq-drain [w :- World, ids :- (List Nat)] (=> (= (p3l w) true) (wq w (drain-world w ids)))
   (intro hp) (simp only [wq]) (apply And.intro)
-  (intro h) (exact (hbw-released _ _ (hb-drain hb w ids) hp h))
+  (intro h) (exact (hbw-released _ _ (hb-drain w ids) hp h))
   (intro h) (rw [(drain-none w ids (quiet-forks-nil w h))]) (exact h))
 (a/theorem cinv-own [cells :- (=> Nat Cell), k :- Nat, s :- Nat, m :- Nat]
   (=> (cinv cells) (cinv (sys-own cells k s m)))
   (intro hc) (simp only [sys-own])
   (exact (cinv-world cells k (world-cell (cells k) (own-world (:world (cells k)) s m)) hc (rfl) (rfl) (rfl) (rfl) (fn [hl :- (= (:live (cells k)) true)] (wq-own (:world (cells k)) s m)))))
-(a/theorem cinv-owned-done [hb :- (hb-ops), cells :- (=> Nat Cell), k :- Nat, s :- Nat, c :- Nat]
+(a/theorem cinv-owned-done [cells :- (=> Nat Cell), k :- Nat, s :- Nat, c :- Nat]
   (=> (sinv cells) (cinv cells) (cinv (sys-owned-done cells k s c)))
   (intros hs hc) (simp only [sys-owned-done])
   (exact (cinv-complete _ k (cinv-world cells k (world-cell (cells k) (owned-done-world (:world (cells k)) s c)) hc (rfl) (rfl) (rfl) (rfl)
-           (fn [hl :- (= (:live (cells k)) true)] (wq-owned-done hb (:world (cells k)) s c (sinv-live cells k hs hl)))))))
-(a/theorem cinv-drain [hb :- (hb-ops), cells :- (=> Nat Cell), k :- Nat]
+           (fn [hl :- (= (:live (cells k)) true)] (wq-owned-done (:world (cells k)) s c (sinv-live cells k hs hl)))))))
+(a/theorem cinv-drain [cells :- (=> Nat Cell), k :- Nat]
   (=> (sinv cells) (cinv cells) (cinv (sys-drain cells k)))
   (intros hs hc)
   (cases hu (:unborn (cells k)))
@@ -2147,7 +2156,7 @@
   (case [false]
     (simp only [sys-drain hu])
     (exact (cinv-complete _ k (cinv-world cells k (drain-cell (cells k)) hc (rfl) (rfl) (rfl) (rfl)
-             (fn [hl :- (= (:live (cells k)) true)] (wq-drain hb (:world (cells k)) (:norm (cells k)) (sinv-live cells k hs hl))))))))
+             (fn [hl :- (= (:live (cells k)) true)] (wq-drain (:world (cells k)) (:norm (cells k)) (sinv-live cells k hs hl))))))))
 
 ;; ---- jinv
 (a/theorem jinv-own [cells :- (=> Nat Cell), k :- Nat, s :- Nat, m :- Nat] (=> (jinv cells) (jinv (sys-own cells k s m)))
@@ -2169,3 +2178,15 @@
   (have r := (hc k hl hk))
   (simp only [complete-ready hu Bool.false_or Bool.and_eq_true] at r)
   (exact (And.right (And.right (And.right r)))))
+
+;; Theorem (normalization, layer 2): after the drain of a live born cell its world holds none of the inherited
+;; markers and nothing is left to drain
+(a/theorem sys-drain-clean [cells :- (=> Nat Cell), k :- Nat]
+  (=> (sinv cells) (= (:live (cells k)) true) (= (:unborn (cells k)) false)
+      (And (= (:norm ((sys-drain cells k) k)) (List.nil Nat))
+           (= (tbl-all (fork-out (:norm (cells k))) (:forks (:world ((sys-drain cells k) k)))) true)))
+  (intros hs hl hu)
+  (have c := (drain-clean (:world (cells k)) (:norm (cells k)) (sinv-live cells k hs hl)))
+  (cases hr (complete-ready (fupd cells k (drain-cell (cells k))) k))
+  (case [false] (simp only [sys-drain hu sys-complete hr fupd-same drain-cell true_and]) (exact c))
+  (case [true] (simp only [sys-drain hu sys-complete hr fupd-same complete-cell drain-cell true_and]) (exact c)))

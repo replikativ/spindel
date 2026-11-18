@@ -755,7 +755,7 @@
                 rr (when-let [r (:fork-run a)] (first (s/run-find w r)))
                 sc (when rr (en/cur-scope w rr))
                 wc (skip-to w c)
-                w1 (if (and owned? rr (ow/own-ok wc sc)) (ow/own-world wc sc c) (skip-to w (inc c)))
+                w1 (if (and owned? rr (en/own-ok wc sc)) (ow/own-world wc sc c) (skip-to w (inc c)))
                 ds (if proj (diff proj (world->proj w1)) [])
                 div? (or (< c (:next-id w)) (seq ds))]
             (recur (inc i) w1 (or proj prev)

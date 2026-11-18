@@ -87,6 +87,17 @@
     44  finally-leave st                       C1 the finally clause entered by the last
                                                             `finally-exit` ends (normally or by a
                                                             throw; engine `leave-finalizer!`) -
+    45  own s m                                C1c stage B: own-child!'s count at the `(fork)`
+                                                            effect (engine `[:fork r c]` in the parent;
+                                                            s = the forking run's `cur-scope`, m = the
+                                                            child cell); counted only when not released
+                                                            and s is open and not the root
+                                                            fork marker (id = the child world's)
+    46  owned-done s c                         C1c stage B: `[:owned-done s c]`, the marker c of
+                                                            scope s goes, then Z#18 at s -
+    47  drain ids                              C1c stage B: `[:normalize]`, the inherited markers
+                                                            ids (W-NORMALIZE) go, then Z#18 at their
+                                                            owners -
   A stream is created by T1 (`create-source(-top)` with kind `sk-stream`, spindel.v2.engine), which
   also allocates its first tail link (id = the stream's + 1).
   Indices 0-24 are unchanged; later items get the next indices.
@@ -228,7 +239,10 @@
   (link-realize [l Nat] [tag Nat] [v Nat] [n Nat])                 ; C0 the realizer's completion realizes l
   (append [x Nat] [v Nat] [t Nat])                                 ; C0 stream append (new tail t)
   (close [x Nat] [tag Nat] [v Nat])                                ; C0 stream close (end 0 / error 2)
-  (finally-leave [st Nat]))                                        ; C1 a finally clause ends (B8)
+  (finally-leave [st Nat])                                         ; C1 a finally clause ends (B8)
+  (own [s Nat] [m Nat])                                            ; C1c B: the owned-fork count ([:fork r c])
+  (owned-done [s Nat] [c Nat])                                     ; C1c B: [:owned-done s c]
+  (drain [ids (List Nat)]))                                        ; C1c B: [:normalize] (W-NORMALIZE)
 
 ;; ---- validity tokens (§2, V#5): one check per token kind
 
@@ -1365,7 +1379,10 @@
     [(link-realize l tag v n) (refuse w)]
     [(append x v t) (refuse w)]
     [(close x tag v) (refuse w)]
-    [(finally-leave st) (refuse w)]))
+    [(finally-leave st) (refuse w)]
+    [(own s m) (refuse w)]
+    [(owned-done s c) (refuse w)]
+    [(drain ids) (refuse w)]))
 
 ;; the item's validity token (§2), true for host operations that carry none
 (a/defn item-token-ok [w :- World, it :- Item] Bool
@@ -1414,7 +1431,10 @@
     [(link-realize l tag v n) true]
     [(append x v t) true]
     [(close x tag v) true]
-    [(finally-leave st) (run-tok-ok w st)]))
+    [(finally-leave st) (run-tok-ok w st)]
+    [(own s m) true]
+    [(owned-done s c) true]
+    [(drain ids) true]))
 
 (a/theorem dispatch-inv [w :- World, it :- Item]
   (=> (= (inv-sample w) true) (= (inv-sample (:world (dispatch w it))) true))

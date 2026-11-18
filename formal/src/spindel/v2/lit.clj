@@ -358,9 +358,9 @@
 
 (doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del
             inv-set-pins inv-resource-del inv-scope-del inv-cleanup-ins inv-act-upd
-            inv-edge-upd inv-drop-cred inv-drop-edges inv-comp-del-unref inv-comp-upd inv-drop-act]]
+            inv-edge-upd inv-drop-cred inv-drop-edges inv-comp-del-unref inv-comp-upd inv-drop-act inv-fork-del]]
   (prim! GL o nil))
-(doseq [o '[inv-source-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-comp-ins-fresh inv-act-ins-fresh]]
+(doseq [o '[inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-comp-ins-fresh inv-act-ins-fresh]]
   (prim! GL o (list 'gl-rest-bump (list (symbol (str/replace (subs (name o) 4) "-fresh" "")) 'w 'r)
                     (list 'Eq.trans '(rfl) 'R))))
 (prim! GL 'inv-bump '(gl-rest-bump w R))
@@ -1657,8 +1657,8 @@
 
 (doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del
             inv-set-pins inv-resource-del inv-scope-del inv-cleanup-ins inv-act-upd inv-edge-upd inv-run-upd inv-task-upd
-            inv-run-del inv-source-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-act-ins-fresh
-            inv-run-ins-fresh inv-task-ins-fresh inv-bump insert-edge-fresh-inv-sample]]
+            inv-run-del inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-act-ins-fresh
+            inv-run-ins-fresh inv-task-ins-fresh inv-bump insert-edge-fresh-inv-sample inv-fork-del]]
   (prim! CH o nil))
 (prim! CH 'inv-comp-upd '(Eq.trans (ch-eq-comp-upd-eq w x f hid cx) R))
 (prim! CH 'inv-drop-cred '(Eq.trans (ch-eq-drop-cred w a cx) R))
@@ -2574,9 +2574,9 @@
 ;; ---- the G9 copy
 
 (doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-task-upd inv-cleanup-upd inv-cleanup-del inv-set-pins inv-scope-del
-            inv-cleanup-ins inv-act-upd inv-edge-upd inv-drop-cred inv-drop-edges inv-comp-del-unref inv-comp-upd inv-drop-act]]
+            inv-cleanup-ins inv-act-upd inv-edge-upd inv-drop-cred inv-drop-edges inv-comp-del-unref inv-comp-upd inv-drop-act inv-fork-del]]
   (prim! G9 o nil))
-(doseq [o '[inv-source-ins-fresh inv-scope-ins-fresh inv-comp-ins-fresh inv-act-ins-fresh inv-task-ins-fresh]]
+(doseq [o '[inv-source-ins-fresh inv-fork-ins-fresh inv-scope-ins-fresh inv-comp-ins-fresh inv-act-ins-fresh inv-task-ins-fresh]]
   (prim! G9 o (list 'g9-rest-bump (list (symbol (str/replace (subs (name o) 4) "-fresh" "")) 'w 'r)
                     (list 'Eq.trans '(rfl) 'R))))
 (prim! G9 'inv-bump '(g9-rest-bump w R))

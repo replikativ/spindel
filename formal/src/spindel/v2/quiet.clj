@@ -71,8 +71,8 @@
 (doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-set-pins
             inv-resource-del inv-scope-del inv-cleanup-ins inv-act-upd inv-edge-upd inv-drop-cred inv-drop-edges
             inv-comp-del-unref inv-comp-upd inv-drop-act inv-task-upd inv-run-upd inv-run-ins-fresh inv-run-del
-            inv-source-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-comp-ins-fresh inv-act-ins-fresh
-            inv-task-ins-fresh inv-bump insert-edge-fresh-inv-sample inv-filter-world inv-set-pending-act]]
+            inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-comp-ins-fresh inv-act-ins-fresh
+            inv-task-ins-fresh inv-bump insert-edge-fresh-inv-sample inv-filter-world inv-set-pending-act inv-fork-del]]
   (prim! GR o nil))
 (prim! GR 'mark-edge-inv-sample '(Eq.trans (grel-rest-mark-edge rb w x) R))
 (prim! GR 'unmark-edge-inv-sample '(Eq.trans (grel-rest-unmark-edge rb w x) R))
@@ -509,7 +509,7 @@
 
 (doseq [o '[inv-scope-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-resource-del inv-scope-del
             inv-cleanup-ins inv-act-upd inv-run-upd inv-run-ins-fresh inv-run-del inv-resource-ins-fresh inv-scope-ins-fresh
-            inv-act-ins-fresh inv-bump]]
+            inv-act-ins-fresh inv-bump inv-fork-del inv-fork-ins-fresh]]
   (prim! GK o nil))
 (prim! GK 'inv-edge-upd '(gk-rest-edge-upd w x f hk hc R))
 (prim! GK 'mark-edge-inv-sample '(gk-rest-mark-edge w x R))

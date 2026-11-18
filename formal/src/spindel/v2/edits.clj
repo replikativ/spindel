@@ -885,6 +885,43 @@
 
 (deffilter)
 
+;; C1c stage B: the last id table (fork markers), with an empty rest
+(a/theorem nat-app-nil-r [xs :- (List Nat)] (= (nat-app xs (List.nil Nat)) xs)
+  (induction xs) (case [nil] (simp only [nat-app])) (case [cons h t ih] (simp only [nat-app ih])))
+(defmacro ^:private deffilter-last []
+  (let [k (dec (count id-tables))
+        [prefix field row :as t] (nth id-tables k)
+        P (app-chain (map ids-of (take k id-tables)))
+        R '(List.nil Nat)
+        idf (symbol (str prefix "-id"))
+        setter (symbol (str "set-" field))
+        kept (list 'tbl-filter 'q (list (keyword field) 'w))]
+    `(do
+       (a/theorem ~(symbol (str prefix "-filter-ids-ok")) [~'w :- ~'World, ~'q :- (~'=> ~row ~'Bool)]
+         (~'=> (~'= (~'ids-ok ~'w) true) (~'= (~'ids-ok (~setter ~'w ~kept)) true))
+         (~'intro ~'h)
+         (~'simp ~'only [~'ids-ok ~'ids-unique ~'ids-below ~'Bool.and_eq_true] ~'at ~'h)
+         (~'have ~'hold (~'= (~'all-ids ~'w) (~'nat-app ~P (~'nat-app ~(ids-of t) ~R))))
+         (~'simp ~'only [~'all-ids ~'nat-app-assoc ~'nat-app-nil-r])
+         (~'have ~'hnew (~'= (~'all-ids (~setter ~'w ~kept))
+                            (~'nat-app ~P (~'nat-app (~'tbl-ids ~idf ~kept) ~R))))
+         (~'simp ~'only [~'all-ids ~setter ~'nat-app-assoc ~'nat-app-nil-r])
+         (~'have ~'hnx (~'= (:next-id (~setter ~'w ~kept)) (:next-id ~'w)))
+         (~'rfl)
+         (~'rw [~'hold] ~'at ~'h)
+         (~'simp ~'only [~'ids-ok ~'ids-unique ~'ids-below ~'Bool.and_eq_true ~'hnew ~'hnx])
+         (~'exact (~'And.intro
+                   (~'filter-ids-nodup-mid ~row ~idf ~'q ~(list (keyword field) 'w) ~R ~P (~'And.left ~'h))
+                   (~'And.intro (~'And.left (~'And.right ~'h))
+                    (~'filter-ids-range-mid ~row ~idf ~'q (~'id-in-range (:next-id ~'w))
+                     ~(list (keyword field) 'w) ~R ~P (~'And.right (~'And.right ~'h)))))))
+       (a/theorem ~(symbol (str prefix "-del-ids-ok")) [~'w :- ~'World, ~'x :- ~'Nat]
+         (~'=> (~'= (~'ids-ok ~'w) true) (~'= (~'ids-ok (~(symbol (str prefix "-del")) ~'w ~'x)) true))
+         (~'intro ~'h)
+         (~'simp ~'only [~(symbol (str prefix "-del")) (~'tbl-del-filter ~row ~idf ~'x ~(list (keyword field) 'w))])
+         (~'exact (~(symbol (str prefix "-filter-ids-ok")) ~'w (~'id-ne ~idf ~'x) ~'h))))))
+(deffilter-last)
+
 (defmacro ^:private defupd-ids
   "For each id table: an update that keeps row ids keeps ids-ok (<p>-upd-ids-ok)."
   []
@@ -1321,6 +1358,25 @@
            (Eq.trans (pending-exact-bump (resource-ins w r)) (Eq.trans (pending-exact-resource-ins w r) (And.left hs)))
            (Eq.trans (edges-ref-ok-bump (resource-ins w r)) (resource-ins-edges-ref-ok w r (And.left (And.right hs))))
            (resource-ins-fresh-ids-ok w r hr (And.right (And.right hs))))))
+
+(a/theorem inv-fork-del [w :- World, x :- Nat]
+  (=> (= (inv-sample w) true) (= (inv-sample (fork-del w x)) true))
+  (intro h)
+  (have hs (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
+  (exact (inv-parts w h))
+  (exact (inv-intro (fork-del w x) (Eq.trans (pending-exact-fork-del w x) (And.left hs))
+           (Eq.trans (edges-ref-ok-fork-del w x) (And.left (And.right hs)))
+           (fork-del-ids-ok w x (And.right (And.right hs))))))
+
+(a/theorem inv-fork-ins-fresh [w :- World, r :- ForkRow]
+  (=> (= (fork-id r) (:next-id w)) (= (inv-sample w) true) (= (inv-sample (bump (fork-ins w r))) true))
+  (intros hr h)
+  (have hs (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
+  (exact (inv-parts w h))
+  (exact (inv-intro (bump (fork-ins w r))
+           (Eq.trans (pending-exact-bump (fork-ins w r)) (Eq.trans (pending-exact-fork-ins w r) (And.left hs)))
+           (Eq.trans (edges-ref-ok-bump (fork-ins w r)) (Eq.trans (edges-ref-ok-fork-ins w r) (And.left (And.right hs))))
+           (fork-ins-fresh-ids-ok w r hr (And.right (And.right hs))))))
 
 (a/theorem inv-remove-edge [w :- World, x :- Nat]
   (=> (= (inv-sample w) true) (= (inv-sample (remove-edge w x)) true))

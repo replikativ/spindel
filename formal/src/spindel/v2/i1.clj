@@ -434,11 +434,7 @@
         (case [inr d2] (exact (Or.inr (Or.inr (And.intro d2 d))))))))
   (exact (g1-intro _ i r)))
 
-(a/theorem open-at-has [w :- World, s :- Nat] (=> (= (scope-open-at w s) true) (= (scope-has w s) true))
-  (intro h)
-  (cases hf (scope-find w s))
-  (case [none] (simp only [scope-open-at hf] at h) (cases h))
-  (case [some sc] (exact (tbl-find-has ScopeRow scope-id s sc (:scopes w) hf))))
+;; open-at-has: engine.clj (C1c stage B)
 
 (a/theorem tsp-has [w :- World, owner :- Nat]
   (= (Bool.or (Nat.beq (task-scope-parent w owner) 0) (scope-has w (task-scope-parent w owner))) true)
@@ -469,8 +465,8 @@
        'inv-remove-if-empty 'g1-remove-if-empty 'inv-add-run-scope 'g1-add-run-scope)
 (doseq [o '[inv-run-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-task-upd inv-comp-upd
             inv-set-pins inv-resource-del inv-cleanup-ins inv-act-upd inv-edge-upd inv-drop-cred inv-drop-edges inv-drop-act
-            inv-comp-del-unref inv-run-del inv-bump inv-source-ins-fresh inv-resource-ins-fresh inv-act-ins-fresh inv-comp-ins-fresh
-            inv-task-ins-fresh insert-edge-fresh-inv-sample]]
+            inv-comp-del-unref inv-run-del inv-bump inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-act-ins-fresh inv-comp-ins-fresh
+            inv-task-ins-fresh insert-edge-fresh-inv-sample inv-fork-del]]
   (prim! G1 o nil))
 (a/theorem g1-rest-mark-edge [w :- World, x :- Nat] (= (g1-rest (mark-edge w x)) (g1-rest w))
   (cases hf (edge-find w x))

@@ -741,9 +741,9 @@
 (swap! (:renames VQ) assoc 'inv-parts 'vq-parts 'inv-comp-upd 'vq-comp-upd 'insert-edge-fresh-inv-sample 'vq-insert-edge-fresh
        'inv-insert-edge-checked 'vq-insert-edge-checked 'inv-comp-ins-fresh 'vq-comp-ins-fresh)
 (doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-set-pins
-            inv-resource-del inv-scope-del inv-cleanup-ins inv-act-upd inv-task-upd inv-run-upd inv-run-del]]
+            inv-resource-del inv-scope-del inv-cleanup-ins inv-act-upd inv-task-upd inv-run-upd inv-run-del inv-fork-del]]
   (prim! VQ o nil))
-(doseq [[o t] '[[inv-source-ins-fresh source-ins] [inv-resource-ins-fresh resource-ins] [inv-scope-ins-fresh scope-ins]
+(doseq [[o t] '[[inv-source-ins-fresh source-ins] [inv-fork-ins-fresh fork-ins] [inv-resource-ins-fresh resource-ins] [inv-scope-ins-fresh scope-ins]
                 [inv-act-ins-fresh act-ins] [inv-task-ins-fresh task-ins] [inv-run-ins-fresh run-ins]]]
   (prim! VQ o (list 'vq-rest-frame 'zq9 'zw9 'zs9 'w (list 'bump (list t 'w 'r)) '(cpres-refl (:comps w)) '(epres-refl (:edges w))
                     '(Nat.le_succ (:next-id w)) 'R)))
@@ -1406,7 +1406,7 @@
           {'inv-comp-upd ['(fn [c :- CompRow] (Eq.refl (ck14 c))) 5]}))
 (swap! (:renames VR) assoc 'inv-parts 'vr-parts 'inv-comp-upd 'vr-comp-upd)
 (doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-set-pins
-            inv-resource-del inv-scope-del inv-cleanup-ins inv-act-upd inv-task-upd inv-run-upd inv-run-del]]
+            inv-resource-del inv-scope-del inv-cleanup-ins inv-act-upd inv-task-upd inv-run-upd inv-run-del inv-fork-del]]
   (prim! VR o nil))
 (prim! VR 'inv-edge-upd '(vr-rest-wd zd9 zr9 w (edge-upd w x f) (wdom-edge-upd w x f hk hc hd) R))
 (prim! VR 'inv-remove-edge '(vr-rest-wd zd9 zr9 w (remove-edge w x) (wdom-remove-edge w x) R))

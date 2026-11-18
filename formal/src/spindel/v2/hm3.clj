@@ -1640,10 +1640,11 @@
        'inv-comp-upd 'h3-comp-upd-NONE 'inv-run-upd 'h3-run-upd-NONE 'inv-task-upd 'h3-task-upd-NONE
        'inv-act-upd 'h3-act-upd-NONE 'inv-edge-upd 'h3-edge-upd-NONE)
 (doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-set-pins
-            inv-resource-del inv-scope-del inv-cleanup-ins inv-set-released inv-set-pending-act]]
+            inv-resource-del inv-scope-del inv-cleanup-ins inv-set-released inv-set-pending-act inv-fork-del]]
   (prim! H3 o nil))
 (prim! H3 'inv-bump '(h3r-bump xm w (h3-db-of w (h3-sample xm w h0)) R))
 (prim! H3 'inv-source-ins-fresh '(h3r-bump xm (source-ins w r) (h3-db-of w (h3-sample xm w h1)) R))
+(prim! H3 'inv-fork-ins-fresh '(h3r-bump xm (fork-ins w r) (h3-db-of w (h3-sample xm w h1)) R))
 (prim! H3 'inv-resource-ins-fresh '(h3r-bump xm (resource-ins w r) (h3-db-of w (h3-sample xm w h1)) R))
 (prim! H3 'inv-scope-ins-fresh '(h3r-bump xm (scope-ins w r) (h3-db-of w (h3-sample xm w h1)) R))
 (prim! H3 'inv-run-ins-fresh '(h3r-run-ins xm w r h0 (h3-db-of w (h3-sample xm w h1)) R))

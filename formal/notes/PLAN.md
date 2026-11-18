@@ -1857,3 +1857,44 @@ engine follows this model. Mapping and questions 15-18 agreed with the engine se
   quiet world has no marker, so both leave it as it is; released stays released by HB), `jinv-own/-owned-done/-drain`,
   `complete-no-markers` (cinv: a live complete born cell has no marker: W-OWNED-N all zero and W-NORMALIZE drained).
 - Question 10 with markers needs no new proof: `complete-born-ledger` goes through `qh`, which now includes no marker.
+
+### Step 2b: the owned-fork operations as layer-1 items (HB discharged)
+- Engine session answers (2026-11-17, engine-v2 eea3112): `[:owned-done s c]` is an internal item (accepted after
+  release); `[:normalize]` is a commit at the start of the first turn of a born fork (run-turn!, activate!), not an
+  ingress item, unaffected by release; `[:fork r c]` is the forking run's effect in the parent; Rule R runs at every
+  commit; an unborn released instance completes without draining (E4, W-NORMALIZE kept: the model's unborn branch of
+  complete-ready needs no marker condition, no engine change). At layer 1 each is a world transition; the engine's
+  orders (queued / fast path) are layer-2 interleavings.
+- Model: step.clj items 45 `own s m`, 46 `owned-done s c`, 47 `drain ids` (internal: not host items; token true);
+  engine.clj `t-own` (own-ok moved here), `t-owned-done`, `t-drain` (each refused when it has nothing to do), with
+  `-inv`/`-refuse` and raw0/raw-inv/raw0-refuse/raw0-l4 arms. owned.clj `own-world`, `owned-done-world`,
+  `drain-world` are now `(:world (world-step w it))` (Rule R and the any-loser cancel included, as the engine's
+  commit!); `internal-refused` (a refused internal item leaves the world as it is) gives `owned-done-none`,
+  `drain-none`, `own-released`.
+- Primitives: edits.clj `inv-fork-del`, `inv-fork-ins-fresh`, `fork-del-ids-ok`/`fork-filter-ids-ok` (the last id
+  table, `deffilter-last`, `nat-app-nil-r`); engine.clj `inv-remove-empty-at`, `open-at-has` (moved from i1),
+  `own-ok-parts`. Every copier bundle: `inv-fork-del` a frame (gw: `gw-rest-fork-del`, esb: `esb-rest-fork-del`),
+  `inv-fork-ins-fresh` handled as `inv-source-ins-fresh` (or a frame next to `inv-resource-ins-fresh`); gw and esb
+  override `t-own-inv` (`t-own-gw`: the owner is not the root, own-ok; `t-own-esb` / `esb-fork-ins-own`: the
+  marker's id and owner are references); rank_step `rk-fork-*`; hm3 `h3r-bump` for fork-ins; i1r GR0 wraps
+  `inv-fork-del`, `inv-remove-empty-at` (used as values in `t-drain-inv`); acts' GA/GX prims; hm17's h3 assembly and
+  inv.clj's i10/i9 chains (`ra-of`: the three change neither runs nor activations). qworld `raw0-quiet` gains
+  `(:forks w) = nil` (from `qh-forks`): a quiet world refuses the three as well.
+- sys.clj: `hb-ops` and every hb premise removed; `hb-step` (step-p3l, step-qinv, step-released) gives `hb-own`,
+  `hb-owned-done`, `hb-drain`; `own-is-step`, `owned-done-is-step` (rfl). The step 2a theorems keep their statements
+  minus the premise.
+- REPL notes: tomb's `GY` is a `defonce` (unmap it before reloading tomb); the 1g REPL slot runs out of heap in i14
+  after several reloads (a 4g REPL via `jvm-slot.sh run` loads everything).
+
+### Step 3: normalization (spindel.v2.drained, sys.clj)
+- `drain-clean`: p3l w -> after `drain-world w ids` no marker has an id in ids (a refused drain: there was none).
+  The drain deletes them (`fold-del-out`: `nat-fold fork-del` leaves no fork with an id in the list); Z#18's removal,
+  the any-loser cancel and Rule R add no marker: the copier bundle `gnf ids` (`fork-out`: the id is not in ids;
+  frames, `gnf-rest-fork-del`, `gnf-rest-filter`, the edge edits), `lcopy!` of `inv-remove-empty-at`,
+  `nat-fold-inv`, `inv-cancel-losers`, `inv-normalize`; `gnf-rule-r` with `step-rule-r-safe` of the raw world.
+- `sys-drain-clean` (layer 2): sinv, a live born cell k -> after `sys-drain` its `norm` is empty and its world holds
+  none of the markers it inherited (W-NORMALIZE drained; a scope they kept is then removed by Z#18 if empty, or
+  kept by something else).
+- With `complete-no-markers` (a complete born world has no marker), `complete-born-ledger` (question 10 through qh,
+  which now has no marker) and step 2b, the stage B proof obligations listed in "Changed statements (model stage)"
+  are discharged.

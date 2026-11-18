@@ -435,7 +435,7 @@
        'inv-comp-ins-fresh 'grx-comp-ins 'inv-task-ins-fresh 'grx-task-ins 'inv-scope-ins-fresh 'grx-scope-ins
        'rpark* 'grx-run-park 'rtpark* 'grx-run-tick-park 'rwake* 'grx-run-wake 'rcancel* 'grx-res-cancel-row)
 (doseq [[n _] @@#'spindel.v2.lit/source-theorems] (patch! GRX n gr-patch))
-(doseq [o '[inv-pub-upd inv-source-upd inv-set-pins inv-act-upd inv-edge-upd inv-bump inv-source-ins-fresh inv-act-ins-fresh insert-edge-fresh-inv-sample]]
+(doseq [o '[inv-pub-upd inv-source-upd inv-set-pins inv-act-upd inv-edge-upd inv-bump inv-source-ins-fresh inv-fork-ins-fresh inv-act-ins-fresh insert-edge-fresh-inv-sample inv-fork-del]]
   (prim! GRX o nil))
 (prim! GRX 'inv-remove-edge '(grk-remove-edge x1r w x R))
 (prim! GRX 'mark-edge-inv-sample '(grk-mark-edge x1r w x R))
@@ -781,7 +781,8 @@
         nm (@#'spindel.v2.lit/copy-name GR0 n)
         gx (get @(:renames GRX) n)]
     (list 'a/theorem nm bs stmt2 (list 'exact (apply list gx '(List.nil Nat) (take-nth 3 bs))))))
-(def gr0-wrapped '[mark-edge-inv-sample inv-drop-act inv-fin-if-final inv-invalidate-id inv-res-cancel inv-close-source])
+(def gr0-wrapped '[mark-edge-inv-sample inv-drop-act inv-fin-if-final inv-invalidate-id inv-res-cancel inv-close-source
+                  inv-fork-del inv-remove-empty-at])
 (doseq [n gr0-wrapped :when (contains? @(:renames GRX) n)]
   (let [form (gr0-wrap-form n)]
     (binding [*ns* (the-ns 'spindel.v2.lit)] (eval form))
@@ -1098,8 +1099,8 @@
 (doseq [B [KRB NEB]]
   (doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-cleanup-ins inv-set-pins
               inv-resource-del inv-scope-del inv-act-upd inv-task-upd inv-comp-upd inv-bump inv-edge-upd inv-drop-cred inv-drop-act inv-drop-edges
-              inv-comp-del-unref inv-act-ins-fresh inv-task-ins-fresh inv-comp-ins-fresh inv-scope-ins-fresh inv-resource-ins-fresh inv-source-ins-fresh
-              insert-edge-fresh-inv-sample]]
+              inv-comp-del-unref inv-act-ins-fresh inv-task-ins-fresh inv-comp-ins-fresh inv-scope-ins-fresh inv-resource-ins-fresh inv-source-ins-fresh inv-fork-ins-fresh
+              insert-edge-fresh-inv-sample inv-fork-del]]
     (prim! B o nil)))
 (prim! KRB 'inv-remove-edge '(krb-runs-eq k2r w (remove-edge w x) (runs-remove-edge w x) R))
 (prim! KRB 'mark-edge-inv-sample '(krb-runs-eq k2r w (mark-edge w x) (runs-mark-edge w x) R))

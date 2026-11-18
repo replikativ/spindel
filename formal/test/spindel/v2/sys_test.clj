@@ -28,8 +28,10 @@
     jinv-instantiate deliver-pending sinv-join sinv-deliver sinv-withdraw qsinv-join qsinv-deliver qsinv-withdraw
     cinv-join cinv-deliver cinv-withdraw once-deliver once-withdraw once-complete once-join final-stays
     complete-born-ledger born-complete-delivered born-abandon-none
-    ;; C1c stage B, proof stage (under HB)
-    owned-done-none drain-none own-released
+    ;; C1c stage B, proof stage (HB discharged: the three are layer-1 items)
+    owned-done-none drain-none own-released internal-refused hb-step hb-own hb-owned-done hb-drain own-is-step owned-done-is-step
+    drain-clean sys-drain-clean fold-del-out gnf-rule-r
+    t-own-inv t-owned-done-inv t-drain-inv t-own-gw t-own-esb inv-fork-del inv-fork-ins-fresh fork-del-ids-ok
     sinv-own sinv-owned-done sinv-drain qsinv-own qsinv-owned-done qsinv-drain cinv-own cinv-owned-done cinv-drain
     jinv-own jinv-owned-done jinv-drain complete-no-markers])
 

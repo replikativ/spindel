@@ -204,6 +204,30 @@
 (prim! GW 'inv-scope-del '(gw-rest-scope-del w x R))
 (prim! GW 'inv-filter-world '(gw-rest-filter w K R))
 
+;; C1c stage B: a marker goes (fk-ok kept); own adds one whose owner is not the root scope (own-ok)
+(a/theorem gw-rest-fork-del [w :- World, x :- Nat] (=> (= (gw-rest w) true) (= (gw-rest (fork-del w x)) true))
+  (intro h)
+  (simp only [gw-rest gwk Bool.and_eq_true] at h)
+  (have a (= (tbl-all fk-ok (tbl-del fork-id x (:forks w))) true))
+  (exact (tbl-all-del ForkRow fork-id x _ _ (fn [f :- ForkRow, p :- (= (fk-ok f) true), q :- (= (Nat.beq (fork-id f) x) false)] p) _ (And.left (And.right (And.right h)))))
+  (simp only [gw-rest gwk fork-del set-forks a (And.left h) (And.left (And.right h)) (And.right (And.right (And.right h))) Bool.and_self]))
+(prim! GW 'inv-fork-del '(gw-rest-fork-del w x R))
+(override! GW 't-own-inv '[]
+  '(a/theorem t-own-gw [w :- World, s :- Nat, m :- Nat]
+     (=> (= (gw w) true) (= (gw (:world (t-own w s m))) true))
+     (intro h)
+     (cases ho (own-ok w s))
+     (case [false] (simp only [t-own ho refuse]) (exact h))
+     (case [true]
+       (simp only [t-own ho accept])
+       (have o := (own-ok-parts w s ho))
+       (have f1 (= (fk-ok (ForkRow.mk (:next-id w) m s)) true)) (simp only [fk-ok ne2 (And.left (And.right o)) Bool.not_false])
+       (have h0 := (gw-rest-of w h)) (simp only [gw-rest gwk Bool.and_eq_true] at h0)
+       (have r1 (= (gw-rest (fork-ins w (ForkRow.mk (:next-id w) m s))) true))
+       (simp only [gw-rest gwk fork-ins set-forks tbl-ins tbl-all f1 (And.left h0) (And.left (And.right h0))
+                   (And.left (And.right (And.right h0))) (And.right (And.right (And.right h0))) Bool.and_self Bool.true_and])
+       (exact (gw-intro _ (inv-fork-ins-fresh w (ForkRow.mk (:next-id w) m s) (rfl) (gw-sample w h)) (gw-rest-bump _ r1))))))
+
 ;; T4/T5/T11: the new run's scope is next-id + 1 (> 2), a run scope
 (a/theorem gw-add-run-scope-o [w :- World, of :- Nat, epoch :- Nat, parent :- Nat, ei :- Nat]
   (=> (= (gw w) true) (= (gw (add-run-scope w of epoch parent ei)) true))

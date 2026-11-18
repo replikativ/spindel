@@ -948,7 +948,7 @@
        'inv-bump 'g8-bump 'inv-filter-world 'g8-filter-world)
 (doseq [o '[inv-pub-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-cleanup-ins inv-set-pins inv-resource-del
             inv-act-upd inv-comp-upd inv-edge-upd inv-drop-cred inv-drop-act inv-drop-edges inv-comp-del-unref
-            inv-act-ins-fresh inv-comp-ins-fresh inv-resource-ins-fresh insert-edge-fresh-inv-sample]]
+            inv-act-ins-fresh inv-comp-ins-fresh inv-resource-ins-fresh insert-edge-fresh-inv-sample inv-fork-del inv-fork-ins-fresh]]
   (prim! G8 o nil))
 (prim! G8 'mark-edge-inv-sample '(Eq.trans (g8-rest-mark-edge x8s w x) R))
 (prim! G8 'unmark-edge-inv-sample '(Eq.trans (g8-rest-unmark-edge x8s w x) R))
@@ -1846,7 +1846,7 @@
 (doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-cleanup-ins inv-set-pins
             inv-resource-del inv-scope-del inv-act-upd inv-task-upd inv-comp-upd inv-bump inv-edge-upd inv-drop-cred inv-drop-act
             inv-drop-edges inv-comp-del-unref inv-act-ins-fresh inv-task-ins-fresh inv-comp-ins-fresh inv-scope-ins-fresh
-            inv-resource-ins-fresh inv-source-ins-fresh insert-edge-fresh-inv-sample]]
+            inv-resource-ins-fresh inv-source-ins-fresh inv-fork-ins-fresh insert-edge-fresh-inv-sample inv-fork-del]]
   (prim! KA o nil))
 (a/theorem ka-rest-same [k8a :- Nat, w :- World, w2 :- World] (=> (= (:runs w2) (:runs w)) (= (ka-rest k8a w2) (ka-rest k8a w)))
   (intro e) (simp only [ka-rest e]))

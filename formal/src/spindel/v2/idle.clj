@@ -635,7 +635,7 @@
 
 (doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del
             inv-set-pins inv-resource-del inv-scope-del inv-cleanup-ins inv-act-upd inv-task-upd
-            inv-source-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-act-ins-fresh inv-task-ins-fresh inv-bump]]
+            inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-act-ins-fresh inv-task-ins-fresh inv-bump inv-fork-del]]
   (prim! G7 o nil))
 (prim! G7 'inv-edge-upd '(g7-rest-edge-upd w x f hk hc hm R))
 (prim! G7 'inv-drop-cred '(g7-rest-drop-cred w a R))
@@ -1213,8 +1213,8 @@
 
 (doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del
             inv-set-pins inv-resource-del inv-scope-del inv-cleanup-ins inv-act-upd inv-task-upd inv-edge-upd
-            inv-source-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-act-ins-fresh inv-task-ins-fresh inv-bump
-            insert-edge-fresh-inv-sample]]
+            inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-act-ins-fresh inv-task-ins-fresh inv-bump
+            insert-edge-fresh-inv-sample inv-fork-del]]
   (prim! AWO o nil))
 (prim! AWO 'inv-drop-cred '(awo-rest-comps awc awr w (drop-cred-edges w a) (fn [a1 :- (= (awake (:comps w) awc) true)] (awake-pending a (comp-set-pending 0) (fn [c :- CompRow] (Eq.refl (comp-id c))) (fn [c :- CompRow] (Eq.refl (ck7 c))) _ awc a1)) (rfl) R))
 (prim! AWO 'inv-drop-act '(awo-rest-comps awc awr w (drop-act w a) (fn [a1 :- (= (awake (:comps w) awc) true)] (awake-pending a (comp-set-pending 0) (fn [c :- CompRow] (Eq.refl (comp-id c))) (fn [c :- CompRow] (Eq.refl (ck7 c))) _ awc a1)) (rfl) R))
@@ -1595,9 +1595,9 @@
 (swap! (:renames KDB) assoc 'inv-parts 'kdb-parts 'inv-run-upd 'kdb-run-upd 'inv-run-del 'kdb-run-del)
 (doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del
             inv-set-pins inv-resource-del inv-scope-del inv-cleanup-ins inv-act-upd inv-task-upd inv-edge-upd
-            inv-source-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-act-ins-fresh inv-task-ins-fresh inv-bump
+            inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-act-ins-fresh inv-task-ins-fresh inv-bump
             insert-edge-fresh-inv-sample inv-drop-cred inv-drop-act inv-drop-edges inv-comp-del-unref
-            inv-comp-upd inv-comp-ins-fresh]]
+            inv-comp-upd inv-comp-ins-fresh inv-fork-del]]
   (prim! KDB o nil))
 (a/theorem kdb-rest-runs [kc0 :- Nat, kl0 :- (List Nat), kd0 :- (List Nat), w2 :- World, w :- World]
   (=> (= (:runs w2) (:runs w)) (= (kdb-rest kc0 kl0 kd0 w2) (kdb-rest kc0 kl0 kd0 w)))
@@ -2060,8 +2060,8 @@
 (swap! (:renames EDB) assoc 'inv-parts 'edb-parts)
 (doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del
             inv-set-pins inv-resource-del inv-scope-del inv-cleanup-ins inv-act-upd inv-task-upd inv-run-upd inv-run-del
-            inv-source-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-act-ins-fresh inv-task-ins-fresh inv-bump
-            inv-comp-upd inv-comp-ins-fresh]]
+            inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-act-ins-fresh inv-task-ins-fresh inv-bump
+            inv-comp-upd inv-comp-ins-fresh inv-fork-del]]
   (prim! EDB o nil))
 (prim! EDB 'inv-edge-upd '(edb-rest-edge-upd kc0 w x f hk hc R))
 (prim! EDB 'inv-remove-edge '(edb-rest-remove-edge kc0 w x R))

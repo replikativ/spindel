@@ -544,9 +544,9 @@
 
 (doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-set-pins
             inv-resource-del inv-scope-del inv-cleanup-ins inv-act-upd inv-edge-upd inv-drop-cred inv-drop-edges
-            inv-comp-del-unref inv-comp-upd inv-drop-act inv-task-upd]]
+            inv-comp-del-unref inv-comp-upd inv-drop-act inv-task-upd inv-fork-del]]
   (prim! MB o nil))
-(doseq [o '[inv-source-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-comp-ins-fresh inv-act-ins-fresh inv-task-ins-fresh]]
+(doseq [o '[inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-comp-ins-fresh inv-act-ins-fresh inv-task-ins-fresh]]
   (prim! MB o (list 'mb-rest-bump 'mux 'mf 'mz 'mg (list (symbol (str/replace (subs (name o) 4) "-fresh" "")) 'w 'r)
                     (list 'Eq.trans '(rfl) 'R))))
 (prim! MB 'inv-bump '(mb-rest-bump mux mf mz mg w R))

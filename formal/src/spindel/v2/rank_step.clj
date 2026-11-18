@@ -578,6 +578,8 @@
   inv-run-del rk-run-del nil
   inv-resource-del rk-resource-del nil
   inv-source-ins-fresh rk-source-ins-fresh nil
+  inv-fork-ins-fresh rk-fork-ins-fresh nil
+  inv-fork-del rk-fork-del nil
   inv-resource-ins-fresh rk-resource-ins-fresh nil
   inv-scope-ins-fresh rk-scope-ins-fresh nil
   inv-run-ins-fresh rk-run-ins-fresh nil
