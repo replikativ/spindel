@@ -226,7 +226,7 @@
        'inv-comp-upd 'fb-comp-upd-NONE 'inv-run-upd 'fb-run-upd-NONE 'inv-act-upd 'fb-act-upd-NONE
        'inv-filter-world 'fb-filter-world-NONE 'inv-act-ins-fresh 'fb-act-ins-NONE)
 (doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-set-pins
-            inv-resource-del inv-scope-del inv-cleanup-ins inv-set-released inv-set-pending-act]]
+            inv-resource-del inv-scope-del inv-cleanup-ins inv-set-released inv-set-pending-act inv-fork-del]]
   (prim! FB o nil))
 (prim! FB 'inv-run-del '(fb-move zl zf zd zs w (run-del w x) (fb-fm-run-del w x) (fb-er zl zf zd zs w R) R))
 (prim! FB 'inv-comp-del-unref '(fb-move zl zf zd zs w (comp-del w x) (fb-fm-comp-del w x) (fb-er zl zf zd zs w R) R))

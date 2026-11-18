@@ -433,7 +433,7 @@
        'inv-filter-world 'g5-filter-world 'inv-edge-set-phase 'g5-edge-set-phase)
 (doseq [o '[inv-scope-upd inv-pub-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-cleanup-ins inv-set-pins
             inv-resource-del inv-scope-del inv-act-upd inv-run-upd inv-run-del inv-act-ins-fresh inv-scope-ins-fresh
-            inv-resource-ins-fresh inv-run-ins-fresh inv-bump inv-comp-upd inv-comp-ins-fresh inv-comp-del-unref]]
+            inv-resource-ins-fresh inv-run-ins-fresh inv-bump inv-comp-upd inv-comp-ins-fresh inv-comp-del-unref inv-fork-del inv-fork-ins-fresh]]
   (prim! G5 o nil))
 (prim! G5 'inv-remove-edge '(g5r-remove-edge x5d w x R))
 (prim! G5 'mark-edge-inv-sample '(g5r-mark-edge x5d w x R))

@@ -524,7 +524,7 @@
        'inv-add-run-scope 'gcy-add-run-scope)
 (doseq [o '[inv-run-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-task-upd inv-comp-upd
             inv-set-pins inv-resource-del inv-cleanup-ins inv-act-upd inv-edge-upd inv-drop-cred inv-drop-edges inv-drop-act
-            inv-comp-del-unref inv-run-del]]
+            inv-comp-del-unref inv-run-del inv-fork-del]]
   (prim! GCY o nil))
 (a/theorem gcy-rest-mark-edge [w :- World, x :- Nat] (= (gcy-rest (mark-edge w x)) (gcy-rest w))
   (cases hf (edge-find w x))
@@ -541,7 +541,7 @@
 (prim! GCY 'mark-edge-inv-sample '(Eq.trans (gcy-rest-mark-edge w x) R))
 (prim! GCY 'unmark-edge-inv-sample '(Eq.trans (gcy-rest-unmark-edge w x) R))
 (prim! GCY 'inv-remove-edge '(Eq.trans (gcy-rest-remove-edge w x) R))
-(doseq [o '[inv-source-ins-fresh inv-resource-ins-fresh inv-act-ins-fresh inv-comp-ins-fresh inv-task-ins-fresh]]
+(doseq [o '[inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-act-ins-fresh inv-comp-ins-fresh inv-task-ins-fresh]]
   (prim! GCY o (list 'gcy-rest-bump (list (symbol (str/replace (subs (name o) 4) "-fresh" "")) 'w 'r) (list 'Eq.trans '(rfl) 'R))))
 (prim! GCY 'inv-bump '(gcy-rest-bump w R))
 (prim! GCY 'insert-edge-fresh-inv-sample '(gcy-rest-bump (insert-edge w (edge-set-id (:next-id w) e)) (Eq.trans (rfl) R)))

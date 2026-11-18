@@ -128,7 +128,8 @@
 (doseq [t '[t1-full-inv t1-top-inv t19-inv t20-pin-inv t20-unpin-inv t3-inv t3-top-inv t4-inv t4-top-inv t5-inv sched-inv
             t-handle-new-inv t-post-inv t-release-inv t-finalize-inv t-open-scope-inv t-detach-inv t-finally-enter-inv
             t-finally-exit-inv t-finally-leave-inv
-            t1-body-inv t1-top-full-inv t-create-link-inv t-create-link-top-inv t-link-demand-inv c0-gate-inv]]
+            t1-body-inv t1-top-full-inv t-create-link-inv t-create-link-top-inv t-link-demand-inv c0-gate-inv
+            t-own-inv t-owned-done-inv t-drain-inv]]
   (lcopy! H3 t))
 
 ;; ---- C0: a link's realization, an append, a stream close (hmk: the realized link / closed stream is a source)
@@ -285,7 +286,10 @@
     (case [true] (simp only [hr refuse]) (exact h))
     (case [false] (simp only [hr]) (exact (c0-gate-h3 xm w _ _ h (h17-t-append xm (List.nil Nat) w x v t hk h)))))
   (case [close x tag v] (simp only [raw0]) (exact (h17-t-close xm (List.nil Nat) w _ _ _ hk h)))
-  (case [finally-leave st] (simp only [raw0]) (exact (t-finally-leave-h3 xm w _ h))))
+  (case [finally-leave st] (simp only [raw0]) (exact (t-finally-leave-h3 xm w _ h)))
+  (case [own s m] (simp only [raw0]) (exact (t-own-h3 xm w _ _ h)))
+  (case [owned-done s c] (simp only [raw0]) (exact (t-owned-done-h3 xm w _ _ h)))
+  (case [drain ids] (simp only [raw0]) (exact (t-drain-h3 xm w _ h))))
 
 (a/theorem h17-raw-h3 [xm :- (List Nat), w :- World, it :- Item]
   (=> (= (p3la w) true) (= (h3 xm w) true) (= (h3 xm (:world (raw w it))) true))

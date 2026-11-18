@@ -269,9 +269,9 @@
 (swap! (:renames KC) assoc 'inv-parts 'kc-parts)
 (doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-set-pins
             inv-resource-del inv-scope-del inv-cleanup-ins inv-act-upd inv-task-upd inv-run-upd inv-run-del inv-comp-upd
-            inv-comp-del-unref]]
+            inv-comp-del-unref inv-fork-del]]
   (prim! KC o nil))
-(doseq [[o w2] '[[inv-source-ins-fresh (bump (source-ins w r))] [inv-resource-ins-fresh (bump (resource-ins w r))]
+(doseq [[o w2] '[[inv-source-ins-fresh (bump (source-ins w r))] [inv-fork-ins-fresh (bump (fork-ins w r))] [inv-resource-ins-fresh (bump (resource-ins w r))]
                  [inv-scope-ins-fresh (bump (scope-ins w r))] [inv-act-ins-fresh (bump (act-ins w r))]
                  [inv-task-ins-fresh (bump (task-ins w r))] [inv-comp-ins-fresh (bump (comp-ins w r))]
                  [inv-run-ins-fresh (bump (run-ins w r))] [inv-bump (bump w)]]]

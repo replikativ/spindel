@@ -3097,6 +3097,82 @@
 ;; Part G. The step: raw transition (every item), then Rule R
 ;; ===========================================================================
 
+;; ---- C1c stage B (spindel.v2.owned): the owned-fork items 45-47. `own` is own-child!'s count in the parent at
+;; the `(fork)` effect (engine `[:fork r c]`; s the forking run's `cur-scope`, m the child cell): counted only when
+;; the world is not released and s is open and not the root (question 18a), a fork marker with the parent's fresh
+;; id. `owned-done` (`[:owned-done s c]`): the marker c of s goes, then Z#18 at s. `drain` (`[:normalize]`): the
+;; inherited markers ids (W-NORMALIZE) go, then Z#18 at each owner. Each is refused when it has nothing to do (no
+;; count; no such marker; none of ids present). Internal: accepted after release; Rule R follows (`finish`).
+(a/defn own-ok [w :- World, s :- Nat] Bool
+  (Bool.and (Bool.not (:released w)) (Bool.and (Bool.not (Nat.beq s root-scope-id)) (scope-open-at w s))))
+(a/defn t-own [w :- World, s :- Nat, m :- Nat] Outcome
+  (if (own-ok w s) (accept (bump (fork-ins w (ForkRow.mk (:next-id w) m s)))) (refuse w)))
+(a/defn marker-of [s :- Nat, c :- Nat, f :- ForkRow] Bool (Bool.and (Nat.beq (:id f) c) (Nat.beq (:owner f) s)))
+(a/defn t-owned-done [w :- World, s :- Nat, c :- Nat] Outcome
+  (if (tbl-any (marker-of s c) (:forks w)) (accept (remove-empty-at (fork-del w c) s)) (refuse w)))
+(a/defn fork-in [ids :- (List Nat), f :- ForkRow] Bool (reach-mem (:id f) ids))
+(a/defn owners-in [ids :- (List Nat), fs :- (List ForkRow)] (List Nat)
+  (match fs [nil (List.nil Nat)]
+         [(cons h t) (if (reach-mem (:id h) ids) (List.cons Nat (:owner h) (owners-in ids t)) (owners-in ids t))]))
+(a/defn t-drain [w :- World, ids :- (List Nat)] Outcome
+  (if (tbl-any (fork-in ids) (:forks w))
+      (accept (nat-fold remove-empty-at (nat-fold fork-del w ids) (owners-in ids (:forks w))))
+      (refuse w)))
+
+(a/theorem open-at-has [w :- World, s :- Nat] (=> (= (scope-open-at w s) true) (= (tbl-has scope-id s (:scopes w)) true))
+  (intro h)
+  (cases hf (scope-find w s))
+  (case [none] (simp [scope-open-at hf] at h))
+  (case [some sc] (exact (tbl-find-has ScopeRow scope-id s sc (:scopes w) hf))))
+(a/theorem own-ok-parts [w :- World, s :- Nat]
+  (=> (= (own-ok w s) true)
+      (And (= (:released w) false) (And (= (Nat.beq s 2) false) (= (tbl-has scope-id s (:scopes w)) true))))
+  (intro h)
+  (simp only [own-ok root-scope-id Bool.and_eq_true] at h)
+  (exact (And.intro (bnot-true _ (And.left h)) (And.intro (bnot-true _ (And.left (And.right h))) (open-at-has w s (And.right (And.right h)))))))
+(a/theorem inv-remove-empty-at [w :- World, o :- Nat]
+  (=> (= (inv-sample w) true) (= (inv-sample (remove-empty-at w o)) true))
+  (intro h) (simp only [remove-empty-at]) (exact (inv-remove-if-empty w (scope-subtree w o) h)))
+(a/theorem t-own-inv [w :- World, s :- Nat, m :- Nat]
+  (=> (= (inv-sample w) true) (= (inv-sample (:world (t-own w s m))) true))
+  (intro h)
+  (cases ho (own-ok w s))
+  (case [false] (simp only [t-own ho refuse]) (exact h))
+  (case [true] (simp only [t-own ho accept]) (exact (inv-fork-ins-fresh w (ForkRow.mk (:next-id w) m s) (rfl) h))))
+(a/theorem t-own-refuse [w :- World, s :- Nat, m :- Nat]
+  (=> (= (:accepted (t-own w s m)) false) (= (:world (t-own w s m)) w))
+  (intro ha)
+  (cases ho (own-ok w s))
+  (case [false] (simp only [t-own ho refuse]))
+  (case [true] (simp [t-own ho accept] at ha)))
+(a/theorem t-owned-done-inv [w :- World, s :- Nat, c :- Nat]
+  (=> (= (inv-sample w) true) (= (inv-sample (:world (t-owned-done w s c))) true))
+  (intro h)
+  (cases hm (tbl-any (marker-of s c) (:forks w)))
+  (case [false] (simp only [t-owned-done hm refuse]) (exact h))
+  (case [true] (simp only [t-owned-done hm accept]) (exact (inv-remove-empty-at (fork-del w c) s (inv-fork-del w c h)))))
+(a/theorem t-owned-done-refuse [w :- World, s :- Nat, c :- Nat]
+  (=> (= (:accepted (t-owned-done w s c)) false) (= (:world (t-owned-done w s c)) w))
+  (intro ha)
+  (cases hm (tbl-any (marker-of s c) (:forks w)))
+  (case [false] (simp only [t-owned-done hm refuse]))
+  (case [true] (simp [t-owned-done hm accept] at ha)))
+(a/theorem t-drain-inv [w :- World, ids :- (List Nat)]
+  (=> (= (inv-sample w) true) (= (inv-sample (:world (t-drain w ids))) true))
+  (intro h)
+  (cases hm (tbl-any (fork-in ids) (:forks w)))
+  (case [false] (simp only [t-drain hm refuse]) (exact h))
+  (case [true]
+    (simp only [t-drain hm accept])
+    (exact (nat-fold-inv remove-empty-at inv-remove-empty-at (owners-in ids (:forks w)) (nat-fold fork-del w ids)
+             (nat-fold-inv fork-del inv-fork-del ids w h)))))
+(a/theorem t-drain-refuse [w :- World, ids :- (List Nat)]
+  (=> (= (:accepted (t-drain w ids)) false) (= (:world (t-drain w ids)) w))
+  (intro ha)
+  (cases hm (tbl-any (fork-in ids) (:forks w)))
+  (case [false] (simp only [t-drain hm refuse]))
+  (case [true] (simp [t-drain hm accept] at ha)))
+
 (a/defn raw0 [w :- World, it :- Item] Outcome
   (match it
     [(create-source st kind v fresh) (if (body-shut w st) (refuse w) (c0-gate w (Nat.beq kind sk-stream) (t1-body w st kind v fresh)))]
@@ -3143,7 +3219,10 @@
     [(link-realize l tag v n) (if (root-shut w) (refuse w) (c0-gate w true (t-link-realize w l tag v n)))]
     [(append x v t) (if (root-shut w) (refuse w) (c0-gate w true (t-append w x v t)))]
     [(close x tag v) (t-close w x tag v)]
-    [(finally-leave st) (t-finally-leave w st)]))
+    [(finally-leave st) (t-finally-leave w st)]
+    [(own s m) (t-own w s m)]
+    [(owned-done s c) (t-owned-done w s c)]
+    [(drain ids) (t-drain w ids)]))
 
 ;; Z#56 (T21): a released world refuses the HOST's admissions (top-level creations, writes, observe,
 ;; pins, handles, host waits, source operations, cancel, close, detach), except while a run holds the
@@ -3196,7 +3275,10 @@
     [(link-realize l tag v n) false]
     [(append x v t) true]
     [(close x tag v) true]
-    [(finally-leave st) false]))
+    [(finally-leave st) false]
+    [(own s m) false]
+    [(owned-done s c) false]
+    [(drain ids) false]))
 (a/defn slice-held [w :- World] Bool (tbl-any run-slice (:runs w)))
 (a/defn host-shut [w :- World, it :- Item] Bool
   (Bool.and (:released w) (Bool.and (host-item it) (Bool.not (slice-held w)))))
@@ -3302,7 +3384,10 @@
   (simp only [hc]) (exact (c0-gate-inv w _ _ h (t-append-inv w x v t h)))
   (simp only [hc refuse]) (exact h)
   (exact (t-close-inv w _ _ _ h))
-  (exact (t-finally-leave-inv w _ h)))
+  (exact (t-finally-leave-inv w _ h))
+  (exact (t-own-inv w _ _ h))
+  (exact (t-owned-done-inv w _ _ h))
+  (exact (t-drain-inv w _ h)))
 
 (a/theorem raw0-refuse [w :- World, it :- Item]
   (=> (= (:accepted (raw0 w it)) false) (= (:world (raw0 w it)) w))
@@ -3394,7 +3479,10 @@
   (simp only [hc] at ha) (simp only [hc]) (exact (c0-gate-refuse w _ _ ha (t-append-refuse w x v t)))
   (simp only [hc refuse])
   (exact (t-close-refuse w _ _ _ ha))
-  (exact (t-finally-leave-refuse w _ ha)))
+  (exact (t-finally-leave-refuse w _ ha))
+  (exact (t-own-refuse w _ _ ha))
+  (exact (t-owned-done-refuse w _ _ ha))
+  (exact (t-drain-refuse w _ ha)))
 
 (a/theorem inv-cancel-losers [w0 :- World, w1 :- World]
   (=> (= (inv-sample w1) true) (= (inv-sample (cancel-losers w0 w1)) true))
@@ -3499,7 +3587,8 @@
   (simp [item-token-ok] at hg)
   (simp [item-token-ok] at hg)
   (simp [item-token-ok] at hg)
-  (simp only [raw0 t-finally-leave (run-tok-none w _ hg) refuse]))
+  (simp only [raw0 t-finally-leave (run-tok-none w _ hg) refuse])
+  (all_goals (simp [item-token-ok] at hg)))
 
 (a/theorem raw-l4 [w :- World, it :- Item]
   (=> (= (raw-token-ok w it) false) (= (:accepted (raw w it)) false))

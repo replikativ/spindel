@@ -153,7 +153,7 @@
 (doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del
             inv-set-pins inv-resource-del inv-scope-del inv-cleanup-ins inv-act-upd inv-task-upd inv-run-upd inv-run-del
             inv-comp-upd inv-comp-del-unref inv-comp-ins-fresh inv-run-ins-fresh
-            inv-source-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-act-ins-fresh inv-task-ins-fresh inv-bump]]
+            inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-act-ins-fresh inv-task-ins-fresh inv-bump inv-fork-del]]
   (prim! MDB o nil))
 (prim! MDB 'inv-edge-upd '(ep-edge-upd marked-dep w x f (md-pres f hk hm) R))
 (prim! MDB 'inv-remove-edge '(ep-remove-edge marked-dep w x R))
@@ -169,7 +169,7 @@
 (doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del
             inv-set-pins inv-resource-del inv-scope-del inv-cleanup-ins inv-act-upd inv-task-upd inv-run-upd inv-run-del
             inv-comp-upd inv-comp-del-unref inv-comp-ins-fresh inv-run-ins-fresh
-            inv-source-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-act-ins-fresh inv-task-ins-fresh inv-bump]]
+            inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-act-ins-fresh inv-task-ins-fresh inv-bump inv-fork-del]]
   (prim! MDK o nil))
 (prim! MDK 'inv-edge-upd '(ep-edge-upd (both marked-dep (dep-in mkm)) w x f (mk-pres mkm f hid hk hm) R))
 (prim! MDK 'inv-remove-edge '(ep-remove-edge (both marked-dep (dep-in mkm)) w x R))
@@ -666,6 +666,10 @@
   (intro h) (simp only [esb-rest cleanup-del set-cleanup])
   (exact (esb-rest-sets w _ _ _ _ h (self-imp _) (all-del-same CleanupRow (crow-ok (:edges w) (:next-id w)) cleanup-id x (:cleanup w)) (self-imp _) (self-imp _))))
 
+(a/theorem esb-rest-fork-del [w :- World, x :- Nat] (=> (= (esb-rest w) true) (= (esb-rest (fork-del w x)) true))
+  (intro h) (simp only [esb-rest fork-del set-forks])
+  (exact (esb-rest-sets w _ _ _ _ h (all-del-same ForkRow (frow-ok (:edges w) (:next-id w)) fork-id x (:forks w)) (self-imp _) (self-imp _) (self-imp _))))
+
 (a/theorem esb-rest-filter-world [w :- World, K :- (=> Nat Bool)] (=> (= (esb-rest w) true) (= (esb-rest (filter-world K w)) true))
   (intro h)
   (have h1 (= (esk (:edges w) (:next-id w) (:cleanup w) (tbl-keep K run-id (:runs w)) (tbl-keep K scope-id (:scopes w))
@@ -866,6 +870,36 @@
              (esk-fparts _ _ _ _ _ _ (esb-rest-of w h)))))
   (exact (esb-intro _ (inv-add-run-scope w of ep parent ei hs) r)))
 
+;; C1c stage B: own's marker (id = next-id, owner a scope row) is a pair of references
+(a/theorem esb-fork-ins-own [w :- World, m :- Nat, s :- Nat]
+  (=> (= (ref-ok-k (:edges w) (:next-id w) s) true) (= (esb w) true)
+      (= (esb (bump (fork-ins w (ForkRow.mk (:next-id w) m s)))) true))
+  (intros hsr h)
+  (have hs := (esb-sample w h))
+  (have p := (esk-parts _ _ _ _ _ _ (esb-rest-of w h)))
+  (have le (<= (:next-id w) (+ (:next-id w) 1))) (omega)
+  (have mm (forall [y :- Nat] (=> (= (ref-ok-k (:edges w) (:next-id w) y) true) (= (ref-ok-k (:edges w) (+ (:next-id w) 1) y) true))))
+  (intros y hy) (exact (ref-ok-up _ _ _ y le hy))
+  (have s0 (= (ref-ok-k (:edges w) (+ (:next-id w) 1) (:next-id w)) true))
+  (have na := (edge-fresh-absent w (:next-id w) hs (Nat.le_refl _)))
+  (have lt (= (Nat.blt (:next-id w) (+ (:next-id w) 1)) true)) (simp only [Nat.blt_eq]) (omega)
+  (simp only [ref-ok-k na lt Bool.not_false Bool.and_self])
+  (have fr (= (frow-ok (:edges w) (+ (:next-id w) 1) (ForkRow.mk (:next-id w) m s)) true))
+  (simp only [frow-ok s0 (mm s hsr) Bool.and_self])
+  (have r (= (esb-rest (bump (fork-ins w (ForkRow.mk (:next-id w) m s)))) true))
+  (simp only [esb-rest bump fork-ins set-next-id set-forks tbl-ins])
+  (exact (esk-intro _ _ _ _ _ _
+           (tbl-all-mono CleanupRow (crow-ok (:edges w) (:next-id w)) (crow-ok (:edges w) (+ (:next-id w) 1))
+             (crow-mono _ _ _ _ mm) (:cleanup w) (And.left p))
+           (tbl-all-mono RunRow (rrow-ok (:edges w) (:next-id w)) (rrow-ok (:edges w) (+ (:next-id w) 1))
+             (fn [q :- RunRow, hq :- (= (rrow-ok (:edges w) (:next-id w) q) true)] (tbl-all-mono Nat _ _ mm (run-stored q) hq)) (:runs w) (And.left (And.right p)))
+           (tbl-all-mono ScopeRow (srow-ok (:edges w) (:next-id w)) (srow-ok (:edges w) (+ (:next-id w) 1))
+             (fn [q :- ScopeRow, hq :- (= (srow-ok (:edges w) (:next-id w) q) true)] (mm (:parent q) hq)) (:scopes w) (And.right (And.right p)))
+           (all-cons ForkRow (frow-ok (:edges w) (+ (:next-id w) 1)) _ _ fr
+             (tbl-all-mono ForkRow (frow-ok (:edges w) (:next-id w)) _ (frow-mono _ _ _ _ mm) (:forks w)
+               (esk-fparts _ _ _ _ _ _ (esb-rest-of w h))))))
+  (exact (esb-intro _ (inv-fork-ins-fresh w (ForkRow.mk (:next-id w) m s) (rfl) hs) r)))
+
 (a/theorem esb-cleanup-set [w :- World, rid :- Nat, rows :- (List Nat)]
   (=> (= (ref-ok-k (:edges w) (:next-id w) rid) true) (= (tbl-all (ref-ok-k (:edges w) (:next-id w)) rows) true)
       (= (esb w) true) (= (esb (cleanup-set w rid rows)) true))
@@ -906,6 +940,16 @@
 (prim! ESB 'inv-scope-del '(esb-rest-scope-del w x R))
 (prim! ESB 'inv-cleanup-del '(esb-rest-cleanup-del w x R))
 (prim! ESB 'inv-filter-world '(esb-rest-filter-world w K R))
+(prim! ESB 'inv-fork-del '(esb-rest-fork-del w x R))
+(override! ESB 't-own-inv '[]
+  '(a/theorem t-own-esb [w :- World, s :- Nat, m :- Nat]
+     (=> (= (esb w) true) (= (esb (:world (t-own w s m))) true))
+     (intro h)
+     (cases ho (own-ok w s))
+     (case [false] (simp only [t-own ho refuse]) (exact h))
+     (case [true]
+       (simp only [t-own ho accept])
+       (exact (esb-fork-ins-own w m s (scope-ref-ok w s (esb-sample w h) (And.right (And.right (own-ok-parts w s ho)))) h)))))
 (override! ESB 'inv-cleanup-set '[]
   '(a/theorem esb-cleanup-set-o [w :- World, rid :- Nat, rows :- (List Nat)]
      (=> (= (ref-ok-k (:edges w) (:next-id w) rid) true) (= (tbl-all (ref-ok-k (:edges w) (:next-id w)) rows) true)
@@ -1581,8 +1625,8 @@
 (swap! (:renames NA) assoc 'inv-parts 'na-parts 'inv-act-upd 'na-act-upd)
 (doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del
             inv-set-pins inv-resource-del inv-scope-del inv-cleanup-ins inv-task-upd inv-run-upd inv-run-del inv-comp-upd
-            inv-comp-del-unref inv-comp-ins-fresh inv-run-ins-fresh inv-source-ins-fresh inv-resource-ins-fresh
-            inv-scope-ins-fresh inv-task-ins-fresh inv-bump inv-edge-upd inv-drop-cred inv-drop-edges insert-edge-fresh-inv-sample]]
+            inv-comp-del-unref inv-comp-ins-fresh inv-run-ins-fresh inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh
+            inv-scope-ins-fresh inv-task-ins-fresh inv-bump inv-edge-upd inv-drop-cred inv-drop-edges insert-edge-fresh-inv-sample inv-fork-del]]
   (prim! NA o nil))
 (prim! NA 'inv-drop-act '(na-rest-drop-act nax w a R))
 (prim! NA 'inv-remove-edge '(Eq.trans (na-rest-same nax w (remove-edge w x) (acts-remove-edge w x)) R))
@@ -1600,8 +1644,8 @@
        'inv-run-ins-fresh 'aha-run-ins-fresh)
 (doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del
             inv-set-pins inv-resource-del inv-scope-del inv-cleanup-ins inv-task-upd inv-comp-upd
-            inv-comp-del-unref inv-comp-ins-fresh inv-source-ins-fresh inv-resource-ins-fresh
-            inv-scope-ins-fresh inv-task-ins-fresh inv-bump inv-edge-upd inv-drop-cred inv-drop-edges insert-edge-fresh-inv-sample]]
+            inv-comp-del-unref inv-comp-ins-fresh inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh
+            inv-scope-ins-fresh inv-task-ins-fresh inv-bump inv-edge-upd inv-drop-cred inv-drop-edges insert-edge-fresh-inv-sample inv-fork-del]]
   (prim! AHA o nil))
 (prim! AHA 'inv-drop-act '(aha-rest-drop-act w a R))
 (prim! AHA 'inv-remove-edge '(Eq.trans (aha-rest-same w (remove-edge w x) (runs-remove-edge w x) (acts-remove-edge w x)) R))
@@ -2610,9 +2654,9 @@
 (swap! (:renames KX) assoc 'inv-parts 'kx-parts)
 (doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-set-pins
             inv-resource-del inv-scope-del inv-cleanup-ins inv-act-upd inv-task-upd inv-run-upd inv-run-del inv-comp-upd
-            inv-comp-del-unref]]
+            inv-comp-del-unref inv-fork-del]]
   (prim! KX o nil))
-(doseq [[o w2] '[[inv-source-ins-fresh (bump (source-ins w r))] [inv-resource-ins-fresh (bump (resource-ins w r))]
+(doseq [[o w2] '[[inv-source-ins-fresh (bump (source-ins w r))] [inv-fork-ins-fresh (bump (fork-ins w r))] [inv-resource-ins-fresh (bump (resource-ins w r))]
                  [inv-scope-ins-fresh (bump (scope-ins w r))] [inv-act-ins-fresh (bump (act-ins w r))]
                  [inv-task-ins-fresh (bump (task-ins w r))] [inv-comp-ins-fresh (bump (comp-ins w r))]
                  [inv-run-ins-fresh (bump (run-ins w r))] [inv-bump (bump w)]]]
@@ -2717,7 +2761,7 @@
        'inv-source-ins-fresh 'svb-source-ins 'inv-comp-del-unref 'svb-comp-del 'inv-filter-world 'svb-filter-world)
 (doseq [o '[inv-scope-upd inv-pub-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-cleanup-ins inv-set-pins
             inv-resource-del inv-scope-del inv-act-upd inv-task-upd inv-run-upd inv-run-del inv-act-ins-fresh inv-task-ins-fresh
-            inv-scope-ins-fresh inv-resource-ins-fresh inv-run-ins-fresh inv-bump]]
+            inv-scope-ins-fresh inv-resource-ins-fresh inv-run-ins-fresh inv-bump inv-fork-del inv-fork-ins-fresh]]
   (prim! SVB o nil))
 (prim! SVB 'inv-remove-edge '(svb-rest-remove-edge w x R))
 (prim! SVB 'mark-edge-inv-sample '(svb-rest-mark-edge w x R))

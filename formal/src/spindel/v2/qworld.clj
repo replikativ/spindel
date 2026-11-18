@@ -152,8 +152,8 @@
 
 (doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-set-pins inv-resource-del inv-scope-del
             inv-act-upd inv-edge-upd inv-drop-cred inv-drop-edges inv-comp-del-unref inv-comp-upd inv-drop-act inv-task-upd
-            inv-source-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-comp-ins-fresh inv-act-ins-fresh
-            inv-task-ins-fresh inv-bump insert-edge-fresh-inv-sample inv-set-pending-act inv-set-released]]
+            inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-comp-ins-fresh inv-act-ins-fresh
+            inv-task-ins-fresh inv-bump insert-edge-fresh-inv-sample inv-set-pending-act inv-set-released inv-fork-del]]
   (prim! GC o nil))
 (prim! GC 'mark-edge-inv-sample '(Eq.trans (gc-rest-mark-edge w x) R))
 (prim! GC 'unmark-edge-inv-sample '(Eq.trans (gc-rest-unmark-edge w x) R))
@@ -752,16 +752,17 @@
 (a/theorem raw0-quiet [w :- World, it :- Item]
   (=> (= (host-item it) false) (= (:runs w) (List.nil RunRow)) (= (:comps w) (List.nil CompRow))
       (= (:edges w) (List.nil EdgeRow)) (= (:res w) (List.nil ResRow)) (= (:sources w) (List.nil SourceRow))
-      (= (:released w) true)
+      (= (:released w) true) (= (:forks w) (List.nil ForkRow))
       (= (:accepted (raw0 w it)) false))
-  (intros hh rn cn en zn sn hr)
+  (intros hh rn cn en zn sn hr fn0)
   (cases it)
   (all_goals (simp only [host-item] at hh))
   (all_goals (simp only [raw0 body-shut cc-shut root-shut hr Bool.or_true Bool.true_or refuse]))
   (all_goals (simp [t7-track t9-fire fire-tok-ok t15-full ack-tok-ok t17-arm t18-resource-fire t5-start t6-await t11-dispatch
                     t12-complete t-schedule t-take t-finalize t-open-scope t-finally-enter t-finally-exit t-finally-leave t-slice-exit
                     t-release-world tok-run run-find comp-find edge-find resource-find resource-has source-find rn cn en zn sn hr
-                    tbl-find tbl-has refuse in-cleanup fin-shut in-fin await-bad take-bad complete-refused fins-open opt-test]))
+                    tbl-find tbl-has refuse in-cleanup fin-shut in-fin await-bad take-bad complete-refused fins-open opt-test
+                    t-own own-ok t-owned-done t-drain fn0 tbl-any]))
   (all_goals (cases hh)))
 
 ;; Theorem (refusal): in a quiet world with qinv every item is refused (host items by host-shut: no
@@ -778,7 +779,7 @@
   (simp only [raw0g host-shut hr sh hh Bool.and_false])
   (exact (raw0-quiet w it hh rn (And.left o) (And.left (And.right (And.right (And.right (And.right o)))))
            (And.left (And.right (And.right (And.right (And.right (And.right (And.right o)))))))
-           (And.left (And.right (And.right (And.right o)))) hr))
+           (And.left (And.right (And.right (And.right o)))) hr (qh-forks w h)))
   (simp only [raw0g host-shut hr sh hh Bool.not_false Bool.and_self refuse])
   (simp only [raw post e0]))
 

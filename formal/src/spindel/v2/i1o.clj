@@ -180,7 +180,7 @@
                     (fn [[_ w x _ _ _ h]] (list 'comp-detach* w x h)))))
 (doseq [[n _] @@#'spindel.v2.lit/source-theorems] (patch! NZ n nz-patch))
 (doseq [o '[inv-scope-upd inv-pub-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-cleanup-ins inv-set-pins
-            inv-resource-del inv-scope-del inv-act-upd inv-run-upd inv-run-del inv-bump inv-edge-upd]]
+            inv-resource-del inv-scope-del inv-act-upd inv-run-upd inv-run-del inv-bump inv-edge-upd inv-fork-del]]
   (prim! NZ o nil))
 (prim! NZ 'inv-comp-del-unref '(nzb-rest-le nzn w (comp-del w x) (oc-comp-del w x) R))
 
@@ -846,7 +846,7 @@
 (prim! GSO 'inv-remove-edge '(Eq.trans (gso-rest-remove-edge w x) R))
 (doseq [o '[inv-scope-upd inv-pub-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-cleanup-ins inv-set-pins
             inv-resource-del inv-scope-del inv-act-upd inv-task-upd inv-comp-upd inv-bump inv-edge-upd inv-drop-cred inv-drop-act inv-drop-edges inv-comp-del-unref
-            inv-act-ins-fresh inv-task-ins-fresh inv-comp-ins-fresh inv-scope-ins-fresh inv-resource-ins-fresh insert-edge-fresh-inv-sample]]
+            inv-act-ins-fresh inv-task-ins-fresh inv-comp-ins-fresh inv-scope-ins-fresh inv-resource-ins-fresh insert-edge-fresh-inv-sample inv-fork-del inv-fork-ins-fresh]]
   (prim! GSO o nil))
 
 (a/theorem src0-consume [s :- SourceRow] (=> (= (src0-ok s) true) (= (src0-ok (source-consume s)) true))

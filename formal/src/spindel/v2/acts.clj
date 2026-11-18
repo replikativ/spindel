@@ -536,9 +536,9 @@
 (defn- prims! [B P del-f keep-f ins-f]
   (doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-task-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del
               inv-set-pins inv-resource-del inv-scope-del inv-cleanup-ins
-              inv-edge-upd inv-drop-cred inv-drop-edges inv-comp-del-unref inv-comp-upd]]
+              inv-edge-upd inv-drop-cred inv-drop-edges inv-comp-del-unref inv-comp-upd inv-fork-del]]
     (prim! B o (copy-name B o) nil))
-  (doseq [o '[inv-source-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-task-ins-fresh inv-comp-ins-fresh]]
+  (doseq [o '[inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-task-ins-fresh inv-comp-ins-fresh]]
     (prim! B o (copy-name B o) (list 'gr-bump P (list (symbol (str/replace (subs (name o) 4) "-fresh" "")) 'w 'r)
                                      (list 'Eq.trans '(rfl) 'R))))
   (prim! B 'inv-bump (copy-name B 'inv-bump) (list 'gr-bump P 'w 'R))

@@ -913,8 +913,8 @@
 (swap! (:renames GOX) assoc 'inv-parts 'gox-parts 'inv-run-upd 'gox-run-upd)
 (doseq [o '[inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-comp-upd inv-task-upd
             inv-set-pins inv-resource-del inv-cleanup-ins inv-act-upd inv-edge-upd inv-drop-cred inv-drop-edges inv-drop-act
-            inv-comp-del-unref inv-source-ins-fresh inv-resource-ins-fresh inv-act-ins-fresh inv-comp-ins-fresh
-            inv-task-ins-fresh inv-bump insert-edge-fresh-inv-sample]]
+            inv-comp-del-unref inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-act-ins-fresh inv-comp-ins-fresh
+            inv-task-ins-fresh inv-bump insert-edge-fresh-inv-sample inv-fork-del]]
   (prim! GOX o nil))
 (prim! GOX 'mark-edge-inv-sample '(Eq.trans (gox-rest-mark-edge xr9 w x) R))
 (prim! GOX 'unmark-edge-inv-sample '(Eq.trans (gox-rest-unmark-edge xr9 w x) R))
@@ -945,8 +945,8 @@
 (swap! (:renames GOS) assoc 'inv-parts 'gos-parts 'inv-run-upd 'gos-run-upd 'inv-scope-upd 'gos-scope-upd)
 (doseq [o '[inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-comp-upd inv-task-upd
             inv-set-pins inv-resource-del inv-cleanup-ins inv-act-upd inv-edge-upd inv-drop-cred inv-drop-edges inv-drop-act
-            inv-comp-del-unref inv-source-ins-fresh inv-resource-ins-fresh inv-act-ins-fresh inv-comp-ins-fresh
-            inv-task-ins-fresh inv-bump insert-edge-fresh-inv-sample]]
+            inv-comp-del-unref inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-act-ins-fresh inv-comp-ins-fresh
+            inv-task-ins-fresh inv-bump insert-edge-fresh-inv-sample inv-fork-del]]
   (prim! GOS o nil))
 (prim! GOS 'mark-edge-inv-sample '(Eq.trans (gos-rest-mark-edge w x) R))
 (prim! GOS 'unmark-edge-inv-sample '(Eq.trans (gos-rest-unmark-edge w x) R))

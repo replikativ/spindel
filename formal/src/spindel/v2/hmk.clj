@@ -590,7 +590,7 @@
        'inv-drop-cred 'hmk-drop-cred 'inv-drop-act 'hmk-drop-act 'inv-drop-edges 'hmk-drop-edges)
 (doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del
             inv-set-pins inv-resource-del inv-scope-del inv-cleanup-ins inv-act-upd inv-task-upd inv-run-upd inv-run-del
-            inv-source-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-act-ins-fresh inv-task-ins-fresh inv-bump inv-run-ins-fresh]]
+            inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-act-ins-fresh inv-task-ins-fresh inv-bump inv-run-ins-fresh inv-fork-del]]
   (prim! HMK o nil))
 (prim! HMK 'inv-edge-upd '(hkr-edge-upd hxm w x f hk hd hm R))
 (prim! HMK 'inv-filter-world '(hkr-filter-world hxm w K h1 R))
@@ -1511,8 +1511,8 @@
 (swap! (:renames HSW) assoc 'inv-parts 'hsw-parts)
 (doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-set-pins
             inv-resource-del inv-scope-del inv-cleanup-ins inv-act-upd inv-task-upd inv-edge-upd inv-run-upd inv-run-del
-            inv-source-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-act-ins-fresh inv-task-ins-fresh inv-run-ins-fresh
-            inv-bump insert-edge-fresh-inv-sample]]
+            inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-act-ins-fresh inv-task-ins-fresh inv-run-ins-fresh
+            inv-bump insert-edge-fresh-inv-sample inv-fork-del]]
   (prim! HSW o nil))
 (prim! HSW 'inv-insert-edge-checked '(hswr-insert-edge-checked hsc w e R))
 (prim! HSW 'inv-remove-edge '(hswr-remove-edge hsc w x R))

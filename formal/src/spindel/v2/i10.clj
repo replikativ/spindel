@@ -829,9 +829,9 @@
        'run-up* 'g10-run-upd-up 'run-same* 'g10-run-upd 'task-same* 'g10-task-upd 'task-clr* 'g10-task-clear)
 
 (doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del
-            inv-set-pins inv-resource-del inv-scope-del inv-cleanup-ins inv-act-upd inv-edge-upd]]
+            inv-set-pins inv-resource-del inv-scope-del inv-cleanup-ins inv-act-upd inv-edge-upd inv-fork-del]]
   (prim! G10 o nil))
-(doseq [o '[inv-source-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-act-ins-fresh]]
+(doseq [o '[inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-act-ins-fresh]]
   (prim! G10 o (list 'g10-rest-bump 'gxz 'gkz (list (symbol (str/replace (subs (name o) 4) "-fresh" "")) 'w 'r)
                      (list 'Eq.trans '(rfl) 'R))))
 (prim! G10 'inv-bump '(g10-rest-bump gxz gkz w R))
@@ -1080,7 +1080,7 @@
 (swap! (:renames NQ) assoc 'inv-parts 'nq-parts 'inv-run-upd 'nq-run-upd 'inv-comp-upd 'nq-comp-upd)
 (doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-task-upd
             inv-set-pins inv-resource-del inv-scope-del inv-cleanup-ins inv-act-upd inv-edge-upd inv-bump
-            inv-source-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-act-ins-fresh insert-edge-fresh-inv-sample]]
+            inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-act-ins-fresh insert-edge-fresh-inv-sample inv-fork-del]]
   (prim! NQ o nil))
 (prim! NQ 'mark-edge-inv-sample '(Eq.trans (nq-ks nqr nqc nqm nqcm w (mark-edge w x) (ks10-mark-edge w x)) R))
 (prim! NQ 'unmark-edge-inv-sample '(Eq.trans (nq-ks nqr nqc nqm nqcm w (unmark-edge w x) (ks10-unmark-edge w x)) R))
