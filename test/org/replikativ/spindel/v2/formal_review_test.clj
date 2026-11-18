@@ -145,3 +145,24 @@
              (is (= [3 7] [(deref seen 1000 ::none) (deref seen2 1000 ::none)]))
              (is (not-any? true? @depths) "no slice starts while another run holds the slice")
              (is (= 2 (v2/value (task (inc (await (spin 1)))) 1000 ::timeout)) "awaits unchanged"))))))))
+
+(deftest host-creations-queued-before-release-are-refused
+  ;; a host signal or pull sequence admitted before T21 and processed after it (refusal
+  ;; samples, root-shut): refused like every other host item
+  (checked
+   (let [w (vworld)
+         lk (aget ^objects w rw/W-LOCK)
+         queued #(count (seq (aget ^objects w rw/W-INGRESS)))]
+     (hs/lock! lk)
+     (let [a (future (binding [v2/*world* w] (v2/signal 3)))
+           _ (is (wait-until #(= 1 (queued))))
+           b (future (binding [v2/*world* w] (v2/aseq [k 0] (when (< k 1) [k (inc k)]))))
+           _ (is (wait-until #(= 2 (queued))))]
+       (#'v2/release-world* w)
+       (hs/unlock! lk)
+       (is (nil? (try (#'v2/process! w) nil (catch Throwable t t))))
+       (deref a 1000 nil) (deref b 1000 nil)
+       (is (= [[:release-world true] [:create-source-top false] [:create-link-top false]]
+              (mapv (juxt (comp first :item) :accepted)
+                    (drop-while #(not= :release-world (first (:item %))) (verify/log w)))))
+       (is (true? (v2/await-complete w 2000 ::timeout)))))))
