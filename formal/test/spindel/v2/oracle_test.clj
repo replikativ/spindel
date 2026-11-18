@@ -41,7 +41,8 @@
             [spindel.v2.engine :as en]
             [spindel.v2.inv :as inv]
             [spindel.v2.oracle :as o]
-            [spindel.v2.sys :as sys]))
+            [spindel.v2.sys :as sys]
+            [spindel.v2.local :as lc]))
 
 (def dir "test/spindel/v2/oracle/")
 (defn- log [n] (o/read-log (str dir "log-sample-" n ".edn")))
@@ -713,3 +714,20 @@
     (is (some #(= [true] (drop 5 (:item %))) (filter #(#{:spawn :spawn-top} (first (:item %))) (log (str n "-root"))))
         (str n ": a fork-local spawn carries the trailing true")))
   (is (= [:retire-local :release-world] (map (comp first :item) (log "54-child"))) "54: the untouched child retires, then releases"))
+
+;; Z#77 tripwires on every replayed world of the fork-local samples: LOC1 and LOC2 (spindel.v2.local; their
+;; preservation by the step is not proved yet), and the retirement's post-condition right after the child's
+;; `[:retire-local]` (retire-clean, executable form): no run of a fork-local task, no cleanup entry, every fork-local
+;; task done
+(deftest fork-local-closure
+  (doseq [[n spec] fork-local-specs
+          :let [fam (o/replay-family spec)]
+          [k {:keys [res init]}] fam
+          w (cons init (:worlds res))]
+    (is (and (lc/loc1 w) (lc/loc2 w)) (str "sample " n " " k ": LOC1, LOC2")))
+  (doseq [[n spec] fork-local-specs
+          :let [{:keys [res]} (:child (o/replay-family spec))
+                w (first (:worlds res))]]
+    (is (not-any? #(en/run-of-local w %) (:runs w)) (str n ": no run of a fork-local task after [:retire-local]"))
+    (is (empty? (:cleanup w)) (str n ": no cleanup entry after [:retire-local]"))
+    (is (every? #(not= s/res-none (:tag (:result %))) (filter :local (:tasks w))) (str n ": every fork-local task is done"))))
