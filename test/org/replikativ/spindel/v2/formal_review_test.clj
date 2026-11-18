@@ -166,3 +166,34 @@
               (mapv (juxt (comp first :item) :accepted)
                     (drop-while #(not= :release-world (first (:item %))) (verify/log w)))))
        (is (true? (v2/await-complete w 2000 ::timeout)))))))
+
+(deftest a-body-creates-nothing-after-its-world-is-released
+  ;; user decision 2026-11-18 (model root-shut on body paths): a released world takes no new
+  ;; work from bodies either. Releasing from a body cancels every run (tasks through the root
+  ;; scope, computations through their revoked demand), and a creation in a released world
+  ;; throws ::released before any item; either way nothing is created
+  (doseq [mk [:task :spin]]
+    (checked
+     (let [w (vworld)
+           seen (atom [])
+           attempt (fn [label f]
+                     (swap! seen conj [label (try (some? (f))
+                                                  (catch clojure.lang.ExceptionInfo _ false))]))]
+       (binding [v2/*world* w]
+         (let [body (fn [] (v2/release-world! w))
+               x (case mk
+                   :task (task (body)
+                               (attempt :spawn #(task 1))
+                               (attempt :create-comp #(spin 1))
+                               (attempt :signal #(v2/signal 1))
+                               (attempt :aseq #(v2/aseq [k 0] (when (< k 1) [k (inc k)]))))
+                   :spin (spin (body)
+                               (attempt :spawn #(task 1))
+                               (attempt :create-comp #(spin 1))
+                               (attempt :signal #(v2/signal 1))
+                               (attempt :aseq #(v2/aseq [k 0] (when (< k 1) [k (inc k)])))))]
+           (when (= mk :spin) (v2/value-async x (fn [_ _])))
+           (is (true? (v2/await-complete w 2000 ::timeout)))
+           (is (every? (comp false? second) @seen) (str mk ": no handle " @seen))
+           (is (not-any? #(#{:spawn :create-comp :create-source :create-link} (first (:item %)))
+                         (drop-while #(not= :release-world (first (:item %))) (verify/log w))))))))))

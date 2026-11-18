@@ -319,6 +319,13 @@ prototypes are not acceptance evidence for this smaller operation API.
     caller, or is a refused item when only the item sees it. Readoption by
     ordinal needs the same kind. `await-any` of no input is an error.
     `world-id` is public (unique within a family).
+  - Z#76 (C1 Q5/Q8, T1/T3/T4; user decision 2026-11-18, model root-shut on
+    body paths): a released world takes no new work from bodies either: a
+    body's spawn, computation, source or sequence creation in a released
+    world throws `::released` before any item or state change. (Releasing
+    from a body already cancels every run: tasks through the root scope,
+    computations through their revoked demand; the refusal makes the rule
+    explicit rather than a consequence.)
 
 Once approved, this document is the normative contract for the v2 engine. It
 supersedes `engine-formalism.md` Part 4 and `engine-memory-v2.md`. Parts 1–3
