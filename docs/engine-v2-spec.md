@@ -274,6 +274,36 @@ prototypes are not acceptance evidence for this smaller operation API.
     `::released`, its pin is dropped; no item either way. Before, the refusal
     was thrown into the draining thread (foerster: `release-world!` threw an
     observer's refusal).
+  - Z#74 (§9, L12, R2, R6; C2, model `formal/c2-merge` sys.clj; user decision
+    2026-11-17, option C): **seal, diff, resolver merge, transfer.**
+    `seal(W)` refuses host admissions (task and computation starts from the
+    host, observe) and every host source change (write, swap, deliver, post,
+    semaphore release, append, close) until `unseal(W)`; bodies and
+    propagation continue. A refusal throws `{:spindel/sealed true}` to a
+    waiting caller; an item admitted before the seal and processed after it
+    is a refused log entry (an observe's callback receives the refusal).
+    Forks and instances start unsealed. `unseal` is refused in a released
+    world. `diff(W′)` lists the inherited sources the mergeable fork changed,
+    with base and current value; the base value is recorded at the fork's
+    first copy of the row, which precedes its first change. `merge` requires
+    the child sealed and quiescent as above (no unretired run, cleanup entry
+    or outstanding resource, empty ingress; model F2: a run parked on an
+    armed resource could fire and write after the seal), and the parent
+    unsealed. A source both sides changed is passed to the caller's
+    resolver `(f source base parent-value child-value)`, which returns the
+    merged value or a refusal; it runs under both gates, is pure, and a throw
+    is a refusal; the default refuses (L12 as before). One refusal refuses
+    the whole merge. `transfer(m, k2)` moves the ownership of a fork owned by
+    a root scope (host `fork!`, `:owner`, an instance) to `k2` of the same
+    family in two steps (model sys-xfer-reserve/-move): `k2` reserves the
+    obligation (kids + 1), then the old owner, under `m`'s gate, retargets
+    `m`'s token to `k2`, drops its holder and ends its own obligation, and
+    `k2` takes the holder in an item queued before `m` can complete; any
+    failure undoes the reservation. Refused: a counted `(fork)`-effect
+    child (it stays in its scope), `k2` the current owner, released or
+    complete, or `k2` = `m` or a world `m` owns (a cycle). The token move is
+    no log item. `descendant?(w, a)` is the lineage test; transfers change
+    no answer.
 
 Once approved, this document is the normative contract for the v2 engine. It
 supersedes `engine-formalism.md` Part 4 and `engine-memory-v2.md`. Parts 1–3
@@ -363,7 +393,8 @@ first-class.
 - settlement capabilities and custody;
 - durable records and recovery;
 - coordinated cuts;
-- merge policies.
+- choosing merge policies (the engine applies a caller-supplied resolver,
+  Z#74).
 
 These belong to yggdrasil and dvergr, which build on §9.
 

@@ -198,6 +198,8 @@
      (s! w rw/W-CALLBACKS (alist))
      (s! w rw/W-INGRESS (hs/mpsc))
      (s! w rw/W-SCHEDULED (hs/flag false))
+     (s! w rw/W-SEALED (hs/flag false))
+     (s! w rw/W-ADMITTING (hs/kids))
      (s! w rw/W-EXEC (or executor (hs/executor)))
      (s! w rw/W-INLINE (boolean inline?))
      (s! w rw/W-BUDGET (long budget))
@@ -599,14 +601,15 @@
       (aset c rw/Z-CTL nil))
     (aset ^objects w rw/W-FWD (assoc (aget ^objects w rw/W-FWD) (aget c rw/ID) c))
     ;; L12: a mergeable fork keeps, for every source it inherited and
-    ;; touches, the identity its parent resolves and its version number at
-    ;; the fork
+    ;; touches, the identity its parent resolves, its version number and its
+    ;; value at the fork (C2: the resolver's base; a frozen fork's first copy
+    ;; of a row precedes its first change, so it is the fork-time state)
     (when-let [mb (aget ^objects w rw/W-MBASE)]
       (when (and (== rw/T-SOURCE (long (aget c rw/TYPE)))
                  (not= rw/SRC-LINK (long (aget c rw/X-KIND)))   ; a fork realizes its own (C0)
                  (< (long (aget c rw/ID)) (long (aget ^objects w rw/ID)))
                  (nil? (get mb (aget c rw/ID))))
-        (aset ^objects w rw/W-MBASE (assoc mb (aget c rw/ID) [r (gl v rw/VERSION)]))))
+        (aset ^objects w rw/W-MBASE (assoc mb (aget c rw/ID) [r (gl v rw/VERSION) (aget v rw/X-VALUE)]))))
     (when-let [reg (aget ^objects w rw/W-REG)]
       (when (some? (hs/mget reg (aget c rw/ID))) (hs/mput! reg (aget c rw/ID) c)))
     c))
@@ -1173,7 +1176,7 @@
   (hs/mpsc-add! (g child rw/W-INGRESS) #(release-world* child))
   (aadd! (g w rw/W-AFTER) child))
 
-(declare accept-child! kid-collected! kid-collector)
+(declare accept-child! kid-collected! kid-collector hold-child!)
 
 (defn- own-child!
   "F2: the fork marker of `child` in `w`, owned by `scope`, held strongly or
@@ -1187,6 +1190,12 @@
       (let [m (g w rw/W-OWNED-N)]
         (s! w rw/W-OWNED-N (assoc m sid [scope (inc (long (second (get m sid [nil 0]))))]))))
     (accept-child! w child sid))      ; C1 R2: an obligation until it completes
+  (hold-child! w scope child strong?))
+
+(defn- hold-child!
+  "F2: `scope` of `w` holds `child` (strongly or weakly) until it closes,
+   which releases the child; a closed owner releases it at once."
+  [w scope child strong?]
   (if (or (g w rw/W-RELEASED) (not (g scope rw/S-OPEN)))
     (do (release-child! w child) child)
     (let [sid (id-of scope)
@@ -2274,6 +2283,8 @@
                (aadd! basis x)   ; the adoption reference moves to the basis
                x))))
 
+(declare admit-change! admitting host-sealed? sealed-ex)
+
 (defn create-comp!
   "T3. `site` is a macro-time int, `inputs` the captured values."
   [site inputs body]
@@ -2323,12 +2334,14 @@
     (let [w (or *world* (throw (ex-info "no world: bind v2/*world*" {})))
           h (top-handle w)
           fr (thread-frame)]             ; the caller's, before the item may move threads
-      (gated w
-             (let [c (new-comp! w (rv w (g w rw/W-ROOT)) 0 0 inputs body 1)]
-               (s! c rw/C-BIND fr)
-               (bind-handle! h c)
-               (aadd! (g w rw/W-RQ) c)   ; outside live: Rule R makes it idle (§3.4)
-               (commit! w [:create-comp-top (g (rv w (g w rw/W-ROOT)) rw/ID) (g c rw/ID) [:opaque-seq inputs] [:opaque body]])))
+      ;; C2: no new host work in a sealed world
+      (admitting w
+                 #(gated w
+                         (let [c (new-comp! w (rv w (g w rw/W-ROOT)) 0 0 inputs body 1)]
+                           (s! c rw/C-BIND fr)
+                           (bind-handle! h c)
+                           (aadd! (g w rw/W-RQ) c)   ; outside live: Rule R makes it idle (§3.4)
+                           (commit! w [:create-comp-top (g (rv w (g w rw/W-ROOT)) rw/ID) (g c rw/ID) [:opaque-seq inputs] [:opaque body]]))))
       h)))
 
 (defn- new-task! [w owner key at inputs body handles]
@@ -2392,14 +2405,16 @@
     (let [w (or *world* (throw (ex-info "no world: bind v2/*world*" {})))
           h (top-handle w)
           fr (thread-frame)]             ; the caller's, before the item may move threads
-      (gated w
-             (let [s (rv w (g w rw/W-ROOT))
-                   k (new-task! w s 0 0 inputs body 1)]
-               (bind-handle! h k)
-               (hs/oset-add! (gm s rw/S-TASKS) (id-of k) k)
-               (ref-inc! k)
-               (start-task! w k fr)
-               (commit! w [:spawn-top (g s rw/ID) [:opaque body] (g k rw/ID) [:opaque-seq inputs]])))
+      ;; C2: no new host work in a sealed world
+      (admitting w
+                 #(gated w
+                         (let [s (rv w (g w rw/W-ROOT))
+                               k (new-task! w s 0 0 inputs body 1)]
+                           (bind-handle! h k)
+                           (hs/oset-add! (gm s rw/S-TASKS) (id-of k) k)
+                           (ref-inc! k)
+                           (start-task! w k fr)
+                           (commit! w [:spawn-top (g s rw/ID) [:opaque body] (g k rw/ID) [:opaque-seq inputs]]))))
       h)))
 
 ;; ---------------------------------------------------------------------------
@@ -2685,6 +2700,34 @@
 
 (defn released-ex [] (control-ex "world released" {:spindel/released true}))
 
+(defn sealed-ex [] (control-ex "world sealed" {:spindel/sealed true}))
+
+(defn- host-sealed?
+  "C2 (§9, model F1): `w` is sealed and the operation is the host's, not an
+   effect of a run of `w` (bodies and propagation continue after a seal)."
+  [w]
+  (and (hs/flag? (g w rw/W-SEALED)) (not (and (identical? w (cw)) (active-run)))))
+
+(defn- admit-change!
+  "C2: a host source change or admission is refused at once in a sealed
+   world. An item admitted before the seal but processed after it is
+   refused in the item (no state change; a refused log entry)."
+  [w]
+  (when (host-sealed? w) (throw (sealed-ex))))
+
+(defn- admitting
+  "C2 (model: the seal check atomic with the enqueue): `(f)` enqueues (or
+   runs) a host start of `w` after its seal check. The start counts as in
+   flight from before the check until after the enqueue, and §9 quiescence
+   waits for none in flight: a start that passed the check before a seal
+   is visible to `merge!` (counted, queued, or running), and one after it
+   sees the seal (both sides sequentially consistent)."
+  [w f]
+  (let [k (g w rw/W-ADMITTING)]
+    (hs/kids-add! k 1)
+    (try (admit-change! w) (f)
+         (finally (hs/kids-add! k -1)))))
+
 (defn- withdraw!
   "`(f)`, a withdrawal (unobserve, unawait): in a released world there is
    nothing left to withdraw (T21), so its refusal is not an error."
@@ -2930,9 +2973,10 @@
 (defn post!
   "Appends `v`, or hands it to the first waiter, atomically (§4.3)."
   [h v]
+  (admit-change! (world-of h))
   (gated (world-of h)
          (let [x (row-of h) w (cw)]
-           (if (closed? x)
+           (if (or (closed? x) (host-sealed? w))
              (refuse! w [:post (g x rw/ID) [:opaque v]])
              (do (s! x rw/VERSION (inc (gl x rw/VERSION)))
                  (when-not (serve-waiter! w x v)
@@ -2953,10 +2997,12 @@
   "Gives the permit to the first armed waiter, or returns it (§4.3). A
    release at the maximum is refused and throws (Z#62, old over-release)."
   [h]
+  (admit-change! (world-of h))
   (let [over? (host-call! (world-of h)
                           #(let [x (row-of h) w (cw)]
                              (cond
                                (closed? x) (do (refuse! w [:release (g x rw/ID)]) false)
+                               (host-sealed? w) (do (refuse! w [:release (g x rw/ID)]) false)
                                (and (some? (g x rw/X-MAX)) (>= (gl x rw/X-VALUE) (gl x rw/X-MAX)))
                                (do (refuse! w [:release (g x rw/ID)]) true)
                                :else
@@ -2984,9 +3030,10 @@
   "Delivers a deferred once: fires its edges and finalizes it (§4.3, T10).
    A second delivery is refused."
   [h v]
+  (admit-change! (world-of h))
   (gated (world-of h)
          (let [x (row-of h) w (cw)]
-           (if (or (final? x) (link? x))
+           (if (or (final? x) (link? x) (host-sealed? w))
              (refuse! w [:deliver (g x rw/ID) [:opaque v]])
              (do (s! x rw/X-VALUE v)
                  (s! x rw/VERSION 1)
@@ -3162,10 +3209,12 @@
    tail, realizes the old one with [v new-tail] and fires its readers.
    Refused on a closed stream."
   [h v]
+  (admit-change! (world-of h))
   (gated (world-of h)
          (let [x (row-of h) w (cw)]
            (cond
              (not (stream? x)) (throw (invalid-op :append "append! is for streams"))
+             (host-sealed? w) (refuse! w [:append (g x rw/ID) [:opaque v] 0])
              ;; a released world's root scope is closed: no new root-owned
              ;; link (an append from a cleanup finalizer is refused like one
              ;; to a closed stream)
@@ -3186,13 +3235,16 @@
    [:close s tag v] (tag 0 end, 2 error)."
   ([h] (close! h nil))
   ([h err]
+   (admit-change! (world-of h))
    (gated (world-of h)
           (let [x (row-of h) w (cw)]
             (when-not (stream? x) (throw (invalid-op :close "close! is for streams")))
-            (when (g x rw/X-OPEN)
-              (end-stream! w x err)
-              (close-source! w x)
-              (when-not (gone? w x) (commit! w [:close (g x rw/ID) (if err 2 0) [:opaque err]])))))
+            (if (host-sealed? w)
+              (refuse! w [:close (g x rw/ID) (if err 2 0) [:opaque err]])
+              (when (g x rw/X-OPEN)
+                (end-stream! w x err)
+                (close-source! w x)
+                (when-not (gone? w x) (commit! w [:close (g x rw/ID) (if err 2 0) [:opaque err]]))))))
    nil))
 
 (defn position
@@ -3246,9 +3298,10 @@
 (defn- write-d!
   "T2 with the write's deltas (nil when unknown)."
   [h v ds]
+  (admit-change! (world-of h))
   (gated (world-of h)
          (let [x (row-of h) w (cw)]
-           (if (closed? x)
+           (if (or (closed? x) (host-sealed? w))
              (refuse! w [:write (g x rw/ID) [:opaque v]])
              (write-row! w x h v ds))))
   v)
@@ -3316,10 +3369,16 @@
         ev (volatile! nil)
         m (calling-frame)]
     (when (g w rw/W-UNBORN) (throw (unborn-ex)))
+    (admit-change! w)
     (try
       (gated w
-             (if (shut-roots! w m)
+             (cond
+               (shut-roots! w m)
                (aadd! (g w rw/W-CALLBACKS) [cb [(released-ex) true]])
+               ;; C2: sealed meanwhile (admitted before the seal)
+               (host-sealed? w)
+               (aadd! (g w rw/W-CALLBACKS) [cb [(sealed-ex) true]])
+               :else
                (let [d (row-of h)]
                  (if (stream? d)
                    ;; a stream is read through its positions (as value-async, C0)
@@ -4534,6 +4593,8 @@
     (s! c rw/W-JOIN-SUBS nil)
     (s! c rw/W-PENDING-ACT nil)
     (s! c rw/W-MBASE nil)
+    (s! c rw/W-SEALED (hs/flag false))   ; C2: a fork starts unsealed
+    (s! c rw/W-ADMITTING (hs/kids))
     (s! c rw/W-MPARENT nil)
     (when-let [reg (g w rw/W-REG)]
       ;; verify mode: the child's registry holds the rows as they are at the
@@ -4591,6 +4652,8 @@
     (s! c rw/W-JOIN-SUBS nil)
     (s! c rw/W-PENDING-ACT nil)
     (s! c rw/W-MBASE nil)
+    (s! c rw/W-SEALED (hs/flag false))   ; C2: a fork starts unsealed
+    (s! c rw/W-ADMITTING (hs/kids))
     (s! c rw/W-MPARENT nil)
     (when-let [reg (g b rw/W-REG)]
       (s! c rw/W-REG (hs/mcopy reg))
@@ -4654,65 +4717,219 @@
        (handoff! c)
        c))))
 
+(defn- quiescent*
+  "§9 under the gate: no unretired run, no cleanup entry, no outstanding
+   resource, nothing queued (C2, model F2: a parked run's armed resource
+   could fire and write after a seal)."
+  [w]
+  (and (zero? (hs/kids-count (g w rw/W-ADMITTING)))   ; checked first: then the queue
+       (zero? (gl w rw/W-RUNS))
+       (zero? (acount (g w rw/W-CLEANUP)))
+       (let [o (g w rw/W-OUTSTANDING)] (or (nil? o) (zero? (hs/oset-count o))))
+       (not (work-pending? w))))
+
+(defn- refuse-merge [_ident _base _parent-value _child-value] ::refuse)
+
 (defn- merge-entries
   "L12 under both gates: [[parent-row value] ...] for every inherited source
    `child` changed, or nil when the merge is refused: the child is not a
-   quiescent, born, live mergeable fork of `parent`, or a changed source is
-   not an open signal the parent still holds at its version of the fork."
-  [parent child]
+   sealed, quiescent (§9), born, live mergeable fork of `parent`; or a
+   changed source is not an open signal the parent still holds; or the
+   parent changed it since the fork and `resolve` refuses (C2): it gets
+   the parent-resolved identity, the base value, the parent's and the
+   child's value and returns the merged value or ::refuse. It runs under
+   both gates: pure, no world operation (B7); a throw is a refusal."
+  [parent child resolve]
   (when (and (g child rw/W-MBASE)
+             (hs/flag? (g child rw/W-SEALED))
              (== (long (g parent rw/ID)) (long (g child rw/W-MPARENT)))
              (not (g child rw/W-RELEASED)) (not (g child rw/W-UNBORN)) (not (g child rw/W-DRAINING))
-             (not (work-pending? child)))
+             (quiescent* child))
     (let [cfwd (g child rw/W-FWD)
           reg (g parent rw/W-REG)]
       (reduce-kv
-       (fn [acc id [ident ^long base]]
+       (fn [acc id [ident ^long base base-v]]
          (let [cx (get cfwd id)]
            (if (or (nil? cx) (== base (gl cx rw/VERSION)))
              acc
              ;; the parent's current state, without copying (it owns the row,
              ;; or reads it through its own lineage)
              (let [px (peek-row parent ident)]
-               (if (and (== base (gl px rw/VERSION))
-                        (== rw/SRC-SIGNAL (gl px rw/X-KIND)) (== rw/SRC-SIGNAL (gl cx rw/X-KIND))
-                        (g px rw/X-OPEN)
-                        (if reg (some? (hs/mget reg id)) (or (pos? (gl px rw/REFS)) (pos? (gl px rw/HANDLES)))))
-                 (conj acc [ident (g cx rw/X-VALUE)])
-                 (reduced nil))))))
+               (if-not (and (== rw/SRC-SIGNAL (gl px rw/X-KIND)) (== rw/SRC-SIGNAL (gl cx rw/X-KIND))
+                            (g px rw/X-OPEN)
+                            (if reg (some? (hs/mget reg id)) (or (pos? (gl px rw/REFS)) (pos? (gl px rw/HANDLES)))))
+                 (reduced nil)
+                 (if (== base (gl px rw/VERSION))
+                   (conj acc [ident (g cx rw/X-VALUE)])
+                   (let [v (try (resolve ident base-v (g px rw/X-VALUE) (g cx rw/X-VALUE))
+                                (catch #?(:clj Throwable :cljs :default) _ ::refuse))]
+                     (if (= ::refuse v) (reduced nil) (conj acc [ident v])))))))))
        ;; in id order: the writes are items, and their order is part of the log
        [] (into (sorted-map) (g child rw/W-MBASE))))))
 
 (defn merge!
-  "L12: adopts the writes of the mergeable fork `child` into its parent
+  "L12/C2: adopts the writes of the mergeable fork `child` into its parent
    `parent`: every inherited signal the child changed is written in the
-   parent with the child's value (T2 each, one host item), then the child is
-   released. Refused, changing neither world, unless the child is quiescent
-   and each changed source is still an open signal the parent has not
-   written since the fork. Sources created in the child are not merged.
-   True when merged. The caller waits for the item (as `host-call!`, B7:
-   not from a thread processing another world), and the item waits out a
-   turn or metadata job holding the child's gate: neither is a refusal."
-  [parent child]
-  (host-call!
-   parent
-   (fn []
-     (let [lk (g child rw/W-LOCK)]
-       (if (or (active-run) (identical? parent child) (hs/held? lk))
-         false
-         ;; deadlock-free: a holder of the child's gate never waits for another
-         ;; gate (B7), and metadata jobs only try
-         (do (hs/lock! lk)
-             (let [es (try (merge-entries parent child)
-                           (finally (hs/unlock! lk) (handoff! child)))]
-               (if-not es
-                 false
-                 (do (doseq [[basis v] es]
-                       (let [x (rv parent basis)
-                             ref (let [r (g x rw/HREF)] (if (instance? Handle r) r (some-> r hs/deref-weak)))]
-                         (write-row! parent x ref v)))
-                     (release-child! parent child)
-                     true)))))))))
+   parent (T2 each, one host item), then the child is released. The child
+   must be sealed (`seal!`) and quiescent (§9: no unretired run, cleanup
+   entry or outstanding resource). A source the parent also changed since
+   the fork is a conflict: `(:resolve opts)`, called as
+   `(f ident base parent-value child-value)`, returns the merged value or
+   ::refuse (the default refuses every conflict). Refused, changing neither
+   world, on any refusal, or when `parent` is itself sealed. Sources created
+   in the child are not merged. True when merged. The caller waits for the
+   item (as `host-call!`, B7: not from a thread processing another world),
+   and the item waits out a turn or metadata job holding the child's gate:
+   neither is a refusal."
+  ([parent child] (merge! parent child nil))
+  ([parent child opts]
+   (let [resolve (or (:resolve opts) refuse-merge)]
+     (host-call!
+      parent
+      (fn []
+        (let [lk (g child rw/W-LOCK)]
+          (if (or (active-run) (identical? parent child) (hs/held? lk) (hs/flag? (g parent rw/W-SEALED)))
+            false
+            ;; deadlock-free: a holder of the child's gate never waits for another
+            ;; gate (B7), and metadata jobs only try
+            (do (hs/lock! lk)
+                (let [es (try (merge-entries parent child resolve)
+                              (finally (hs/unlock! lk) (handoff! child)))]
+                  (if-not es
+                    false
+                    (do (doseq [[basis v] es]
+                          (let [x (rv parent basis)
+                                ref (let [r (g x rw/HREF)] (if (instance? Handle r) r (some-> r hs/deref-weak)))]
+                            (write-row! parent x ref v)))
+                        (release-child! parent child)
+                        true)))))))))))
+
+(defn seal!
+  "C2 (§9): `w` refuses host admissions (task and computation starts,
+   observe) and host source changes (write, swap, deliver, post, release,
+   append, close) until `unseal!`; its bodies and propagation continue.
+   Idempotent. A sealed world's `diff` is stable once it is quiescent."
+  [w]
+  (host-call! w #(do (hs/flag-set! (g w rw/W-SEALED) true) nil)))
+
+(defn unseal!
+  "C2: lifts `seal!`. A diff or preflight read before is stale: reseal and
+   reread. Refused (::released) in a released world, a merged one included."
+  [w]
+  (host-call! w #(do (when (g w rw/W-RELEASED) (throw (released-ex)))
+                     (hs/flag-set! (g w rw/W-SEALED) false)
+                     nil)))
+
+(defn sealed? [w] (hs/flag? (g w rw/W-SEALED)))
+
+(defn diff
+  "C2 (§9): the inherited sources the mergeable fork `w` changed, as
+   {source-handle {:base base-value :value value}} (in the parent's terms,
+   a handle of `w`). Sources created in `w` are not listed. nil for a fork
+   that is not mergeable."
+  [w]
+  (host-call! w (fn []
+                  (when-let [mb (g w rw/W-MBASE)]
+                    (let [fwd (g w rw/W-FWD)]
+                      (reduce-kv (fn [acc id [ident ^long base base-v]]
+                                   (let [cx (get fwd id)]
+                                     (if (or (nil? cx) (== base (gl cx rw/VERSION)))
+                                       acc
+                                       (assoc acc (new-handle w ident) {:base base-v :value (g cx rw/X-VALUE)}))))
+                                 {} (into (sorted-map) mb)))))))
+
+(defn- owner-world
+  "The world whose obligation `w` is (its accepted kid token's owner), or nil."
+  [w]
+  (when-let [kc (g w rw/W-KID-TOKEN)]   ; a root world is nobody's obligation
+    (let [t (hs/kid-token kc)]
+      (when-not (or (nil? t) (keyword? t)) (hs/deref-weak (aget ^objects t 0))))))
+
+(defn- owned-below?
+  "Whether `x` is `w` or a world `w` owns, directly or further down."
+  [x w]
+  (loop [x x n 0]
+    (cond (nil? x) false
+          (identical? x w) true
+          (> n 10000) false
+          :else (recur (owner-world x) (inc n)))))
+
+(defn transfer!
+  "C2 R6: `new-owner` (a world of the same family) takes over the ownership
+   of the fork `child` from its current owner: the child's completion (or
+   collection) acknowledges `new-owner`, and closing `new-owner` releases
+   it; the old owner no longer waits for it (and may complete). Only a fork
+   owned by a root scope (`fork!`, `:owner`, an instance) moves; the child of
+   a body's `(fork)` stays in its scope (stage B). Refused, changing nothing
+   (false): a child that is done, released or counted; `new-owner` that is
+   the current owner, released or complete, or the child itself or a world
+   the child owns (an ownership cycle). True when moved. Two steps, as the
+   model's sys-xfer-reserve/-move: `new-owner` reserves the obligation, then
+   the old owner hands the child over under the child's gate, or the
+   reservation is undone. Host operation (B7: not from a world's turn)."
+  [child new-owner]
+  (when-not (identical? (g child rw/W-FAMILY) (g new-owner rw/W-FAMILY))
+    (throw (ex-info "transfer!: the new owner belongs to an unrelated world" {:spindel/invalid :lineage})))
+  (let [kc (g child rw/W-KID-TOKEN)
+        t1 (some-> kc hs/kid-token)
+        old (when-not (or (nil? t1) (keyword? t1)) (hs/deref-weak (aget ^objects t1 0)))]
+    (if (or (nil? old) (identical? old new-owner) (some? (aget ^objects t1 2))
+            (owned-below? new-owner child))
+      false
+      (let [t2 (try
+                 (host-call! new-owner
+                             (fn []
+                               (when-not (or (g new-owner rw/W-RELEASED) (g new-owner rw/W-COMPLETE))
+                                 (let [k (or (g new-owner rw/W-KIDS)
+                                             (let [k (hs/kids)] (s! new-owner rw/W-KIDS k) k))]
+                                   (hs/kids-add! k 1)
+                                   (object-array [(hs/weak new-owner) (hs/flag false) nil (g child rw/ID)])))))
+                 ;; a released new owner refuses the host item: no reservation
+                 (catch #?(:clj clojure.lang.ExceptionInfo :cljs :default) e
+                   (if (:spindel/released (ex-data e)) nil (throw e))))]
+        (if-not t2
+          false
+          (let [moved (try
+                        (host-call!
+                         old
+                         (fn []
+                           (let [lk (g child rw/W-LOCK)]
+                             (when-not (or (active-run) (hs/held? lk))
+                               (hs/lock! lk)
+                               (try
+                                 (let [^objects h (g child rw/W-HOLDER)]
+                                   (when (and (not (g old rw/W-COMPLETE))
+                                              (not (g child rw/W-RELEASED)) (not (g child rw/W-COMPLETE))
+                                              h (not (holder-dead? h))
+                                              (hs/kid-move! kc t1 t2))
+                                     ;; the old owner lets go: its scope's close no longer
+                                     ;; releases the child, and its obligation ends
+                                     (aset h 0 nil)
+                                     (hs/flag-set! (aget h 2) true)
+                                     (kid-done! t1)
+                                     ;; queued before the child can complete (its ack is
+                                     ;; queued after, FIFO); scheduled after this gate (E3)
+                                     (hs/mpsc-add! (g new-owner rw/W-INGRESS)
+                                                   #(hold-child! new-owner (rv new-owner (g new-owner rw/W-ROOT)) child false))
+                                     (aadd! (g old rw/W-AFTER) new-owner)
+                                     true))
+                                 (finally (hs/unlock! lk) (handoff! child)))))))
+                        ;; a released old owner refuses the host item: nothing moved
+                        (catch #?(:clj clojure.lang.ExceptionInfo :cljs :default) e
+                          (if (:spindel/released (ex-data e)) false (do (kid-done! t2) (throw e)))))]
+            (when-not moved (kid-done! t2))
+            (boolean moved)))))))
+
+(defn descendant?
+  "R2: whether `w` descends from `ancestor` (a fork, a fork of a fork, an
+   instance of its publication's world, ...). A world is not its own
+   descendant; worlds of unrelated families never are. Ownership transfers
+   change no answer."
+  [w ancestor]
+  (and (not (identical? w ancestor))
+       (identical? (g w rw/W-FAMILY) (g ancestor rw/W-FAMILY))
+       (let [a (long (g ancestor rw/ID))]
+         (boolean (some #(== a (long (first %))) (g w rw/W-LINEAGE))))))
 
 (defn fork-effect!
   "D3/Q4 `(fork)` in a task body: the fork boundary is this effect's commit.

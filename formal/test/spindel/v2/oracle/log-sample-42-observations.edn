@@ -1,0 +1,124 @@
+[{:step :before,
+  :log-length {:k1 0, :k2 0, :m 0, :root 3},
+  :obs
+  {:k1
+   {:released? false,
+    :complete? false,
+    :sealed? false,
+    :owner 1,
+    :kids 1,
+    :holder-live true},
+   :k2
+   {:released? false,
+    :complete? false,
+    :sealed? false,
+    :owner 1,
+    :kids 0,
+    :holder-live true},
+   :m
+   {:released? false,
+    :complete? false,
+    :sealed? false,
+    :owner 3,
+    :kids 0,
+    :holder-live true},
+   :root
+   {:released? false,
+    :complete? false,
+    :sealed? false,
+    :owner nil,
+    :kids 2,
+    :holder-live nil}}}
+ {:step :transferred,
+  :log-length {:k1 0, :k2 0, :m 0, :root 3},
+  :obs
+  {:k1
+   {:released? false,
+    :complete? false,
+    :sealed? false,
+    :owner 1,
+    :kids 0,
+    :holder-live true},
+   :k2
+   {:released? false,
+    :complete? false,
+    :sealed? false,
+    :owner 1,
+    :kids 1,
+    :holder-live true},
+   :m
+   {:released? false,
+    :complete? false,
+    :sealed? false,
+    :owner 4,
+    :kids 0,
+    :holder-live true},
+   :root
+   {:released? false,
+    :complete? false,
+    :sealed? false,
+    :owner nil,
+    :kids 2,
+    :holder-live nil}}}
+ {:step :k1-released,
+  :log-length {:k1 1, :k2 0, :m 0, :root 3},
+  :obs
+  {:k1
+   {:released? true,
+    :complete? true,
+    :sealed? false,
+    :owner nil,
+    :kids 0,
+    :holder-live false},
+   :k2
+   {:released? false,
+    :complete? false,
+    :sealed? false,
+    :owner 1,
+    :kids 1,
+    :holder-live true},
+   :m
+   {:released? false,
+    :complete? false,
+    :sealed? false,
+    :owner 4,
+    :kids 0,
+    :holder-live true},
+   :root
+   {:released? false,
+    :complete? false,
+    :sealed? false,
+    :owner nil,
+    :kids 1,
+    :holder-live nil}}}
+ {:step :k2-released,
+  :log-length {:k1 1, :k2 1, :m 1, :root 3},
+  :obs
+  {:k1
+   {:released? true,
+    :complete? true,
+    :sealed? false,
+    :owner nil,
+    :kids 0,
+    :holder-live false},
+   :k2
+   {:released? true,
+    :complete? true,
+    :sealed? false,
+    :owner nil,
+    :kids 0,
+    :holder-live false},
+   :m
+   {:released? true,
+    :complete? true,
+    :sealed? false,
+    :owner nil,
+    :kids 0,
+    :holder-live false},
+   :root
+   {:released? false,
+    :complete? false,
+    :sealed? false,
+    :owner nil,
+    :kids 0,
+    :holder-live nil}}}]
