@@ -3282,33 +3282,55 @@
 (defn unborn-ex []
   (control-ex "instance not activated: only writes before activate! (S3)" {:spindel/unborn true}))
 
+(defn- calling-frame
+  "Marks the caller of a host operation, so its item can tell whether it runs
+   while that caller is still waiting on it (JVM: the caller's thread)."
+  []
+  #?(:clj (Thread/currentThread) :cljs (volatile! true)))
+
+(defn- in-calling-frame? [m]
+  #?(:clj (identical? m (Thread/currentThread)) :cljs @m))
+
+(defn- leave-calling-frame! [m]
+  #?(:clj nil :cljs (vreset! m false)))
+
 (defn- shut-roots!
-  "T21/Z#40: a released world takes no new root. Host items are refused at
-   ingress, but a cleanup slice may still run host operations of its own
+  "T21/Z#40/Z#68: a released world takes no new root. Host items are refused
+   at ingress, but a cleanup slice may still run host operations of its own
    world (Z#40: write, deliver, post, release, close); an observe or a pin
    from there would add a root after T21 revoked them, and a computation it
-   demands could run after the world completed."
-  [w]
-  (when (g w rw/W-RELEASED) (throw (released-ex))))
+   demands could run after the world completed. The refusal throws to a
+   caller still waiting on the operation (`m`, its calling frame). An item
+   admitted before T21 but processed after it, in a turn another thread
+   drains, is revoked as T21 revokes roots instead (true): its observe
+   callback receives ::released, its pin is dropped. Thrown there, the
+   refusal would reach the draining thread, not the caller."
+  [w m]
+  (when (g w rw/W-RELEASED)
+    (if (in-calling-frame? m) (throw (released-ex)) true)))
 
 (defn observe!
   "T8: `cb` receives (value err?) on each change. Returns an unobserve fn."
   [h cb]
   (let [w (world-of h)
-        ev (volatile! nil)]
+        ev (volatile! nil)
+        m (calling-frame)]
     (when (g w rw/W-UNBORN) (throw (unborn-ex)))
-    (gated w
-           (shut-roots! w)
-           (let [d (row-of h)]
-             (if (stream? d)
-               ;; a stream is read through its positions (as value-async, C0)
-               (aadd! (g w rw/W-CALLBACKS) [cb [(stream-ex) true]])
-               (let [e (link! w rw/EK-OBSERVE cb d 0)]
-                 (vreset! ev e)
-                 (when (and (comp? d) (g d rw/C-IDLE)) (validate! w d))
-                 (deliver-observe! w e)
-                 (commit! w [:observe (g d rw/ID) [:opaque cb] (g e rw/ID)])
-                 (demand! w d)))))
+    (try
+      (gated w
+             (if (shut-roots! w m)
+               (aadd! (g w rw/W-CALLBACKS) [cb [(released-ex) true]])
+               (let [d (row-of h)]
+                 (if (stream? d)
+                   ;; a stream is read through its positions (as value-async, C0)
+                   (aadd! (g w rw/W-CALLBACKS) [cb [(stream-ex) true]])
+                   (let [e (link! w rw/EK-OBSERVE cb d 0)]
+                     (vreset! ev e)
+                     (when (and (comp? d) (g d rw/C-IDLE)) (validate! w d))
+                     (deliver-observe! w e)
+                     (commit! w [:observe (g d rw/ID) [:opaque cb] (g e rw/ID)])
+                     (demand! w d))))))
+      (finally (leave-calling-frame! m)))
     (fn []
       (withdraw!
        (fn []
@@ -3322,14 +3344,17 @@
 (defn pin!
   "T20: a row is a root while its pin count is positive (Z#16)."
   [h]
-  (gated (world-of h)
-         (shut-roots! (cw))
-         (let [x (row-of h) w (cw)
-               pins (g w rw/W-PINS)
-               n (long (or (second (hs/mget pins (id-of x))) 0))]
-           (hs/mput! pins (id-of x) [x (inc n)])
-           (ref-inc! x)
-           (commit! w [:pin (g x rw/ID)])))
+  (let [m (calling-frame)]
+    (try
+      (gated (world-of h)
+             (when-not (shut-roots! (cw) m)
+               (let [x (row-of h) w (cw)
+                     pins (g w rw/W-PINS)
+                     n (long (or (second (hs/mget pins (id-of x))) 0))]
+                 (hs/mput! pins (id-of x) [x (inc n)])
+                 (ref-inc! x)
+                 (commit! w [:pin (g x rw/ID)]))))
+      (finally (leave-calling-frame! m))))
   h)
 
 (defn unpin! [h]

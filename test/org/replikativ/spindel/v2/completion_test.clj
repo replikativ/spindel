@@ -7,6 +7,8 @@
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.spindel.v2.core :as v2 :refer [spin task await track]]
             [org.replikativ.spindel.v2.verify :as verify]
+            [org.replikativ.spindel.v2.rows :as rw]
+            [org.replikativ.spindel.v2.host :as hs]
             [org.replikativ.spindel.incremental.interval :as iv]))
 
 (def ^:dynamic *divergences* nil)
@@ -299,3 +301,28 @@
          (is (wait-until #(= 4 (count @seen))))
          (is (= #{[:observe :released] [:pin :released] [:value-async true] [:write :accepted]} (set @seen)))
          (is (zero? @runs) "the computation never ran"))))))
+
+(deftest a-root-queued-before-release-is-revoked-not-thrown
+  ;; Z#68: an observe or pin admitted before T21 but processed after it, in a
+  ;; turn another thread drains, is revoked as T21 revokes roots (callback
+  ;; ::released, pin dropped); the refusal never reaches the draining thread
+  ;; (foerster SMC: release-world! threw an observer's refusal)
+  (doseq [op [:observe :pin]]
+    (checked
+     (let [w (vworld)
+           s (binding [v2/*world* w] (v2/signal 1))
+           lk (aget ^objects w rw/W-LOCK)
+           got (promise)]
+       (hs/lock! lk)
+       (let [queued (future (case op
+                              :observe (v2/observe! s (fn [v err?] (deliver got [(:spindel/released (ex-data v)) err?])))
+                              :pin (v2/pin! s)))]
+         (is (wait-until #(not (hs/mpsc-empty? (aget ^objects w rw/W-INGRESS)))) "admitted and queued behind the gate")
+         (#'v2/release-world* w)                  ; T21 first, under the held gate
+         (hs/unlock! lk)
+         (deref queued 2000 ::timeout)
+         (is (nil? (try (#'v2/process! w) nil (catch Throwable t t))) (str op ": the drainer gets no refusal"))
+         (when (= op :observe)
+           (is (= [true true] (deref got 2000 ::timeout)) "the observer receives ::released"))
+         (is (not-any? #(#{:observe :pin} (first (:item %))) (verify/log w)) "no root item")
+         (is (true? (v2/await-complete w 2000 ::timeout))))))))
