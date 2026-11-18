@@ -33,8 +33,10 @@
             [spindel.v2.step :refer :all]
             [spindel.v2.engine :refer :all]))
 
-;; the counting branch of own-child! at the `(fork)` effect: not released, the owner scope open
-(a/defn own-ok [w :- World, s :- Nat] Bool (Bool.and (Bool.not (:released w)) (scope-open-at w s)))
+;; the counting branch of own-child! at the `(fork)` effect: not released, the owner scope open (and not the root
+;; scope: the owner is the forking run's `cur-scope`, never the root, question 18a; i11 `fk-ok`)
+(a/defn own-ok [w :- World, s :- Nat] Bool
+  (Bool.and (Bool.not (:released w)) (Bool.and (Bool.not (Nat.beq s root-scope-id)) (scope-open-at w s))))
 
 ;; +1: the marker of the child cell m owned by s, with the parent's fresh id (the child world's id). The
 ;; early branch (released, or the owner closed) releases the child at once and never counts it.
@@ -42,7 +44,9 @@
   (if (own-ok w s) (bump (fork-ins w (ForkRow.mk (:next-id w) m s))) w))
 
 (a/defn marker-ids [w :- World] (List Nat) (tbl-ids fork-id (:forks w)))
-(a/defn no-markers [w :- World] Bool (match (:forks w) [nil true] [(cons h t) false]))
+(a/defn no-markers [w :- World] Bool (forks-nil (:forks w)))
+(a/theorem no-markers-nil [w :- World] (=> (= (no-markers w) true) (= (forks-nil (:forks w)) true)) (intro h) (exact h))
+(a/theorem nil-no-markers [w :- World] (=> (= (forks-nil (:forks w)) true) (= (no-markers w) true)) (intro h) (exact h))
 
 ;; `[:owned-done s child]`: the marker `child` of s goes, then remove-scope-if-empty! at s (Z#18) and Rule R
 ;; (the parents of a removed scope: the filter). Without that marker the world is unchanged (the engine
@@ -51,9 +55,27 @@
 (a/defn owned-done-world [w :- World, s :- Nat, c :- Nat] World
   (if (tbl-any (marker-of s c) (:forks w)) (rule-r (remove-empty-at (fork-del w c) s)) w))
 
-;; `[:normalize]`: the inherited markers `ids` go, then Z#18 at each of their owners and Rule R
+;; `[:normalize]`: the inherited markers `ids` go, then Z#18 at each of their owners and Rule R. Without any of them
+;; the world is unchanged (the engine logs the item only with W-NORMALIZE non-empty)
+(a/defn fork-in [ids :- (List Nat), f :- ForkRow] Bool (reach-mem (:id f) ids))
 (a/defn owners-in [ids :- (List Nat), fs :- (List ForkRow)] (List Nat)
   (match fs [nil (List.nil Nat)]
          [(cons h t) (if (reach-mem (:id h) ids) (List.cons Nat (:owner h) (owners-in ids t)) (owners-in ids t))]))
 (a/defn drain-world [w :- World, ids :- (List Nat)] World
-  (rule-r (nat-fold remove-empty-at (nat-fold fork-del w ids) (owners-in ids (:forks w)))))
+  (if (tbl-any (fork-in ids) (:forks w))
+      (rule-r (nat-fold remove-empty-at (nat-fold fork-del w ids) (owners-in ids (:forks w))))
+      w))
+
+;; a world without markers is left as it is by owned-done and the drain; a released one by own
+(a/theorem owned-done-none [w :- World, s :- Nat, c :- Nat] (=> (= (forks-nil (:forks w)) true) (= (owned-done-world w s c) w))
+  (intro h)
+  (cases hf (:forks w))
+  (case [nil] (simp only [owned-done-world hf tbl-any]))
+  (case [cons a t] (rw [hf] at h) (simp [forks-nil] at h)))
+(a/theorem drain-none [w :- World, ids :- (List Nat)] (=> (= (forks-nil (:forks w)) true) (= (drain-world w ids) w))
+  (intro h)
+  (cases hf (:forks w))
+  (case [nil] (simp only [drain-world hf tbl-any]))
+  (case [cons a t] (rw [hf] at h) (simp [forks-nil] at h)))
+(a/theorem own-released [w :- World, s :- Nat, m :- Nat] (=> (= (:released w) true) (= (own-world w s m) w))
+  (intro h) (simp only [own-world own-ok h Bool.not_true Bool.false_and]))

@@ -4,8 +4,8 @@
   kernel-checked (Init only).
 
   Bundle gw = inv-sample and: id 2 is the root scope's (a scope of kind root or with id 2 is the
-  root scope with parent 0), no run scope is 2, the allocator is above 2, there are no fork markers
-  (layer 1 creates none). Copied over the raw transition and normalization (`lcopy!`); overrides:
+  root scope with parent 0), no run scope is 2, the allocator is above 2, no fork marker is owned
+  by the root scope (C1c stage B; before it: no fork markers). Copied over the raw transition and normalization (`lcopy!`); overrides:
   run creation (`add-run-scope`: the new scope is next-id + 1) and detach (the re-parented scope is
   a run's scope, not 2).
   Reach: from the roots, every node is the root scope or reached from the obligations
@@ -37,7 +37,7 @@
 
 ;; ===========================================================================
 ;; Part A. The bundle gw: id 2 is the root scope's (kind root -> id 2, parent 0), no run scope
-;; is 2, the allocator is above 2, no fork markers (layer 1 creates none)
+;; is 2, the allocator is above 2, no fork marker owned by the root scope (C1c stage B, `fk-ok`)
 ;; ===========================================================================
 
 (a/structure SKW [] (id Nat) (kind Nat) (parent Nat))
@@ -47,13 +47,14 @@
   (match ss [nil (List.nil SKW)] [(cons h t) (List.cons SKW (skw h) (skws t))]))
 (a/defn rscs [rs :- (List RunRow)] (List Nat)
   (match rs [nil (List.nil Nat)] [(cons h t) (List.cons Nat (:scope h) (rscs t))]))
-(a/defn forks-nil [fs :- (List ForkRow)] Bool (match fs [nil true] [(cons h t) false]))
 (a/defn root-ok [k :- SKW] Bool
   (Bool.or (Bool.not (Bool.or (Nat.beq (:kind k) scope-root) (Nat.beq (:id k) 2)))
            (Bool.and (Nat.beq (:id k) 2) (Bool.and (Nat.beq (:kind k) scope-root) (Nat.beq (:parent k) 0)))))
 (a/defn ne2 [x :- Nat] Bool (Bool.not (Nat.beq x 2)))
+;; C1c stage B: no fork marker is owned by the root scope (the owner is the forking run's current scope)
+(a/defn fk-ok [f :- ForkRow] Bool (ne2 (:owner f)))
 (a/defn gwk [sks :- (List SKW), rss :- (List Nat), fs :- (List ForkRow), n :- Nat] Bool
-  (Bool.and (tbl-all root-ok sks) (Bool.and (tbl-all ne2 rss) (Bool.and (forks-nil fs) (Nat.blt 2 n)))))
+  (Bool.and (tbl-all root-ok sks) (Bool.and (tbl-all ne2 rss) (Bool.and (tbl-all fk-ok fs) (Nat.blt 2 n)))))
 (a/defn gw-rest [w :- World] Bool (gwk (skws (:scopes w)) (rscs (:runs w)) (:forks w) (:next-id w)))
 (a/defn gw [w :- World] Bool (Bool.and (inv-sample w) (gw-rest w)))
 
@@ -139,10 +140,7 @@
   (have a2 (= (tbl-all ne2 (rscs (tbl-keep K run-id (:runs w)))) true))
   (rw [all-rscs]) (have a0 := (And.left (And.right h))) (rw [all-rscs] at a0) (exact (tbl-all-keep-same RunRow K run-id _ _ a0))
   (have f0 := (And.left (And.right (And.right h))))
-  (have a3 (= (forks-nil (tbl-keep K fork-id (:forks w))) true))
-  (cases hf (:forks w))
-  (case [nil] (simp only [tbl-keep forks-nil]))
-  (case [cons fh ft] (rw [hf] at f0) (simp [forks-nil] at f0))
+  (have a3 (= (tbl-all fk-ok (tbl-keep K fork-id (:forks w))) true)) (exact (tbl-all-keep-same ForkRow K fork-id _ _ f0))
   (simp only [gw-rest gwk filter-world a1 a2 a3 (And.right (And.right (And.right h))) Bool.and_self]))
 (a/theorem gw-rest-next [w :- World, v :- Nat]
   (=> (= (gw-rest w) true) (<= (:next-id w) v) (= (gw-rest (set-next-id w v)) true))
@@ -498,6 +496,9 @@
     (rw [eo] at sc)
     (exact (Reach.step (:id r) (:id t) ro (Iff.mp (reach-mem-iff (:id t) (retain-succ w (:id r))) sc)))))
 
+;; a marker with fk-ok is not owned by the root scope
+(a/theorem fk-root [f :- ForkRow] (=> (= (fk-ok f) true) (= (owned-fork 2 f) true) False)
+  (intros h p) (simp only [fk-ok ne2 owned-fork] at h p) (rw [p] at h) (cases h))
 (a/theorem root-scope-succ [w :- World, s :- ScopeRow, z :- Nat]
   (=> (= (gw w) true) (= (g10r w) true) (List.Mem s (:scopes w)) (= (id-is scope-id 2 s) true) (= (reach-mem z (scope-contrib w s)) true)
       (Reach (retain-succ w) (obligations w) z))
@@ -519,9 +520,9 @@
       (exact (scan-prop TaskRow task-id (owned-running-task w 2) (Reach (retain-succ w) (obligations w)) (:tasks w)
                (fn [t :- TaskRow, mt :- (List.Mem t (:tasks w)), pt :- (= (owned-running-task w 2 t) true)] (root-task w t h h10 mt pt)) z d)))
     (case [inr d]
-      (cases hf (:forks w))
-      (case [nil] (rw [hf] at d) (simp [tbl-scan reach-mem] at d))
-      (case [cons fh ft] (rw [hf] at fk) (simp [forks-nil] at fk)))))
+      (exact (False.elim (scan-prop ForkRow fork-id (owned-fork 2) (fn [z :- Nat] False) (:forks w)
+               (fn [f :- ForkRow, mf :- (List.Mem f (:forks w)), pf :- (= (owned-fork 2 f) true)]
+                 (fk-root f (tbl-all-mem ForkRow fk-ok f (:forks w) fk mf) pf)) z d))))))
 
 (a/theorem root-succ-other [w :- World, y :- Nat]
   (=> (= (inv-sample w) true) (= (scope-has w 2) true)
