@@ -1927,19 +1927,19 @@ Option C (decided): the engine owns the mechanism, not the policy. Modelled in s
 - Invariants: sinv/cinv(-q)/qsinv/jinv of `sys-merge`, `sys-merge-release`, `sys-seal`.
 
 ### 3. R6 transfer (dvergr transfer-fork!)
-- `sys-transfer cells m s1 k2 s2 n`: old side first (`sys-disown`: m leaves k1's `kids`; `[:owned-done s1 m]`
-  in k1 then maybe-complete!), then m's `owner` := k2, then k2 counts it (`[:own s2 m]`) unless s2 is a root scope,
-  and accepts the token. Refused unless m live, not complete, not released; k1 live, not complete; k2 live, not
-  complete, not released, not m and not owned by m within the fuel (`owned-under`); k2 accepts the count.
-- Decisions it forces: m's `[:owned-done]` goes to the new owner (the kid token, with its owner scope, is
-  retargeted); the count moves with it (k1's W-OWNED-N for s1 decremented, k2's for s2 incremented, or none for a
-  root-scope owner: weak, uncounted, as a host fork). Without the move the old owner could not complete
-  (`complete-ready` needs no marker) and closing s1 would release the transferred fork (F2).
-- Invariants: `sinv-transfer`, `cinv-transfer`, `qsinv-transfer`, `jinv-transfer`, from per-part lemmas.
+- Decided with the engine session (Q4, Q5 below): only a root-owned fork (host fork, or `:owner`) transfers, into the
+  new owner's root scope, uncounted; a counted `(fork)`-effect child never leaves its scope. Two operations with
+  anything between them: `sys-xfer-reserve` (k2 takes the token; refused unless k2 live, open, not the current
+  owner, not owned by m within the fuel: `owned-under`) and `sys-xfer-move` (if m live, open, not counted in k1
+  (`counted-in`: no marker), k1 live and not complete, reservation held: k1 gives the token back, maybe-complete!,
+  m's owner := k2; otherwise the reservation is undone). m's own completion then acknowledges k2.
+- Invariants: sinv/cinv/qsinv/jinv of each (`cinv-disown-any`: giving a token back is safe in a complete owner).
+- The first, atomic `sys-transfer` (which also moved a count) is gone: it passed the cell index to
+  `[:owned-done s1 m]`, whose argument is the marker id, and the decision removed the counted case.
 
 ### 4. R2 descendant? over lineage
 - `descendant cells a d n` (fuel n) over `parent`: `descendant-refl`, `descendant-fork`, `descendant-par`;
-  `par-transfer`/`descendant-transfer`: a transfer changes no lineage answer (ownership is not lineage).
+  `descendant-xfer-reserve`/`-move`: a transfer changes no lineage answer (ownership is not lineage).
 
 ### Engine findings (for the engine session)
 - F1 seal must refuse host source changes too, not only T4/T5/T8: otherwise a host write after seal changes
@@ -1957,3 +1957,47 @@ Option C (decided): the engine owns the mechanism, not the policy. Modelled in s
   gates; k2's acceptance queued before the fork can complete (FIFO ingress puts its `[:owned-done s2 m]` after
   it); a refused acceptance refuses the transfer (dvergr's prepare/abort expects an unchanged fork).
 - Not modelled yet (as asked): stream append on merge; stock resolvers.
+
+### Engine design questions (2026-11-17) and answers from the model
+- Q1 unseal: `sys-unseal` (refused in a released world, so after a merge) keeps sinv/cinv/qsinv/jinv: the flag only
+  gates host items and merge. A diff read before an unseal is stale after it.
+- Q2 merge! sealing the child itself: `merge-seal-same` (k ≠ m): the seal changes no world, so the merge reads the
+  same child, as sealed. But a refused merge then leaves the child sealed unless the item clears it again (the
+  refusal must change neither world): effectively the guard without `sealed`.
+- Q3 base at the child's first change: the child's state before its first change of x is the basis's (frozen
+  fork, no following), so `[ident base-version base-value]` recorded then is `version-of b x`/`state-of b x`.
+- Q4 the engine's order, as two system operations with anything between them: `sys-xfer-reserve` (k2 takes
+  the token; refused unless k2 live, open, not the current owner, not owned by m) and `sys-xfer-move` (old side
+  and m's owner := k2 if m live and open, k1 live, not complete, reservation held; else the reservation is undone).
+  Each keeps sinv/cinv/qsinv/jinv (`cinv-disown-any`: giving a token back is safe in a complete owner too).
+  k2 ≠ current owner is required: with a token list, reserve then move into the same owner drops it.
+- Q5 counted re-owning: not needed. Decided: transfer! refuses a counted `(fork)`-effect child (no s1, no
+  `[:owned-done]`); `sys-xfer-move` narrowed accordingly.
+- Decided (engine session): Q1 unseal! under the child's gate; Q2 no auto-seal, merge! refuses unsealed; Q3 base
+  recorded at the first change of every kind; Q4 reserve then move, no `[:transfer]` item (sidecar).
+
+### Aligned with the engine (spec Z#74, feat/c2-merge-engine)
+- `merge-guard` is §9: `settled` (W-RUNS 0, no cleanup entry, no outstanding resource; the empty ingress is the
+  engine's, an item is atomic here) and not released; the model's weaker `quiescent` is no longer used.
+- `seals-ok`: the child sealed and the parent not. A sealed parent refuses the merge (its writes would be host
+  writes past its own seal: without the guard, merge would bypass `cstep`).
+- `seal-item` is the in-item refusals only: write (swap logs a write), deliver, post, release, append, close.
+  The admissions (spawn-top, create-comp-top, observe) throw at admission and make no item, so they are not
+  layer-1 refusals: an admission taken before the seal is processed as usual.
+- The race of a spawn-top admitted before the seal: harmless for a diff read at sealed and settled, as long as no
+  admission can still enqueue after that point (check and enqueue atomic with the seal flag, or the seal waits for
+  in-flight admissions). Otherwise refusing in the item is needed.
+- W-MBASE `[ident base-version base-value]` at own-copy!: the first copy precedes the first change, so it is the
+  basis state (Q3). transfer!: as `sys-xfer-reserve`/`sys-xfer-move`.
+
+### Samples 39-42 (engine #289, generator oracle/gen/samples-c2.clj), registered in oracle_test
+- `replay :sealed-from n`: seal makes no item; from commit n an item the model's `seal-shut` refuses is refused
+  unchanged (layer-2 `cstep`). 39: the child's `[:write 3 7]`/`[:post 4 8]` refused as the engine's; unsealed
+  the model would take both (2 divergences).
+- 40: the merges with `sys/merge-world` and a resolver over the decoded values (logs carry interned ids):
+  throw and ::refuse are none; the value resolver gives the parent's two merge writes exactly.
+- 41: the child sealed from commit 4: the body write after the seal is taken (slice held); `settled` false while
+  the task is parked on its timer (first merge refused), true after its retirement; the second merge is the
+  model's (the parent's `:next-id` is the family allocator, not compared).
+- 42: `sys-xfer-reserve`/`sys-xfer-move`, then the releases (k2's release releases m, F2) and completions give
+  the sidecar's :owner (until completion), pending :kids, :released? and :complete? at all four checkpoints.

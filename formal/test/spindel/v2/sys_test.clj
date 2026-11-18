@@ -38,8 +38,11 @@
     p3l-cstep wq-cstep rel-cstep qid-cstep qinv-cstep sealed-write sinv-seal cinv-seal qsinv-seal jinv-seal
     merge-out-world merge-unsealed writes-refused writes-default-ok writes-default-no run-wr merge-default
     merge-release-refused sinv-merge-release cinv-merge-release-q qsinv-merge-release jinv-merge-release
-    transfer-refused sinv-transfer cinv-transfer qsinv-transfer jinv-transfer
-    descendant-refl descendant-fork descendant-par par-transfer descendant-transfer])
+    descendant-refl descendant-fork descendant-par par-xfer-reserve par-xfer-move descendant-xfer-reserve
+    descendant-xfer-move
+    tbl-all-nat-del cinv-disown-any sinv-xfer-reserve cinv-xfer-reserve qsinv-xfer-reserve jinv-xfer-reserve
+    sinv-xfer-move cinv-xfer-move qsinv-xfer-move jinv-xfer-move
+    sinv-unseal cinv-unseal qsinv-unseal jinv-unseal merge-seal-same])
 
 (deftest theorems-kernel-checked
   (doseq [t theorems]
@@ -137,38 +140,19 @@
     (is (false? (en/slice-held w)) "the host acts between slices")
     (is (= w (:world (sys/cell-step sealed (it :write 3 7)))) "a host write is refused")
     (is (not= w (:world (sys/cell-step (cell child false) (it :write 3 7)))) "unsealed it is taken")
-    (is (= w (:world (sys/cell-step sealed (it :spawn-top s/root-scope-id 1 (:next-id w) [])))) "a spawn is refused")
+    (is (= w (:world (sys/cell-step sealed (it :post 3 7)))) "so is any host source change")
+    (is (not= w (:world (sys/cell-step sealed (it :spawn-top s/root-scope-id 1 (:next-id w) []))))
+        "a spawn item is processed: admissions are refused at admission, before any item (Z#74)")
     (is (true? (:released (:world (sys/cell-step sealed (it :release-world))))) "release is taken")
     (let [c0 (cells false) c1 (sys/sys-merge-release c0 1 2 basis sys/refuse-all)]
       (is (= (map c0 [1 2]) (map c1 [1 2])) "unsealed: the system is unchanged"))
     (let [c0 (sys/sys-seal (cells false) 2) c1 (sys/sys-merge-release c0 1 2 basis sys/refuse-all)]
       (is (= (sys/merge-world parent child basis sys/refuse-all true) (:world (c1 1))) "the parent is merged")
       (is (true? (:released (:world (c1 2)))) "the child is released")
-      (is (= (map c0 [1 2]) (map (sys/sys-merge-release c0 2 2 basis sys/refuse-all) [1 2])) "into itself: refused"))))
-
-;; C2 R6/R2: a transfer moves the token (and the count) from the old owner to the new one and changes no
-;; lineage; it is refused into the fork's own owned subtree
-(deftest c2-transfer-and-descendant
-  (let [cell (fn [parent owner kids] (sys/->Cell s/empty-world true parent owner [] false 0 kids false [] [] false))
-        ;; 1 forked 2 (owner 1) and 3 (owner 1); 2 forked 4 (owner 2)
-        cells (fn [k] (case (long k) 1 (cell 0 0 [2 3]) 2 (cell 1 1 [4]) 3 (cell 1 1 []) 4 (cell 2 2 []) (cell 0 0 [])))
-        fuel [0 0 0 0 0]
-        root s/root-scope-id
-        c1 (sys/sys-transfer cells 2 root 3 root fuel)]
-    (is (true? (sys/descendant cells 1 4 fuel)))
-    (is (false? (sys/descendant cells 3 4 fuel)))
-    (is (= 3 (:owner (c1 2))) "the new owner")
-    (is (= [3] (:kids (c1 1))) "the old owner returned the token")
-    (is (= [2] (:kids (c1 3))) "the new owner holds it")
-    (is (= 1 (:parent (c1 2))) "the lineage stays")
-    (is (= (for [a (range 5) d (range 5)] (sys/descendant cells a d fuel))
-           (for [a (range 5) d (range 5)] (sys/descendant c1 a d fuel))) "no lineage answer changes")
-    (let [c2 (sys/sys-transfer cells 2 root 4 root fuel)]
-      (is (= (map cells (range 5)) (map c2 (range 5))) "into the fork's owned subtree: refused"))
-    (let [c3 (sys/sys-transfer cells 2 root 2 root fuel)]
-      (is (= (map cells (range 5)) (map c3 (range 5))) "to itself: refused"))
-    (let [c4 (sys/sys-transfer cells 2 root 3 (+ root 100) fuel)]
-      (is (= (map cells (range 5)) (map c4 (range 5))) "a counted owner whose scope is not open: refused"))))
+      (is (= (map c0 [1 2]) (map (sys/sys-merge-release c0 2 2 basis sys/refuse-all) [1 2])) "into itself: refused"))
+    (let [c0 (sys/sys-seal (sys/sys-seal (cells false) 2) 1) c1 (sys/sys-merge-release c0 1 2 basis sys/refuse-all)]
+      (is (= (map c0 [1 2]) (map c1 [1 2])) "a sealed parent refuses (Z#74)"))
+    (is (true? (sys/settled child)) "the sample's child is settled (§9)")))
 
 (deftest idle-release-fires-on-an-idle-world-only
   (let [{:keys [child]} (fork-worlds)
@@ -511,3 +495,46 @@
     (testing "an unborn cell does not drain"
       (let [u (c1-cells {5 (assoc (c1-cell (:world (f 3)) :unborn true :pending 99) :norm [mid])})]
         (is (= (u 5) ((sys/sys-drain u 5) 5)))))))
+
+;; C2 R6, the engine's protocol: reserve in the new owner, then move; a completion in between, a counted fork
+;; or a cycle undoes or refuses it; lineage stays; unseal clears the flag unless released
+(deftest c2-transfer-protocol
+  (let [cell (fn [parent owner kids] (sys/->Cell s/empty-world true parent owner [] false 0 kids false [] [] false))
+        cells (fn [k] (case (long k) 1 (cell 0 0 [2 3]) 2 (cell 1 1 []) 3 (cell 1 1 []) (cell 0 0 [])))
+        fuel [0 0 0 0]
+        root s/root-scope-id
+        r (sys/sys-xfer-reserve cells 2 3 fuel)
+        mv (sys/sys-xfer-move r 2 3)]
+    (is (= [2] (:kids (r 3))) "reserved: the new owner holds a token")
+    (is (= [2 3] (:kids (r 1))) "the old one still holds its own")
+    (is (= [3 [3] [2]] [(:owner (mv 2)) (:kids (mv 1)) (:kids (mv 3))]) "moved")
+    (let [done (fn [k] (if (= k 2) (assoc (r 2) :complete true) (r k)))
+          u (sys/sys-xfer-move done 2 3)]
+      (is (= [1 nil] [(:owner (u 2)) (seq (:kids (u 3)))]) "completed meanwhile: the reservation is undone"))
+    (is (= (map cells (range 4)) (map (sys/sys-xfer-reserve cells 2 1 fuel) (range 4))) "to the current owner: refused")
+    (is (= 1 (:parent (mv 2))) "the lineage stays")
+    (is (= (for [a (range 4) d (range 4)] (sys/descendant cells a d fuel))
+           (for [a (range 4) d (range 4)] (sys/descendant mv a d fuel))) "no lineage answer changes")
+    ;; 2 forked 4 (owner 2): a transfer of 2 into its own owned subtree is refused
+    (let [c4 (fn [k] (case (long k) 2 (cell 1 1 [4]) 4 (cell 2 2 []) (cells k)))]
+      (is (true? (sys/descendant c4 1 4 fuel)))
+      (is (= (map c4 (range 5)) (map (sys/sys-xfer-reserve c4 2 4 fuel) (range 5))) "a cycle: refused"))
+    ;; a counted fork: the old owner's world holds its marker; the move undoes the reservation
+    (let [w1 (assoc s/empty-world :forks [(s/->ForkRow 9 2 7)])
+          cc (fn [k] (if (= k 1) (assoc (r 1) :world w1) (r k)))
+          u (sys/sys-xfer-move cc 2 3)]
+      (is (= [1 nil] [(:owner (u 2)) (seq (:kids (u 3)))]) "a counted (fork)-effect child does not move"))
+    (let [sealed ((sys/sys-seal cells 2) 2)]
+      (is (false? (:sealed ((sys/sys-unseal (fn [k] (if (= k 2) sealed (cells k))) 2) 2))) "unsealed")
+      (let [rel (assoc sealed :world (assoc s/empty-world :released true))]
+        (is (true? (:sealed ((sys/sys-unseal (fn [k] (if (= k 2) rel (cells k))) 2) 2))) "released: refused")))))
+
+;; C2 (Z#74): §9 settledness; a child with an unretired run (sample 27: a cancelled run waits for its offload)
+;; is not merged
+(deftest c2-merge-needs-a-settled-child
+  (let [busy (released-busy)
+        w (assoc busy :released false)]
+    (is (pos? (en/world-runs busy)))
+    (is (false? (sys/settled w)))
+    (is (false? (sys/merge-ok s/empty-world w s/empty-world sys/refuse-all true)) "an unretired run: refused")))
+
