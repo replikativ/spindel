@@ -213,7 +213,10 @@
                              (cond-> {:owner (owner-id w (f x rw/OWNER))
                                       :kind (rw/kind-names kind)
                                       ;; a stream's state is its tail link's handle: projected as :tail
-                                      :state (when-not (== kind rw/SRC-STREAM) (intern! w (f x rw/X-VALUE)))
+                                      :state (cond (== kind rw/SRC-STREAM) nil
+                                                   ;; a semaphore's state is its raw permit count (Z#62)
+                                                   (== kind rw/SRC-SEMAPHORE) (f x rw/X-VALUE)
+                                                   :else (intern! w (f x rw/X-VALUE)))
                                       :version (f x rw/VERSION)
                                       :open (f x rw/X-OPEN) :handles (f x rw/HANDLES)}
                                ;; C0: a link's realizer task, pull/push, and its next link once realized

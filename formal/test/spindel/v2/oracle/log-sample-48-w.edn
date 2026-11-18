@@ -1,4 +1,4 @@
-[{:item [:create-source-top 2 :semaphore 3 3],
+[{:item [:create-source-top 2 :semaphore 1 3],
   :accepted true,
   :proj
   {:scopes {2 {:parent nil, :kind :root, :open true}},
@@ -9,7 +9,7 @@
    {3
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1}},
@@ -23,7 +23,7 @@
    :acts {},
    :edges {},
    :cleanup {}}}
- {:item [:spawn-top 2 4 4 [5]],
+ {:item [:spawn-top 2 3 4 [4]],
   :accepted true,
   :proj
   {:scopes
@@ -36,12 +36,12 @@
    {3
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1}},
    :pending-act nil,
-   :tasks {4 {:owner 2, :run 5, :inputs [5], :result nil, :handles 1}},
+   :tasks {4 {:owner 2, :run 5, :inputs [4], :result nil, :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -74,12 +74,12 @@
    {3
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1}},
    :pending-act nil,
-   :tasks {4 {:owner 2, :run 5, :inputs [5], :result nil, :handles 1}},
+   :tasks {4 {:owner 2, :run 5, :inputs [4], :result nil, :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -99,7 +99,7 @@
    :acts {},
    :edges {},
    :cleanup {}}}
- {:item [:arm 5 :timer 6 7],
+ {:item [:arm 5 :timer 5 7],
   :accepted true,
   :proj
   {:scopes
@@ -112,12 +112,12 @@
    {3
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1}},
    :pending-act nil,
-   :tasks {4 {:owner 2, :run 5, :inputs [5], :result nil, :handles 1}},
+   :tasks {4 {:owner 2, :run 5, :inputs [4], :result nil, :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -141,7 +141,7 @@
      :members [[9 0]],
      :slots [nil],
      :remaining 1,
-     :cont 6}},
+     :cont 5}},
    :edges
    {9
     {:baseline nil,
@@ -167,12 +167,12 @@
    {3
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1}},
    :pending-act nil,
-   :tasks {4 {:owner 2, :run 5, :inputs [5], :result nil, :handles 1}},
+   :tasks {4 {:owner 2, :run 5, :inputs [4], :result nil, :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -196,7 +196,7 @@
      :members [[9 0]],
      :slots [nil],
      :remaining 1,
-     :cont 6}},
+     :cont 5}},
    :edges
    {9
     {:baseline nil,
@@ -232,12 +232,12 @@
    {3
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1}},
    :pending-act nil,
-   :tasks {4 {:owner 2, :run 5, :inputs [5], :result nil, :handles 1}},
+   :tasks {4 {:owner 2, :run 5, :inputs [4], :result nil, :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -280,12 +280,12 @@
    {3
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1}},
    :pending-act nil,
-   :tasks {4 {:owner 2, :run 5, :inputs [5], :result nil, :handles 1}},
+   :tasks {4 {:owner 2, :run 5, :inputs [4], :result nil, :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -328,12 +328,12 @@
    {3
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1}},
    :pending-act nil,
-   :tasks {4 {:owner 2, :run 5, :inputs [5], :result nil, :handles 1}},
+   :tasks {4 {:owner 2, :run 5, :inputs [4], :result nil, :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -363,7 +363,7 @@
      :at 0,
      :debtor 4}},
    :cleanup {}}}
- {:item [:arm 5 :offload 7 11],
+ {:item [:arm 5 :offload 6 11],
   :accepted true,
   :proj
   {:scopes
@@ -376,12 +376,12 @@
    {3
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1}},
    :pending-act nil,
-   :tasks {4 {:owner 2, :run 5, :inputs [5], :result nil, :handles 1}},
+   :tasks {4 {:owner 2, :run 5, :inputs [4], :result nil, :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -405,7 +405,7 @@
      :members [[13 0]],
      :slots [nil],
      :remaining 1,
-     :cont 7}},
+     :cont 6}},
    :edges
    {10
     {:baseline nil,
@@ -428,7 +428,7 @@
      :at 1,
      :debtor 11}},
    :cleanup {}}}
- {:item [:resource-fire 11 1 8],
+ {:item [:resource-fire 11 1 7],
   :accepted true,
   :proj
   {:scopes
@@ -441,12 +441,12 @@
    {3
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1}},
    :pending-act nil,
-   :tasks {4 {:owner 2, :run 5, :inputs [5], :result nil, :handles 1}},
+   :tasks {4 {:owner 2, :run 5, :inputs [4], :result nil, :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -489,12 +489,12 @@
    {3
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1}},
    :pending-act nil,
-   :tasks {4 {:owner 2, :run 5, :inputs [5], :result nil, :handles 1}},
+   :tasks {4 {:owner 2, :run 5, :inputs [4], :result nil, :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -537,12 +537,12 @@
    {3
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1}},
    :pending-act nil,
-   :tasks {4 {:owner 2, :run 5, :inputs [5], :result nil, :handles 1}},
+   :tasks {4 {:owner 2, :run 5, :inputs [4], :result nil, :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -572,7 +572,7 @@
      :at 0,
      :debtor 4}},
    :cleanup {}}}
- {:item [:arm 5 :external 9 14],
+ {:item [:arm 5 :external 8 14],
   :accepted true,
   :proj
   {:scopes
@@ -585,12 +585,12 @@
    {3
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1}},
    :pending-act nil,
-   :tasks {4 {:owner 2, :run 5, :inputs [5], :result nil, :handles 1}},
+   :tasks {4 {:owner 2, :run 5, :inputs [4], :result nil, :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -614,7 +614,7 @@
      :members [[16 0]],
      :slots [nil],
      :remaining 1,
-     :cont 9}},
+     :cont 8}},
    :edges
    {10
     {:baseline nil,
@@ -637,7 +637,7 @@
      :at 2,
      :debtor 14}},
    :cleanup {}}}
- {:item [:resource-fire 14 1 10],
+ {:item [:resource-fire 14 1 9],
   :accepted true,
   :proj
   {:scopes
@@ -650,12 +650,12 @@
    {3
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1}},
    :pending-act nil,
-   :tasks {4 {:owner 2, :run 5, :inputs [5], :result nil, :handles 1}},
+   :tasks {4 {:owner 2, :run 5, :inputs [4], :result nil, :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -698,12 +698,12 @@
    {3
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1}},
    :pending-act nil,
-   :tasks {4 {:owner 2, :run 5, :inputs [5], :result nil, :handles 1}},
+   :tasks {4 {:owner 2, :run 5, :inputs [4], :result nil, :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -746,12 +746,12 @@
    {3
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1}},
    :pending-act nil,
-   :tasks {4 {:owner 2, :run 5, :inputs [5], :result nil, :handles 1}},
+   :tasks {4 {:owner 2, :run 5, :inputs [4], :result nil, :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -781,7 +781,7 @@
      :at 0,
      :debtor 4}},
    :cleanup {}}}
- {:item [:complete 5 1 11],
+ {:item [:complete 5 1 10],
   :accepted true,
   :proj
   {:scopes {2 {:parent nil, :kind :root, :open true}},
@@ -792,13 +792,13 @@
    {3
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [5], :result [:ok 11], :handles 1}},
+   {4 {:owner 2, :run nil, :inputs [4], :result [:ok 10], :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -807,7 +807,7 @@
    :acts {},
    :edges {},
    :cleanup {}}}
- {:item [:spawn-top 2 12 17 [13]],
+ {:item [:spawn-top 2 11 17 [12]],
   :accepted true,
   :proj
   {:scopes
@@ -820,14 +820,14 @@
    {3
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [5], :result [:ok 11], :handles 1},
-    17 {:owner 2, :run 18, :inputs [13], :result nil, :handles 1}},
+   {4 {:owner 2, :run nil, :inputs [4], :result [:ok 10], :handles 1},
+    17 {:owner 2, :run 18, :inputs [12], :result nil, :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -860,14 +860,14 @@
    {3
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [5], :result [:ok 11], :handles 1},
-    17 {:owner 2, :run 18, :inputs [13], :result nil, :handles 1}},
+   {4 {:owner 2, :run nil, :inputs [4], :result [:ok 10], :handles 1},
+    17 {:owner 2, :run 18, :inputs [12], :result nil, :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -887,7 +887,7 @@
    :acts {},
    :edges {},
    :cleanup {}}}
- {:item [:arm 18 :external 14 20],
+ {:item [:arm 18 :external 13 20],
   :accepted true,
   :proj
   {:scopes
@@ -900,14 +900,14 @@
    {3
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [5], :result [:ok 11], :handles 1},
-    17 {:owner 2, :run 18, :inputs [13], :result nil, :handles 1}},
+   {4 {:owner 2, :run nil, :inputs [4], :result [:ok 10], :handles 1},
+    17 {:owner 2, :run 18, :inputs [12], :result nil, :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -931,7 +931,7 @@
      :members [[22 0]],
      :slots [nil],
      :remaining 1,
-     :cont 14}},
+     :cont 13}},
    :edges
    {22
     {:baseline nil,
@@ -957,15 +957,15 @@
    {3
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [5], :result [:ok 11], :handles 1},
+   {4 {:owner 2, :run nil, :inputs [4], :result [:ok 10], :handles 1},
     17
-    {:owner 2, :run 18, :inputs [13], :result [:err 1], :handles 1}},
+    {:owner 2, :run 18, :inputs [12], :result [:err 1], :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -997,15 +997,15 @@
    {3
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [5], :result [:ok 11], :handles 1},
+   {4 {:owner 2, :run nil, :inputs [4], :result [:ok 10], :handles 1},
     17
-    {:owner 2, :run nil, :inputs [13], :result [:err 1], :handles 1}},
+    {:owner 2, :run nil, :inputs [12], :result [:err 1], :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -1025,15 +1025,15 @@
    {3
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [5], :result [:ok 11], :handles 1},
+   {4 {:owner 2, :run nil, :inputs [4], :result [:ok 10], :handles 1},
     17
-    {:owner 2, :run nil, :inputs [13], :result [:err 1], :handles 1}},
+    {:owner 2, :run nil, :inputs [12], :result [:err 1], :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -1042,7 +1042,7 @@
    :acts {},
    :edges {},
    :cleanup {}}}
- {:item [:spawn-top 2 15 24 [16]],
+ {:item [:spawn-top 2 14 24 [15]],
   :accepted true,
   :proj
   {:scopes
@@ -1055,16 +1055,16 @@
    {3
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [5], :result [:ok 11], :handles 1},
+   {4 {:owner 2, :run nil, :inputs [4], :result [:ok 10], :handles 1},
     17
-    {:owner 2, :run nil, :inputs [13], :result [:err 1], :handles 1},
-    24 {:owner 2, :run 25, :inputs [16], :result nil, :handles 1}},
+    {:owner 2, :run nil, :inputs [12], :result [:err 1], :handles 1},
+    24 {:owner 2, :run 25, :inputs [15], :result nil, :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -1097,16 +1097,16 @@
    {3
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 0,
      :open true,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [5], :result [:ok 11], :handles 1},
+   {4 {:owner 2, :run nil, :inputs [4], :result [:ok 10], :handles 1},
     17
-    {:owner 2, :run nil, :inputs [13], :result [:err 1], :handles 1},
-    24 {:owner 2, :run 25, :inputs [16], :result nil, :handles 1}},
+    {:owner 2, :run nil, :inputs [12], :result [:err 1], :handles 1},
+    24 {:owner 2, :run 25, :inputs [15], :result nil, :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -1126,7 +1126,7 @@
    :acts {},
    :edges {},
    :cleanup {}}}
- {:item [:take 25 3 17 27],
+ {:item [:take 25 3 16 27],
   :accepted true,
   :proj
   {:scopes
@@ -1139,16 +1139,16 @@
    {3
     {:owner 2,
      :kind :semaphore,
-     :state 18,
+     :state 0,
      :version 1,
      :open true,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [5], :result [:ok 11], :handles 1},
+   {4 {:owner 2, :run nil, :inputs [4], :result [:ok 10], :handles 1},
     17
-    {:owner 2, :run nil, :inputs [13], :result [:err 1], :handles 1},
-    24 {:owner 2, :run 25, :inputs [16], :result nil, :handles 1}},
+    {:owner 2, :run nil, :inputs [12], :result [:err 1], :handles 1},
+    24 {:owner 2, :run 25, :inputs [15], :result nil, :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -1168,7 +1168,7 @@
    :acts {},
    :edges {},
    :cleanup {}}}
- {:item [:complete 25 1 19],
+ {:item [:complete 25 1 17],
   :accepted true,
   :proj
   {:scopes {2 {:parent nil, :kind :root, :open true}},
@@ -1179,17 +1179,17 @@
    {3
     {:owner 2,
      :kind :semaphore,
-     :state 18,
+     :state 0,
      :version 1,
      :open true,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [5], :result [:ok 11], :handles 1},
+   {4 {:owner 2, :run nil, :inputs [4], :result [:ok 10], :handles 1},
     17
-    {:owner 2, :run nil, :inputs [13], :result [:err 1], :handles 1},
+    {:owner 2, :run nil, :inputs [12], :result [:err 1], :handles 1},
     24
-    {:owner 2, :run nil, :inputs [16], :result [:ok 19], :handles 1}},
+    {:owner 2, :run nil, :inputs [15], :result [:ok 17], :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -1209,17 +1209,17 @@
    {3
     {:owner 2,
      :kind :semaphore,
-     :state 18,
+     :state 0,
      :version 1,
      :open true,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [5], :result [:ok 11], :handles 1},
+   {4 {:owner 2, :run nil, :inputs [4], :result [:ok 10], :handles 1},
     17
-    {:owner 2, :run nil, :inputs [13], :result [:err 1], :handles 1},
+    {:owner 2, :run nil, :inputs [12], :result [:err 1], :handles 1},
     24
-    {:owner 2, :run nil, :inputs [16], :result [:ok 19], :handles 1}},
+    {:owner 2, :run nil, :inputs [15], :result [:ok 17], :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -1228,7 +1228,7 @@
    :acts {},
    :edges {},
    :cleanup {}}}
- {:item [:spawn-top 2 20 30 [16]],
+ {:item [:spawn-top 2 18 30 [15]],
   :accepted true,
   :proj
   {:scopes
@@ -1241,18 +1241,18 @@
    {3
     {:owner 2,
      :kind :semaphore,
-     :state 18,
+     :state 0,
      :version 1,
      :open true,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [5], :result [:ok 11], :handles 1},
+   {4 {:owner 2, :run nil, :inputs [4], :result [:ok 10], :handles 1},
     17
-    {:owner 2, :run nil, :inputs [13], :result [:err 1], :handles 1},
+    {:owner 2, :run nil, :inputs [12], :result [:err 1], :handles 1},
     24
-    {:owner 2, :run nil, :inputs [16], :result [:ok 19], :handles 1},
-    30 {:owner 2, :run 31, :inputs [16], :result nil, :handles 1}},
+    {:owner 2, :run nil, :inputs [15], :result [:ok 17], :handles 1},
+    30 {:owner 2, :run 31, :inputs [15], :result nil, :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -1285,18 +1285,18 @@
    {3
     {:owner 2,
      :kind :semaphore,
-     :state 18,
+     :state 0,
      :version 1,
      :open true,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [5], :result [:ok 11], :handles 1},
+   {4 {:owner 2, :run nil, :inputs [4], :result [:ok 10], :handles 1},
     17
-    {:owner 2, :run nil, :inputs [13], :result [:err 1], :handles 1},
+    {:owner 2, :run nil, :inputs [12], :result [:err 1], :handles 1},
     24
-    {:owner 2, :run nil, :inputs [16], :result [:ok 19], :handles 1},
-    30 {:owner 2, :run 31, :inputs [16], :result nil, :handles 1}},
+    {:owner 2, :run nil, :inputs [15], :result [:ok 17], :handles 1},
+    30 {:owner 2, :run 31, :inputs [15], :result nil, :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -1316,7 +1316,7 @@
    :acts {},
    :edges {},
    :cleanup {}}}
- {:item [:take 31 3 21 33],
+ {:item [:take 31 3 19 33],
   :accepted true,
   :proj
   {:scopes
@@ -1329,18 +1329,18 @@
    {3
     {:owner 2,
      :kind :semaphore,
-     :state 18,
+     :state 0,
      :version 1,
      :open true,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [5], :result [:ok 11], :handles 1},
+   {4 {:owner 2, :run nil, :inputs [4], :result [:ok 10], :handles 1},
     17
-    {:owner 2, :run nil, :inputs [13], :result [:err 1], :handles 1},
+    {:owner 2, :run nil, :inputs [12], :result [:err 1], :handles 1},
     24
-    {:owner 2, :run nil, :inputs [16], :result [:ok 19], :handles 1},
-    30 {:owner 2, :run 31, :inputs [16], :result nil, :handles 1}},
+    {:owner 2, :run nil, :inputs [15], :result [:ok 17], :handles 1},
+    30 {:owner 2, :run 31, :inputs [15], :result nil, :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -1364,7 +1364,7 @@
      :members [[34 0]],
      :slots [nil],
      :remaining 1,
-     :cont 21}},
+     :cont 19}},
    :edges
    {34
     {:baseline nil,
@@ -1390,18 +1390,18 @@
    {3
     {:owner 2,
      :kind :semaphore,
-     :state 18,
+     :state 0,
      :version 2,
      :open true,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [5], :result [:ok 11], :handles 1},
+   {4 {:owner 2, :run nil, :inputs [4], :result [:ok 10], :handles 1},
     17
-    {:owner 2, :run nil, :inputs [13], :result [:err 1], :handles 1},
+    {:owner 2, :run nil, :inputs [12], :result [:err 1], :handles 1},
     24
-    {:owner 2, :run nil, :inputs [16], :result [:ok 19], :handles 1},
-    30 {:owner 2, :run 31, :inputs [16], :result nil, :handles 1}},
+    {:owner 2, :run nil, :inputs [15], :result [:ok 17], :handles 1},
+    30 {:owner 2, :run 31, :inputs [15], :result nil, :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -1434,18 +1434,18 @@
    {3
     {:owner 2,
      :kind :semaphore,
-     :state 18,
+     :state 0,
      :version 2,
      :open true,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [5], :result [:ok 11], :handles 1},
+   {4 {:owner 2, :run nil, :inputs [4], :result [:ok 10], :handles 1},
     17
-    {:owner 2, :run nil, :inputs [13], :result [:err 1], :handles 1},
+    {:owner 2, :run nil, :inputs [12], :result [:err 1], :handles 1},
     24
-    {:owner 2, :run nil, :inputs [16], :result [:ok 19], :handles 1},
-    30 {:owner 2, :run 31, :inputs [16], :result nil, :handles 1}},
+    {:owner 2, :run nil, :inputs [15], :result [:ok 17], :handles 1},
+    30 {:owner 2, :run 31, :inputs [15], :result nil, :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -1465,7 +1465,7 @@
    :acts {},
    :edges {},
    :cleanup {}}}
- {:item [:complete 31 1 22],
+ {:item [:complete 31 1 20],
   :accepted true,
   :proj
   {:scopes {2 {:parent nil, :kind :root, :open true}},
@@ -1476,19 +1476,19 @@
    {3
     {:owner 2,
      :kind :semaphore,
-     :state 18,
+     :state 0,
      :version 2,
      :open true,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [5], :result [:ok 11], :handles 1},
+   {4 {:owner 2, :run nil, :inputs [4], :result [:ok 10], :handles 1},
     17
-    {:owner 2, :run nil, :inputs [13], :result [:err 1], :handles 1},
+    {:owner 2, :run nil, :inputs [12], :result [:err 1], :handles 1},
     24
-    {:owner 2, :run nil, :inputs [16], :result [:ok 19], :handles 1},
+    {:owner 2, :run nil, :inputs [15], :result [:ok 17], :handles 1},
     30
-    {:owner 2, :run nil, :inputs [16], :result [:ok 22], :handles 1}},
+    {:owner 2, :run nil, :inputs [15], :result [:ok 20], :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -1508,19 +1508,19 @@
    {3
     {:owner 2,
      :kind :semaphore,
-     :state 18,
+     :state 0,
      :version 2,
      :open true,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [5], :result [:ok 11], :handles 1},
+   {4 {:owner 2, :run nil, :inputs [4], :result [:ok 10], :handles 1},
     17
-    {:owner 2, :run nil, :inputs [13], :result [:err 1], :handles 1},
+    {:owner 2, :run nil, :inputs [12], :result [:err 1], :handles 1},
     24
-    {:owner 2, :run nil, :inputs [16], :result [:ok 19], :handles 1},
+    {:owner 2, :run nil, :inputs [15], :result [:ok 17], :handles 1},
     30
-    {:owner 2, :run nil, :inputs [16], :result [:ok 22], :handles 1}},
+    {:owner 2, :run nil, :inputs [15], :result [:ok 20], :handles 1}},
    :comps {},
    :released false,
    :forks {},
@@ -1540,19 +1540,19 @@
    {3
     {:owner 2,
      :kind :semaphore,
-     :state 3,
+     :state 1,
      :version 3,
      :open true,
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [5], :result [:ok 11], :handles 1},
+   {4 {:owner 2, :run nil, :inputs [4], :result [:ok 10], :handles 1},
     17
-    {:owner 2, :run nil, :inputs [13], :result [:err 1], :handles 1},
+    {:owner 2, :run nil, :inputs [12], :result [:err 1], :handles 1},
     24
-    {:owner 2, :run nil, :inputs [16], :result [:ok 19], :handles 1},
+    {:owner 2, :run nil, :inputs [15], :result [:ok 17], :handles 1},
     30
-    {:owner 2, :run nil, :inputs [16], :result [:ok 22], :handles 1}},
+    {:owner 2, :run nil, :inputs [15], :result [:ok 20], :handles 1}},
    :comps {},
    :released false,
    :forks {},

@@ -3124,7 +3124,7 @@
      :at 0,
      :debtor 12}},
    :cleanup {}}}
- {:item [:handle-new 18],
+ {:item [:create-comp 24 18 [] 18],
   :accepted true,
   :proj
   {:scopes
@@ -3171,7 +3171,7 @@
      :adoption nil,
      :inputs [],
      :result [:ok 16],
-     :handles 1,
+     :handles 0,
      :version 1,
      :body 14,
      :owner 13,
@@ -3214,7 +3214,7 @@
      :at 0,
      :debtor 12}},
    :cleanup {}}}
- {:item [:create-comp 24 18 [] 18],
+ {:item [:handle-new 18],
   :accepted true,
   :proj
   {:scopes
@@ -3332,7 +3332,7 @@
      :pending 0,
      :rank 1,
      :basis [[18 1]],
-     :adoption {:basis [], :baselines [[2 18 0]]},
+     :adoption {:basis [], :baselines []},
      :inputs [10],
      :result [:ok 17],
      :handles 1,

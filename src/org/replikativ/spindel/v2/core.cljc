@@ -1674,30 +1674,37 @@
 
 (defn- raise-rank!
   "I12 by height adjustment: `c` must rank above `d`. Raising propagates to
-   c's creditors; reaching `d` again means the new edge closes a cycle."
+   c's creditors; reaching `d` again means the new edge closes a cycle. The
+   raise is planned first and written only when it closes no cycle: a
+   refused edge (::cycle) changes no rank."
   [w c d]
   (let [need (inc (gl d rw/C-RANK))]
     (if (>= (gl c rw/C-RANK) need)
       true
-      (loop [todo [[c need]] seen #{}]
-        (if-let [[x n] (peek todo)]
-          (let [todo (pop todo)]
-            (cond
-              (identical? x d) false
-              (>= (gl x rw/C-RANK) (long n)) (recur todo seen)
-              :else
-              (do (s! x rw/C-RANK n)
-                  (let [outs (g x rw/OUTS)]
-                    (recur (loop [i 0 todo todo]
-                             (if (< i (acount outs))
-                               (let [e (rv w (anth outs i))]
-                                 (recur (inc i)
-                                        (if (== rw/EK-DEP (gl e rw/E-KIND))
-                                          (conj todo [(rv w (g e rw/E-CRED)) (inc (long n))])
-                                          todo)))
-                               todo))
-                           seen)))))
-          true)))))
+      (let [plan (loop [todo [[c need]] plan {}]
+                   (if-let [[x n] (peek todo)]
+                     (let [todo (pop todo)
+                           id (g x rw/ID)
+                           cur (max (gl x rw/C-RANK) (long (or (second (get plan id)) 0)))]
+                       (cond
+                         (identical? x d) nil
+                         (>= cur (long n)) (recur todo plan)
+                         :else
+                         (let [outs (g x rw/OUTS)]
+                           (recur (loop [i 0 todo todo]
+                                    (if (< i (acount outs))
+                                      (let [e (rv w (anth outs i))]
+                                        (recur (inc i)
+                                               (if (== rw/EK-DEP (gl e rw/E-KIND))
+                                                 (conj todo [(rv w (g e rw/E-CRED)) (inc (long n))])
+                                                 todo)))
+                                      todo))
+                                  (assoc plan id [x n])))))
+                     plan))]
+        (if (nil? plan)
+          false
+          (do (doseq [[x n] (vals plan)] (s! x rw/C-RANK n))
+              true))))))
 
 (defn cycle-ex [c d]
   (ex-info "dependency cycle" {:spindel/cycle [(g c rw/ID) (g d rw/ID)]}))
@@ -1960,8 +1967,44 @@
                :when (and (task? d) s (identical? s (rv w (g d rw/OWNER))))]
            (g d rw/ID)))))
 
+(defn- comp-debtors
+  "The computation debtors `y` depends on: its live dep edges, or for an
+   idle `y` the debtors its validity records (the edges a reactivation
+   would re-link)."
+  [w y]
+  (if (g y rw/C-IDLE)
+    (let [vs (g y rw/C-VALIDITY)]
+      (if (sequential? vs)
+        (into [] (keep (fn [[d]] (let [d (rv w d)] (when (and d (comp? d)) d)))) vs)
+        []))
+    (let [ins (g y rw/C-INS)]
+      (loop [i 0 acc []]
+        (if (and ins (< i (acount ins)))
+          (let [e (rv w (anth ins i))
+                d (when e (rv w (g e rw/E-DEBTOR)))]
+            (recur (inc i) (if (and d (comp? d)) (conj acc d) acc)))
+          acc)))))
+
+(defn- await-cycle
+  "T6's cycle check on the unchanged world (the model's await-cycle, before
+   any reactivation, edge or raise): the first computation member from
+   which `x` is reachable through computation debtors, or nil."
+  [w x ds]
+  (let [xid (long (g x rw/ID))]
+    (some (fn [h]
+            (let [d (row-of h)]
+              (when (comp? d)
+                (loop [todo [d] seen #{}]
+                  (when-let [y (peek todo)]
+                    (let [todo (pop todo) id (long (g y rw/ID))]
+                      (cond (== id xid) d
+                            (contains? seen id) (recur todo seen)
+                            :else (recur (into todo (comp-debtors w y)) (conj seen id)))))))))
+          ds)))
+
 (defn- await-group!
-  "T6: an activation over `ds` with `mode` (:one :all :any)."
+  "T6: an activation over `ds` with `mode` (:one :all :any). A cycle is
+   refused before anything changes (the model's refusal is atomic)."
   [ds mode k ek]
   (if-not (valid-run)
     (unwind! ek)
@@ -1977,23 +2020,29 @@
             refused (volatile! nil)
           ;; group sites restart (Y#3); `one` sites re-enter when allowed (§2)
             kk (when (= mode :one) (reentrant-k r k))]
+        (when in-comp?
+          (when-let [d (await-cycle w x ds)] (vreset! refused d)))
       ;; Reactivation of valid idle debtors first, then member edges in
       ;; debtor-list order (the model's allocation order).
-        (dotimes [i n]
-          (let [d (row-of (nth ds i))]
-            (when (and (comp? d) (g d rw/C-IDLE)) (validate! w d))))
+        (when-not @refused
+          (dotimes [i n]
+            (let [d (row-of (nth ds i))]
+              (when (and (comp? d) (g d rw/C-IDLE)) (validate! w d)))))
       ;; Member edges; a repeated debtor shares its edge.
-        (dotimes [i n]
+        (dotimes [i (if @refused 0 n)]
           (let [d (row-of (nth ds i))
                 prev (loop [j 0] (when (< j i)
                                    (let [m (rv w (aget members j))]
                                      (if (and m (identical? d (rv w (g m rw/E-DEBTOR)))) m (recur (inc j))))))]
             (cond
               prev (aset members i prev)
-              in-comp? (let [[e _] (site-edge! w r x d at kk ek)]
+              in-comp? (let [[e reused?] (site-edge! w r x d at kk ek)]
                          (if (nil? e)
                            (vreset! refused d)
                            (do (when (and (source? d) (not (deferred? d))) (s! e rw/E-BASE (g d rw/X-VALUE)))
+                               ;; §4.4: a suffix debtor stays cached until the new run awaits
+                               ;; it again: the re-await's own edge retains it now
+                               (when-not reused? (adoption-baseline! w x at d))
                                (aset members i e))))
               (and (source? d) (not (deferred? d))) nil       ; a task reads a signal once
               (settled? d) (alloc-id! w)                      ; consumed at once (Z#28)
@@ -2432,9 +2481,10 @@
                             (s! child rw/C-RESTART true)
                             (mark-from! w child)
                             (maybe-schedule! w child)))))
-                  (let [h (handle! w child)]
-                    (commit! w [:create-comp (g r rw/ID) (g child rw/ID) [:opaque-seq inputs] [:opaque body]])
-                    h))
+                  (do (commit! w [:create-comp (g r rw/ID) (g child rw/ID) [:opaque-seq inputs] [:opaque body]])
+                      ;; the item first: its projection is the readoption itself; a new
+                      ;; handle (a dead one replaced) follows as its own [:handle-new]
+                      (handle! w child)))
               ;; A body creation gets the body's weak handle (Z#13): +1 in handle!
               (let [child (set-origin! (new-comp! w c key at inputs body 0) (conj (frame-of c) key) r)]
                 (aadd! (gm c rw/C-BASIS) child)
@@ -2494,9 +2544,10 @@
             (if (and old (task? old) (same-inputs? inputs (g old rw/K-INPUTS))
                      (= (g r rw/R-PATH) (g old rw/K-PATH)))   ; §8.2 P4
               (do (s! old rw/AT at)
-                  (let [h (handle! w old)]
-                    (commit! w [:spawn (g r rw/ID) [:opaque body] (g old rw/ID) [:opaque-seq inputs]])
-                    h))
+                  (do (commit! w [:spawn (g r rw/ID) [:opaque body] (g old rw/ID) [:opaque-seq inputs]])
+                      ;; the item first: its projection is the readoption itself; a new
+                      ;; handle (a dead one replaced) follows as its own [:handle-new]
+                      (handle! w old)))
               (do (when old                       ; changed captures: replace it
                     (let [basis (gm x rw/C-BASIS)
                           i (idx-of basis old)]
@@ -2995,6 +3046,15 @@
     (s! x rw/X-OPEN false)
     (settle! w x)))
 
+(defn- source-item-value
+  "A creation item's initial value: opaque (interned in the log), except a
+   semaphore's permit count, which the model compares against its maximum
+   (Z#62), and a mailbox's, which is not a value (nil)."
+  [kind v]
+  (cond (== kind rw/SRC-SEMAPHORE) v
+        (== kind rw/SRC-MAILBOX) [:opaque nil]
+        :else [:opaque v]))
+
 (defn- create-source-in-run!
   "T1 inside a run: owned by the computation (in its basis, adopted by later
    runs in creation order) or by the task run's current scope, which retains
@@ -3011,10 +3071,11 @@
         ;; signal where the last one created a mailbox makes a new source)
         (if (and old (source? old) (== (long kind) (gl old rw/X-KIND)))
           (do (s! old rw/AT at)
-              (let [h (handle! w old)]
-                (commit! w [:create-source (g r rw/ID) (rw/kind-names kind)
-                            [:opaque (when-not (== kind rw/SRC-MAILBOX) v)] (g old rw/ID)])
-                h))
+              (do (commit! w [:create-source (g r rw/ID) (rw/kind-names kind)
+                              (source-item-value kind v) (g old rw/ID)])
+                  ;; the item first: its projection is the readoption itself; a new
+                  ;; handle (a dead one replaced) follows as its own [:handle-new]
+                  (handle! w old)))
           (let [s (new-source! w kind v x key at)]
             (s! s rw/HANDLES 0)
             (when init (init s))
@@ -3022,7 +3083,7 @@
             (ref-inc! s)
             (let [h (handle! w s)]
               (commit! w [:create-source (g r rw/ID) (rw/kind-names kind)
-                          [:opaque (when-not (== kind rw/SRC-MAILBOX) v)] (g s rw/ID)])
+                          (source-item-value kind v) (g s rw/ID)])
               h))))
       (let [sc (current-scope! w r)
             s (new-source! w kind v sc 0 at)]
@@ -3032,7 +3093,7 @@
         (aadd! (g w rw/W-RQ) s)
         (let [h (handle! w s)]
           (commit! w [:create-source (g r rw/ID) (rw/kind-names kind)
-                      [:opaque (when-not (== kind rw/SRC-MAILBOX) v)] (g s rw/ID)])
+                      (source-item-value kind v) (g s rw/ID)])
           h)))))
 
 (defn- create-source-top! [w kind v init]
@@ -3048,13 +3109,13 @@
            (if (host-released? w)
              (refuse! w [:create-source-top (g (rv w (g w rw/W-ROOT)) rw/ID)
                          (rw/kind-names kind)
-                         [:opaque (when-not (== kind rw/SRC-MAILBOX) v)] 0])
+                         (source-item-value kind v) 0])
              (let [x (new-source! w kind v (rv w (g w rw/W-ROOT)) 0 0)]
                (when init (init x))
                (bind-handle! h x)
                (commit! w [:create-source-top (g (rv w (g w rw/W-ROOT)) rw/ID)
                            (rw/kind-names kind)
-                           [:opaque (when-not (== kind rw/SRC-MAILBOX) v)] (g x rw/ID)]))))
+                           (source-item-value kind v) (g x rw/ID)]))))
     h))
 
 (defn signal
@@ -3340,9 +3401,10 @@
               spec (when (and old (link? old)) (g old rw/X-REALIZE))]
           (if (and spec (same-inputs? inputs (nth spec 5)) (same-capture? init (nth spec 1)))
             (do (s! old rw/AT at)
-                (let [h (handle! w old)]
-                  (commit! w [:create-link (g r rw/ID) (g old rw/ID)])
-                  h))
+                (do (commit! w [:create-link (g r rw/ID) (g old rw/ID)])
+                    ;; the item first: its projection is the readoption itself; a new
+                    ;; handle (a dead one replaced) follows as its own [:handle-new]
+                    (handle! w old)))
             (do (when old
                   (let [basis (gm x rw/C-BASIS)]
                     (hs/remove-at! basis (idx-of basis old))
