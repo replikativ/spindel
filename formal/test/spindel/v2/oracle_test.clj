@@ -641,3 +641,44 @@
   (doseq [n ["39-parent" "39-child" "40-parent" "40-child" "41-parent" "41-child" "42-root"]]
     (is (= [] (o/roundtrip (log n))) (str "sample " n))))
 
+
+;; ---------------------------------------------------------------------------
+;; Refusal samples 43-50 (engine #297 and fix/v2-raise-cycle-atomic, generator oracle/gen/samples-refusals.clj):
+;; every world replays with no divergence, refusals included, and the model's derived completion state matches the
+;; sidecar. 43: T21 with 16 host operations queued before it (Z#75 (2)); 44: an await cycle, refused with no rank
+;; change (I12); 45: a blocked chain of 66 (no depth bound, Z#75 (3)); 46: pins, handles and readoption (a
+;; readopted creation leaves the adoption basis; a re-await consumes its adoption baseline, §4.4); 47: creations
+;; in bodies, link-demand/realize; 48: resources and the semaphore maximum (Z#62); 49: await-all fail-fast (Z#61);
+;; 50: one slice holder at a time (D0)
+(def ^:private refusal-specs
+  (merge
+   {"43" (let [r (log "43-root")]
+           {:root {:log r :kind :root}
+            :hostfork {:log (log "43-hostfork") :from :root :kind :fork-host :at (c1-idx r #(= :fork-host (first %)))}
+            :effect {:log (log "43-effect") :from :root :kind :fork :at (c1-idx r #(= :fork (first %)))}})}
+   (into {} (for [n ["44" "45" "46" "47" "48" "49" "50"]] [n {:w {:log (log (str n "-w")) :kind :root}}]))))
+
+(deftest refusal-samples
+  (doseq [[n spec] refusal-specs]
+    (let [fam (o/replay-family spec)
+          obs (o/read-observations (str "test/spindel/v2/oracle/log-sample-" n "-observations.edn"))]
+      (is (seq obs) (str "sample " n ": sidecar"))
+      (doseq [[k {:keys [res]}] fam]
+        (is (= [(count (:log (spec k))) 0 0] ((juxt :checked :n-divergences :resyncs) res)) (str "sample " n " " k)))
+      (is (= [] (o/check-observations spec fam obs)) (str "sample " n ": host observations")))))
+
+(deftest refusal-sample-shapes
+  (let [refused (fn [n] (mapv :item (filter #(false? (:accepted %)) (log n))))]
+    (is (= [:write :spawn-top :create-comp-top :deliver :post :release :append :close :cancel :unpin :handle-drop]
+           (map first (refused "43-root")))
+        "43: one refused item per queued host operation kind (observe, pin and value-async make no item)")
+    (is (= [[:await 10 [3] :one 12]] (refused "44-w")) "44: the await closing the cycle")
+    (is (= [[:unpin 4]] (refused "46-w")) "46: unpin at count 0")
+    (is (= [[:resource-fire 20] [:release 3]] (refused "48-w")) "48: the late fire of a cancelled external, the over-release")
+    (doseq [n ["45-w" "47-w" "49-w" "50-w" "43-hostfork" "43-effect"]]
+      (is (= [] (refused n)) (str n ": no refusal")))
+    (is (= 66 (count (filter #(= :spawn-top (first (:item %))) (log "45-w")))) "45: the chain is deeper than 64")))
+
+(deftest projection-roundtrip-refusals
+  (doseq [n ["43-root" "43-hostfork" "43-effect" "44-w" "45-w" "46-w" "47-w" "48-w" "49-w" "50-w"]]
+    (is (= [] (o/roundtrip (log n))) (str "sample " n))))

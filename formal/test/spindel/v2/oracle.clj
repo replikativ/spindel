@@ -92,7 +92,12 @@
                           :basis (mapv (juxt :id :at) (:basis c))
                           :adoption (when (or (seq (:adopt-basis c)) (seq (:adopt-baselines c)))
                                       {:basis (mapv :id (:adopt-basis c))
-                                       :baselines (mapv (juxt :site :source :value) (:adopt-baselines c))})
+                                       ;; as for edges: the engine has a baseline value for a source debtor
+                                       ;; only (a computation debtor's entry carries nil, interned 0); the
+                                       ;; model records the delivered result, which nothing reads
+                                       :baselines (mapv (fn [b] [(:site b) (:source b)
+                                                                 (if (s/source-has w (:source b)) (:value b) 0)])
+                                                        (:adopt-baselines c))})
                           :handles (:handles c)}))
      :tasks (tbl (:tasks w) (fn [k] (cond-> {:owner (opt0 (:owner k)) :run (opt0 (:run k))
                                              :result (result->edn (:result k)) :handles (:handles k)}
@@ -324,8 +329,12 @@
                   only (re-entry point); the engine leaves 0, the model stores the site index
   :link-state     `:sources :state` of a realized link (C0): the engine interns its value
                   [v next-handle] (or the failure box) as one opaque value; the model keeps v
-                  in `state` and next in `:next` (compared), the error in `state` with `fail`"
-  {:mailbox-state true :wait-at true :link-state true})
+                  in `state` and next in `:next` (compared), the error in `state` with `fail`
+  :link-pull      `:sources :pull` of a realized link (C0): the engine keeps the realizer of a link
+                  that a computation body created for as long as a handle holds the link (a lazy
+                  sequence is a value: readers can still pull it), the model has no realizer
+                  field; compared while the link is unrealized (a realizer can still start)"
+  {:mailbox-state true :wait-at true :link-state true :link-pull true})
 
 (def ^:dynamic *deviations* pending-deviations)
 
@@ -361,7 +370,10 @@
                                 (dissoc :state)
                                 (and (:link-state *deviations*) (= :link (kw-of source-kinds (:kind %)))
                                      (pos? (:version %)))
-                                (dissoc :state)))
+                                (dissoc :state)
+                                (and (:link-pull *deviations*) (= :link (kw-of source-kinds (:kind %)))
+                                     (pos? (:version %)))
+                                (dissoc :pull)))
      :edges (rows :edges #(cond-> % (and (:wait-at *deviations*) (not= :dep (:kind %))) (dissoc :at)))
      :acts (rows :acts #(-> % (update :mode (partial kw-of act-modes)) (update :members (comp vec (partial sort-by second)))))
      :res (rows :res #(-> % (update :kind (fn [k] (let [k (kw-of res-kinds k)] (get {:savepoint :offload} k k)))) (update :phase (partial kw-of res-phases))))
@@ -510,7 +522,10 @@
    :take take-item
    ;; a refused fire is logged as `[:resource-fire z]` (engine `refuse!`, sample 9 commit 21: the
    ;; resource is cancelling): the model's T18 refuses it whatever the payload (ok, 0)
-   :resource-fire (fn [_ [z]] {:item (item :resource-fire z 1 0)})})
+   :resource-fire (fn [_ [z]] {:item (item :resource-fire z 1 0)})
+   ;; a refused await is logged as `[:await r ds mode a]` (sample 44: ::cycle), `a` the id the
+   ;; activation would have taken; the model's T6 refuses before it reads the cont or `mine`
+   :await (fn [ctx args] ((engine-adapters :await) ctx args))})
 
 ;; the legacy logs carry the same `[:take r x a]` shape; legacy `[:spawn r site k]` has no inputs
 (alter-var-root #'engine-adapters assoc :take take-item :spawn (add-inputs :spawn))
@@ -654,7 +669,10 @@
      :inv-sample (ed/inv-sample w')
      :acts-alive (casc/acts-alive rw)
      :ga (acts/ga w')
-     :i3 (s/tbl-all (partial rt/keep-fn w') (s/all-ids w'))
+     ;; I3 as qworld's `i3` (tbl-all (keep-fn w) all-ids), with keep-fn's live list, cleanup rows and
+     ;; storage computed once (keep-fn = keep-with w (live-list w) (cleanup-rows w) (storage w))
+     :i3 (let [lv (rt/live-list w') cl (rt/cleanup-rows w') st (rt/storage w')]
+           (s/tbl-all (fn [y] (rt/keep-with w' lv cl st y)) (s/all-ids w')))
      :i4 (every? #(or (= s/act-done (:act %)) (rt/in-live w' (:id %))) (:runs w'))
      :step-normalized (r/normalized w')
      :inv-all (inv/inv-all w')
