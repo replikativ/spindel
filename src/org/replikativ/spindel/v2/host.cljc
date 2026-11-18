@@ -74,6 +74,16 @@
   [c t]
   #?(:clj (.compareAndSet ^java.util.concurrent.atomic.AtomicReference c nil t)
      :cljs (if (nil? (.-v c)) (do (set! (.-v c) t) true) false)))
+(defn kid-token
+  "The installed token, :done, or nil."
+  [c]
+  #?(:clj (.get ^java.util.concurrent.atomic.AtomicReference c) :cljs (.-v c)))
+(defn kid-move!
+  "C2 transfer: replaces the installed token `old` by `new`; false when the
+   world was done (or `old` is not installed)."
+  [c old new]
+  #?(:clj (.compareAndSet ^java.util.concurrent.atomic.AtomicReference c old new)
+     :cljs (if (identical? (.-v c) old) (do (set! (.-v c) new) true) false)))
 (defn kid-finish!
   "Marks the world done; returns the token installed before, if any."
   [c]

@@ -20,6 +20,14 @@
 (defn- wait-until [f] (loop [n 200] (or (f) (when (pos? n) (Thread/sleep 5) (recur (dec n))))))
 (defn- released? [w] (aget ^objects w rw/W-RELEASED))
 
+(defn- sm!
+  "C2: callers seal the child before merging it."
+  ([p c] (sm! p c nil))
+  ([p c opts]
+   (when-not (identical? p c)
+     (try (v2/seal! c) (catch clojure.lang.ExceptionInfo e (when-not (:spindel/released (ex-data e)) (throw e)))))
+   (v2/merge! p c opts)))
+
 (defn- hold-gate!
   "Holds world `w`'s gate from another thread for `ms`, as a metadata job or a
    turn would, then hands off as every holder does (H2); returns once it is held."
@@ -40,7 +48,7 @@
              child (v2/fork! w {:mergeable? true})]
          (v2/write! (v2/in-world child s) 7)
          (hold-gate! child 100)
-         (is (true? (v2/merge! w child)))
+         (is (true? (sm! w child)))
          (is (= 7 (v2/value s))))))))
 
 (deftest merge-waits-for-a-busy-parent-gate
@@ -52,7 +60,7 @@
              child (v2/fork! w {:mergeable? true})]
          (v2/write! (v2/in-world child s) 7)
          (hold-gate! w 100)
-         (is (true? (v2/merge! w child)))
+         (is (true? (sm! w child)))
          (is (= 7 (v2/value s))))))))
 
 (deftest merge-adopts-the-childs-writes
@@ -71,7 +79,7 @@
          (v2/write! made 101)
          (v2/write! u 30)
          (is (= 1 (v2/value s)) "isolated before the merge")
-         (is (true? (v2/merge! w child)))
+         (is (true? (sm! w child)))
          (is (= [11 2 30] (mapv v2/value [s t u])) "the child's last value of s; t and the parent's own write to u are kept")
          (is (= 13 (v2/value c 1000 ::timeout)) "dependents recompute")
          ;; the child inherited this observe edge too: its release reports to the same callback
@@ -79,7 +87,7 @@
          (is (= 2 (count (filter #(= :write (first (:item %))) (verify/log w))))
              "one host write in the parent, after its own")
          (is (wait-until #(released? child)) "the merged child is released")
-         (is (false? (v2/merge! w child)) "at most once")
+         (is (false? (sm! w child)) "at most once")
          (stop))))))
 
 (deftest a-conflict-refuses-the-whole-merge
@@ -91,7 +99,7 @@
          (v2/write! (v2/in-world child s) 10)
          (v2/write! (v2/in-world child t) 20)
          (v2/write! t 21)
-         (is (false? (v2/merge! w child)) "the parent wrote t since the fork")
+         (is (false? (sm! w child)) "the parent wrote t since the fork")
          (is (= [1 21] (mapv v2/value [s t])) "nothing is adopted, not even s")
          (is (not (released? child)))
          (is (= [10 20] (mapv #(v2/value (v2/in-world child %)) [s t])) "the child is untouched and usable"))))))
@@ -106,13 +114,13 @@
              grand (v2/fork! child {:mergeable? true})]
          (v2/write! (v2/in-world plain s) 5)
          (v2/write! (v2/in-world grand s) 7)
-         (is (false? (v2/merge! w plain)) "not created mergeable")
-         (is (false? (v2/merge! w grand)) "its parent is the child")
-         (is (false? (v2/merge! w w)))
+         (is (false? (sm! w plain)) "not created mergeable")
+         (is (false? (sm! w grand)) "its parent is the child")
+         (is (false? (sm! w w)))
          (is (= 1 (v2/value s)))
-         (is (true? (v2/merge! child grand)) "a fork merges into its own parent")
+         (is (true? (sm! child grand)) "a fork merges into its own parent")
          (is (= 7 (v2/value (v2/in-world child s))))
-         (is (true? (v2/merge! w child)) "and the result merges on")
+         (is (true? (sm! w child)) "and the result merges on")
          (is (= 7 (v2/value s))))))))
 
 (deftest a-changed-source-that-is-not-a-signal-refuses
@@ -123,7 +131,7 @@
              child (v2/fork! w {:mergeable? true})]
          (v2/write! (v2/in-world child s) 10)
          (v2/deliver! (v2/in-world child d) :x)
-         (is (false? (v2/merge! w child)) "a delivery is not a write")
+         (is (false? (sm! w child)) "a delivery is not a write")
          (is (= 1 (v2/value s))))))))
 
 (deftest a-merge-with-no-writes-releases-the-child
@@ -133,6 +141,6 @@
        (let [s (v2/signal 1)
              child (v2/fork! w {:mergeable? true})]
          (is (= 1 (v2/value (v2/in-world child s))))
-         (is (true? (v2/merge! w child)))
+         (is (true? (sm! w child)))
          (is (= 1 (v2/value s)))
          (is (wait-until #(released? child))))))))
