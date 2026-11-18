@@ -12,6 +12,7 @@
 
 (def ^:dynamic *divergences* nil)
 (defn- vworld [] (v2/world {:verify? true :hook (verify/checking-hook *divergences*)}))
+(defn- pworld [] (v2/world {:verify? true :hook (verify/projecting-hook (verify/checking-hook *divergences*))}))
 (defmacro checked [& body]
   `(binding [*divergences* (atom [])]
      ~@body
@@ -219,5 +220,58 @@
                             (when (and (== rw/T-COMP (aget ^objects c rw/TYPE)) (== rw/T-COMP (aget ^objects d rw/TYPE)))
                               (is (> (long (aget ^objects c rw/C-RANK)) (long (aget ^objects d rw/C-RANK)))
                                   "I12 on every live dep edge"))))))
+         (v2/release-world! w)
+         (is (true? (v2/await-complete w 2000 ::timeout))))))))
+
+(deftest a-re-await-consumes-the-suffix-baseline
+  ;; §4.4: after a restart, a suffix debtor stays cached until the new run awaits it again;
+  ;; the re-await's own edge retains it, so its adoption baseline entry is consumed then, not
+  ;; at completion. Checked while the restarted run is parked after its re-await.
+  (checked
+   (let [w (vworld)]
+     (binding [v2/*world* w]
+       (let [s (v2/signal 1)
+             gates [(v2/deferred) (v2/deferred)]
+             runs (atom -1)
+             d (spin 10)
+             c (spin (let [x (iv/get-new (track s))
+                           i (swap! runs inc)
+                           y (await d)]
+                       (+ x y (await (nth gates (min i 1))))))
+             stop (v2/observe! c (fn [_ _]))
+             adopt-base #(v2/call-in! w (fn [] (count (seq (aget ^objects (#'v2/row-of c) rw/C-ADOPT-BASE)))))]
+         (v2/deliver! (first gates) 0)
+         (is (= 11 (v2/value c 1000 ::timeout)))
+         (v2/write! s 2)                     ; restart: d's edge (after the track) becomes a suffix entry
+         (is (wait-until #(= 1 @runs)) "the second run started")
+         (is (zero? (adopt-base)) "parked after re-awaiting d: its entry was consumed")
+         (v2/deliver! (second gates) 0)
+         (is (= 12 (v2/value c 1000 ::timeout)))
+         (stop))))))
+
+(deftest a-refused-multi-member-await-changes-nothing
+  ;; T6 refusal is atomic: the second member closes a cycle, so the first member gets no edge
+  ;; and no rank changes
+  (checked
+   (let [w (pworld)]
+     (binding [v2/*world* w]
+       (let [cell (atom nil)
+             e (spin 5)
+             a (spin (v2/await-all [e (deref cell)]))
+             b (spin (inc (first (await a))))
+             _ (reset! cell b)]
+         ;; b first: b's edge on a exists when a's await reaches its second member, b
+         (is (some? (try (v2/value b 1000 ::timeout) nil
+                         (catch clojure.lang.ExceptionInfo ex ex))) "b fails (a's await was refused)")
+         (is (some #(and (= :await (first (:item %))) (false? (:accepted %))) (verify/log w))
+             "the await was refused")
+         ;; the commit right after the refusal: no dep edge from a was left behind
+         (let [aid (v2/call-in! w #(aget ^objects (#'v2/row-of a) rw/ID))
+               l (verify/log w)
+               i (first (keep-indexed (fn [i e] (when (and (= :await (first (:item e))) (false? (:accepted e))) i)) l))
+               nxt (first (filter :proj (drop (inc i) l)))]
+           (is (empty? (filter (fn [[_ ed]] (and (= :dep (:kind ed)) (= aid (:creditor ed))))
+                               (:edges (:proj nxt))))
+               (str "edges after the refusal: " (:edges (:proj nxt)))))
          (v2/release-world! w)
          (is (true? (v2/await-complete w 2000 ::timeout))))))))
