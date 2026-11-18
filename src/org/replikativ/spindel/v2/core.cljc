@@ -1564,6 +1564,14 @@
       (when (>= since from)
         (reduce into [] (subvec l (- since from)))))))
 
+(defn- resume-k
+  "Resumes a parked body at `k` with `v`. A throw from the resumed code
+   before its next suspension belongs to the handler that was in scope at
+   the suspension (`ek`), as it would without the suspension: the lexical
+   `try` around the effect has returned by now."
+  [k ek v]
+  (try (k v) (catch #?(:clj Throwable :cljs :default) t (ek t))))
+
 (defn- dispatch!
   "T11 (and T5 for a computation without a fired edge): starts the
    computation's next run, re-entering at its earliest fired dep edge when
@@ -1614,13 +1622,14 @@
                    (let [ds (when (source? d) (deltas-since d (gl e rw/E-SEEN)))]
                      (s! e rw/E-SEEN (g d rw/VERSION))
                      (if (source? d)
-                       (let [old (g e rw/E-BASE) v (g d rw/X-VALUE)]
+                       (let [old (g e rw/E-BASE) v (g d rw/X-VALUE)
+                             ek (g e rw/E-ERRK)]
                          (s! e rw/E-BASE v)
-                         #(k (iv/->Interval old v ds)))
+                         #(resume-k k ek (iv/->Interval old v ds)))
                        (let [[v err?] (debtor-result d)
                              ek (g e rw/E-ERRK)]
                          (when (final? d) (remove-dep! w e))   ; consumed: removed, not re-armed
-                         (if err? #(ek v) #(k v))))))
+                         (if err? #(ek v) #(resume-k k ek v))))))
                  ;; Restart from the body. E (if any) is re-armed (removed if its
                  ;; debtor is final); its baseline advances when the new run reads
                  ;; it (Z#22).
@@ -1866,7 +1875,7 @@
                  [(persistent! acc) false]))))))
 
 (defn- continue! [res k ek]
-  (let [[v err?] res] (if err? (ek v) (k v))))
+  (let [[v err?] res] (if err? (ek v) (resume-k k ek v))))
 
 (defn- cancel-losers!
   "`any` in a task run: loser tasks created by the run, with no other
