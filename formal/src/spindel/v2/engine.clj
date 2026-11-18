@@ -27,7 +27,8 @@
        debtor, a duplicate debtor one edge at several indices, Z#7; site edge reuse; fast path;
        park unless resumed; T10 on final debtors; ::cycle refusal), T22 host-await/unawait,
        T8 with validation and the Z#15 initial delivery, the scheduling choice, handle-new
-       (Z#29), and the `any` loser cancel (`cancel-losers`, run after every accepted raw item)
+       (Z#29), and the `any`/`all` loser cancel (`cancel-losers`, run after every accepted raw
+       item; Z#61 fail-fast `all`)
     F2 source operations (§4.3: deliver, post, take = take/acquire, release), finally regions
        (B3: finally-enter/-exit), the `finalize R` cleanup slice (B8), host cancel (T14),
        open/close-scope (T16), detach (Q10), release-world (T21), B8 refusals (`in-cleanup`)
@@ -100,9 +101,9 @@
         semaphore member is refused (`await-kind-bad` in raw0; the engine logs an await on a
         mailbox as `take`), so no dep edge has a mailbox or semaphore debtor.
     B9. `any` losers (engine `cancel-losers!`): when an `any` activation of a TASK run
-        resolved and its run is not done, the tasks of `mine` (the activation's `spawned`)
-        that are owned by the run's scope, still run and have no other out-edge are cancelled
-        (ordinary cancel).
+        resolved, or an `all` one failed fast at its first err slot (Z#61), and its run is not
+        done, the tasks of `mine` (the activation's `spawned`) that are owned by the run's
+        scope, still run and have no other out-edge are cancelled (ordinary cancel).
     B10. T22: the host-wait edge is consumed by the debtor's settle, a task's completion, a
         resource fire, at once when the debtor is fast-ready, or by the close of its source
         (Z#53, rule.clj `wake-closed`). Z#54: a host read of a mailbox or semaphore is refused
@@ -1359,9 +1360,13 @@
 (a/defn await-cont [r :- RunRow, mode :- Nat, k :- Nat] Nat
   (if (Bool.and (Nat.beq mode am-one) (Bool.and (regions-empty (:finalizers r)) (nats-empty (:resources r)))) k cont-restart))
 (a/defn as-dep [w :- World, r :- RunRow, d :- Nat] Bool (Bool.and (in-comp w r) (Bool.not (resource-has w d))))
+;; a dep member on a signal or cell records the source's state as its baseline at the site (engine
+;; `await-group!`: E-BASE := X-VALUE), whether or not the fast path then fills it (Z#61: after the
+;; resolving fill it does not)
 (a/defn await-edge [w :- World, r :- RunRow, a :- Nat, mode :- Nat, k :- Nat, d :- Nat] EdgeRow
   (if (as-dep w r d)
-      (EdgeRow.mk 0 ek-dep (:of r) d (await-cont r mode k) (:effect-index r) ph-armed false false 0 false 0 0)
+      (EdgeRow.mk 0 ek-dep (:of r) d (await-cont r mode k) (:effect-index r) ph-armed false false 0
+                  (sig-cell w d) (if (sig-cell w d) (deb-value w d) 0) (if (sig-cell w d) (deb-version w d) 0))
       (EdgeRow.mk 0 ek-wait a d cont-restart (:effect-index r) ph-armed false false 0 false 0 0)))
 ;; re-await of an existing site edge: re-armed with the new cont (its baseline stays)
 (a/defn edge-reawait [c :- Nat, e :- EdgeRow] EdgeRow
@@ -1402,9 +1407,18 @@
   (ActRow.mk (:id a) (:run a) (:mode a) ms (:slots a) (:remaining a) (:cont a) (:spawned a)))
 (a/theorem act-set-members-id [ms :- (List Member), a :- ActRow] (= (act-id (act-set-members ms a)) (act-id a)) (rfl))
 
-;; fast fills: a ready debtor fills its slot(s) in the same commit (T9 on its member edge)
+;; fast fills: a ready debtor fills its slot(s) in the same commit (T9 on its member edge),
+;; while that edge is still an unfilled member: once the activation resolved (`any` on its
+;; first fill, a failing `all` on its first err, Z#61) the later ready debtors fill nothing and
+;; their edges stay as wired (engine `await-group!`: the fast path stops at the winner; a T9
+;; on such a dep edge would be an invalidation of the awaiting computation). Such an edge on a
+;; final debtor goes with T10 after the fills (`fin-if-final` in await-post, as the engine's
+;; removal of final debtors' site edges).
+(a/defn still-member [w :- World, x :- Nat] Bool (tbl-any (act-has-member x) (:acts w)))
 (a/defn fast-fill [ps :- (List DE), w :- World, d :- Nat] World
-  (if (fast-ready w d) (fire-edge (deb-result w d) w (pair-edge d ps)) w))
+  (if (fast-ready w d)
+      (if (still-member w (pair-edge d ps)) (fire-edge (deb-result w d) w (pair-edge d ps)) w)
+      w))
 (a/defn run-park-row [r :- RunRow] RunRow
   (RunRow.mk (:id r) (:of r) (:stamp r) (:epoch r) (:scope r) act-parked (:mode r) false
              (:effect-index r) (:finalizers r) (:resources r)))
@@ -1502,7 +1516,9 @@
   (intro h)
   (cases hr (fast-ready w d))
   (simp only [fast-fill hr]) (exact h)
-  (simp only [fast-fill hr]) (exact (inv-fire-edge _ w _ h)))
+  (cases hm (still-member w (pair-edge d ps)))
+  (simp only [fast-fill hr hm]) (exact h)
+  (simp only [fast-fill hr hm]) (exact (inv-fire-edge _ w _ h)))
 
 (a/theorem inv-park-if [w :- World, a :- Nat, rid :- Nat]
   (=> (= (inv-sample w) true) (= (inv-sample (park-if w a rid)) true))
@@ -1765,17 +1781,22 @@
 (defnew-lemmas new-task-handle task-find task-upd task-h1 inv-task-upd [task-h1-id] new-source-handle)
 (defnew-lemmas t-handle-new comp-find comp-upd comp-h1 inv-comp-upd [comp-h1-id comp-h1-pending] new-task-handle true)
 
-;; ---- `any` losers (T6): when an `any` activation resumed (its row is gone and its run is not
-;; done), the tasks R created for this await (`spawned`, from the item) that are still running
-;; and have no other creditor (no edge names them) are cancelled (T14, cascade). Applied after
-;; every accepted raw transition (`post`), by comparing the activations before and after.
+;; ---- `any` and `all` losers (T6, Z#61): when an `any` activation resumed, or an `all` one
+;; failed fast (its row is gone and its run is not done), the tasks R created for this await
+;; (`spawned`, from the item) that are still running and have no other creditor (no edge names
+;; them) are cancelled (T14, cascade). Applied after every accepted raw transition (`post`), by
+;; comparing the activations before and after. The engine (`resume-at-fill!`) cancels for an
+;; `all` only when a slot failed (A-WINNER); the model does not tell the two ways an `all` row
+;; goes, and need not: an `all` that resumed with every slot filled has no running member task
+;; (a task fills its slot when it completes, T12, whose run is done by then).
 (a/defn loser-task [w1 :- World, s :- Nat, k :- Nat] Bool
   (Bool.and (tbl-all (no-debtor k) (:edges w1))
             (match (task-find w1 k) [none false]
                    [(some t) (Bool.and (Nat.beq (:owner t) s) (opt-test run-alive (run-find w1 (:run t))))])))
 (a/defn run-of-task [w1 :- World, r :- RunRow] Bool (task-has w1 (:of r)))
+(a/defn group-mode [m :- Nat] Bool (Bool.or (Nat.beq m am-any) (Nat.beq m am-all)))
 (a/defn any-resolved [w1 :- World, a :- ActRow] Bool
-  (Bool.and (Nat.beq (:mode a) am-any)
+  (Bool.and (group-mode (:mode a))
             (Bool.and (Bool.not (act-has w1 (:id a)))
                       (Bool.and (opt-test run-alive (run-find w1 (:run a))) (opt-test (run-of-task w1) (run-find w1 (:run a)))))))
 (a/defn run-scope-of [w1 :- World, rid :- Nat] Nat (match (run-find w1 rid) [none 0] [(some r) (:scope r)]))

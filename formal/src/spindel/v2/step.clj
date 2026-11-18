@@ -155,10 +155,12 @@
     current. observe: delivered when seen = none or seen < version (seen := version); stays
     armed (persistent). Slots (Z#7): `members` is a list of (edge, slot index); a fire fills
     every index listed with the edge and removes those entries (`act-fill`); `one`/`all`
-    resume when remaining = 0, `any` on the first fill (`resume`: the activation and every
-    edge it is the creditor of are removed, i.e. its wait members including the losers; run
-    act := active). The `any` loser tasks are cancelled by spindel.v2.engine (it needs the
-    cascade). TODO: savepoint edges (`fire-savepoint-todo`, layer 2).
+    resume when remaining = 0, `any` on the first fill, `all` on its first err slot (Z#61
+    fail-fast: `fill-fails`, the filled row has remaining 0) (`resume`: the activation and
+    every edge it is the creditor of are removed, i.e. its wait members including the losers;
+    run act := active). The loser tasks of a resolved `any`, and of an `all` that failed
+    fast, are cancelled by spindel.v2.engine (it needs the cascade). TODO: savepoint edges
+    (`fire-savepoint-todo`, layer 2).
   - T13 (`retire-check`): retirable = act done, no slice, no finalizers, no resources;
     retire removes the run row and cleanup[R] and closes the run scope. STUB: T16 is only
     `close-scope-shallow` (open := false) here. The model's step (spindel.v2.rule/world-step)
@@ -356,12 +358,16 @@
          [(cons h t) (slots-fill x v t (if (Nat.beq (:edge h) x) (slot-set 0 (:idx h) v sl) sl))]))
 (a/defn mem-is [x :- Nat, m :- Member] Bool (Nat.beq (:edge m) x))
 (a/defn mem-other [x :- Nat, m :- Member] Bool (Bool.not (Nat.beq (:edge m) x)))
+;; Z#61 (spec T6): an `all` activation fails fast: an err filled into it ends the wait
+(a/defn fill-fails [v :- RunResult, a :- ActRow] Bool
+  (Bool.and (Nat.beq (:mode a) am-all) (Nat.beq (:tag v) res-err)))
 ;; fill: the slots of x's entries get v, the entries go (unfilled members only, X#4), remaining
-;; drops by the number of entries
+;; drops by the number of entries; a failing fill of an `all` leaves nothing to wait for
+;; (remaining 0, the engine's A-WINNER: `act-done?` is remaining = 0 or a winner)
 (a/defn act-fill [x :- Nat, v :- RunResult, a :- ActRow] ActRow
   (ActRow.mk (:id a) (:run a) (:mode a) (tbl-filter (mem-other x) (:members a))
              (slots-fill x v (:members a) (:slots a))
-             (- (:remaining a) (tbl-count (mem-is x) (:members a))) (:cont a) (:spawned a)))
+             (if (fill-fails v a) 0 (- (:remaining a) (tbl-count (mem-is x) (:members a)))) (:cont a) (:spawned a)))
 
 (defmacro ^:private deffield-lemmas
   "For each [fn [params] row idf? & kept-fields]: <fn>-<field> lemmas (= (field (fn params r)) (field r))."
@@ -466,7 +472,8 @@
   (run-upd (drop-act w (:id a)) (:run a) run-wake))
 
 ;; Fill the slots of edge x in activation a with v (T6, T9, Z#7). `one`/`all` resume when
-;; remaining reaches 0, `any` on its first fill; otherwise the activation is updated.
+;; remaining reaches 0, `any` on its first fill, `all` also on its first err (Z#61: `act-fill`
+;; sets remaining to 0); otherwise the activation is updated.
 (a/defn act-ready [a :- ActRow] Bool (Bool.or (Nat.beq (:mode a) am-any) (Nat.beq (:remaining a) 0)))
 (a/defn fill-slot [w :- World, a :- ActRow, x :- Nat, v :- RunResult] World
   (if (act-ready (act-fill x v a)) (resume w a) (act-upd w (:id a) (act-fill x v))))

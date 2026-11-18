@@ -2001,3 +2001,28 @@ Option C (decided): the engine owns the mechanism, not the policy. Modelled in s
   model's (the parent's `:next-id` is the family allocator, not compared).
 - 42: `sys-xfer-reserve`/`sys-xfer-move`, then the releases (k2's release releases m, F2) and completions give
   the sidecar's :owner (until completion), pending :kids, :released? and :complete? at all four checkpoints.
+
+## Correctness stage 1, item 1: Z#61 await(all) fail-fast (2026-11-17, branch `formal/z61-z62`)
+- Spec T6 / engine `slot-fill!`, `resume-at-fill!`, `await-group!`: an `all` activation resumes at its first err slot
+  (A-WINNER), and its unfilled member tasks are cancelled as an `any`'s losers (`cancel-losers!` runs for `any` and
+  for an `all` with a winner). The model resumed `all` only at remaining 0.
+- Model: `step/fill-fails` (mode all, tag err); `act-fill` sets remaining to 0 on such a fill, so `act-ready` and
+  `fill-slot` are unchanged in shape (every proof that cases on `act-ready (act-fill ..)` stands). `engine/group-mode`
+  (any or all) in `any-resolved`: the loser cancel runs for a resolved `all` too. It cannot tell a failed `all` from
+  one that resumed with every slot filled, and need not: then every member task delivered its result at T12, whose
+  run is done, so no loser is left.
+- The fast path stops at the resolving fill (engine: `(when (nil? @winner) ...)`). The model fired every ready
+  debtor's edge: after an `any` (or a failed `all`) resolved, a ready dep member in a computation was a T9 on a
+  non-member edge = an invalidation (epoch + 1, the run no longer current). Found by the engine probe
+  `log-probe-z61-1` (an `any` over two signals in a computation: engine epoch 1, model 2); a pre-existing `any`
+  divergence that no sample had driven. `engine/still-member`: `fast-fill` fires only an edge that is still an
+  unfilled member, otherwise leaves the world as it is; a final such debtor's edge goes with the T10 of await-post.
+  With that, a dep member on a signal or cell keeps the baseline it got at the site (`await-edge`: has-base, the
+  source's state and version, as the engine's `E-BASE := X-VALUE`), which the fill used to overwrite.
+- Proofs: every bundle's fast-fill lemma gains the no-op case. G5 (I5 dep-final, i5.clj) cannot hold between the
+  fills any more (an armed dep edge on a final, skipped debtor waits for T10): the fold now carries a second
+  exemption `escn` (a pair edge of the await that is no member), `jw-fin-fold` discharges it through the T10 of each
+  debtor; `g5-await-raw` is restated over that chain. hm10: `h10-free-nonmember` (a non-member edge is h3-free).
+- Tests: `z61_test` (act-fill, the loser modes, the four engine probes `oracle/log-probe-z61-1..4`, generator
+  `oracle/gen/probe-z61.clj`, replay with no divergence); hm10/hm11/hm12 tests that pinned the old invalidating
+  fast path now expect the engine's behaviour (no epoch step, the run current, the later edges armed or finalized).

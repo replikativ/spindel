@@ -22,7 +22,9 @@
     T14, T12, deliver    `g5-fold-all`: the fired list holds every dep edge on the debtor
     T6 (await)           `g5-await-raw`: an armed member edge on a final debtor is its debtor's
                          recorded pair (`esc6`), and the fast path fires it (a final debtor is
-                         fast-ready: `fast-not-final`)
+                         fast-ready: `fast-not-final`) while it is a member; after the activation
+                         resolved (Z#61) it stays exempt as a non-member pair (`escn`) until the T10
+                         of await-post removes it (`jw-fin-fold`)
 
   Theorems:
     step-g5                      g5 xd w, rule-r-safe raw -> g5 xd (world-step w it)
@@ -1889,38 +1891,221 @@
       (simp only [reach-mem hb] at b2)
       (simp only [jn esc6 b1 b2 b3 Bool.and_self Bool.or_true]))))
 
-(a/theorem jw6-fast [xd :- (List Nat), ps :- (List DE), T :- (List Nat)]
-  (forall [w :- World] (=> (= (inv-sample w) true) (= (jw xd (esc6 ps T) w) true)
-                           (= (jw xd (esc6 ps (List.nil Nat)) (nat-fold (fast-fill ps) w T)) true)))
+;; Z#61: once the activation resolved (an `any`'s first fill, a failing `all`), a ready debtor's
+;; pair edge is no member: the fast fill leaves it, and it stays exempt (`escn`: a pair edge of D
+;; that is no member) until T10 after the fills removes it (or its debtor is not final)
+(a/defn escn [ps :- (List DE), D :- (List Nat), as :- (List ActRow), e :- EdgeRow] Bool
+  (Bool.and (esc6 ps D as e) (Bool.not (mem-in (:id e) as))))
+(a/defn escf [ps :- (List DE), T :- (List Nat), D :- (List Nat), as :- (List ActRow), e :- EdgeRow] Bool
+  (Bool.or (esc6 ps T as e) (escn ps D as e)))
+(a/theorem escn-mono [ps :- (List DE), D :- (List Nat)] (esc-mono (escn ps D))
+  (simp only [esc-mono]) (intros as bs e hi h)
+  (cases hb (mem-in (:id e) bs))
+  (case [false]
+    (simp only [escn hb Bool.not_false Bool.and_true])
+    (simp only [escn Bool.and_eq_true] at h) (exact (And.left h)))
+  (case [true]
+    (have z := (hi _ hb))
+    (simp only [escn Bool.and_eq_true] at h)
+    (have h2 := (And.right h)) (rw [z] at h2) (simp at h2)))
+(a/theorem escf-mono [ps :- (List DE), T :- (List Nat), D :- (List Nat)] (esc-mono (escf ps T D))
+  (simp only [esc-mono]) (intros as bs e hi h)
+  (simp only [escf Bool.or_eq_true] at h)
+  (cases h)
+  (case [inl a] (simp only [escf Bool.or_eq_true]) (exact (Or.inl a)))
+  (case [inr b] (simp only [escf Bool.or_eq_true]) (exact (Or.inr (escn-mono ps D as bs e hi b)))))
+
+(a/theorem esc6-escf [xd :- (List Nat), F :- (=> Nat Bool), ps :- (List DE), T :- (List Nat), D :- (List Nat), as :- (List ActRow), e :- EdgeRow]
+  (=> (= (jn xd F (esc6 ps T) as e) true) (= (jn xd F (escf ps T D) as e) true))
+  (intro h)
+  (simp only [jn Bool.or_eq_true] at h)
+  (cases h)
+  (case [inl a] (simp only [jn a Bool.true_or]))
+  (case [inr b] (simp only [jn escf b Bool.true_or Bool.or_true])))
+(a/theorem jw-escf [xd :- (List Nat), ps :- (List DE), T :- (List Nat), D :- (List Nat), w :- World]
+  (=> (= (jw xd (esc6 ps T) w) true) (= (jw xd (escf ps T D) w) true))
+  (intro h) (simp only [jw] at h) (simp only [jw])
+  (apply (tbl-all-mono EdgeRow _ _ _ (:edges w) h))
+  (intros e he) (exact (esc6-escf xd _ ps T D (:acts w) e he)))
+
+(a/theorem escf-nf [xd :- (List Nat), F :- (=> Nat Bool), ps :- (List DE), d :- Nat, t :- (List Nat), D :- (List Nat), as :- (List ActRow), e :- EdgeRow]
+  (=> (= (F d) false) (= (jn xd F (escf ps (List.cons Nat d t) D) as e) true) (= (jn xd F (escf ps t D) as e) true))
+  (intros hf h)
+  (simp only [jn Bool.or_eq_true] at h)
+  (cases h)
+  (case [inl a] (simp only [jn a Bool.true_or]))
+  (case [inr b]
+    (simp only [escf Bool.or_eq_true] at b)
+    (cases b)
+    (case [inr c] (simp only [jn escf c Bool.or_true]))
+    (case [inl c]
+      (have j0 (= (jn xd F (esc6 ps (List.cons Nat d t)) as e) true)) (simp only [jn c Bool.or_true])
+      (exact (esc6-escf xd F ps t D as e (esc6-nf xd F ps d t as e hf j0))))))
+
+(a/theorem escf-skip [xd :- (List Nat), F :- (=> Nat Bool), ps :- (List DE), d :- Nat, t :- (List Nat), D :- (List Nat), as :- (List ActRow), e :- EdgeRow]
+  (=> (= (mem-in (pair-edge d ps) as) false) (= (reach-mem d D) true)
+      (= (jn xd F (escf ps (List.cons Nat d t) D) as e) true) (= (jn xd F (escf ps t D) as e) true))
+  (intros hm hd h)
+  (simp only [jn Bool.or_eq_true] at h)
+  (cases h)
+  (case [inl a] (simp only [jn a Bool.true_or]))
+  (case [inr b]
+    (simp only [escf Bool.or_eq_true] at b)
+    (cases b)
+    (case [inr c] (simp only [jn escf c Bool.or_true]))
+    (case [inl c]
+      (simp only [esc6 Bool.and_eq_true] at c)
+      (have b1 := (And.left c)) (have b2 := (And.left (And.right c))) (have b3 := (And.right (And.right c)))
+      (cases hb (Nat.beq (:debtor e) d))
+      (case [true]
+        (have eq (= (:debtor e) d)) (exact (Nat.eq_of_beq_eq_true hb))
+        (have ie (= (:id e) (pair-edge d ps))) (rw [← eq]) (exact (Nat.eq_of_beq_eq_true b3))
+        (have nm (= (mem-in (:id e) as) false)) (rw [ie]) (exact hm)
+        (have dD (= (reach-mem (:debtor e) D) true)) (rw [eq]) (exact hd)
+        (simp only [jn escf escn esc6 b1 dD b3 nm Bool.not_false Bool.and_self Bool.or_true]))
+      (case [false]
+        (simp only [reach-mem hb] at b2)
+        (simp only [jn escf esc6 b1 b2 b3 Bool.and_self Bool.true_or Bool.or_true])))))
+
+(a/theorem escf-step [xd :- (List Nat), F :- (=> Nat Bool), ps :- (List DE), d :- Nat, t :- (List Nat), D :- (List Nat), as :- (List ActRow), e :- EdgeRow]
+  (=> (= (jn xd F (escf ps (List.cons Nat d t) D) as e) true) (= (jm xd F (escf ps t D) as (pair-edge d ps) e) true))
+  (intro h)
+  (simp only [jn Bool.or_eq_true] at h)
+  (cases h)
+  (case [inl a] (simp only [jm jn a Bool.true_or]))
+  (case [inr b]
+    (simp only [escf Bool.or_eq_true] at b)
+    (cases b)
+    (case [inr c] (simp only [jm jn escf c Bool.or_true Bool.true_or]))
+    (case [inl c]
+      (have s := (esc6-step ps d t as e c))
+      (simp only [Bool.or_eq_true] at s)
+      (cases s)
+      (case [inl s1] (simp only [jm jn escf s1 Bool.true_or Bool.or_true]))
+      (case [inr s2] (simp only [jm s2 Bool.or_true])))))
+
+(a/theorem jw6-fast [xd :- (List Nat), ps :- (List DE), T :- (List Nat), D :- (List Nat)]
+  (forall [w :- World] (=> (= (inv-sample w) true) (forall [y :- Nat] (=> (= (reach-mem y T) true) (= (reach-mem y D) true)))
+                           (= (jw xd (escf ps T D) w) true)
+                           (= (jw xd (escf ps (List.nil Nat) D) (nat-fold (fast-fill ps) w T)) true)))
   (induction T)
-  (case [nil] (intros w hs h) (simp only [nat-fold]) (exact h))
+  (case [nil] (intros w hs hsub h) (simp only [nat-fold]) (exact h))
   (case [cons d t ih]
-    (intros w hs h)
+    (intros w hs hsub h)
     (simp only [nat-fold])
-    (apply (ih (fast-fill ps w d) (inv-fast-fill ps w d hs)))
+    (have hsub2 (forall [y :- Nat] (=> (= (reach-mem y t) true) (= (reach-mem y D) true))))
+    (intros y hy) (apply hsub) (simp only [reach-mem])
+    (cases hyd (Nat.beq y d))
+    (case [false] (simp only [hyd]) (exact hy))
+    (case [true] (simp only [hyd]))
+    (apply (ih (fast-fill ps w d) (inv-fast-fill ps w d hs) hsub2))
     (cases hr (fast-ready w d))
     (case [false]
       (simp only [fast-fill hr])
       (have nf := (fast-not-final w d hs hr))
       (simp only [jw] at h) (simp only [jw])
       (apply (tbl-all-mono EdgeRow _ _ _ (:edges w) h))
-      (intros e he) (exact (esc6-nf xd _ ps d t (:acts w) e nf he)))
+      (intros e he) (exact (escf-nf xd _ ps d t D (:acts w) e nf he)))
     (case [true]
-      (simp only [fast-fill hr])
-      (have j (= (jwy xd (esc6 ps t) (pair-edge d ps) w) true))
-      (simp only [jw] at h) (simp only [jwy])
-      (apply (tbl-all-mono EdgeRow _ _ _ (:edges w) h))
-      (intros e he)
-      (simp only [jn Bool.or_eq_true] at he)
-      (cases he)
-      (case [inl a] (simp only [jm jn a Bool.true_or]))
-      (case [inr b]
-        (have s := (esc6-step ps d t (:acts w) e b))
-        (simp only [Bool.or_eq_true] at s)
-        (cases s)
-        (case [inl s1] (simp only [jm jn s1 Bool.or_true Bool.true_or]))
-        (case [inr s2] (simp only [jm s2 Bool.or_true])))
-      (exact (jw-fire-edge xd (esc6 ps t) _ w (pair-edge d ps) (esc6-mono ps t) hs j)))))
+      (cases hm (still-member w (pair-edge d ps)))
+      (case [false]
+        (simp only [fast-fill hr hm])
+        (have hm2 (= (mem-in (pair-edge d ps) (:acts w)) false)) (simp only [mem-in]) (simp only [still-member] at hm) (exact hm)
+        (have hd (= (reach-mem d D) true)) (apply hsub) (simp only [reach-mem Nat.beq_refl])
+        (simp only [jw] at h) (simp only [jw])
+        (apply (tbl-all-mono EdgeRow _ _ _ (:edges w) h))
+        (intros e he) (exact (escf-skip xd _ ps d t D (:acts w) e hm2 hd he)))
+      (case [true]
+        (simp only [fast-fill hr hm])
+        (have j (= (jwy xd (escf ps t D) (pair-edge d ps) w) true))
+        (simp only [jw] at h) (simp only [jwy])
+        (apply (tbl-all-mono EdgeRow _ _ _ (:edges w) h))
+        (intros e he) (exact (escf-step xd _ ps d t D (:acts w) e he))
+        (exact (jw-fire-edge xd (escf ps t D) _ w (pair-edge d ps) (escf-mono ps t D) hs j))))))
+
+;; after the fills only the non-member pair edges stay exempt; park-if keeps them; T10 on each
+;; debtor discharges its own (a kept edge on a final debtor is not an armed dep edge)
+(a/theorem jw6-escn [xd :- (List Nat), ps :- (List DE), D :- (List Nat), w :- World]
+  (=> (= (jw xd (escf ps (List.nil Nat) D) w) true) (= (jw xd (escn ps D) w) true))
+  (intro h) (simp only [jw] at h) (simp only [jw])
+  (apply (tbl-all-mono EdgeRow _ _ _ (:edges w) h))
+  (intros e he) (simp only [jn escf esc6 reach-mem Bool.false_and Bool.and_false Bool.false_or] at he) (simp only [jn]) (exact he))
+(a/theorem jw-run-upd [xd :- (List Nat), esc :- (=> (List ActRow) EdgeRow Bool), w :- World, x :- Nat, f :- (=> RunRow RunRow)]
+  (= (jw xd esc (run-upd w x f)) (jw xd esc w)) (rfl))
+(a/theorem jw-park-if [xd :- (List Nat), esc :- (=> (List ActRow) EdgeRow Bool), w :- World, a :- Nat, rid :- Nat]
+  (= (jw xd esc (park-if w a rid)) (jw xd esc w))
+  (cases hc (act-has w a))
+  (all_goals (simp only [park-if hc jw run-upd set-runs])))
+(a/theorem escn-nf [xd :- (List Nat), F :- (=> Nat Bool), ps :- (List DE), d :- Nat, t :- (List Nat), as :- (List ActRow), e :- EdgeRow]
+  (=> (= (F d) false) (= (jn xd F (escn ps (List.cons Nat d t)) as e) true) (= (jn xd F (escn ps t) as e) true))
+  (intros hf h)
+  (simp only [jn Bool.or_eq_true] at h)
+  (cases h)
+  (case [inl a] (simp only [jn a Bool.true_or]))
+  (case [inr b]
+    (cases hb (Nat.beq (:debtor e) d))
+    (case [true]
+      (have eq (= (:debtor e) d)) (exact (Nat.eq_of_beq_eq_true hb))
+      (have f2 (= (F (:debtor e)) false)) (rw [eq]) (exact hf)
+      (simp only [jn (dfk-nonfinal xd F e f2) Bool.true_or]))
+    (case [false]
+      (simp only [escn esc6 Bool.and_eq_true] at b)
+      (have b1 := (And.left (And.left b))) (have b2 := (And.left (And.right (And.left b))))
+      (have b3 := (And.right (And.right (And.left b)))) (have b4 := (And.right b))
+      (simp only [reach-mem hb] at b2)
+      (simp only [jn escn esc6 b1 b2 b3 b4 Bool.and_self Bool.or_true]))))
+(a/theorem escn-keep [xd :- (List Nat), F :- (=> Nat Bool), ps :- (List DE), d :- Nat, t :- (List Nat), as :- (List ActRow), e :- EdgeRow]
+  (=> (= (fin-keep as d e) true) (= (jn xd F (escn ps (List.cons Nat d t)) as e) true) (= (jn xd F (escn ps t) as e) true))
+  (intros hk h)
+  (simp only [jn Bool.or_eq_true] at h)
+  (cases h)
+  (case [inl a] (simp only [jn a Bool.true_or]))
+  (case [inr b]
+    (simp only [escn esc6 Bool.and_eq_true] at b)
+    (have b1 := (And.left (And.left b))) (have b2 := (And.left (And.right (And.left b))))
+    (have b3 := (And.right (And.right (And.left b)))) (have b4 := (And.right b))
+    (cases hb (Nat.beq (:debtor e) d))
+    (case [true]
+      (have m (= (tbl-any (act-has-member (:id e)) as) false)) (simp only [mem-in] at b4) (exact (bnot-true _ b4))
+      (cases hd (Nat.beq (:kind e) ek-dep))
+      (case [false] (simp only [jn (dfk-kind xd F e hd) Bool.true_or]))
+      (case [true]
+        (cases hp (Nat.beq (:phase e) ph-armed))
+        (case [false] (simp only [jn (dfk-phase xd F e hp) Bool.true_or]))
+        (case [true]
+          (simp only [fin-keep fin-drop hd hp hb m Bool.not_false Bool.and_self Bool.not_true] at hk)
+          (cases hk))))
+    (case [false]
+      (simp only [reach-mem hb] at b2)
+      (simp only [jn escn esc6 b1 b2 b3 b4 Bool.and_self Bool.or_true]))))
+(a/theorem jw-fin-one [xd :- (List Nat), ps :- (List DE), d :- Nat, t :- (List Nat), w :- World]
+  (=> (= (jw xd (escn ps (List.cons Nat d t)) w) true) (= (jw xd (escn ps t) (fin-if-final w d)) true))
+  (intro h)
+  (simp only [jw] at h)
+  (cases hf (deb-final w d))
+  (case [false]
+    (simp only [fin-if-final hf]) (simp only [jw])
+    (have nf (= (fin-st (:sources w) (:tasks w) d) false)) (rw [← deb-final-st]) (exact hf)
+    (apply (tbl-all-mono EdgeRow _ _ _ (:edges w) h))
+    (intros e he) (exact (escn-nf xd _ ps d t (:acts w) e nf he)))
+  (case [true]
+    (simp only [fin-if-final hf]) (rw [fd-one])
+    (simp only [jw finalize-one drop-edges set-comps set-edges])
+    (exact (tbl-all-filter-imp EdgeRow _ _ (fin-keep (:acts w) d)
+             (fn [e :- EdgeRow, h1 :- (= (jn xd (fin-st (:sources w) (:tasks w)) (escn ps (List.cons Nat d t)) (:acts w) e) true),
+                  h2 :- (= (fin-keep (:acts w) d e) true)]
+               (escn-keep xd _ ps d t (:acts w) e h2 h1))
+             (:edges w) h))))
+(a/theorem jw-fin-fold [xd :- (List Nat), ps :- (List DE), D :- (List Nat)]
+  (forall [w :- World] (=> (= (jw xd (escn ps D) w) true) (= (jw xd (escn ps (List.nil Nat)) (nat-fold fin-if-final w D)) true)))
+  (induction D)
+  (case [nil] (intros w h) (simp only [nat-fold]) (exact h))
+  (case [cons d t ih] (intros w h) (simp only [nat-fold]) (exact (ih _ (jw-fin-one xd ps d t w h)))))
+(a/theorem jw-escn-end [xd :- (List Nat), ps :- (List DE), w :- World]
+  (=> (= (jw xd (escn ps (List.nil Nat)) w) true) (= (g5-rest xd w) true))
+  (intro h) (simp only [jw] at h) (simp only [g5-rest])
+  (apply (tbl-all-mono EdgeRow _ _ _ (:edges w) h))
+  (intros e he) (simp only [jn escn esc6 reach-mem Bool.false_and Bool.and_false Bool.or_false] at he) (exact he))
 
 (a/theorem jw6-end [xd :- (List Nat), ps :- (List DE), w :- World]
   (=> (= (jw xd (esc6 ps (List.nil Nat)) w) true) (= (g5-rest xd w) true))
@@ -1952,12 +2137,17 @@
                     (act-set-members-id (mk-members (:pairs (await-acc w r ds mode k mine)) 0 ds)) hs2))
      (have j3 := (Eq.trans (jw6-act-upd x5d (:pairs (await-acc w r ds mode k mine)) (nat-distinct ds) (:world (await-acc w r ds mode k mine)) (:next-id w)
                              (act-set-members (mk-members (:pairs (await-acc w r ds mode k mine)) 0 ds))) j2))
-     (have j4 := (jw6-fast x5d (:pairs (await-acc w r ds mode k mine)) (nat-distinct ds) _ hs3 j3))
+     (have j4 := (jw6-fast x5d (:pairs (await-acc w r ds mode k mine)) (nat-distinct ds) (nat-distinct ds) _ hs3
+                   (fn [y :- Nat, hy :- (= (reach-mem y (nat-distinct ds)) true)] hy)
+                   (jw-escf x5d (:pairs (await-acc w r ds mode k mine)) (nat-distinct ds) (nat-distinct ds) _ j3)))
      (have hs4 := (nat-fold-inv (fast-fill (:pairs (await-acc w r ds mode k mine))) (inv-fast-fill (:pairs (await-acc w r ds mode k mine)))
                     (nat-distinct ds) _ hs3))
-     (have g4 := (g5-intro x5d _ hs4 (jw6-end x5d (:pairs (await-acc w r ds mode k mine)) _ j4)))
+     (have j5 := (jw6-escn x5d (:pairs (await-acc w r ds mode k mine)) (nat-distinct ds) _ j4))
+     (have j6 := (Eq.trans (jw-park-if x5d (escn (:pairs (await-acc w r ds mode k mine)) (nat-distinct ds)) (nat-fold (fast-fill (:pairs (await-acc w r ds mode k mine))) (act-upd (:world (await-acc w r ds mode k mine)) (:next-id w) (act-set-members (mk-members (:pairs (await-acc w r ds mode k mine)) 0 ds))) (nat-distinct ds)) (:next-id w) (:id r)) j5))
+     (have j7 := (jw-fin-fold x5d (:pairs (await-acc w r ds mode k mine)) (nat-distinct ds) _ j6))
+     (have hs7 := (nat-fold-inv fin-if-final inv-fin-if-final (nat-distinct ds) _ (inv-park-if _ (:next-id w) (:id r) hs4)))
      (simp only [await-raw await-post])
-     (exact (nat-fold-g5 x5d fin-if-final (g5-fin-if-final x5d) (nat-distinct ds) _ (g5-park-if x5d _ (:next-id w) (:id r) g4)))))
+     (exact (g5-intro x5d _ hs7 (jw-escn-end x5d (:pairs (await-acc w r ds mode k mine)) _ j7)))))
 
 ;; ===========================================================================
 ;; Part C. The copy, Rule R and the step

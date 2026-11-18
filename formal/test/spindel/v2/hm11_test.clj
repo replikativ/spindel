@@ -244,10 +244,12 @@
         (let [out (await-final-prefixes f ds mode 3002 [ready-comp] [])]
           (is (nil? (row (:final out) :acts (:next-id (:w f)))))
           (when (and (= kind :comp) (= mode s/am-any))
-            (let [eid (get (:pairs out) delivered), before (row (:parked out) :edges eid)]
-              (is (= [s/ek-dep s/ph-fired delivered] ((juxt :kind :phase :debtor) before)))
-              (is (= before (row (:final out) :edges eid)) "unarmed final-debtor edge survives finalization")
-              (is (false? (fill/current-run? (:final out) (:rid f)))))))))))
+            ;; Z#61 / engine `await-group!`: after the winner the final debtor's edge fills
+            ;; nothing; T10 removes it at once, and the run stays current
+            (let [eid (get (:pairs out) delivered)]
+              (is (= [s/ek-dep s/ph-armed delivered] ((juxt :kind :phase :debtor) (row (:parked out) :edges eid))))
+              (is (nil? (row (:final out) :edges eid)) "T10 removes the unfilled edge on the final debtor")
+              (is (true? (fill/current-run? (:final out) (:rid f)))))))))))
 
 (deftest accepted-overlapping-xm-and-token-valid-stale-final-prefixes
   (let [{:keys [w rid signal delivered deferred] :as f} (fill/comprehensive-fixture :comp)

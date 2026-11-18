@@ -307,22 +307,28 @@
         (if-let [d (first tail)]
           (let [eid (get pairs d), e (row W :edges eid), ready? (engine/fast-ready W d)
                 current? (current-run? W rid), dep? (= s/ek-dep (:kind e))
-                deliver? (and ready? a e (= s/ph-armed (:phase e)) current?)
+                ;; Z#61: once the activation resolved, a ready debtor's edge is no member: it
+                ;; fills nothing, and T10 applies to it at once
+                member? (engine/still-member W eid)
+                deliver? (and ready? member? a e (= s/ph-armed (:phase e)) current?)
                 out (engine/fast-fill (:pairs acc) W d)
                 value (expected-result W d)
                 positions (keep-indexed (fn [j item] (when (= item d) j)) ds)
                 next-slots (if deliver? (reduce #(assoc %1 %2 value) slots positions) slots)
                 next-members (if deliver? (vec (remove #(= eid (:edge %)) members)) members)
-                removed? (and deliver? (or (= mode s/am-any) (empty? next-members)))]
+                ;; Z#61: an err filled into an `all` resolves it (act-fill: remaining 0)
+                fails? (and (= mode s/am-all) (= s/res-err (:tag value)))
+                removed? (and deliver? (or (= mode s/am-any) (empty? next-members) fails?))]
             (when (and ready? (row W :comps d))
               (is (false? (:idle (row W :comps d))))
               (is (true? (step/comp-live (row W :comps d)))))
             (cond
               (not ready?) (is (= W out))
+              (not member?) (is (= W out))
               (nil? e) (is (= W out))
               deliver?
               (do
-                (is (= (assoc a :slots (seq next-slots) :members (seq next-members) :remaining (count next-members))
+                (is (= (assoc a :slots (seq next-slots) :members (seq next-members) :remaining (if fails? 0 (count next-members)))
                        (step/act-fill eid value a)))
                 (is (= (count (filter #(= eid (:edge %)) members)) (count positions)))
                 (if removed? (is (nil? (row out :acts aid)))
@@ -389,7 +395,7 @@
   (doseq [kind [:comp :task]]
     (let [{:keys [ready-comp pending-task completed-task delivered closed-source signal cell
                   pending-resource ready-resource fresh top deferred] :as f} (comprehensive-fixture kind)
-          ds [ready-comp ready-comp pending-task completed-task delivered closed-source signal cell
+          ds [ready-comp ready-comp pending-task completed-task delivered signal cell
               pending-resource ready-resource fresh top deferred]
           out (checkpoint f ds s/am-all 2001 [fresh top fresh] [])
           aid (:next-id (:w f)), installed (:installed out), filled (:filled out)
@@ -403,10 +409,16 @@
       (is (= (s/->RunResult s/res-ok 88) (nth (:slots a) 0) (nth (:slots a) 1)))
       (is (= (s/->RunResult s/res-ok 89) (nth (:slots a) 3)))
       (is (= (s/->RunResult s/res-ok 53) (nth (:slots a) 4)))
-      (is (= (s/->RunResult s/res-err 2) (nth (:slots a) 5)))
-      (is (= (s/->RunResult s/res-ok 51) (nth (:slots a) 6)))
-      (is (= (s/->RunResult s/res-ok 52) (nth (:slots a) 7)))
-      (is (= [s/act-parked false] ((juxt :act :slice) (row (:parked out) :runs (:rid f))))))))
+      (is (= (s/->RunResult s/res-ok 51) (nth (:slots a) 5)))
+      (is (= (s/->RunResult s/res-ok 52) (nth (:slots a) 6)))
+      (is (= [s/act-parked false] ((juxt :act :slice) (row (:parked out) :runs (:rid f)))))
+      ;; Z#61: the closed source delivers err ::closed; an `all` fails fast there: the activation is
+      ;; gone, the run keeps going, the later ready members fill nothing
+      (let [ds2 [ready-comp completed-task closed-source signal pending-task deferred]
+            out2 (checkpoint f ds2 s/am-all 2004 [pending-task] [])]
+        (is (nil? (row (:filled out2) :acts aid)))
+        (is (= [ready-comp completed-task closed-source] (:deliveries out2)))
+        (is (not= s/act-parked (:act (row (:parked out2) :runs (:rid f)))))))))
 
 (deftest accepted-all-fast-aliases-all-modes-and-early-resume
   (doseq [kind [:comp :task]]
@@ -422,12 +434,14 @@
             (do
               (is (= [signal] (:deliveries out)))
               (if (= kind :comp)
+                ;; the fast path stops at the winner (engine `await-group!`): the later ready
+                ;; members are not invalidations, their dep edges stay armed and the run current
                 (do
-                  (is (= (+ 2 (:epoch (row (:w f) :comps (:owner f))))
+                  (is (= (:epoch (row (:w f) :comps (:owner f)))
                          (:epoch (row after :comps (:owner f)))))
-                  (is (false? (current-run? after (:rid f))))
+                  (is (true? (current-run? after (:rid f))))
                   (doseq [d [cell ready-comp]]
-                    (is (= s/ph-fired (:phase (row after :edges (get (:pairs out) d)))))))
+                    (is (= s/ph-armed (:phase (row after :edges (get (:pairs out) d)))))))
                 (doseq [d [cell ready-comp]]
                   (is (nil? (row after :edges (get (:pairs out) d)))))))
             (do (is (= (vec (distinct ds)) (:deliveries out)))
