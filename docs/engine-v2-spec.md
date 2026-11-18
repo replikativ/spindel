@@ -1018,7 +1018,7 @@ Transitions are built from a small set of primitive table edits (§11).
 | T3 | `create-comp(id, inputs, body)` | **Absent id:** a `fresh` computation is created. **Present, equal inputs** (the conservative capture comparison, formalism §1.6): it is adopted. **Present, different inputs (W#5):** body and inputs are replaced at the same id, and the change is handled exactly like a write to `C`'s rerun source. Marking (§4.5.1) dirties `C`'s transitive dependents. `C.epoch += 1`, and the replacement run starts from the body (restart). An idle entry is replaced by a `fresh` one. In every case the creator records `C` (§5.2) before Rule R. |
 | T4 | `spawn(body)` | Creates task `K` owned per §5.2 and starts its run (fresh stamp, run scope with parent `K.owner`, Z#26). |
 | T5 | `start(C)` | **Applies to:** a `fresh` computation, or an invalid idle one. The new run starts from the body, with a fresh stamp and `R.epoch := C.epoch`. |
-| T6 | `await(R, ds, mode)` | **Activation:** an activation `A = {run R, mode, slots, remaining = |ds|, cont}` is created. Its id is always allocated, even when the fast path fills every slot in the same commit and `A` is removed at once (Z#28). **Member edges:** in a computation, each debtor's `dep` edge at this site (`at`) is reused or created, with `C` as creditor; in a task, and for consuming operations, a `wait` edge is created with `A` as creditor. **Demand:** debtors that are not running are demanded (T5, or T11 if `needs-run`). The awaiting slice ends here, and the demanded debtor's first slice is the next step; running that slice on the host stack implements this suspend–run–resume sequence (I10). **Fast path:** a member whose debtor is `live` or final fills its slot in the same commit. **`one`/`all`:** the run resumes when `remaining = 0`; an `all` activation also resumes at its first `err` slot, with that error, and its unfilled members are treated as `any` losers (fail-fast, Z#61). **`any`:** the first filled slot resumes it; loser `wait` edges are removed, and loser tasks created by `R` for this await that have no other creditor are cancelled (T14). Loser computations keep `C`'s `dep` edges, because they are dependencies of `C`. Filling slot `i` removes the entry `(E, i)` from `A.members` (X#4, Z#7). On resume, `A` is removed; `wait` members are removed with it, and `dep` members stay with `C` (W#2). |
+| T6 | `await(R, ds, mode)` | **Activation:** an activation `A = {run R, mode, slots, remaining = |ds|, cont}` is created. Its id is always allocated, even when the fast path fills every slot in the same commit and `A` is removed at once (Z#28). **Member edges:** in a computation, each debtor's `dep` edge at this site (`at`) is reused or created, with `C` as creditor; in a task, and for consuming operations, a `wait` edge is created with `A` as creditor. **Demand:** debtors that are not running are demanded (T5, or T11 if `needs-run`). The awaiting slice ends here, and the demanded debtor's first slice is the next step; running that slice on the host stack implements this suspend–run–resume sequence (I10). **Fast path:** a member whose debtor is `live` or final fills its slot in the same commit, but only while `A` is unresolved. Once a fill resolves `A` (any fill of an `any`, the first `err` of an `all`, the last fill of a `one`/`all`), a later ready member fills nothing. In a computation, its `dep` edge stays with `C` as a loser's does, and it does not invalidate `C`. **Baseline:** a `dep` member on a signal or cell records the debtor's current value and version at the site when its edge is created. A re-await at the same site re-arms the edge and keeps that baseline (Z#22). **`one`/`all`:** the run resumes when `remaining = 0`; an `all` activation also resumes at its first `err` slot, with that error, and its unfilled members are treated as `any` losers (fail-fast, Z#61). **`any`:** the first filled slot resumes it; loser `wait` edges are removed, and loser tasks created by `R` for this await that have no other creditor are cancelled (T14). Loser computations keep `C`'s `dep` edges, because they are dependencies of `C`. Filling slot `i` removes the entry `(E, i)` from `A.members` (X#4, Z#7). On resume, `A` is removed; `wait` members are removed with it, and `dep` members stay with `C` (W#2). |
 | T7 | `track(R, X)` | **Domain:** `X` is a signal or a cell; otherwise it is refused (Z#17). Inside a computation: a `dep` edge per §4.4, read immediately. Inside a task: a snapshot read with no edge, which allocates nothing (Q1, Z#19). |
 | T8 | `observe(host, d, cb)` / `unobserve` | Adds or removes an `observe` edge with `seen = none`; validates `d` if it is idle. **Initial delivery (Z#15):** if `d` is a source, or a `live` computation, its current `(value, version)` is delivered in the same commit. Otherwise `d` is demanded (T5, or T11) and the first delivery happens when it settles changed. |
 | T9 | `fire(E, result)` | Requires `E` to be `armed`; then `E` becomes `fired`. **`wait` edge:** fill its activation's slot, at the index recorded with the member (Z#7); a member listed at several indices fills all of them. **`dep` edge** of `C`: if `E` is a member of an activation of `C`'s current run, fill the slot (delivery) and re-arm `E` per §4.2. Otherwise this is an invalidation (§4.5.3), and `E` stays `fired` as a re-entry point. **`savepoint` edge (X#6):** fill its activation's slot, resume the run once if it is still parked on that activation (Z#50; otherwise the fire is refused), and remove the edge; the publication keeps only its basis. **`observe` edge:** per §4.2; it stays `armed` (Z#9). **Slots:** a filled activation resumes per T6, only if its run is parked on it (Z#50). If its run is stale, the slot is not filled (§4.5.4). |
@@ -1086,7 +1086,7 @@ Invariants hold after every commit.
 | I10 | **Runs:** a computation has at most one current run, and every other run of it is stale and retiring. A task has exactly one run until it completes. At most one run in the world has `slice = true` (D0). |
 | I11a | **Retention is reachable from obligations (A#4, X#12):** every row is either part of the fixed per-world administrative allowance (the root scope and the world record), or reachable by the edges of §3.2 from an outstanding obligation, a cleanup entry or a §3.4 admission, or a finalizer ref of a reachable run (Z#3). The **obligations** are: open explicit scopes; runs with `act ≠ done`; outstanding resources; open/active finalizer boundaries and pending cleanup waiters (including normal entry); pending world close and owned-child acknowledgements (Z#66 slice 2); `observe` edges; pins; host handles; `pending-activation`. |
 | I11b | **Bounded fan-out (W#13):** no table is keyed by history. Each row's references are bounded by its current content: <br>• a computation's edges, `basis` and adoption are bounded by its last two runs' effect indices; <br>• an activation's members by its `ds`; <br>• a run's finalizers/boundaries by lexical nesting depth, with at most one current cleanup waiter per run; <br>• an operation's subscriptions and a closing world's child obligations by currently pending observers/owned children, never past registrations; ordered failures by the current close report, cleared from runs at retirement (Z#66); <br>• a source's delta log by `B`; <br>• a mailbox's queue by (posted − taken); <br>• a world's lineage (§8.1) by its fork depth: one `[ancestor, cut]` pair per fork on its path, shared with every descendant of that ancestor. This is the one bound not by current content (decision 2026-11-14). <br>Combined with I11a, retained rows are a function of the obligations' current content. The constant factor is measured by the census gate. Physical pages are bounded separately (F5). |
-| I12 | **Rank (A#6):** for every `dep` edge between computations, `rank(creditor) > rank(debtor)`. **Adding an edge** that would violate this raises the creditor's rank and propagates the raise to its creditors. **A cycle:** if the propagation reaches the edge's debtor, the transition refuses with `::cycle`. |
+| I12 | **Rank (A#6):** for every `dep` edge between computations, `rank(creditor) > rank(debtor)`. **Adding an edge** that would violate this raises the creditor's rank and propagates the raise to its creditors. **A cycle:** if the propagation reaches the edge's debtor, the transition refuses with `::cycle`. The model proves the rank order. That the transition refuses with `::cycle` exactly when the propagation reaches the debtor is not proved: the raise loop is fuel-bounded. |
 | I13 | **Coherence as guards (A#5, W#1):** T9 fills a slot from a computation only if that computation is `live`. T12 sets a result only for a current run. |
 | I14 | **Validity is acyclic (Z#60):** the graph whose nodes are idle computations and whose edges go from each to the computation debtors in its `validity` has no cycle. Validation (§3.4) relies on it to terminate. Witness: validity entries strictly decrease in the lexicographic pair (demotion pass, rank at demotion). Demotions in one Rule R pass share their pass and are ordered by I12; a later pass is later; I12 raises happen only in allocating steps, so they never reorder entries recorded in one pass. Rank alone is not a witness: a still-live debtor can be raised after its creditor's demotion (proved in the model, together with "no dep edge has an idle debtor"). |
 | I15 | **Coherence of results (Z#64):** (a) a `live` computation's `dep` edges all have `seen` equal to their debtor's current `version`, and its result is the one its current run produced from those reads; (b) an idle computation whose `validity` is not `invalid` has `done-epoch = epoch`, and each entry records the version its current result read of that debtor; (c) hence validation (§3.4) reactivates a result only when every debtor still has the version the result was computed at. A stale read is a violation of (a) or (b). |
@@ -1100,7 +1100,7 @@ Invariants hold after every commit.
 | L5 | **Admission (A#8).** *Safety half (proved):* if no slice is runnable and some demanded computation is dirty, then at least one of these holds:
 - its dirty cone contains an entity blocked on a non-computation debtor (§4.5.6);
 - an eligible `needs-run` computation exists;
-- the cone contains a cyclic wait among tasks, which is a user deadlock (X#8). *Liveness half (argued, not proved):* a scheduler that is fair to eligible computations starts each of them eventually. |
+- the cone contains a parked task that is not blocked (in practice a cyclic wait among tasks, a user deadlock, X#8). *Liveness half (argued, not proved):* a scheduler that is fair to eligible computations starts each of them eventually. |
 
 ---
 
@@ -1574,21 +1574,59 @@ Shaped by the ansatz feasibility read (`ansatz/.internal/design/spindel-v2-feasi
      blockedness and for L5.
    - A fuel-bounded worklist returns a `converged` flag. Proved:
      `converged ⇒` the result is sound and closed, hence equals `live`. The
-     oracle asserts `converged`. Fuel sufficiency (a pigeonhole argument) can
-     come later.
+     oracle asserts `converged`. Fuel sufficiency is proved for normalization
+     (P1/P2), cascades (P4), reactivation (P6/P8), the obligation reach, the
+     scope subtree and ancestors, and the cycle reach. It is open for the I12
+     raise loop, Derive/blocked, the dirty cone and `cur-scope`. There, fuel
+     is a parameter and convergence is checked by flags.
    - `step : World × item → Outcome` is sequential (D0). Items are slice
      effects with opaque continuation ids, completions, scheduling choices and
-     ingress items.
-   - `step` is assembled from about 10 primitive table edits. Preservation
-     is proved once per primitive; each transition then only discharges
-     preconditions. The invariants are assembled from per-transition
-     lemmas, not from one large conjunction.
+     ingress items. The step is `world-step w it = finish(raw w it)`: the raw
+     transition, then Rule R to normalization.
+   - Preservation is proved once per primitive table edit for each invariant
+     bundle. A lemma copier carries the per-primitive lemmas from one bundle
+     to the next. Each transition then discharges its preconditions, with
+     per-transition overrides where a primitive's frame lemma does not apply.
+     The invariant is a conjunction of 13 nested bundles (p3b ⊂ … ⊂ p3m), one
+     per proof campaign.
    - No Mathlib: Init's `List` lemmas suffice.
 
-   Estimate: 3–4k lines.
+   Size: about 78k lines in 63 namespaces, most of it bundle copies
+   (kernel-checked like the rest).
 
-2. **Safety.** I1–I13, L1, L4 and the safety half of L5 are preserved by
-   every `step`. Rule R's lemma obligation (§3.3) is proved once.
+2. **Safety.** The model's top invariant is
+   `inv w := p3m w ∧ svb w ∧ inv-i9 w ∧ inv-i10-slice w ∧ i3 w`
+   (`spindel.v2.top`). Proved: `inv-empty`; `inv-step` (every item, accepted
+   or refused, keeps `inv`); and `reach-inv` (every world reachable from the
+   empty world by steps satisfies `inv`).
+   - Covered by `inv`: I1, I3, I4, I5, I8, I9 (synchronous finalizers), I10,
+     I11a, I12 (the rank order; see I12), I14; L4 (`step-l4`); and the safety
+     half of L5 (`l5-safety-total`).
+   - Partial: I2 (member edges of current runs; "every basis member exists or
+     is idle" is not proved), I7 (the empty-basis clause is checked by the
+     oracle, not proved), I13 (guard lemmas only).
+   - Out of scope: I6 (continuations are opaque ids) and I11b (the census
+     gate). Z#66 waiters and I15 are not modelled (§11.3).
+   - L1 is proved in state form (`live-converged`/`normalized` premises),
+     with the premises discharged by P1/P2 separately.
+   - I8 rests on a model-only guard, `cur-closed`: a spawn or creation is
+     refused when the run's current scope is closed. The obligation that the
+     guard never fires (P10) is open.
+   - Rule R's lemma obligation (§3.3) is proved once.
+
+   **Layer 2** (`spindel.v2.systop`): `SysReach` (the systems reachable from
+   an initial one by the 28 operations of `spindel.v2.sys`, each with the
+   premises its theorems take, e.g. a fresh id for fork, fork effect and
+   instance) and `sys-reach-inv`. Every reachable system satisfies `sysinv`:
+   - every live world and every live publication's basis satisfies `inv`;
+   - completion soundness: a live complete cell is released, has no run,
+     every kid is done and no marker remains;
+   - every live world is quiet-compatible;
+   - host joins are well formed.
+
+   **Physical:** `mv-refinement` (`spindel.v2.mvcc`). In every MVCC family
+   state reachable from the initial one, every active world reads each id as
+   the value-copy model of layer 2 has it.
 
 3. **Join.** The pre-Z#66 L2 argument uses the measure lemma on `μ(R)`
    and well-foundedness of ℕ × ℕ. That argument does not cover suspended
@@ -1610,8 +1648,9 @@ Shaped by the ansatz feasibility read (`ansatz/.internal/design/spindel-v2-feasi
    these lemmas nor the existing Z#64/I15 obligation.
 
 4. **Oracle.**
-   - The model namespace holds definitions only and loads fast. The proofs
-     namespace is the CI gate.
+   - The model and its proofs load together today (one namespace per proof
+     campaign); the split into a fast definitions namespace and a proofs gate
+     is planned (the restructure).
    - The engine writes a test-only commit log. Each item carries the stamps
      and ids the engine allocated, and the model checks their freshness.
    - Scheduling choices are items, so the model refuses inadmissible ones.
@@ -1619,11 +1658,14 @@ Shaped by the ansatz feasibility read (`ansatz/.internal/design/spindel-v2-feasi
    - After each commit:
      - the projected engine state is compared with the model as id-keyed
        sets;
-     - a compiled `inv : World → Bool` runs as a tripwire;
-     - refusals are compared through `Outcome.accepted`.
-   - Divergences are shrunk with test.check, in a dedicated `:verify` JVM
-     (≤ 2 GB). This replaces `test/.../lifetime/model.cljc` and
-     `engine/kernel.cljc`.
+     - executable invariant checks (`inv-all`, `lit-all`) run as tripwires.
+       The proved `inv` itself is not yet evaluated on replayed states: fork
+       markers and validity crank/stamp are not projected;
+     - refusals are compared through `Outcome.accepted`. Samples 43–50 drive
+       the refusals of T21, the cycle, pins and handles, resources and the
+       semaphore maximum.
+   - Divergences are reported per commit; there is no automatic shrinking
+     (test.check is not used by the oracle).
 
 5. **The body contract:** B1–B8 property tests in partial-cps and spindel.
 
