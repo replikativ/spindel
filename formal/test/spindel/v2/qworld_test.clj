@@ -9,7 +9,7 @@
             [spindel.v2.engine-test :as et]))
 
 (def theorems '[step-gc step-gc-rest gc-empty step-qinv qinv-empty quiet-rows raw0-quiet quiet-refused quiet-step quiet-stays
-                quiet-no-open live-root quiet-root-only quiet-task-complete quiet-scope-complete])
+                quiet-no-open live-root quiet-root-only quiet-task-complete quiet-scope-complete qh-forks])
 
 (deftest theorems-kernel-checked
   (doseq [t theorems]
@@ -36,4 +36,8 @@
     (is (every? empty? ((juxt :comps :tasks :runs :sources :edges :acts :res :cleanup :pubs :forks) w)) "only scopes")
     (doseq [it [(et/start c (:next-id w)) (et/handle-new c) (et/close-scope et/root) (et/append* 3 1 0)
                 (et/create-comp-top et/root (:next-id w) 1 1) (et/schedule r) (et/release-world) (et/write 3 1)]]
-      (is (= {:accepted false :world w} (into {} (en/world-step w it))) (pr-str it)))))
+      (is (= {:accepted false :world w} (into {} (en/world-step w it))) (pr-str it)))
+    ;; C1c stage B: a fork marker (an owned fork still counted) keeps the world from being quiet
+    (let [wm (assoc w :forks [(s/->ForkRow (:next-id w) 0 s/root-scope-id)])]
+      (is (false? (en/world-quiet wm)) "a marker: not quiet")
+      (is (false? (qw/qh wm)) "a marker: not qh"))))

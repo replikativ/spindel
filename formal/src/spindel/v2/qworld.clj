@@ -291,13 +291,6 @@
   (intro h) (exact (ga-sample w (And.left (p3b-parts w (p3l-p3b w h))))))
 (a/theorem p3l-gw [w :- World] (=> (= (p3l w) true) (= (gw-rest w) true))
   (intro h) (exact (gw-rest-of w (And.left (And.right (p3d-parts _ (p3l-p3d w h)))))))
-;; layer 1 creates no fork marker (gw); C1c stage B: so no marker is storage either
-(a/theorem p3l-forks-nil [w :- World] (=> (= (p3l w) true) (= (:forks w) (List.nil ForkRow)))
-  (intro h)
-  (have g := (p3l-gw w h))
-  (simp only [gw-rest gwk Bool.and_eq_true] at g)
-  (have fk := (And.left (And.right (And.right g))))
-  (cases hf (:forks w)) (case [nil] (rfl)) (case [cons a t] (rw [hf] at fk) (simp [forks-nil] at fk)))
 (a/theorem p3l-i1 [w :- World] (=> (= (p3l w) true) (= (lit-i1-scope w) true))
   (intro h) (exact (g1-rest-of w (And.right (p3e-parts _ (p3l-p3e w h))))))
 
@@ -353,25 +346,30 @@
               (And.left (And.right (And.right (And.right (And.right (And.right (And.right (And.right d))))))))
               Bool.or_self]))
 
-;; ---- the quiet hypotheses: released, no run, qinv
-(a/defn qh [w :- World] Bool (Bool.and (qinv w) (Bool.and (:released w) (nats-empty (tbl-ids run-id (:runs w))))))
+;; ---- the quiet hypotheses: released, no run, no fork marker (C1c stage B), qinv
+(a/defn qh [w :- World] Bool
+  (Bool.and (qinv w) (Bool.and (:released w) (Bool.and (nats-empty (tbl-ids run-id (:runs w))) (forks-nil (:forks w))))))
 (a/theorem qh-parts [w :- World]
   (=> (= (qh w) true) (And (= (qinv w) true) (And (= (:released w) true) (= (:runs w) (List.nil RunRow)))))
   (intro h) (simp only [qh Bool.and_eq_true] at h)
   (have e (= (:runs w) (List.nil RunRow)))
-  (have r := (And.right (And.right h)))
+  (have r := (And.left (And.right (And.right h))))
   (cases hr (:runs w)) (case [nil] (rfl)) (case [cons a t] (rw [hr] at r) (simp [tbl-ids nats-empty] at r))
   (exact (And.intro (And.left h) (And.intro (And.left (And.right h)) e))))
+(a/theorem qh-forks [w :- World] (=> (= (qh w) true) (= (:forks w) (List.nil ForkRow)))
+  (intro h) (simp only [qh Bool.and_eq_true] at h)
+  (have f := (And.right (And.right (And.right h))))
+  (cases hf (:forks w)) (case [nil] (rfl)) (case [cons a t] (rw [hf] at f) (simp [forks-nil] at f)))
 (a/theorem qh-quiet [w :- World] (=> (= (qh w) true) (= (world-quiet w) true))
   (intro h) (have q := (qh-parts w h))
-  (simp only [world-quiet world-runs (And.left (And.right q)) (And.right (And.right q))]))
+  (simp only [world-quiet world-runs (And.left (And.right q)) (And.right (And.right q)) (qh-forks w h) forks-nil]))
 (a/theorem qh-of [w :- World] (=> (= (qinv w) true) (= (world-quiet w) true) (= (qh w) true))
   (intros h hq)
   (simp only [world-quiet world-runs Bool.and_eq_true] at hq)
   (have e (= (nats-empty (tbl-ids run-id (:runs w))) true))
-  (have z := (Nat.eq_of_beq_eq_true (And.right hq)))
+  (have z := (Nat.eq_of_beq_eq_true (And.left (And.right hq))))
   (cases hr (:runs w)) (case [nil] (simp only [tbl-ids nats-empty])) (case [cons a t] (rw [hr] at z) (simp at z))
-  (simp only [qh h (And.left hq) e Bool.and_self]))
+  (simp only [qh h (And.left hq) e (And.right (And.right hq)) Bool.and_self]))
 
 (a/theorem k-parts [w :- World]
   (=> (= (gk-rest w) true) (= (:released w) true)
@@ -444,11 +442,7 @@
   (intros h m hz)
   (have q := (qh-parts w h))
   (have qi := (qinv-parts w (And.left q)))
-  (have g := (p3l-gw w (And.left qi)))
-  (simp only [gw-rest gwk Bool.and_eq_true] at g)
-  (have fk := (And.left (And.right (And.right g))))
-  (have ef (= (:forks w) (List.nil ForkRow)))
-  (cases hf (:forks w)) (case [nil] (rfl)) (case [cons a t] (rw [hf] at fk) (simp [forks-nil] at fk))
+  (have ef := (qh-forks w h))
   (have t0 (= (reach-mem z (tbl-scan task-id (owned-running-task w (:id s)) (:tasks w))) false))
   (cases hb (reach-mem z (tbl-scan task-id (owned-running-task w (:id s)) (:tasks w)))) (rfl)
   (apply (False.elim (scan-prop TaskRow task-id (owned-running-task w (:id s)) (fn [z :- Nat] False) (:tasks w) _ z hb)))
@@ -523,7 +517,7 @@
   (cases hk)
   (case [inl a] (exact (reach-scope w y h (Iff.mp (in-live-iff w y (live-converged-all w)) a))))
   (case [inr b]
-    (have ef := (p3l-forks-nil w (And.left qi)))
+    (have ef := (qh-forks w h))
     (simp [cleanup-rows cn cleanup-rows-in admitted a1 a2 a3 pn tbl-any storage storage-with storage-gather storage-gather0
            ef fork-keep rn tbl-gather anc-close anc-all reach-mem] at b)))
 
@@ -571,11 +565,7 @@
   (intros x hx) (exact (kept-scope w x h (mem x hx)))
   (have nope (forall [x :- Nat] (=> (= (other-has w x) true) False)))
   (intros x hx) (have z := (o x (hk x hx))) (rw [hx] at z) (cases z)
-  (have g := (p3l-gw w (And.left qi)))
-  (simp only [gw-rest gwk Bool.and_eq_true] at g)
-  (have fk := (And.left (And.right (And.right g))))
-  (have ef (= (:forks w) (List.nil ForkRow)))
-  (cases hf (:forks w)) (case [nil] (rfl)) (case [cons a t] (rw [hf] at fk) (simp [forks-nil] at fk))
+  (have ef := (qh-forks w h))
   (have c1 (= (:comps w) (List.nil CompRow)))
   (apply (tbl-empty CompRow comp-id (:comps w))) (intros x hx) (apply (nope x)) (simp only [other-has hx Bool.true_or])
   (have c2 (= (:tasks w) (List.nil TaskRow)))
@@ -612,11 +602,7 @@
   (have i2 (= (Nat.beq (:id (skw s)) 2) true)) (simp only [id-is scope-id] at p) (exact p)
   (simp only [root-ok i2 Bool.or_true Bool.not_true Bool.false_or Bool.true_and Bool.and_eq_true] at r)
   (have p0 (= (Nat.beq (:parent s) 0) true)) (exact (And.right r))
-  (have g := (p3l-gw w (And.left qi)))
-  (simp only [gw-rest gwk Bool.and_eq_true] at g)
-  (have fk := (And.left (And.right (And.right g))))
-  (have ef (= (:forks w) (List.nil ForkRow)))
-  (cases hf (:forks w)) (case [nil] (rfl)) (case [cons a t] (rw [hf] at fk) (simp [forks-nil] at fk))
+  (have ef := (qh-forks w h))
   (have t0 (= (reach-mem y (tbl-scan task-id (owned-running-task w (:id s)) (:tasks w))) false))
   (cases hb (reach-mem y (tbl-scan task-id (owned-running-task w (:id s)) (:tasks w)))) (rfl)
   (apply (False.elim (scan-prop TaskRow task-id (owned-running-task w (:id s)) (fn [z :- Nat] False) (:tasks w) _ y hb)))
@@ -712,7 +698,7 @@
   (cases hk)
   (case [inl a] (exact (Iff.mp (in-live-iff w y (live-converged-all w)) a)))
   (case [inr b]
-    (have ef := (p3l-forks-nil w (And.left qi)))
+    (have ef := (qh-forks w h))
     (simp [cleanup-rows cn cleanup-rows-in admitted a1 a2 a3 pn tbl-any storage storage-with storage-gather storage-gather0
            ef fork-keep rn tbl-gather anc-close anc-all reach-mem] at b)))
 ;; live is the root scope

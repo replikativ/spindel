@@ -27,7 +27,11 @@
     jinv-release-unborn jinv-drop jinv-idle-release jinv-resume jinv-activate jinv-merge jinv-fork jinv-fork-effect
     jinv-instantiate deliver-pending sinv-join sinv-deliver sinv-withdraw qsinv-join qsinv-deliver qsinv-withdraw
     cinv-join cinv-deliver cinv-withdraw once-deliver once-withdraw once-complete once-join final-stays
-    complete-born-ledger born-complete-delivered born-abandon-none])
+    complete-born-ledger born-complete-delivered born-abandon-none
+    ;; C1c stage B, proof stage (under HB)
+    owned-done-none drain-none own-released
+    sinv-own sinv-owned-done sinv-drain qsinv-own qsinv-owned-done qsinv-drain cinv-own cinv-owned-done cinv-drain
+    jinv-own jinv-owned-done jinv-drain complete-no-markers])
 
 (deftest theorems-kernel-checked
   (doseq [t theorems]

@@ -1826,3 +1826,34 @@ engine follows this model. Mapping and questions 15-18 agreed with the engine se
 - Changed statement: engine.clj `arm-kind-ok` admits `rk-external` (Z#63: arm, then a one-shot completion fire + ack,
   accepted after release; the same lifecycle as `op`). Sample 35 has the first external arm. No proof needed a change.
 
+
+## C1c stage B, proof stage (2026-11-17, branch `formal/c1c-b-proofs`, from engine-v2 eea3112)
+
+### Step 1: layer 1 with markers (gw generalized; quiet = no marker)
+- i11 `gwk`: `forks-nil fs` is replaced by `tbl-all fk-ok fs` (`fk-ok f` = the owner is not the root scope 2: the
+  owner is the forking run's `cur-scope`, never the root; question 18a). Used where gw's marker clause was read:
+  `gw-rest-filter` (kept by the filter) and `root-scope-succ` (no marker is owned by the root scope, `fk-root`). Every
+  layer-1 step keeps it (no layer-1 transition inserts a marker; deletions and the filter keep `tbl-all`).
+- engine.clj `world-quiet` gains `forks-nil (:forks w)` (moved here from i11): the layer-1 part of completion is
+  released, no run and no marker (W-OWNED-N all zero, W-NORMALIZE empty: questions 15, 16). owned.clj `no-markers w`
+  = `forks-nil (:forks w)`.
+- qworld `qh` gains `forks-nil (:forks w)`; `qh-parts` is unchanged in text; new `qh-forks`. Removed:
+  `p3l-forks-nil` (false now); its four users read the markers from `qh-forks`. sys.clj: `p3l-no-markers` removed;
+  `ready-put`, `ready-put-q`, `cinv-world`, `cinv-world-q` lose the stage-B no-markers premise again (world-quiet now
+  carries it: a complete-ready born world is quiet, and `wq`/`wqc` keep quiet), call sites as before stage B.
+- Changed statements: `gwk`/`gw-rest` (weaker), `world-quiet` and `qh` (stronger), the four sys.clj lemmas above
+  (one premise fewer). `wq`, `wqc`, `cinv`, `qsinv` are unchanged in text (HQ of the `cinv-*` lemmas is stronger
+  through world-quiet). Test: qworld_test, a marker keeps a released world without runs from being quiet and qh.
+
+### Step 2a: layer 2 under HB (sys.clj)
+- HB (`hb-ops`, as HQ was for C1): own, owned-done and the drain keep p3l and qinv and keep a released world released
+  (`hb-world w w2`). Its discharge is per bundle (step 2b).
+- Definitions changed (owned.clj): `own-ok` also refuses the root scope (the owner is `cur-scope`, never the root:
+  question 18a; it is what keeps gw's `fk-ok`); `drain-world` leaves the world as it is unless one of the inherited
+  markers is present (the engine logs `[:normalize]` only with W-NORMALIZE non-empty). New: `owned-done-none`,
+  `drain-none` (no marker: unchanged), `own-released` (released: unchanged).
+- Theorems: `sinv-own/-owned-done/-drain`, `qsinv-own/-owned-done/-drain` (with sinv: an unborn released cell's world
+  stays released, `cq-world`), `cinv-own` (no HB: own leaves a released world as it is), `cinv-owned-done/-drain` (a
+  quiet world has no marker, so both leave it as it is; released stays released by HB), `jinv-own/-owned-done/-drain`,
+  `complete-no-markers` (cinv: a live complete born cell has no marker: W-OWNED-N all zero and W-NORMALIZE drained).
+- Question 10 with markers needs no new proof: `complete-born-ledger` goes through `qh`, which now includes no marker.

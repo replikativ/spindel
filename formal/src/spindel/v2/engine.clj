@@ -2481,7 +2481,9 @@
 ;; or collected (layer 2, the owner relation of spindel.v2.sys; an unborn instance released before
 ;; its activation is complete at once)
 (a/defn world-runs [w :- World] Nat (List.length (:runs w)))
-(a/defn world-quiet [w :- World] Bool (Bool.and (:released w) (Nat.beq (world-runs w) 0)))
+;; C1c stage B: and no fork marker (the engine's W-OWNED-N all zero and W-NORMALIZE empty, questions 15, 16)
+(a/defn forks-nil [fs :- (List ForkRow)] Bool (match fs [nil true] [(cons h t) false]))
+(a/defn world-quiet [w :- World] Bool (Bool.and (:released w) (Bool.and (Nat.beq (world-runs w) 0) (forks-nil (:forks w)))))
 
 ;; C1/E4: an unborn instance (layer 2, sys.clj `Cell.unborn`) released before its activation: nothing
 ;; in it runs, its copied work and finalizers included; the engine logs `[:release-world]` and only
