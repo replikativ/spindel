@@ -667,6 +667,9 @@
 (a/defn scope-local [w :- World, s :- Nat] Bool
   (tbl-any (local-run-scope w) (List.cons Nat s (scope-ancestors w s))))
 (a/defn spawn-loc [w :- World, owner :- Nat, flag :- Bool] Bool (Bool.or flag (scope-local w owner)))
+;; Z#77 (Q4): an unmarked task is not detached into a fork-local scope (the mark is the creator's: a fork-local
+;; task detached elsewhere keeps it)
+(a/defn detach-local-bad [w :- World, k :- Nat, s :- Nat] Bool (Bool.and (scope-local w s) (Bool.not (task-local-id w k))))
 ;; the option inside a computation body is refused (raw0, Z#77: `{:spindel/invalid :fork-local}`)
 (a/defn spawn-local-bad [w :- World, st :- Nat, flag :- Bool] Bool
   (Bool.and flag (match (tok-run w st) [none false] [(some r) (in-comp w r)])))
@@ -3350,7 +3353,7 @@
     [(release-world) (t-release-world w)]
     [(open-scope st s) (t-open-scope w st s)]
     [(close-scope s) (t-close-scope w s)]
-    [(detach k s) (t-detach w k s)]
+    [(detach k s) (if (detach-local-bad w k s) (refuse w) (t-detach w k s))]
     [(finally-enter st) (t-finally-enter w st)]
     [(finally-exit st) (t-finally-exit w st)]
     [(slice-exit r) (t-slice-exit w r)]
@@ -3509,7 +3512,9 @@
   (exact (t-release-world-inv w h))
   (exact (t-open-scope-inv w _ _ h))
   (exact (t-close-scope-inv w _ h))
-  (exact (t-detach-inv w _ _ h))
+  (rename_i k s) (cases hc (detach-local-bad w k s))
+  (simp only [hc]) (exact (t-detach-inv w _ _ h))
+  (simp only [hc refuse]) (exact h)
   (exact (t-finally-enter-inv w _ h))
   (exact (t-finally-exit-inv w _ h))
   (exact (t-slice-exit-inv w _ h))
@@ -3607,7 +3612,9 @@
   (exact (t-release-world-refuse w ha))
   (exact (t-open-scope-refuse w _ _ ha))
   (exact (t-close-scope-refuse w _ ha))
-  (exact (t-detach-refuse w _ _ ha))
+  (rename_i k s) (cases hc (detach-local-bad w k s))
+  (simp only [hc] at ha) (simp only [hc]) (exact (t-detach-refuse w _ _ ha))
+  (simp only [hc refuse])
   (exact (t-finally-enter-refuse w _ ha))
   (exact (t-finally-exit-refuse w _ ha))
   (exact (t-slice-exit-refuse w _ ha))

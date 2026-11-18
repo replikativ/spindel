@@ -616,7 +616,7 @@
   (let [obs (o/read-observations "test/spindel/v2/oracle/log-sample-42-observations.edn")
         rl (log "42-root")
         w0 (peek (:worlds (o/replay rl :family? true :worlds? true)))
-        cell (fn [parent owner kids] (sys/->Cell w0 true parent owner [] false 0 kids false [] [] false))
+        cell (fn [parent owner kids] (sys/->Cell w0 true parent owner [] false 0 kids false [] [] false false w0))
         c0 (fn [k] (case (long k) 1 (cell 0 0 [3 4]) 3 (cell 1 1 [5]) 4 (cell 1 1 []) 5 (cell 1 3 []) (cell 0 0 [])))
         rel (fn [cs k] (sys/sys-complete (sys/sys-step cs k [(o/ctor-idx :release-world)]) k))
         c1 (sys/sys-xfer-move (sys/sys-xfer-reserve c0 5 4 [0 0 0 0]) 5 4)

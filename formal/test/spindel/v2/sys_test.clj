@@ -136,7 +136,7 @@
 (deftest c2-seal-and-merge-release
   (let [{:keys [basis parent child]} (fork-worlds)
         it (fn [tag & fs] (into [(o/ctor-idx tag)] fs))
-        cell (fn [w sealed] (sys/->Cell w true 1 s/root-scope-id [] false 0 [] false [] [] sealed))
+        cell (fn [w sealed] (sys/->Cell w true 1 s/root-scope-id [] false 0 [] false [] [] sealed false w))
         cells (fn [sealed] (fn [k] (case (long k) 1 (cell parent false) 2 (cell child sealed) (cell s/empty-world false))))
         sealed ((sys/sys-seal (cells false) 2) 2)
         w (:world sealed)]
@@ -161,7 +161,7 @@
 (deftest idle-release-fires-on-an-idle-world-only
   (let [{:keys [child]} (fork-worlds)
         it (fn [tag & fs] (into [(o/ctor-idx tag)] fs))
-        cell (fn [w] (sys/->Cell w true 1 s/root-scope-id [] false 0 [] false [] [] false))
+        cell (fn [w] (sys/->Cell w true 1 s/root-scope-id [] false 0 [] false [] [] false false w))
         cells (fn [w] (fn [k] (cell (if (= k 2) w s/empty-world))))
         step (fn [w i] (let [o (en/world-step w i)] (is (:accepted o) (pr-str i)) (:world o)))
         ;; the host lets go: every handle dropped, every host edge removed
@@ -244,7 +244,7 @@
     (:world (en/world-step w3 (it :await st [(dec (:next-id w3))] s/am-one 1 (:next-id w3) [])))))
 
 (defn- c1-cell [w & {:keys [parent unborn pending] :or {parent 0 unborn false pending 0}}]
-  (sys/->Cell w true parent s/root-scope-id [] unborn pending [] false [] [] false))
+  (sys/->Cell w true parent s/root-scope-id [] unborn pending [] false [] [] false false w))
 (defn- c1-cells [m] (fn [k] (get m k (c1-cell s/empty-world))))
 (defn- released [w] (:world (en/world-step w [(o/ctor-idx :release-world)])))
 
@@ -503,7 +503,7 @@
 ;; C2 R6, the engine's protocol: reserve in the new owner, then move; a completion in between, a counted fork
 ;; or a cycle undoes or refuses it; lineage stays; unseal clears the flag unless released
 (deftest c2-transfer-protocol
-  (let [cell (fn [parent owner kids] (sys/->Cell s/empty-world true parent owner [] false 0 kids false [] [] false))
+  (let [cell (fn [parent owner kids] (sys/->Cell s/empty-world true parent owner [] false 0 kids false [] [] false false s/empty-world))
         cells (fn [k] (case (long k) 1 (cell 0 0 [2 3]) 2 (cell 1 1 []) 3 (cell 1 1 []) (cell 0 0 [])))
         fuel [0 0 0 0]
         root s/root-scope-id

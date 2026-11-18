@@ -1363,6 +1363,8 @@
 (lcopy! HMK 't12-inv)
 
 ;; ---- Z#77 T28: a retired run that is not done completes (T12); its entity is a task (gd-cce is false)
+(lcopy! HMK 'inv-retire-pre)
+(lcopy! HMK 'inv-run-cascade)
 (a/theorem hmk-retire-one [hxm :- (List Nat), v :- Nat, w :- World, rid :- Nat]
   (=> (= (gd w) true) (= (g7 w) true) (= (hmk hxm w) true) (= (hmk hxm (retire-one v w rid)) true))
   (intros hg h7 h)
