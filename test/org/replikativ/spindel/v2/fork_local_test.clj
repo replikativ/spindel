@@ -362,3 +362,45 @@
        (when (even? i) (v2/swap-world! c assoc :x 1))
        (done! c w)
        (is (not-any? #(in-child? c %) @log) "NEGATIVE")))))
+
+(defn- waiters [c h]
+  (v2/host-call! c #(.size ^java.util.ArrayDeque
+                     (aget ^objects (v2/row-of (v2/in-world c h)) org.replikativ.spindel.v2.rows/X-WAITERS))))
+
+(deftest a-retired-consuming-waiter-leaves-the-fifo
+  (checked
+   (let [w (vworld)
+         m (binding [v2/*world* w] (v2/mailbox))
+         sem (binding [v2/*world* w] (v2/semaphore 1))
+         d (binding [v2/*world* w] (v2/deferred))
+         _ (binding [v2/*world* w] (task (v2/acquire! sem) (await d) (v2/sem-release! sem)))   ; holds the permit
+         _ (settle)
+         _ (binding [v2/*world* w] (ltask (v2/take! m)))
+         _ (binding [v2/*world* w] (ltask (v2/acquire! sem)))
+         _ (settle)
+         c (v2/fork! w)]
+     (v2/swap-world! c assoc :x 1)
+     (is (zero? (waiters c m)) "NEGATIVE: the mailbox FIFO lets go of the retired taker")
+     (is (zero? (waiters c sem)) "NEGATIVE: the semaphore FIFO lets go of the retired acquirer")
+     (is (= 1 (waiters w m)) "the parent's taker still waits")
+     (v2/post! m :x)
+     (v2/deliver! d 1)
+     (done! c w))))
+
+(deftest a-collected-alias-in-an-untouched-fork-follows-retirement
+  (checked
+   (let [w (vworld)
+         s (binding [v2/*world* w] (v2/signal 0))
+         d (binding [v2/*world* w] (v2/deferred))
+         _ (binding [v2/*world* w] (ltask (await d)))
+         _ (settle)
+         c (v2/fork! w)]
+     ((fn [] (v2/in-world c s) nil))          ; an alias nobody keeps
+     (loop [i 0]
+       (when (and (< i 100) (empty? (verify/log c)))
+         (System/gc) (Thread/sleep 20) (recur (inc i))))
+     (is (seq (verify/log c)) "the alias was collected")
+     (is (= [:retire-local] (:item (first (verify/log c))))
+         "the fork's first item is its retirement, before the T19 bookkeeping")
+     (v2/deliver! d 1)
+     (done! c w))))

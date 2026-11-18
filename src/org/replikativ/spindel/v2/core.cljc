@@ -2234,7 +2234,16 @@
    releasing the gate (H2)."
   [w row]
   (let [lk (g w rw/W-LOCK)]
-    (if (hs/try-lock! lk)
+    (cond
+      (not (hs/try-lock! lk))
+      (hs/metadata-later! #(source-token-drop! w row) 1)
+      ;; Z#77: a fork's first item is its retirement (T28): an empty
+      ;; internal item enters it through the ordinary path, then this retries
+      (g w rw/W-RETIRE)
+      (do (hs/unlock! lk)
+          (internal! w (fn [] nil))
+          (hs/metadata-later! #(source-token-drop! w row) 1))
+      :else
       (do
         (try
           (when-not (g w rw/W-META-CLOSED)
@@ -2251,8 +2260,7 @@
                    (when-let [log (g w rw/W-LOG)]
                      (aadd! log {:item [:handle-drop (g x rw/ID)] :accepted true})))))))
           (finally (hs/unlock! lk)))
-        (handoff! w))
-      (hs/metadata-later! #(source-token-drop! w row) 1))))
+        (handoff! w)))))
 
 (defn- attach-watch-token! [w cell row]
   (when (watchable-source? row)
@@ -4168,6 +4176,17 @@
     ;; its activation goes (wait members unlinked), its resources with their
     ;; outstanding/dormant/discharge entries, its finalizers and slice
     (doseq [r rs]
+      ;; a consuming wait (take!/acquire!) also leaves its source's FIFO
+      (when-let [a (rv w (g r rw/R-ACTV))]
+        (let [^objects ms (g a rw/A-MEMBERS)]
+          (dotimes [i (alength ms)]
+            (when-let [e (rv w (aget ms i))]
+              (when (== rw/EK-WAIT (gl e rw/E-KIND))
+                (let [d (rv w (g e rw/E-DEBTOR))]
+                  (when (and (source? d) (<= rw/SRC-MAILBOX (gl d rw/X-KIND) rw/SRC-SEMAPHORE)
+                             (g d rw/X-WAITERS))
+                    (let [eid (id-of e)]
+                      (hs/dq-remove-if! (deque d rw/X-WAITERS) #(== eid (id-of %)))))))))))
       (drop-activation! w r)
       (when-let [zs (g r rw/R-RES)]
         (dotimes [i (acount zs)]
