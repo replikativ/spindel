@@ -1139,7 +1139,7 @@
   (cases hg (create-ok w c))
   (simp only [t3-create ht hg refuse]) (exact h)
   (simp only [t3-create ht hg accept])
-  (exact (sl-run-upd x _ _ _ (keeps-run-tick x) (Eq.trans (sl-record-basis x _ r c) (sl-create-comp-raw x w c _ ins body h)))))
+  (exact (sl-run-upd x _ _ _ (keeps-run-tick x) (Eq.trans (sl-comp-upd x _ _ _) (sl-create-comp-raw x w c _ ins body h)))))
 
 (a/theorem sl-t3-top [x :- Nat, w :- World, sc :- Nat, c :- Nat, ins :- (List Nat), body :- Nat]
   (=> (= (i10-slice-at x w) true) (= (i10-slice-at x (:world (t3-create-top w sc c ins body))) true))
@@ -3070,7 +3070,7 @@
   (cases hg (create-ok w c))
   (simp only [t3-create ht hg refuse]) (exact h)
   (simp only [t3-create ht hg accept])
-  (exact (s9-run-upd _ _ _ keeps9-run-tick (Eq.trans (s9-record-basis _ r c) (s9-create-comp-raw w c _ ins body h)))))
+  (exact (s9-run-upd _ _ _ keeps9-run-tick (Eq.trans (s9-comp-upd _ _ _) (s9-create-comp-raw w c _ ins body h)))))
 
 (a/theorem s9-t3-top [w :- World, sc :- Nat, c :- Nat, ins :- (List Nat), body :- Nat]
   (=> (= (inv-i9 w) true) (= (inv-i9 (:world (t3-create-top w sc c ins body))) true))

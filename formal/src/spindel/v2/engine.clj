@@ -775,7 +775,9 @@
 
 ;; ---- T3 create-comp(c, inputs, body). The item names the computation id c: an existing
 ;; computation (adoption or replacement), or else c must be next-id (a fresh computation).
-;; Every case records C in a computation creator's basis (§5.2) and ticks the effect index.
+;; Every case records C in a computation creator's basis at the current site (§5.2), and takes it
+;; out of the creator's adoption basis (a readopted creation leaves the adoption basis at
+;; readoption, as a re-spawn's: `comp-rebasis`), and ticks the effect index.
 ;;   absent: fresh (epoch 1, done-epoch none, handles 1, Z#13), owner per §5.2
 ;;   present, equal inputs: adopted, handles unchanged (Z#29: a new handle is `handle-new`)
 ;;   present, different inputs (W#5): inputs/body replaced, handles unchanged (Z#29), the
@@ -813,7 +815,9 @@
   (match (tok-run w st)
     [none (refuse w)]
     [(some r) (if (create-ok w c)
-                  (accept (run-upd (record-basis (create-comp-raw w c (src-owner w r) inputs body) r c) (:id r) run-tick))
+                  (accept (run-upd (comp-upd (create-comp-raw w c (src-owner w r) inputs body) (:of r)
+                                             (comp-rebasis (Created.mk c (:effect-index r))))
+                                   (:id r) run-tick))
                   (refuse w))]))
 (a/defn t3-create-top [w :- World, scope :- Nat, c :- Nat, inputs :- (List Nat), body :- Nat] Outcome
   (if (Bool.and (create-ok w c) (scope-open-at w scope)) (accept (create-comp-raw w c scope inputs body)) (refuse w)))
@@ -844,7 +848,8 @@
   (simp only [t3-create ht hg refuse]) (exact h)
   (simp only [t3-create ht hg accept])
   (exact (inv-run-upd _ (:id r) run-tick run-tick-run-id
-           (inv-record-basis _ r c (inv-create-comp-raw w c (src-owner w r) inputs body h)))))
+           (inv-comp-upd _ (:of r) _ (comp-rebasis-id _) (comp-rebasis-pending _)
+             (inv-create-comp-raw w c (src-owner w r) inputs body h)))))
 
 (a/theorem t3-refuse [w :- World, st :- Nat, c :- Nat, inputs :- (List Nat), body :- Nat]
   (=> (= (:accepted (t3-create w st c inputs body)) false) (= (:world (t3-create w st c inputs body)) w))

@@ -2081,12 +2081,12 @@ Not done in this stage; each needs a proof campaign of its own (estimates below)
   the item's tag is never none): the same kind of check as `fresh = next-id`. No reachability statement applies.
 - `fins-open` on complete (Z#43): kept. The engine's CPS body closes its regions before it completes; that is a
   property of the body compiler's item stream, which the model does not describe (bodies are opaque).
-- `root-shut` in `body-shut` (spawn/create-source in a run) and the C0 `c0-gate` root check: kept, but it is NOT
-  unreachable: a normal run can exist in a released world (a computation started after T21, notes above, C1 quiet
-  half), and the engine's `host-shut?` exempts a run's own slice while `spawn!`/`create-source-in-run!` have no
-  released check (engine-v2 c1a47bb). So the model refuses a body creation after release that the engine commits.
-  Engine/spec decision (C1 Q5/Q8: does "a released world takes no new creation" cover body creations of a run
-  that started after the release?).
+- `root-shut` in `body-shut` (spawn/create-source in a run) and the C0 `c0-gate` root check: kept. No trace from the
+  empty world reaches a normal run in a released world after #269. The old C1 quiet-half counterexample needed an
+  observe/pin accepted in a released world's cleanup slice, which root-shut now refuses. T21 cancels every task run at
+  once, unlinks every root and drops the pins, and a cleanup slice can neither await nor create. So nothing demands a
+  computation after T21. Engine decision Z#76 (#298): body creations in a released world throw `::released` with no
+  item, as the model refuses them. The guard is a candidate for a never-fires proof (as P10), not a divergence.
 - Item 6: the engine commits `open-scope!` and `enter-finally!` with no run-mode check (core.cljc 4454, 1691). The
   model's `t-open-scope` (`open-ok`: run-normal) and `t-finally-enter` (run-normal) refuse them in a cleanup slice.
   Admitting them needs: the current scope of an unwinding run (the model's T14 cascade cancels the subtree's runs;

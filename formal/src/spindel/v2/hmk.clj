@@ -2193,7 +2193,7 @@
      (exact (hmk-mfr hxm w c row inputs body hc hg h7 h))
      (simp only [create-comp-raw hc hi])
      (exact (hmk-comp-upd-m hxm w c comp-adopt-row comp-adopt-row-id comp-adopt-row-pending (fn [q :- CompRow, hq :- (= (hk-wt q) true)] hq) h))))
-(override! HMK 't3-inv '[inv-create-comp-raw inv-record-basis inv-run-upd]
+(override! HMK 't3-inv '[inv-create-comp-raw inv-run-upd]
   '(a/theorem t3-hmk [hxm :- (List Nat), w :- World, st :- Nat, c :- Nat, inputs :- (List Nat), body :- Nat]
      (=> (= (gd w) true) (= (g7 w) true) (= (hmk hxm w) true) (= (hmk hxm (:world (t3-create w st c inputs body))) true))
      (intros hg h7 h)
@@ -2204,7 +2204,9 @@
      (simp only [t3-create ht hg2 refuse]) (exact h)
      (simp only [t3-create ht hg2 accept])
      (exact (hmk-run-upd hxm _ (:id r) run-tick run-tick-run-id
-              (hmk-record-basis hxm _ r c (hmk-create-comp-raw hxm w c (src-owner w r) inputs body hg h7 h))))))
+              (hmk-comp-upd-m hxm _ (:of r) _ (comp-rebasis-id _) (comp-rebasis-pending _)
+                (fn [q :- CompRow, hq :- (= (hk-wt q) true)] hq)
+                (hmk-create-comp-raw hxm w c (src-owner w r) inputs body hg h7 h))))))
 (override! HMK 't3-top-inv '[inv-create-comp-raw]
   '(a/theorem t3-top-hmk [hxm :- (List Nat), w :- World, scope :- Nat, c :- Nat, inputs :- (List Nat), body :- Nat]
      (=> (= (gd w) true) (= (g7 w) true) (= (hmk hxm w) true) (= (hmk hxm (:world (t3-create-top w scope c inputs body))) true))
