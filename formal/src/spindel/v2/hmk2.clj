@@ -1362,6 +1362,39 @@
      (exact (hmk-complete-raw-x hxm w r _ (gd-u1-of-g10r w r hg10 mr) hg h7 mr (normal-alive r hn) h))))
 (lcopy! HMK 't12-inv)
 
+;; ---- Z#77 T28: a retired run that is not done completes (T12); its entity is a task (gd-cce is false)
+(a/theorem hmk-retire-one [hxm :- (List Nat), v :- Nat, w :- World, rid :- Nat]
+  (=> (= (gd w) true) (= (g7 w) true) (= (hmk hxm w) true) (= (hmk hxm (retire-one v w rid)) true))
+  (intros hg h7 h)
+  (cases hf (run-find w rid))
+  (case [none] (simp only [retire-one hf]) (exact h))
+  (case [some r]
+    (have hp := (hmk-retire-pre hxm w r h))
+    (have gp := (gd-retire-pre w r hg))
+    (have sp := (g7-retire-pre w r h7))
+    (cases hf1 (run-find (retire-pre w r) rid))
+    (case [none] (simp only [retire-one hf hf1]) (exact hp))
+    (case [some r1]
+      (cases ha (Bool.and (run-alive r1) (run-of-local (retire-pre w r) r1)))
+      (case [true] (simp only [retire-one hf hf1 ha])
+        (have hnc := (local-run-nocomp _ r1 (gd-sample _ gp) (bool-and-right _ _ ha)))
+        (have pre (= (Bool.or (Bool.not (gd-cce (retire-pre w r) r1)) (tbl-all (gd-u1 r1) (:runs (retire-pre w r)))) true))
+        (simp only [gd-cce hnc Bool.not_false Bool.true_or])
+        (exact (hmk-complete-raw-x hxm _ r1 _ pre gp sp (retire-r1-mem w r r1 rid hf1) (bool-and-left _ _ ha) hp)))
+      (case [false] (simp only [retire-one hf hf1 ha retire-full]) (exact (hmk-run-cascade hxm _ _ hp))))))
+(a/theorem hmk-t-retire-local [hxm :- (List Nat), w :- World, v :- Nat]
+  (=> (= (gd w) true) (= (g7 w) true) (= (hmk hxm w) true) (= (hmk hxm (:world (t-retire-local w v))) true))
+  (intros hg h7 h)
+  (cases hm (tbl-any (run-of-local w) (:runs w)))
+  (case [false] (simp only [t-retire-local hm refuse]) (exact h))
+  (case [true] (simp only [t-retire-local hm accept])
+    (have hq (forall [u :- World, x :- Nat] (=> (= (Bool.and (gd u) (g7 u)) true) (= (hmk hxm u) true) (= (hmk hxm (retire-one v u x)) true))))
+    (intros u x hu hk) (simp only [Bool.and_eq_true] at hu) (exact (hmk-retire-one hxm v u x (And.left hu) (And.right hu) hk))
+    (have h0 (= (Bool.and (gd w) (g7 w)) true)) (simp only [hg h7 Bool.and_self])
+    (exact (nat-fold-pres2 (fn [u :- World] (Bool.and (gd u) (g7 u))) (hmk hxm) (retire-one v)
+             (pres-and gd g7 (retire-one v) (gd-retire-one v) (g7-retire-one v)) hq (local-order w) w h0 h))))
+(swap! (:renames HMK) assoc 'inv-retire-one 'hmk-retire-one 't-retire-local-inv 'hmk-t-retire-local)
+
 ;; ===========================================================================
 ;; Part F. Rule R: demote (the round's strays are exempt; i14's vr gives their creditors)
 ;; ===========================================================================
@@ -1581,7 +1614,8 @@
     (t3-inv w _ _ _ _ h) (t3-inv w _ _ _ _ hg hg7 h)
     (t3-top-inv w _ _ _ _ h) (t3-top-inv w _ _ _ _ hg hg7 h)
     (t11-inv w _ _ h) (t11-inv w _ _ hg h)
-    (t12-inv w _ _ _ h) (t12-inv w _ _ _ hg10 hg hg7 h)})
+    (t12-inv w _ _ _ h) (t12-inv w _ _ _ hg10 hg hg7 h)
+    (t-retire-local-inv w _ h) (t-retire-local-inv w _ hg hg7 h)})
 (defn- hmk-add-hyps [form calls]
   (let [[hd nm binders stmt & proof] form
         stmt2 (apply list '=> '(= (gd w) true) '(= (g7 w) true) '(= (ga w) true) '(= (g10r w) true) (rest stmt))

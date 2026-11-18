@@ -1078,8 +1078,8 @@
   (simp only [demand-reactive hc hi hv sl-comp-upd]) (exact h)
   (simp only [demand-reactive hc hi hv]) (exact (sl-react-loop x (react-fuel w) w _ h)))
 
-(a/theorem sl-spawn-rows [x :- Nat, w :- World, owner :- Nat, ins :- (List Nat)]
-  (=> (= (i10-slice-at x w) true) (= (i10-slice-at x (spawn-rows w owner ins)) true))
+(a/theorem sl-spawn-rows [x :- Nat, w :- World, owner :- Nat, ins :- (List Nat), loc :- Bool]
+  (=> (= (i10-slice-at x w) true) (= (i10-slice-at x (spawn-rows w owner ins loc)) true))
   (intro h) (simp only [spawn-rows])
   (exact (sl-add-run-scope x _ _ _ _ _ (Eq.trans (sl-bump x _) (Eq.trans (sl-task-ins x w _) h)))))
 
@@ -1088,8 +1088,8 @@
   (intro h) (simp only [respawn-raw])
   (exact (sl-run-upd x _ _ _ (keeps-run-tick x) (Eq.trans (sl-comp-upd x w _ _) h))))
 
-(a/theorem sl-t4 [x :- Nat, w :- World, st :- Nat, body :- Nat, fresh :- Nat, ins :- (List Nat)]
-  (=> (= (i10-slice-at x w) true) (= (i10-slice-at x (:world (t4-spawn w st body fresh ins))) true))
+(a/theorem sl-t4 [x :- Nat, w :- World, st :- Nat, body :- Nat, fresh :- Nat, ins :- (List Nat), flag :- Bool]
+  (=> (= (i10-slice-at x w) true) (= (i10-slice-at x (:world (t4-spawn w st body fresh ins flag))) true))
   (intro h)
   (cases ht (tok-run w st)) (case' [some r]) (case' [none])
   (simp only [t4-spawn ht refuse]) (exact h)
@@ -1097,17 +1097,17 @@
   (cases hf (Nat.beq fresh (:next-id w)))
   (simp only [t4-spawn ht hr hf refuse]) (exact h)
   (simp only [t4-spawn ht hr hf accept])
-  (exact (sl-run-upd x _ _ _ (keeps-run-tick x) (Eq.trans (sl-record-basis x _ r fresh) (sl-spawn-rows x w _ ins h))))
+  (exact (sl-run-upd x _ _ _ (keeps-run-tick x) (Eq.trans (sl-record-basis x _ r fresh) (sl-spawn-rows x w _ ins _ h))))
   (cases hi (nat-list-eq ins (:inputs t)))
   (simp only [t4-spawn ht hr hi refuse]) (exact h)
   (simp only [t4-spawn ht hr hi accept]) (exact (sl-respawn-raw x w r fresh h)))
 
-(a/theorem sl-t4-top [x :- Nat, w :- World, sc :- Nat, body :- Nat, fresh :- Nat, ins :- (List Nat)]
-  (=> (= (i10-slice-at x w) true) (= (i10-slice-at x (:world (t4-spawn-top w sc body fresh ins))) true))
+(a/theorem sl-t4-top [x :- Nat, w :- World, sc :- Nat, body :- Nat, fresh :- Nat, ins :- (List Nat), flag :- Bool]
+  (=> (= (i10-slice-at x w) true) (= (i10-slice-at x (:world (t4-spawn-top w sc body fresh ins flag))) true))
   (intro h)
   (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (scope-open-at w sc)))
   (simp only [t4-spawn-top hg refuse]) (exact h)
-  (simp only [t4-spawn-top hg accept]) (exact (sl-spawn-rows x w sc ins h)))
+  (simp only [t4-spawn-top hg accept]) (exact (sl-spawn-rows x w sc ins _ h)))
 
 (a/theorem sl-t5 [x :- Nat, w :- World, cid :- Nat, fresh :- Nat]
   (=> (= (i10-slice-at x w) true) (= (i10-slice-at x (:world (t5-start w cid fresh))) true))
@@ -1266,6 +1266,51 @@
   (have h1 := (sl-run-upd x w (:id r) run-complete-row (keeps-run-complete-row x) h))
   (have h2 := (sl-complete-body x _ r (RunResult.mk tag v) h1))
   (exact (sl-fin-if-final x _ _ (sl-run-cascade x _ _ (Eq.trans (sl-retire-after x _ _) h2)))))
+
+
+;; ---- Z#77 T28 retire-local: no run gains the slice
+(a/theorem keeps-run-drop-fins [x :- Nat] (keeps-slice x run-drop-fins)
+  (unfold keeps-slice) (intros r h) (simp only [slice-only run-drop-fins Bool.not_false Bool.true_or]))
+(a/theorem sl-ack-if [x :- Nat, rid :- Nat, w :- World, z :- Nat]
+  (=> (= (i10-slice-at x w) true) (= (i10-slice-at x (ack-if rid w z)) true))
+  (intro h)
+  (cases hu (tbl-all (no-debtor z) (:edges w)))
+  (case [false] (simp only [ack-if hu]) (exact h))
+  (case [true] (simp only [ack-if hu]) (exact (sl-ack-raw x w z rid h))))
+(a/theorem sl-retire-pre [x :- Nat, w :- World, r :- RunRow]
+  (=> (= (i10-slice-at x w) true) (= (i10-slice-at x (retire-pre w r)) true))
+  (intro h)
+  (have h1 (= (i10-slice-at x (cancel-acts w (:id r))) true))
+  (simp only [cancel-acts]) (exact (sl-fold-frame x drop-act (sl-drop-act x) _ _ h))
+  (have h2 := (nat-fold-pres (i10-slice-at x) (ack-if (:id r)) (fn [w2 :- World, y :- Nat] (sl-ack-if x (:id r) w2 y)) (:resources r) _ h1))
+  (simp only [retire-pre]) (exact (sl-run-upd x _ _ _ (keeps-run-drop-fins x) h2)))
+(a/theorem sl-complete-raw [x :- Nat, w :- World, r :- RunRow, res :- RunResult]
+  (=> (= (i10-slice-at x w) true) (= (i10-slice-at x (complete-raw w r res)) true))
+  (intro h)
+  (simp only [complete-raw])
+  (have h1 := (sl-run-upd x w (:id r) run-complete-row (keeps-run-complete-row x) h))
+  (have h2 := (sl-complete-body x _ r res h1))
+  (exact (sl-fin-if-final x _ _ (sl-run-cascade x _ _ (Eq.trans (sl-retire-after x _ _) h2)))))
+(a/theorem sl-retire-one [x :- Nat, v :- Nat, w :- World, rid :- Nat]
+  (=> (= (i10-slice-at x w) true) (= (i10-slice-at x (retire-one v w rid)) true))
+  (intro h)
+  (cases hf (run-find w rid))
+  (case [none] (simp only [retire-one hf]) (exact h))
+  (case [some r]
+    (have hp := (sl-retire-pre x w r h))
+    (cases hf1 (run-find (retire-pre w r) rid))
+    (case [none] (simp only [retire-one hf hf1]) (exact hp))
+    (case [some r1]
+      (cases ha (Bool.and (run-alive r1) (run-of-local (retire-pre w r) r1)))
+      (case [true] (simp only [retire-one hf hf1 ha]) (exact (sl-complete-raw x _ r1 _ hp)))
+      (case [false] (simp only [retire-one hf hf1 ha]) (exact (sl-retire-full x _ _ hp))))))
+(a/theorem sl-t-retire-local [x :- Nat, w :- World, v :- Nat]
+  (=> (= (i10-slice-at x w) true) (= (i10-slice-at x (:world (t-retire-local w v))) true))
+  (intro h)
+  (cases hm (tbl-any (run-of-local w) (:runs w)))
+  (case [false] (simp only [t-retire-local hm refuse]) (exact h))
+  (case [true] (simp only [t-retire-local hm accept])
+    (exact (nat-fold-pres (i10-slice-at x) (retire-one v) (sl-retire-one x v) (local-order w) w h))))
 
 ;; ---- engine.clj Parts F, F2
 
@@ -1678,7 +1723,7 @@
   (cases hg (Bool.and (link-idle w s) (Bool.and (Nat.beq k (:next-id w)) (scope-open-at w root-scope-id))))
   (simp only [t-link-demand hf hg refuse]) (exact h)
   (simp only [t-link-demand hf hg accept link-demand-raw])
-  (exact (Eq.trans (sl-source-upd x _ l _) (Eq.trans (sl-task-upd x _ _ _) (sl-spawn-rows x w _ _ h)))))
+  (exact (Eq.trans (sl-source-upd x _ l _) (Eq.trans (sl-task-upd x _ _ _) (sl-spawn-rows x w _ _ _ h)))))
 
 (a/theorem sl-t-link-realize [x :- Nat, w :- World, l :- Nat, tag :- Nat, v :- Nat, n :- Nat]
   (=> (= (i10-slice-at x w) true) (= (i10-slice-at x (:world (t-link-realize w l tag v n))) true))
@@ -1849,11 +1894,13 @@
   (cases hc (root-shut w))
   (simp only [hc]) (exact (i10-slice-intro _ _ (sl-t3-top _ w _ _ _ _ hx)))
   (simp only [hc refuse]) (exact h)
-  (rename_i st b fresh ins) (cases hc (body-shut w st))
-  (simp only [hc]) (exact (i10-slice-intro _ _ (sl-t4 _ w _ _ _ _ hx)))
+  (rename_i st b fresh ins loc) (cases hc (body-shut w st))
+  (simp only [hc]) (cases hl (spawn-local-bad w st loc))
+  (simp only [hl]) (exact (i10-slice-intro _ _ (sl-t4 _ w _ _ _ _ _ hx)))
+  (simp only [hl refuse]) (exact h)
   (simp only [hc refuse]) (exact h)
   (cases hc (root-shut w))
-  (simp only [hc]) (exact (i10-slice-intro _ _ (sl-t4-top _ w _ _ _ _ hx)))
+  (simp only [hc]) (exact (i10-slice-intro _ _ (sl-t4-top _ w _ _ _ _ _ hx)))
   (simp only [hc refuse]) (exact h)
   (exact (i10-slice-intro _ _ (sl-t5 _ w _ _ hx)))
   (rename_i st ds m k fresh mine) (cases hc (await-bad w st ds m))
@@ -1905,7 +1952,8 @@
   (exact (i10-slice-intro _ _ (sl-t-finally-leave _ w _ hx)))
   (rename_i s m) (exact (i10-ra w _ (ra-t-own w s m) h))
   (rename_i s c) (exact (i10-ra w _ (ra-t-owned-done w s c) h))
-  (rename_i ids) (exact (i10-ra w _ (ra-t-drain w ids) h)))
+  (rename_i ids) (exact (i10-ra w _ (ra-t-drain w ids) h))
+  (rename_i v) (exact (i10-slice-intro _ _ (sl-t-retire-local _ w v hx))))
 
 (a/theorem i10-raw [w :- World, it :- Item]
   (=> (= (inv-i10-slice w) true) (= (inv-i10-slice (:world (raw w it))) true))
@@ -2193,7 +2241,7 @@
 
 (defkeeps9 run-tick [] run-arm [z :- Nat] run-unres [z :- Nat] run-set-act [n :- Nat] run-wake []
   run-fin-push [fz :- Finalizer] run-fin-pop [] run-fin-exit [] run-complete-row [] run-park-row [] run-tick-park []
-  run-fin-pop-end [] run-enter-row [])
+  run-fin-pop-end [] run-enter-row [] run-drop-fins [])
 
 (a/theorem new-run-row-mode [id :- Nat, of :- Nat, ep :- Nat, sc :- Nat, ei :- Nat]
   (= (:mode (new-run-row id of ep sc ei)) mode-normal) (rfl))
@@ -3009,8 +3057,8 @@
   (simp only [demand-reactive hc hi hv s9-comp-upd]) (exact h)
   (simp only [demand-reactive hc hi hv]) (exact (s9-react-loop (react-fuel w) w _ h)))
 
-(a/theorem s9-spawn-rows [w :- World, owner :- Nat, ins :- (List Nat)]
-  (=> (= (inv-i9 w) true) (= (inv-i9 (spawn-rows w owner ins)) true))
+(a/theorem s9-spawn-rows [w :- World, owner :- Nat, ins :- (List Nat), loc :- Bool]
+  (=> (= (inv-i9 w) true) (= (inv-i9 (spawn-rows w owner ins loc)) true))
   (intro h) (simp only [spawn-rows])
   (exact (s9-add-run-scope _ _ _ _ _ (Eq.trans (s9-bump _) (Eq.trans (s9-task-ins w _) h)))))
 
@@ -3019,8 +3067,8 @@
   (intro h) (simp only [respawn-raw])
   (exact (s9-run-upd _ _ _ keeps9-run-tick (Eq.trans (s9-comp-upd w _ _) h))))
 
-(a/theorem s9-t4 [w :- World, st :- Nat, body :- Nat, fresh :- Nat, ins :- (List Nat)]
-  (=> (= (inv-i9 w) true) (= (inv-i9 (:world (t4-spawn w st body fresh ins))) true))
+(a/theorem s9-t4 [w :- World, st :- Nat, body :- Nat, fresh :- Nat, ins :- (List Nat), flag :- Bool]
+  (=> (= (inv-i9 w) true) (= (inv-i9 (:world (t4-spawn w st body fresh ins flag))) true))
   (intro h)
   (cases ht (tok-run w st)) (case' [some r]) (case' [none])
   (simp only [t4-spawn ht refuse]) (exact h)
@@ -3028,17 +3076,17 @@
   (cases hf (Nat.beq fresh (:next-id w)))
   (simp only [t4-spawn ht hr hf refuse]) (exact h)
   (simp only [t4-spawn ht hr hf accept])
-  (exact (s9-run-upd _ _ _ keeps9-run-tick (Eq.trans (s9-record-basis _ r fresh) (s9-spawn-rows w _ ins h))))
+  (exact (s9-run-upd _ _ _ keeps9-run-tick (Eq.trans (s9-record-basis _ r fresh) (s9-spawn-rows w _ ins _ h))))
   (cases hi (nat-list-eq ins (:inputs t)))
   (simp only [t4-spawn ht hr hi refuse]) (exact h)
   (simp only [t4-spawn ht hr hi accept]) (exact (s9-respawn-raw w r fresh h)))
 
-(a/theorem s9-t4-top [w :- World, sc :- Nat, body :- Nat, fresh :- Nat, ins :- (List Nat)]
-  (=> (= (inv-i9 w) true) (= (inv-i9 (:world (t4-spawn-top w sc body fresh ins))) true))
+(a/theorem s9-t4-top [w :- World, sc :- Nat, body :- Nat, fresh :- Nat, ins :- (List Nat), flag :- Bool]
+  (=> (= (inv-i9 w) true) (= (inv-i9 (:world (t4-spawn-top w sc body fresh ins flag))) true))
   (intro h)
   (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (scope-open-at w sc)))
   (simp only [t4-spawn-top hg refuse]) (exact h)
-  (simp only [t4-spawn-top hg accept]) (exact (s9-spawn-rows w sc ins h)))
+  (simp only [t4-spawn-top hg accept]) (exact (s9-spawn-rows w sc ins _ h)))
 
 (a/theorem s9-t5 [w :- World, cid :- Nat, fresh :- Nat]
   (=> (= (inv-i9 w) true) (= (inv-i9 (:world (t5-start w cid fresh))) true))
@@ -3197,6 +3245,49 @@
   (have h1 := (s9-run-upd w (:id r) run-complete-row keeps9-run-complete-row h))
   (have h2 := (s9-complete-body _ r (RunResult.mk tag v) h1))
   (exact (s9-fin-if-final _ _ (s9-run-cascade _ _ (Eq.trans (s9-retire-after _ _) h2)))))
+
+
+;; ---- Z#77 T28 retire-local
+(a/theorem s9-ack-if [rid :- Nat, w :- World, z :- Nat]
+  (=> (= (inv-i9 w) true) (= (inv-i9 (ack-if rid w z)) true))
+  (intro h)
+  (cases hu (tbl-all (no-debtor z) (:edges w)))
+  (case [false] (simp only [ack-if hu]) (exact h))
+  (case [true] (simp only [ack-if hu]) (exact (s9-ack-raw w z rid h))))
+(a/theorem s9-retire-pre [w :- World, r :- RunRow]
+  (=> (= (inv-i9 w) true) (= (inv-i9 (retire-pre w r)) true))
+  (intro h)
+  (have h1 (= (inv-i9 (cancel-acts w (:id r))) true))
+  (simp only [cancel-acts]) (exact (nat-fold-pres inv-i9 drop-act s9-drop-act _ w h))
+  (have h2 := (nat-fold-pres inv-i9 (ack-if (:id r)) (s9-ack-if (:id r)) (:resources r) _ h1))
+  (simp only [retire-pre]) (exact (s9-run-upd _ _ _ keeps9-run-drop-fins h2)))
+(a/theorem s9-complete-raw [w :- World, r :- RunRow, res :- RunResult]
+  (=> (= (inv-i9 w) true) (= (inv-i9 (complete-raw w r res)) true))
+  (intro h)
+  (simp only [complete-raw])
+  (have h1 := (s9-run-upd w (:id r) run-complete-row keeps9-run-complete-row h))
+  (have h2 := (s9-complete-body _ r res h1))
+  (exact (s9-fin-if-final _ _ (s9-run-cascade _ _ (Eq.trans (s9-retire-after _ _) h2)))))
+(a/theorem s9-retire-one [v :- Nat, w :- World, rid :- Nat]
+  (=> (= (inv-i9 w) true) (= (inv-i9 (retire-one v w rid)) true))
+  (intro h)
+  (cases hf (run-find w rid))
+  (case [none] (simp only [retire-one hf]) (exact h))
+  (case [some r]
+    (have hp := (s9-retire-pre w r h))
+    (cases hf1 (run-find (retire-pre w r) rid))
+    (case [none] (simp only [retire-one hf hf1]) (exact hp))
+    (case [some r1]
+      (cases ha (Bool.and (run-alive r1) (run-of-local (retire-pre w r) r1)))
+      (case [true] (simp only [retire-one hf hf1 ha]) (exact (s9-complete-raw _ r1 _ hp)))
+      (case [false] (simp only [retire-one hf hf1 ha]) (exact (s9-retire-full _ _ hp))))))
+(a/theorem s9-t-retire-local [w :- World, v :- Nat]
+  (=> (= (inv-i9 w) true) (= (inv-i9 (:world (t-retire-local w v))) true))
+  (intro h)
+  (cases hm (tbl-any (run-of-local w) (:runs w)))
+  (case [false] (simp only [t-retire-local hm refuse]) (exact h))
+  (case [true] (simp only [t-retire-local hm accept])
+    (exact (nat-fold-pres inv-i9 (retire-one v) (s9-retire-one v) (local-order w) w h))))
 
 ;; ---- engine.clj Parts F, F2
 
@@ -3632,7 +3723,7 @@
   (cases hg (Bool.and (link-idle w s) (Bool.and (Nat.beq k (:next-id w)) (scope-open-at w root-scope-id))))
   (simp only [t-link-demand hf hg refuse]) (exact h)
   (simp only [t-link-demand hf hg accept link-demand-raw])
-  (exact (Eq.trans (s9-source-upd _ l _) (Eq.trans (s9-task-upd _ _ _) (s9-spawn-rows w _ _ h)))))
+  (exact (Eq.trans (s9-source-upd _ l _) (Eq.trans (s9-task-upd _ _ _) (s9-spawn-rows w _ _ _ h)))))
 
 (a/theorem s9-t-link-realize [w :- World, l :- Nat, tag :- Nat, v :- Nat, n :- Nat]
   (=> (= (inv-i9 w) true) (= (inv-i9 (:world (t-link-realize w l tag v n))) true))
@@ -3741,11 +3832,13 @@
   (cases hc (root-shut w))
   (simp only [hc]) (exact (s9-t3-top w _ _ _ _ h))
   (simp only [hc refuse]) (exact h)
-  (rename_i st b fresh ins) (cases hc (body-shut w st))
-  (simp only [hc]) (exact (s9-t4 w _ _ _ _ h))
+  (rename_i st b fresh ins loc) (cases hc (body-shut w st))
+  (simp only [hc]) (cases hl (spawn-local-bad w st loc))
+  (simp only [hl]) (exact (s9-t4 w _ _ _ _ _ h))
+  (simp only [hl refuse]) (exact h)
   (simp only [hc refuse]) (exact h)
   (cases hc (root-shut w))
-  (simp only [hc]) (exact (s9-t4-top w _ _ _ _ h))
+  (simp only [hc]) (exact (s9-t4-top w _ _ _ _ _ h))
   (simp only [hc refuse]) (exact h)
   (exact (s9-t5 w _ _ h))
   (rename_i st ds m k fresh mine) (cases hc (await-bad w st ds m))
@@ -3797,7 +3890,8 @@
   (exact (s9-t-finally-leave w _ h))
   (rename_i s m) (exact (i9-ra w _ (ra-t-own w s m) h))
   (rename_i s c) (exact (i9-ra w _ (ra-t-owned-done w s c) h))
-  (rename_i ids) (exact (i9-ra w _ (ra-t-drain w ids) h)))
+  (rename_i ids) (exact (i9-ra w _ (ra-t-drain w ids) h))
+  (rename_i v) (exact (s9-t-retire-local w v h)))
 
 (a/theorem i9-raw [w :- World, it :- Item]
   (=> (= (inv-sample w) true) (= (inv-i9 w) true) (= (inv-i9 (:world (raw w it))) true))

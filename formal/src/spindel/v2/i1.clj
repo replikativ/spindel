@@ -490,13 +490,13 @@
 (patch! G1 'inv-start-raw add-hp)
 (patch! G1 'inv-new-run-of add-hp)
 (override! G1 'inv-spawn-rows '[]
-  '(a/theorem g1-spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat)]
-     (=> (= (g1 w) true) (= (g1 (spawn-rows w owner inputs)) true))
+  '(a/theorem g1-spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat), loc :- Bool]
+     (=> (= (g1 w) true) (= (g1 (spawn-rows w owner inputs loc)) true))
      (intro h)
      (simp only [spawn-rows])
-     (have h1 (= (g1 (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs)))) true))
-     (exact (g1-task-ins-fresh w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs) (rfl) h))
-     (exact (g1-add-run-scope (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs)))
+     (have h1 (= (g1 (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc)))) true))
+     (exact (g1-task-ins-fresh w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc) (rfl) h))
+     (exact (g1-add-run-scope (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc)))
               (:next-id w) 0 (task-scope-parent w owner) 0 (tsp-has w owner) h1))))
 (override! G1 't-open-scope-inv '[]
   '(a/theorem t-open-scope-g1 [w :- World, st :- Nat, s :- Nat]

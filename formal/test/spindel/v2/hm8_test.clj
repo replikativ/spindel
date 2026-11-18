@@ -139,7 +139,7 @@
         fresh (:next-id w), w (accepted-step w [14 2 fresh [2] 3])
         selected (if (= kind :comp)
                    (computation w)
-                   (let [c (:next-id w), w (accepted-step w [16 2 7 c []]), rid (inc c)]
+                   (let [c (:next-id w), w (accepted-step w [16 2 7 c [] false]), rid (inc c)]
                      {:w (accepted-step w [21 rid]) :c c :rid rid}))]
     {:w (:w selected) :rid (:rid selected) :owner (:c selected) :kind kind
      :leaf leaf :deferred deferred :consuming consuming :bottom (:c bottom) :top (:c top)

@@ -733,17 +733,17 @@
      (exact (gdk-next _ _ _ _ (Nat.le_trans (Nat.le_succ _) (Nat.le_succ _)) r1))
      (exact (gd-intro _ (inv-add-run-scope w of ep parent ei (gd-sample w h)) rr))))
 (override! GD 'inv-spawn-rows '[inv-add-run-scope]
-  '(a/theorem gd-spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat)]
-     (=> (= (gd w) true) (= (gd (spawn-rows w owner inputs)) true))
+  '(a/theorem gd-spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat), loc :- Bool]
+     (=> (= (gd w) true) (= (gd (spawn-rows w owner inputs loc)) true))
      (intro h)
      (have p := (gdk-parts _ _ _ (gd-rest-of w h)))
      (have ho := (tbl-all-mono GDK (gd-c (:runs w) (:next-id w)) (gd-ok-new (:next-id w) 0)
                    (fn [k :- GDK, h1 :- (= (gd-c (:runs w) (:next-id w) k) true)] (gd-ok-new-zero (:runs w) (:next-id w) (:next-id w) k h1))
                    (gdkeys (:comps w)) (And.right p)))
      (simp only [spawn-rows])
-     (exact (gd-add-run-scope (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs)))
+     (exact (gd-add-run-scope (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc)))
               (:next-id w) 0 (task-scope-parent w owner) 0 ho
-              (gd-task-ins-fresh w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs) (rfl) h)))))
+              (gd-task-ins-fresh w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc) (rfl) h)))))
 
 ;; T6/take/arm: i8's overrides (the parked run is alive; KA through the await wiring), for gd
 (defn- gd-from-g8 [form]
@@ -1277,6 +1277,28 @@
        (exact (gd-noal-upd r (:runs w) hpre)))
      (simp only [complete-raw])
      (exact (gd-fin-if-final _ (:of r) (gd-run-cascade _ _ (gd-retire-after _ (:id r) (gd-complete-body _ r res p2 h0)))))))
+(override! GD 'inv-retire-one '[inv-retire-pre inv-complete-raw inv-run-cascade]
+  '(a/theorem gd-retire-one [v :- Nat, w :- World, rid :- Nat]
+     (=> (= (gd w) true) (= (gd (retire-one v w rid)) true))
+     (intro h)
+     (cases hf (run-find w rid))
+     (case [none] (simp only [retire-one hf]) (exact h))
+     (case [some r]
+       (have hp := (gd-retire-pre w r h))
+       
+       (cases hf1 (run-find (retire-pre w r) rid))
+       (case [none] (simp only [retire-one hf hf1]) (exact hp))
+       (case [some r1]
+         (have hm1 := (retire-r1-mem w r r1 rid hf1))
+         (have hn1 := (retire-r1-noact w r r1 rid hf hf1))
+         (have ht1 := (task-final-res-tag (retire-pre w r) (:of r1) v))
+         (cases ha (Bool.and (run-alive r1) (run-of-local (retire-pre w r) r1)))
+         (case [true] (simp only [retire-one hf hf1 ha]) (have hnc := (local-run-nocomp _ r1 (gd-sample _ hp) (bool-and-right _ _ ha)))
+         (have pre (= (Bool.or (Bool.not (gd-cce (retire-pre w r) r1)) (tbl-all (gd-u1 r1) (:runs (retire-pre w r)))) true))
+         (simp only [gd-cce hnc Bool.not_false Bool.true_or])
+         (exact (gd-complete-raw _ r1 _ pre hp)))
+         (case [false] (simp only [retire-one hf hf1 ha retire-full]) (exact (gd-run-cascade _ _ hp)))))))
+
 (override! GD 't12-inv '[inv-complete-raw]
   '(a/theorem t12-gd [w :- World, st :- Nat, tag :- Nat, v :- Nat]
      (=> (= (g10r w) true) (= (gd w) true) (= (gd (:world (t12-complete w st tag v))) true))

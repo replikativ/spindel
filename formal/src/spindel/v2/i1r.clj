@@ -869,13 +869,13 @@
 (a/theorem or-comp [w :- World, x :- Nat] (=> (= (comp-has w x) true) (= (Bool.or (comp-has w x) (task-has w x)) true))
   (intro h) (simp only [h Bool.true_or]))
 (override! GR0 'inv-spawn-rows '[]
-  '(a/theorem gr0-spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat)]
-     (=> (= (gr0 w) true) (= (gr0 (spawn-rows w owner inputs)) true))
+  '(a/theorem gr0-spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat), loc :- Bool]
+     (=> (= (gr0 w) true) (= (gr0 (spawn-rows w owner inputs loc)) true))
      (intro h)
      (simp only [spawn-rows])
-     (have h1 := (grx-task-ins (List.nil Nat) w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs) (rfl) h))
-     (have th (= (Bool.or (comp-has (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs))) (:next-id w))
-                          (task-has (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs))) (:next-id w))) true))
+     (have h1 := (grx-task-ins (List.nil Nat) w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc) (rfl) h))
+     (have th (= (Bool.or (comp-has (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc))) (:next-id w))
+                          (task-has (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc))) (:next-id w))) true))
      (simp only [task-has bump task-ins set-next-id set-tasks tbl-ins tbl-has-ins new-task-row task-id Nat.beq_refl Bool.true_or Bool.or_true])
      (exact (gr0-add-run-scope _ (:next-id w) 0 (task-scope-parent w owner) 0 th h1))))
 (override! GR0 'inv-start-raw '[]
@@ -1242,13 +1242,38 @@
       (exact (grx-disch (:id r) (List.nil Nat) _ (grx-run-cascade (List.cons Nat (:id r) (List.nil Nat)) _ _ h1) ne)))))
 
 (swap! (:renames GR0) assoc 'inv-complete-raw 'gr0-complete-raw)
+;; Z#77 T28 (retire-local) with ga: each retired run completes (T12, no activation) or retires (T13)
+(lcopy! GR0 'inv-retire-pre)
+(a/theorem gr0-retire-one [v :- Nat, w :- World, rid :- Nat]
+  (=> (= (ga w) true) (= (gr0 w) true) (= (gr0 (retire-one v w rid)) true))
+  (intros hga h)
+  (cases hf (run-find w rid))
+  (case [none] (simp only [retire-one hf]) (exact h))
+  (case [some r]
+    (have hp := (gr0-retire-pre w r h))
+    (have gp := (ga-retire-pre w r hga))
+    (cases hf1 (run-find (retire-pre w r) rid))
+    (case [none] (simp only [retire-one hf hf1]) (exact hp))
+    (case [some r1]
+      (cases ha (Bool.and (run-alive r1) (run-of-local (retire-pre w r) r1)))
+      (case [true] (simp only [retire-one hf hf1 ha]) (exact (gr0-complete-raw _ r1 _ (retire-r1-noact w r r1 rid hf hf1) gp hp)))
+      (case [false] (simp only [retire-one hf hf1 ha retire-full]) (exact (grx-run-cascade (List.nil Nat) _ _ hp))))))
+(a/theorem gr0-t-retire-local [w :- World, v :- Nat]
+  (=> (= (ga w) true) (= (gr0 w) true) (= (gr0 (:world (t-retire-local w v))) true))
+  (intros hga h)
+  (cases hm (tbl-any (run-of-local w) (:runs w)))
+  (case [false] (simp only [t-retire-local hm refuse]) (exact h))
+  (case [true] (simp only [t-retire-local hm accept])
+    (exact (nat-fold-pres2 ga gr0 (retire-one v) (ga-retire-one v) (gr0-retire-one v) (local-order w) w hga h))))
+(swap! (:renames GR0) assoc 'inv-retire-one 'gr0-retire-one 't-retire-local-inv 'gr0-t-retire-local)
 (defn- add-ga-premise [form call-from call-to]
   (let [[hd nm binders stmt & proof] form
         stmt2 (apply list '=> '(= (ga w) true) (rest stmt))
         proof2 (map (fn [t] (if (= t '(intro h)) '(intros hga h) t)) proof)]
     (subst-forms #(= % call-from) (fn [_] call-to) (apply list hd nm binders stmt2 proof2))))
 (patch! GR0 't12-inv (fn [form] (gr-patch4 (add-ga-premise form '(inv-complete-raw w r _ h) '(inv-complete-raw w r _ (ga-free-of-tok w st r hga ht) hga h)))))
-(patch! GR0 'raw0-inv (fn [form] (gr-patch4 (add-ga-premise form '(t12-inv w _ _ _ h) '(t12-inv w _ _ _ hga h)))))
+(patch! GR0 'raw0-inv (fn [form] (gr-patch4 (subst-forms #(= % '(t-retire-local-inv w _ h)) (fn [_] '(t-retire-local-inv w _ hga h))
+                                                (add-ga-premise form '(t12-inv w _ _ _ h) '(t12-inv w _ _ _ hga h))))))
 (patch! GR0 'raw0g-inv (fn [form] (gr-patch4 (add-ga-premise form '(raw0-inv w it h) '(raw0-inv w it hga h)))))
 (patch! GR0 'raw-inv (fn [form] (gr-patch4 (add-ga-premise form '(raw0g-inv w it h) '(raw0g-inv w it hga h)))))
 

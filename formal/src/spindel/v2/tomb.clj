@@ -482,7 +482,7 @@
 ;; the generic source patch: a computation edit by a row that clears the flag, a run edit that ends a run
 (def ^:private clear-fns '#{comp-react-row comp-demand-row comp-start-row comp-replace-row comp-set-run comp-make-idle})
 (def ^:private down-fns '{run-cancel-row run-cancel-row-dwn run-complete-row run-complete-row-dwn run-fin-pop-end run-fin-pop-end-dwn
-                          run-enter-row enter-dwn})
+                          run-enter-row enter-dwn run-drop-fins run-drop-fins-dwn})
 (defn- fhead [f] (if (seq? f) (first f) f))
 (defn- lemma-app [f lem] (if (seq? f) (apply list lem (rest f)) lem))
 (defn gy-patch [form]
@@ -648,12 +648,12 @@
        (have hc := (gy-switch y (:id c) _ h1 (untomb-clear (:id c) comp-react-row comp-react-row-id (fn [q :- CompRow] (Eq.refl false)) (:comps w))))
        (exact (gy-react-edges y (:validity c) _ (:id c) hc h1)))]
     [inv-spawn-rows []
-     (a/theorem gy-spawn-rows [y :- Nat, w :- World, owner :- Nat, inputs :- (List Nat)]
-       (=> (= (gy y w) true) (= (gy y (spawn-rows w owner inputs)) true))
+     (a/theorem gy-spawn-rows [y :- Nat, w :- World, owner :- Nat, inputs :- (List Nat), loc :- Bool]
+       (=> (= (gy y w) true) (= (gy y (spawn-rows w owner inputs loc)) true))
        (intro h)
        (simp only [spawn-rows])
-       (have h1 := (gy-task-ins-fresh y w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs) (rfl) h))
-       (have a1 (= (untomb (:comps (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs)))) (:next-id w)) true))
+       (have h1 := (gy-task-ins-fresh y w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc) (rfl) h))
+       (have a1 (= (untomb (:comps (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc)))) (:next-id w)) true))
        (exact (untomb-fresh w (gy-sample y w h)))
        (exact (gy-add-run-scope y _ (:next-id w) 0 (task-scope-parent w owner) 0 a1 h1)))]
     [inv-start-raw []

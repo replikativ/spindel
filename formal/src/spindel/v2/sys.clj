@@ -170,8 +170,8 @@
     [(unpin x) false]
     [(create-comp st c i b) false]
     [(create-comp-top sc c i b) false]
-    [(spawn st b fresh ins) false]
-    [(spawn-top sc b fresh ins) false]
+    [(spawn st b fresh ins loc) false]
+    [(spawn-top sc b fresh ins loc) false]
     [(start c fresh) false]
     [(await st ds m k fresh mine) false]
     [(dispatch-comp c fresh) false]
@@ -202,7 +202,8 @@
     [(finally-leave st) false]
     [(own s m) false]
     [(owned-done s c) false]
-    [(drain ids) false]))
+    [(drain ids) false]
+    [(retire-local v) false]))
 (a/defn seal-shut [sealed :- Bool, w :- World, it :- Item] Bool
   (Bool.and sealed (Bool.and (seal-item it) (Bool.not (slice-held w)))))
 ;; the world after item `it` in a cell sealed or not: a refused item changes nothing

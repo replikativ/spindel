@@ -59,7 +59,7 @@
 ;; savepoint is refused, which would make every savepoint statement empty.
 (deftest savepoint-and-fork-effect-are-not-refused
   (let [it (fn [tag & fs] (into [(o/ctor-idx tag)] fs))
-        w0 (:world (en/world-step s/empty-world (it :spawn-top s/root-scope-id 0 (:next-id s/empty-world) [])))
+        w0 (:world (en/world-step s/empty-world (it :spawn-top s/root-scope-id 0 (:next-id s/empty-world) [] false)))
         r (first (:runs w0))
         w1 (:world (en/world-step w0 (it :schedule (:id r))))
         run (fn [w] ((juxt :act :slice :resources) (first (s/run-find w (:id r)))))
@@ -145,7 +145,7 @@
     (is (= w (:world (sys/cell-step sealed (it :write 3 7)))) "a host write is refused")
     (is (not= w (:world (sys/cell-step (cell child false) (it :write 3 7)))) "unsealed it is taken")
     (is (= w (:world (sys/cell-step sealed (it :post 3 7)))) "so is any host source change")
-    (is (not= w (:world (sys/cell-step sealed (it :spawn-top s/root-scope-id 1 (:next-id w) []))))
+    (is (not= w (:world (sys/cell-step sealed (it :spawn-top s/root-scope-id 1 (:next-id w) [] false))))
         "a spawn item is processed: admissions are refused at admission, before any item (Z#74)")
     (is (true? (:released (:world (sys/cell-step sealed (it :release-world))))) "release is taken")
     (let [c0 (cells false) c1 (sys/sys-merge-release c0 1 2 basis sys/refuse-all)]
@@ -236,7 +236,7 @@
 (defn- prefix-world-c1 []
   (let [it (fn [tag & fs] (into [(o/ctor-idx tag)] fs))
         w0 s/empty-world k (:next-id w0)
-        w1 (:world (en/world-step w0 (it :spawn-top s/root-scope-id 0 k [])))
+        w1 (:world (en/world-step w0 (it :spawn-top s/root-scope-id 0 k [] false)))
         r (:run (first (filter #(= k (:id %)) (:tasks w1))))
         w2 (:world (en/world-step w1 (it :schedule r)))
         st (:stamp (first (filter #(= r (:id %)) (:runs w2))))

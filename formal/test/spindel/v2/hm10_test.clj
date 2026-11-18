@@ -362,18 +362,18 @@
 (defn comprehensive-fixture [kind]
   (let [f (fixture/fixture kind), w (fixture/accepted-step (:w f) [20 (:rid f) s/res-ok 77])
         ready (fixture/computation w), w (fixture/accepted-step (:w ready) [20 (:rid ready) s/res-ok 88])
-        pending-task (:next-id w), w (fixture/accepted-step w [16 2 101 pending-task []]), pending-rid (inc pending-task)
+        pending-task (:next-id w), w (fixture/accepted-step w [16 2 101 pending-task [] false]), pending-rid (inc pending-task)
         w (fixture/accepted-step w [21 pending-rid]), pending-resource (:next-id w)
         w (fixture/accepted-step w [8 pending-rid s/rk-timer 102 pending-resource])
-        completed-task (:next-id w), w (fixture/accepted-step w [16 2 103 completed-task []]), completed-rid (inc completed-task)
+        completed-task (:next-id w), w (fixture/accepted-step w [16 2 103 completed-task [] false]), completed-rid (inc completed-task)
         w (fixture/accepted-step w [21 completed-rid]), w (fixture/accepted-step w [20 completed-rid s/res-ok 89])
-        resource-task (:next-id w), w (fixture/accepted-step w [16 2 104 resource-task []]), resource-rid (inc resource-task)
+        resource-task (:next-id w), w (fixture/accepted-step w [16 2 104 resource-task [] false]), resource-rid (inc resource-task)
         w (fixture/accepted-step w [21 resource-rid]), ready-resource (:next-id w)
         w (fixture/accepted-step w [8 resource-rid s/rk-offload 105 ready-resource])
         w (fixture/accepted-step w [9 ready-resource s/res-ok 90])
         [w signal] (fixture/source w s/sk-signal 51), [w cell] (fixture/source w s/sk-cell 52)
         [w delivered] (fixture/source w s/sk-deferred 0), w (fixture/accepted-step w [25 delivered 53])
-        scope-task (:next-id w), w (fixture/accepted-step w [16 2 106 scope-task []]), scope-rid (inc scope-task)
+        scope-task (:next-id w), w (fixture/accepted-step w [16 2 106 scope-task [] false]), scope-rid (inc scope-task)
         w (fixture/accepted-step w [21 scope-rid]), scope (:next-id w)
         w (fixture/accepted-step w [32 scope-rid scope])
         closed-source (:next-id w), w (fixture/accepted-step w [1 scope s/sk-deferred 0 closed-source])
@@ -382,7 +382,7 @@
                    (let [w (fixture/accepted-step w [14 2 (:owner f) [9] 9]), rid (:next-id w)
                          w (fixture/accepted-step w [19 (:owner f) rid])]
                      {:w (fixture/accepted-step w [21 rid]) :rid rid :owner (:owner f)})
-                   (let [owner (:next-id w), w (fixture/accepted-step w [16 2 107 owner []]), rid (inc owner)]
+                   (let [owner (:next-id w), w (fixture/accepted-step w [16 2 107 owner [] false]), rid (inc owner)]
                      {:w (fixture/accepted-step w [21 rid]) :rid rid :owner owner}))]
     (is (false? (:open (row (:w selected) :sources closed-source))))
     (is (= 0 (:version (row (:w selected) :sources closed-source))))

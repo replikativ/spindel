@@ -762,7 +762,7 @@
                     t12-complete t-schedule t-take t-finalize t-open-scope t-finally-enter t-finally-exit t-finally-leave t-slice-exit
                     t-release-world tok-run run-find comp-find edge-find resource-find resource-has source-find rn cn en zn sn hr
                     tbl-find tbl-has refuse in-cleanup fin-shut in-fin await-bad take-bad complete-refused fins-open opt-test
-                    t-own own-ok t-owned-done t-drain fn0 tbl-any]))
+                    t-own own-ok t-owned-done t-drain t-retire-local fn0 tbl-any]))
   (all_goals (cases hh)))
 
 ;; Theorem (refusal): in a quiet world with qinv every item is refused (host items by host-shut: no

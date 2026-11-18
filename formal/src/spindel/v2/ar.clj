@@ -373,7 +373,7 @@
 
 ;; the source patch: run edits by a row function that ends a run go through ar-run-upd-m, a wake through arrk
 (def ^:private ar-run-fns '{run-cancel-row run-cancel-row-dwn run-complete-row run-complete-row-dwn
-                            run-fin-pop-end run-fin-pop-end-dwn})
+                            run-fin-pop-end run-fin-pop-end-dwn run-drop-fins run-drop-fins-dwn})
 (defn- ar-fhead [f] (if (seq? f) (first f) f))
 (defn- ar-lapp [f lem] (if (seq? f) (apply list lem (rest f)) lem))
 (defn ar-patch [form]
@@ -591,15 +591,15 @@
   (case [false] (rfl))
   (case [true] (have z := (comp-below w (:next-id w) hs hb)) (omega)))
 (override! AR 'inv-spawn-rows '[inv-add-run-scope]
-  '(a/theorem ar-spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat)]
-     (=> (= (ar w) true) (= (ar (spawn-rows w owner inputs)) true))
+  '(a/theorem ar-spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat), loc :- Bool]
+     (=> (= (ar w) true) (= (ar (spawn-rows w owner inputs loc)) true))
      (intro h)
      (have hc := (ar-has-next w (ar-sample w h)))
-     (have hl (< (:next-id w) (:next-id (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs)))))) (show (< (:next-id w) (+ (:next-id w) 1))) (omega)
+     (have hl (< (:next-id w) (:next-id (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc)))))) (show (< (:next-id w) (+ (:next-id w) 1))) (omega)
      (simp only [spawn-rows])
-     (exact (ar-add-run-scope (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs)))
+     (exact (ar-add-run-scope (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc)))
               (:next-id w) 0 (task-scope-parent w owner) 0 hc hl
-              (ar-task-ins-fresh w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs) (rfl) h)))))
+              (ar-task-ins-fresh w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc) (rfl) h)))))
 
 ;; ---- T5/T11: C has no alive run; the new run becomes C.run
 (a/theorem ar-cs-own [cid :- Nat, rid :- Nat, f :- (=> CompRow CompRow), hid :- (forall [c :- CompRow] (= (comp-id (f c)) (comp-id c))),

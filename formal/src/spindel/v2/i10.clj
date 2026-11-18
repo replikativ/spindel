@@ -2401,17 +2401,17 @@
   (simp only [g10k tbl-all hN hR hC hT hT1 Bool.and_self]))
 
 (override! G10 'inv-spawn-rows '[]
-  '(a/theorem g10-spawn-rows [gxz :- (List Nat), gkz :- (List Nat), w :- World, owner :- Nat, inputs :- (List Nat)]
-     (=> (= (g10 gxz gkz w) true) (= (g10 gxz gkz (spawn-rows w owner inputs)) true))
+  '(a/theorem g10-spawn-rows [gxz :- (List Nat), gkz :- (List Nat), w :- World, owner :- Nat, inputs :- (List Nat), loc :- Bool]
+     (=> (= (g10 gxz gkz w) true) (= (g10 gxz gkz (spawn-rows w owner inputs loc)) true))
      (intro h)
      (have hs := (g10-sample gxz gkz w h))
      (have hr := (g10-rest-of gxz gkz w h)) (simp only [g10-rest] at hr)
      (have k1 := (g10k-spawn gxz gkz _ _ _ _ hr (runs-below w hs) (comps-below w hs)))
-     (have e (= (g10-rest gxz gkz (spawn-rows w owner inputs))
+     (have e (= (g10-rest gxz gkz (spawn-rows w owner inputs loc))
                 (g10k gxz gkz (List.cons RK10 (RK10.mk (+ (:next-id w) 1) (:next-id w) 0 true) (rk10s (:runs w))) (ck10s (:comps w))
                       (List.cons TK10 (TK10.mk (:next-id w) (+ (:next-id w) 1)) (tk10s (:tasks w))) (+ (:next-id w) 3))))
      (rfl)
-     (exact (g10-intro gxz gkz _ (inv-spawn-rows w owner inputs hs) (Eq.trans e k1)))))
+     (exact (g10-intro gxz gkz _ (inv-spawn-rows w owner inputs loc hs) (Eq.trans e k1)))))
 (lcopy! G10 't4-inv)
 (lcopy! G10 't4-top-inv)
 
@@ -2729,6 +2729,24 @@
        (cases he (Nat.beq (:epoch r) (:epoch c)))
        (case [false] (exact (cmp-stale gxz gkz w r res c mr h hc he)))
        (case [true] (exact (cmp-cur gxz gkz w r res c mr h hc he))))))
+
+(override! G10 'inv-retire-one '[inv-retire-pre inv-complete-raw inv-run-cascade]
+  '(a/theorem g10-retire-one [gxz :- (List Nat), gkz :- (List Nat), v :- Nat, w :- World, rid :- Nat]
+     (=> (= (g10 gxz gkz w) true) (= (g10 gxz gkz (retire-one v w rid)) true))
+     (intro h)
+     (cases hf (run-find w rid))
+     (case [none] (simp only [retire-one hf]) (exact h))
+     (case [some r]
+       (have hp := (g10-retire-pre gxz gkz w r h))
+       (cases hf1 (run-find (retire-pre w r) rid))
+       (case [none] (simp only [retire-one hf hf1]) (exact hp))
+       (case [some r1]
+         (have hm1 := (retire-r1-mem w r r1 rid hf1))
+         (have hn1 := (retire-r1-noact w r r1 rid hf hf1))
+         (have ht1 := (task-final-res-tag (retire-pre w r) (:of r1) v))
+         (cases ha (Bool.and (run-alive r1) (run-of-local (retire-pre w r) r1)))
+         (case [true] (simp only [retire-one hf hf1 ha]) (exact (g10-complete-raw gxz gkz _ r1 _ hm1 hp)))
+         (case [false] (simp only [retire-one hf hf1 ha retire-full]) (exact (g10-run-cascade gxz gkz (retire-pre w r) (List.cons Job (Job.jretire rid) (List.nil Job)) (Eq.refl true) hp)))))))
 
 (patch! G10 't12-inv
   (fn [form] (subst-forms #(= % '(inv-complete-raw w r _ h)) (fn [_] '(inv-complete-raw w r _ (And.left (tok-facts w st r ht)) h)) form)))

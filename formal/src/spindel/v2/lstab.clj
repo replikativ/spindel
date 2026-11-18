@@ -318,6 +318,25 @@
      (simp only [t12-complete ht hn refuse]) (exact h)
      (simp only [t12-complete ht hn accept])
      (exact (gst-complete-raw tk9 sc9 w r (RunResult.mk tag v) (tag-ok-none tag hg) h))))
+(override! GST 'inv-retire-one '[inv-retire-pre inv-complete-raw inv-run-cascade]
+  '(a/theorem gst-retire-one [tk9 :- Nat, sc9 :- Nat, v :- Nat, w :- World, rid :- Nat]
+     (=> (= (gst tk9 sc9 w) true) (= (gst tk9 sc9 (retire-one v w rid)) true))
+     (intro h)
+     (cases hf (run-find w rid))
+     (case [none] (simp only [retire-one hf]) (exact h))
+     (case [some r]
+       (have hp := (gst-retire-pre tk9 sc9 w r h))
+       
+       (cases hf1 (run-find (retire-pre w r) rid))
+       (case [none] (simp only [retire-one hf hf1]) (exact hp))
+       (case [some r1]
+         (have hm1 := (retire-r1-mem w r r1 rid hf1))
+         (have hn1 := (retire-r1-noact w r r1 rid hf hf1))
+         (have ht1 := (task-final-res-tag (retire-pre w r) (:of r1) v))
+         (cases ha (Bool.and (run-alive r1) (run-of-local (retire-pre w r) r1)))
+         (case [true] (simp only [retire-one hf hf1 ha]) (exact (gst-complete-raw tk9 sc9 _ r1 _ ht1 hp)))
+         (case [false] (simp only [retire-one hf hf1 ha retire-full]) (exact (gst-run-cascade tk9 sc9 _ _ hp)))))))
+
 (patch! GST 'raw0-inv
   (fn [form] (subst-forms #(= % '(t12-inv w _ _ _ h)) (fn [_] '(t12-inv w _ _ _ (refused-tag-ok w st tag hc) h)) form)))
 

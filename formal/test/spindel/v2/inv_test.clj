@@ -39,7 +39,7 @@
 ;; three sources (3 signal, 11 deferred, 12 mailbox, 13 semaphore), computation 4 observed by
 ;; edge 5 with run 6 (scope 7), task 8 with run 9 (scope 10); next-id 14; no slice held
 (def base
-  [[1 2 0 0 3] [14 2 4 [1] 1] [4 4 1 5] [17 4 6] [16 2 1 8 []]
+  [[1 2 0 0 3] [14 2 4 [1] 1] [4 4 1 5] [17 4 6] [16 2 1 8 [] false]
    [1 2 2 0 11] [1 2 3 0 12] [1 2 4 1 13]])
 
 (def counterexamples
@@ -58,7 +58,7 @@
    ;; I8 runs (Z#41): task 14 spawned in run 9 (run scope 16, parent 10) is detached to the root
    ;; scope, which re-parents scope 16 under it; cancelling run 9 closes scope 10's subtree
    ;; without 16, so task 14's run spawns task 19 into an open scope
-   'lit-i8-runs (into base [[21 9] [15 9 1 14 []] [18 9 [11] 0 1 17 []] [34 14 2] [30 9] [21 15] [15 15 1 19 []]])
+   'lit-i8-runs (into base [[21 9] [15 9 1 14 [] false] [18 9 [11] 0 1 17 []] [34 14 2] [30 9] [21 15] [15 15 1 19 [] false]])
    ;; I9 (Z#40): the cleanup slice of cancelled run 6 may not arm a resource (offload)
    'lit-i9-res (into base [[21 6] [35 6] [18 6 [11] 0 1 14 []] [5 5] [29 6] [8 6 2 0 16]])
    ;; I5 (Z#39): computation 4's run awaits task 8 (dep edge 15, member of activation 14); host
@@ -117,7 +117,7 @@
 ;; basis) ended with result none and no run, against I10 ("a task has a run until it
 ;; completes"). The model now refuses such a malformed item (`complete-refused`).
 (deftest complete-tag-none-refused
-  (let [items (into base [[21 6] [15 6 1 14 []] [20 6 1 3] [21 15] [20 15 0 5]])
+  (let [items (into base [[21 6] [15 6 1 14 [] false] [20 6 1 3] [21 15] [20 15 0 5]])
         n (count items)
         w (reduce (fn [w [i it]]
                     (let [o (en/world-step w it)]
@@ -136,7 +136,7 @@
 ;; takes no dep edge on a final debtor (consumed, no id allocated); 10 is live with no dep edge.
 (def i5-reactivation
   [[1 2 2 0 3]          ; deferred 3
-   [16 2 1 4 []]        ; task 4, run 5, run scope 6
+   [16 2 1 4 [] false]        ; task 4, run 5, run scope 6
    [21 5]               ; run 5 takes the slice
    [0 5 0 0 7]          ; signal 7, owned by scope 6
    [18 5 [3] 0 1 8 []]  ; run 5 awaits deferred 3 (activation 8) and parks
@@ -175,12 +175,12 @@
 (def i1-reparent
   (into base
         [[21 9]                       ; task 8's run 9 (scope 10, parent root 2) takes the slice
-         [15 9 1 14 []]               ; spawns task 14: run 15, scope 16 (parent 10)
+         [15 9 1 14 [] false]               ; spawns task 14: run 15, scope 16 (parent 10)
          [18 9 [11] 0 1 17 []]        ; run 9 parks on the deferred 11
          [21 15] [35 15]              ; run 15 enters a finally region
          [18 15 [11] 0 1 19 []]       ; and parks
          [30 15]                      ; host cancel: run 15 unwinds; cleanup[15] rows = (16)
-         [16 2 1 21 []] [21 22]       ; task 21's run 22 (scope 23)
+         [16 2 1 21 [] false] [21 22]       ; task 21's run 22 (scope 23)
          [32 22 24]                   ; opens the explicit scope 24 (parent 23)
          [18 22 [11] 0 1 25 []]       ; and parks
          [34 8 24]                    ; detach task 8 to scope 24: scope 10's parent := 24
