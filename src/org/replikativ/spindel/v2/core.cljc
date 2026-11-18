@@ -2385,11 +2385,22 @@
 
 (declare admit-change! admitting host-sealed? host-released? sealed-ex)
 
+(declare released-ex)
+
+(defn- body-released!
+  "C1 Q5/Q8 (user decision 2026-11-18, model root-shut on body paths): a
+   released world takes no new work, also from a run still in its slice (a
+   body that released its own world): a creation throws ::released before
+   any item or state change."
+  []
+  (when (g (cw) rw/W-RELEASED) (throw (released-ex))))
+
 (defn create-comp!
   "T3. `site` is a macro-time int, `inputs` the captured values."
   [site inputs body]
   (if-let [r (active-run)]
     (when (valid-run)
+      (body-released!)
       (let [w (cw)
             c (rv w (g r rw/R-OF))
             at (next-at! r)]
@@ -2473,6 +2484,7 @@
   [site inputs body]
   (if-let [r (active-run)]
     (when (valid-run)
+      (body-released!)
       (let [w (cw)
             x (rv w (g r rw/R-OF))
             at (next-at! r)]
@@ -2988,6 +3000,7 @@
    runs in creation order) or by the task run's current scope, which retains
    it only through edges and handles (§5.2)."
   [r kind v init]
+  (body-released!)
   (let [w (cw)
         x (rv w (g r rw/R-OF))
         at (next-at! r)]
@@ -3291,6 +3304,7 @@
   ([f init id]
    (if-let [r (active-run)]
      (when (valid-run)
+       (body-released!)
        (next-at! r)
        (let [w (cw) h (new-link! w [f init (thread-frame) id 0] nil)]
          (commit! w [:create-link (g r rw/ID) (handle-id h)])
@@ -3318,6 +3332,7 @@
     (if-not (and x (comp? x))
       (new-aseq f init)
       (when (valid-run)
+        (body-released!)
         (let [w (cw)
               at (next-at! r)
               key (creation-key! r site)
