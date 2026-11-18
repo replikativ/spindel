@@ -1975,3 +1975,17 @@ Option C (decided): the engine owns the mechanism, not the policy. Modelled in s
   `[:owned-done]`); `sys-xfer-move` narrowed accordingly.
 - Decided (engine session): Q1 unseal! under the child's gate; Q2 no auto-seal, merge! refuses unsealed; Q3 base
   recorded at the first change of every kind; Q4 reserve then move, no `[:transfer]` item (sidecar).
+
+### Aligned with the engine (spec Z#74, feat/c2-merge-engine)
+- `merge-guard` is §9: `settled` (W-RUNS 0, no cleanup entry, no outstanding resource; the empty ingress is the
+  engine's, an item is atomic here) and not released; the model's weaker `quiescent` is no longer used.
+- `seals-ok`: the child sealed and the parent not. A sealed parent refuses the merge (its writes would be host
+  writes past its own seal: without the guard, merge would bypass `cstep`).
+- `seal-item` is the in-item refusals only: write (swap logs a write), deliver, post, release, append, close.
+  The admissions (spawn-top, create-comp-top, observe) throw at admission and make no item, so they are not
+  layer-1 refusals: an admission taken before the seal is processed as usual.
+- The race of a spawn-top admitted before the seal: harmless for a diff read at sealed and settled, as long as no
+  admission can still enqueue after that point (check and enqueue atomic with the seal flag, or the seal waits for
+  in-flight admissions). Otherwise refusing in the item is needed.
+- W-MBASE `[ident base-version base-value]` at own-copy!: the first copy precedes the first change, so it is the
+  basis state (Q3). transfer!: as `sys-xfer-reserve`/`sys-xfer-move`.

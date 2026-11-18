@@ -53,7 +53,7 @@
 
   C2 (merge layer, option C): `Cell.sealed`, `sys-seal` (a sealed cell refuses host admissions and host source
   changes outside a slice, `cstep`); merge with an opaque per-source resolver (`pick`, `merge-writes`; `refuse-all`
-  is today's L12: `merge-default`), guarded by sealed and quiescent; `sys-merge-release` (merge!: the child is
+  is today's L12: `merge-default`), guarded by the seals (child sealed, parent not) and §9 (`settled`); `sys-merge-release` (merge!: the child is
   released); `sys-xfer-reserve`/`sys-xfer-move`
   (R6: a root-owned fork's token moves to the new owner, uncounted); `sys-unseal`; `descendant` (R2, lineage).
 
@@ -141,9 +141,11 @@
 ;; ---------------------------------------------------------------------------
 ;; L1: a layer-1 item in world k
 
-;; C2 seal (spec §9): a sealed world refuses the host items that admit work (T4/T5 from the host: spawn-top,
-;; host-await; T8 observe) and, so that its diff stays as sealed, the host items that change a source (T2 write,
-;; deliver, post, release, append, close). Propagation continues: a body's items (a slice is held, as for
+;; C2 seal (spec §9, Z#74): a sealed world refuses, inside the item, the host items that change a source (T2 write
+;; and swap, deliver, post, semaphore release, append, close: an {:accepted false} entry, as a closed source's), so
+;; that its diff stays as sealed. The admissions (spawn-top, create-comp-top, observe) are refused at admission (a
+;; throw, no item), which this layer does not see: an admission taken before the seal is processed as usual, and
+;; the §9 guard of merge waits for its work. Propagation continues: a body's items (a slice is held, as for
 ;; `host-shut`) and the internal items are not refused, nor are withdrawals, handles, pins, cancel and release.
 (a/defn seal-item [it :- Item] Bool
   (match it
@@ -151,7 +153,7 @@
     [(create-source-top scope kind v fresh) false]
     [(write x v) true]
     [(track st x k fresh) false]
-    [(observe d cb fresh) true]
+    [(observe d cb fresh) false]
     [(unobserve e) false]
     [(fire e tag val) false]
     [(resource-ack z) false]
@@ -163,13 +165,13 @@
     [(create-comp st c i b) false]
     [(create-comp-top sc c i b) false]
     [(spawn st b fresh ins) false]
-    [(spawn-top sc b fresh ins) true]
+    [(spawn-top sc b fresh ins) false]
     [(start c fresh) false]
     [(await st ds m k fresh mine) false]
     [(dispatch-comp c fresh) false]
     [(complete st tag val) false]
     [(schedule r) false]
-    [(host-await d fresh) true]
+    [(host-await d fresh) false]
     [(host-unawait e) false]
     [(handle-new x) false]
     [(deliver x v) true]
@@ -709,7 +711,7 @@
 ;; ---------------------------------------------------------------------------
 ;; L12: merge of child world c into parent world p, relative to the child's fork-time basis b.
 ;; The diff is the inherited sources whose version changed in the child; each is a host write (T2)
-;; in the parent. The merge is refused, with no change, unless the child is quiescent, the parent
+;; in the parent. The merge is refused, with no change, unless the child is settled (§9), the parent
 ;; has not written any of those sources since the fork, and every write is accepted.
 
 (a/defn version-of [w :- World, x :- Nat] Nat
@@ -767,10 +769,17 @@
   (match its [nil (Outcome.mk p true)]
          [(cons it t) (if (:accepted (world-step p it)) (items-run (:world (world-step p it)) t) (Outcome.mk p false))]))
 
-;; C2 (spec §9): the merge entry point refuses unless the child is sealed and quiescent (and not released:
-;; the engine releases a merged child, `sys-merge-release`)
+;; C2 (spec §9, Z#74): the child is settled: no unretired run (W-RUNS 0), no cleanup entry, no outstanding
+;; resource (an item is atomic here: the empty ingress is the engine's)
+(a/defn settled [c :- World] Bool
+  (Bool.and (Nat.beq (world-runs c) 0)
+            (Bool.and (Nat.beq (List.length (:cleanup c)) 0) (Nat.beq (List.length (:res c)) 0))))
+;; the merge entry point refuses unless the seals admit it (`seals-ok`: the child sealed, the parent not) and the
+;; child is settled and not released (the engine releases a merged child, `sys-merge-release`)
 (a/defn merge-guard [c :- World, sealed :- Bool] Bool
-  (Bool.and sealed (Bool.and (Bool.not (:released c)) (quiescent c))))
+  (Bool.and sealed (Bool.and (Bool.not (:released c)) (settled c))))
+;; Z#74: a sealed parent refuses the merge as well: its writes are host writes, which its seal refuses one by one
+(a/defn seals-ok [cp :- Cell, cc :- Cell] Bool (Bool.and (:sealed cc) (Bool.not (:sealed cp))))
 
 (a/defn merge-out [rv :- (=> Nat Nat Nat Nat (Option Nat)), p :- World, c :- World, b :- World, sealed :- Bool] Outcome
   (if (merge-guard c sealed)
@@ -894,7 +903,7 @@
 
 ;; the parent side of a merge of child cell m into cell k
 (a/defn sys-merge [cells :- (=> Nat Cell), k :- Nat, m :- Nat, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat))] (=> Nat Cell)
-  (fupd cells k (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b rv (:sealed (cells m))))))
+  (fupd cells k (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b rv (seals-ok (cells k) (cells m))))))
 
 (a/theorem merge-frame [cells :- (=> Nat Cell), k :- Nat, m :- Nat, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat)), j :- Nat]
   (=> (Not (= j k)) (= (sys-merge cells k m b rv j) (cells j)))
@@ -904,19 +913,19 @@
 (a/theorem sinv-merge [cells :- (=> Nat Cell), k :- Nat, m :- Nat, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat))]
   (=> (sinv cells) (sinv (sys-merge cells k m b rv)))
   (intro hs)
-  (have hc (=> (= (:live (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b rv (:sealed (cells m))))) true)
-               (= (p3l (:world (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b rv (:sealed (cells m)))))) true)))
+  (have hc (=> (= (:live (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b rv (seals-ok (cells k) (cells m))))) true)
+               (= (p3l (:world (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b rv (seals-ok (cells k) (cells m)))))) true)))
   (intro hl)
   (simp only [merge-cell] at hl)
   (simp only [merge-cell])
-  (exact (p3l-merge-world (:world (cells k)) (:world (cells m)) b rv (:sealed (cells m)) (sinv-live cells k hs hl)))
+  (exact (p3l-merge-world (:world (cells k)) (:world (cells m)) b rv (seals-ok (cells k) (cells m)) (sinv-live cells k hs hl)))
   (simp only [sys-merge])
-  (exact (sinv-put cells k (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b rv (:sealed (cells m)))) hs hc)))
+  (exact (sinv-put cells k (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b rv (seals-ok (cells k) (cells m)))) hs hc)))
 
 ;; the engine's merge!: the parent side, then the child is released (T21 in it); refused (k = m included:
 ;; merge! of a world into itself is refused), the system is unchanged
 (a/defn merge-acc [cells :- (=> Nat Cell), k :- Nat, m :- Nat, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat))] Bool
-  (Bool.and (Bool.not (Nat.beq k m)) (merge-ok (:world (cells k)) (:world (cells m)) b rv (:sealed (cells m)))))
+  (Bool.and (Bool.not (Nat.beq k m)) (merge-ok (:world (cells k)) (:world (cells m)) b rv (seals-ok (cells k) (cells m)))))
 (a/defn sys-merge-release [cells :- (=> Nat Cell), k :- Nat, m :- Nat, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat))]
   (=> Nat Cell)
   (if (merge-acc cells k m b rv) (sys-step (sys-merge cells k m b rv) m (Item.release-world)) cells))
@@ -1248,8 +1257,8 @@
   (=> (sinv cells) (cinv cells) (cinv (sys-merge cells k m b rv)))
   (intros hs hc)
   (simp only [sys-merge])
-  (exact (cinv-world cells k (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b rv (:sealed (cells m)))) hc (rfl) (rfl) (rfl) (rfl)
-           (fn [hl :- (= (:live (cells k)) true)] (wq-merge-world hq (:world (cells k)) (:world (cells m)) b rv (:sealed (cells m)) (sinv-live cells k hs hl))))))
+  (exact (cinv-world cells k (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b rv (seals-ok (cells k) (cells m)))) hc (rfl) (rfl) (rfl) (rfl)
+           (fn [hl :- (= (:live (cells k)) true)] (wq-merge-world hq (:world (cells k)) (:world (cells m)) b rv (seals-ok (cells k) (cells m)) (sinv-live cells k hs hl))))))
 
 (a/theorem cinv-publish [hq :- (forall [w :- World, it :- Item] (=> (= (p3l w) true) (wq w (:world (world-step w it))))), cells :- (=> Nat Cell), k :- Nat, st :- Nat, kont :- Nat, fresh :- Nat]
   (=> (sinv cells) (cinv cells) (cinv (sys-publish cells k st kont fresh)))
@@ -1629,10 +1638,10 @@
   (=> (sinv cells) (qsinv cells) (cinv cells) (cinv (sys-merge cells k m b rv)))
   (intros hs hq hc)
   (simp only [sys-merge])
-  (exact (cinv-world-q cells k (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b rv (:sealed (cells m)))) hc (rfl) (rfl) (rfl) (rfl)
+  (exact (cinv-world-q cells k (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b rv (seals-ok (cells k) (cells m)))) hc (rfl) (rfl) (rfl) (rfl)
            (fn [hl :- (= (:live (cells k)) true)]
-             (wqc-of (cells k) _ (qsinv-live cells k hq hl) (rel-merge-world (:world (cells k)) (:world (cells m)) b rv (:sealed (cells m)) (sinv-live cells k hs hl))
-               (fn [h :- (= (qh (:world (cells k))) true)] (qid-merge-world (:world (cells k)) (:world (cells m)) b rv (:sealed (cells m)) h)))))))
+             (wqc-of (cells k) _ (qsinv-live cells k hq hl) (rel-merge-world (:world (cells k)) (:world (cells m)) b rv (seals-ok (cells k) (cells m)) (sinv-live cells k hs hl))
+               (fn [h :- (= (qh (:world (cells k))) true)] (qid-merge-world (:world (cells k)) (:world (cells m)) b rv (seals-ok (cells k) (cells m)) h)))))))
 
 (a/theorem cinv-publish-q [cells :- (=> Nat Cell), k :- Nat, st :- Nat, kont :- Nat, fresh :- Nat]
   (=> (sinv cells) (qsinv cells) (cinv cells) (cinv (sys-publish cells k st kont fresh)))
@@ -1688,11 +1697,11 @@
   (=> (sinv cells) (qsinv cells) (qsinv (sys-merge cells k m b rv)))
   (intros hs hq)
   (simp only [sys-merge])
-  (apply (qsinv-put cells k (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b rv (:sealed (cells m)))) hq))
+  (apply (qsinv-put cells k (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b rv (seals-ok (cells k) (cells m)))) hq))
   (intro hl) (simp only [merge-cell] at hl)
-  (exact (cq-trans (cells k) (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b rv (:sealed (cells m)))) (rfl)
-           (fn [r :- (= (:released (:world (cells k))) true)] (rel-merge-world (:world (cells k)) (:world (cells m)) b rv (:sealed (cells m)) (sinv-live cells k hs hl) r))
-           (fn [q :- (= (qinv (:world (cells k))) true)] (qinv-merge-world (:world (cells k)) (:world (cells m)) b rv (:sealed (cells m)) q)) (qsinv-live cells k hq hl))))
+  (exact (cq-trans (cells k) (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b rv (seals-ok (cells k) (cells m)))) (rfl)
+           (fn [r :- (= (:released (:world (cells k))) true)] (rel-merge-world (:world (cells k)) (:world (cells m)) b rv (seals-ok (cells k) (cells m)) (sinv-live cells k hs hl) r))
+           (fn [q :- (= (qinv (:world (cells k))) true)] (qinv-merge-world (:world (cells k)) (:world (cells m)) b rv (seals-ok (cells k) (cells m)) q)) (qsinv-live cells k hq hl))))
 
 (a/theorem qsinv-publish [cells :- (=> Nat Cell), k :- Nat, st :- Nat, kont :- Nat, fresh :- Nat]
   (=> (sinv cells) (qsinv cells) (qsinv (sys-publish cells k st kont fresh)))
@@ -2056,7 +2065,7 @@
   (case [false] (simp only [sys-activate ha]) (exact h))
   (case [true] (simp only [sys-activate ha]) (exact (jinv-same cells m (act-cell (cells m) v) h (rfl) (rfl) (rfl)))))
 (a/theorem jinv-merge [cells :- (=> Nat Cell), k :- Nat, m :- Nat, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat))] (=> (jinv cells) (jinv (sys-merge cells k m b rv)))
-  (intro h) (simp only [sys-merge]) (exact (jinv-same cells k (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b rv (:sealed (cells m)))) h (rfl) (rfl) (rfl))))
+  (intro h) (simp only [sys-merge]) (exact (jinv-same cells k (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b rv (seals-ok (cells k) (cells m)))) h (rfl) (rfl) (rfl))))
 (a/theorem jinv-fork [cells :- (=> Nat Cell), k :- Nat, m :- Nat, owner :- Nat] (=> (jinv cells) (jinv (sys-fork cells k m owner)))
   (intro h)
   (cases hu (:unborn (cells k)))
@@ -2747,7 +2756,7 @@
 ;; same child, as sealed
 (a/theorem merge-seal-same [cells :- (=> Nat Cell), k :- Nat, m :- Nat, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat))]
   (=> (Not (= k m))
-      (= (merge-world (:world (sys-seal cells m k)) (:world (sys-seal cells m m)) b rv (:sealed (sys-seal cells m m)))
-         (merge-world (:world (cells k)) (:world (cells m)) b rv true)))
+      (= (merge-world (:world (sys-seal cells m k)) (:world (sys-seal cells m m)) b rv (seals-ok (sys-seal cells m k) (sys-seal cells m m)))
+         (merge-world (:world (cells k)) (:world (cells m)) b rv (Bool.not (:sealed (cells k))))))
   (intro hne)
-  (simp only [sys-seal fupd-same seal-cell fupd (nbeq-ne k m hne)]))
+  (simp only [sys-seal fupd-same seal-cell fupd (nbeq-ne k m hne) seals-ok Bool.true_and]))

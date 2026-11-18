@@ -140,14 +140,19 @@
     (is (false? (en/slice-held w)) "the host acts between slices")
     (is (= w (:world (sys/cell-step sealed (it :write 3 7)))) "a host write is refused")
     (is (not= w (:world (sys/cell-step (cell child false) (it :write 3 7)))) "unsealed it is taken")
-    (is (= w (:world (sys/cell-step sealed (it :spawn-top s/root-scope-id 1 (:next-id w) [])))) "a spawn is refused")
+    (is (= w (:world (sys/cell-step sealed (it :post 3 7)))) "so is any host source change")
+    (is (not= w (:world (sys/cell-step sealed (it :spawn-top s/root-scope-id 1 (:next-id w) []))))
+        "a spawn item is processed: admissions are refused at admission, before any item (Z#74)")
     (is (true? (:released (:world (sys/cell-step sealed (it :release-world))))) "release is taken")
     (let [c0 (cells false) c1 (sys/sys-merge-release c0 1 2 basis sys/refuse-all)]
       (is (= (map c0 [1 2]) (map c1 [1 2])) "unsealed: the system is unchanged"))
     (let [c0 (sys/sys-seal (cells false) 2) c1 (sys/sys-merge-release c0 1 2 basis sys/refuse-all)]
       (is (= (sys/merge-world parent child basis sys/refuse-all true) (:world (c1 1))) "the parent is merged")
       (is (true? (:released (:world (c1 2)))) "the child is released")
-      (is (= (map c0 [1 2]) (map (sys/sys-merge-release c0 2 2 basis sys/refuse-all) [1 2])) "into itself: refused"))))
+      (is (= (map c0 [1 2]) (map (sys/sys-merge-release c0 2 2 basis sys/refuse-all) [1 2])) "into itself: refused"))
+    (let [c0 (sys/sys-seal (sys/sys-seal (cells false) 2) 1) c1 (sys/sys-merge-release c0 1 2 basis sys/refuse-all)]
+      (is (= (map c0 [1 2]) (map c1 [1 2])) "a sealed parent refuses (Z#74)"))
+    (is (true? (sys/settled child)) "the sample's child is settled (§9)")))
 
 (deftest idle-release-fires-on-an-idle-world-only
   (let [{:keys [child]} (fork-worlds)
@@ -523,4 +528,13 @@
       (is (false? (:sealed ((sys/sys-unseal (fn [k] (if (= k 2) sealed (cells k))) 2) 2))) "unsealed")
       (let [rel (assoc sealed :world (assoc s/empty-world :released true))]
         (is (true? (:sealed ((sys/sys-unseal (fn [k] (if (= k 2) rel (cells k))) 2) 2))) "released: refused")))))
+
+;; C2 (Z#74): §9 settledness; a child with an unretired run (sample 27: a cancelled run waits for its offload)
+;; is not merged
+(deftest c2-merge-needs-a-settled-child
+  (let [busy (released-busy)
+        w (assoc busy :released false)]
+    (is (pos? (en/world-runs busy)))
+    (is (false? (sys/settled w)))
+    (is (false? (sys/merge-ok s/empty-world w s/empty-world sys/refuse-all true)) "an unretired run: refused")))
 
