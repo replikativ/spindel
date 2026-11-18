@@ -2148,10 +2148,23 @@ entry, `(fork)` in a fork-local run refused, computations never marked). Engine 
   fork-local task; `[:retire-local]` → item 48 with v from the projection (`retire-local-item`). `proj->world` reads a
   task `:local` (false when absent); `world->edn` emits it (compared once the engine projects it: the diff takes the
   fields both sides have). The sidecar task observation gains `:local`.
-- Generator `oracle/gen/samples-fork-local.clj` (scenarios 51-60 of the design's table; 51-56 written, 57-60 TODO).
+- Generator `oracle/gen/samples-fork-local.clj` (scenarios 51-60 of the design's table; 51-56 written and generated
+  from engine 869bf29+, 57-60 TODO), registered as `fork-local-specs` in oracle_test (`fork-local-samples`,
+  `fork-local-sample-shapes`): every family replays with no divergence and no re-sync, the sidecars (task `:local`
+  kept after the row goes) match, and each child's first item is `[:retire-local]`. The engine projects no task
+  `:local` yet: a re-sync would lose the marks (none happens in 51-56); the engine gives every task of one
+  `[:retire-local]` commit a fresh ::forked value (`forked-local-ex` per task), so the projection-read v is exact only
+  while one task without a result is retired per commit (51-56); one shared value per commit, or the value as the
+  item's payload, makes it exact.
+
+### LOC1, LOC2 (spindel.v2.local)
+- `loc1` (`loc1-task`: a task owned by a fork-local scope is fork-local; `loc1-run`: a run of a fork-local task has a
+  fork-local run scope), `loc2` (no fork marker owned by a fork-local scope). Proved: `loc1-runs` (the run half holds
+  in every world). Tripwire `fork-local-closure` (oracle_test): LOC1 and LOC2 on every replayed world of 51-56, and
+  the retirement's post-condition after each child's `[:retire-local]` (no run of a fork-local task, no cleanup
+  entry, every fork-local task done).
 
 ### Not done in this step (open)
-- LOC1 (every task owned by a fork-local scope is fork-local) and LOC2 (no fork marker owned by a fork-local scope)
-  as invariants preserved by the step; `retire-clean` and `retire-quiet` as theorems. Both post-conditions need LOC1
+- LOC1's task half and LOC2 as invariants preserved by the step (in `inv`); `retire-clean` and `retire-quiet` as theorems. Both post-conditions need LOC1
   (an unmarked task in a fork-local subtree would be cancelled by the cascade with a cleanup entry) and that every
   resource wait edge belongs to its owner run's activation (so `ack-if`'s guard holds after `cancel-acts`).
