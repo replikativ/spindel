@@ -1,0 +1,103 @@
+[{:step :idle-invalid,
+  :log-length {:w 10},
+  :obs
+  {:w
+   {:scopes {2 {:open? true, :present? true, :complete? false}},
+    :owned-by nil,
+    :pending-joins 0,
+    :holders {},
+    :tasks {},
+    :token nil,
+    :comps
+    {4 {:epoch 1, :done-epoch 1, :idle? true, :validity [[3 0]]}},
+    :kids nil,
+    :complete? false,
+    :owned {},
+    :runs 0,
+    :normalize #{},
+    :released? false}}}
+ {:step :awaited,
+  :log-length {:w 20},
+  :obs
+  {:w
+   {:scopes {2 {:open? true, :present? true, :complete? false}},
+    :owned-by nil,
+    :pending-joins 0,
+    :holders {},
+    :tasks
+    {10
+     {:done? true,
+      :retired? true,
+      :materialized? false,
+      :srow-present? false,
+      :complete? true}},
+    :token nil,
+    :comps
+    {4 {:epoch 2, :done-epoch 2, :idle? true, :validity [[3 1]]}},
+    :kids nil,
+    :complete? false,
+    :owned {},
+    :runs 0,
+    :normalize #{},
+    :released? false}}}
+ {:step :observed-from-body,
+  :log-length {:w 34},
+  :obs
+  {:w
+   {:scopes {2 {:open? true, :present? true, :complete? false}},
+    :owned-by nil,
+    :pending-joins 0,
+    :holders {},
+    :tasks
+    {10
+     {:done? true,
+      :retired? true,
+      :materialized? false,
+      :srow-present? false,
+      :complete? true},
+     21
+     {:done? true,
+      :retired? true,
+      :materialized? false,
+      :srow-present? false,
+      :complete? true}},
+    :token nil,
+    :comps
+    {4 {:epoch 2, :done-epoch 2, :idle? true, :validity [[3 1]]},
+     19 {:epoch 1, :done-epoch 1, :idle? false, :validity nil},
+     20 {:epoch 1, :done-epoch 1, :idle? true, :validity []}},
+    :kids nil,
+    :complete? false,
+    :owned {},
+    :runs 0,
+    :normalize #{},
+    :released? false}}}
+ {:step :released,
+  :log-length {:w 36},
+  :obs
+  {:w
+   {:scopes {2 {:open? false, :present? true, :complete? false}},
+    :owned-by nil,
+    :pending-joins 0,
+    :holders {},
+    :tasks
+    {10
+     {:done? true,
+      :retired? true,
+      :materialized? false,
+      :srow-present? false,
+      :complete? true},
+     21
+     {:done? true,
+      :retired? true,
+      :materialized? false,
+      :srow-present? false,
+      :complete? true}},
+    :token nil,
+    :comps {},
+    :kids nil,
+    :complete? true,
+    :owned {},
+    :runs 0,
+    :normalize #{},
+    :released? true}}}]

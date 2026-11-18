@@ -1,0 +1,55 @@
+[{:step :created,
+  :log-length {:w 2},
+  :obs
+  {:w
+   {:scopes {2 {:open? true, :present? true, :complete? false}},
+    :owned-by nil,
+    :pending-joins 0,
+    :holders {},
+    :tasks {},
+    :token nil,
+    :comps
+    {3 {:epoch 1, :done-epoch nil, :idle? true, :validity nil},
+     4 {:epoch 1, :done-epoch nil, :idle? true, :validity nil}},
+    :kids nil,
+    :complete? false,
+    :owned {},
+    :runs 0,
+    :normalize #{},
+    :released? false}}}
+ {:step :failed,
+  :log-length {:w 13},
+  :obs
+  {:w
+   {:scopes {2 {:open? true, :present? true, :complete? false}},
+    :owned-by nil,
+    :pending-joins 0,
+    :holders {},
+    :tasks {},
+    :token nil,
+    :comps
+    {3 {:epoch 1, :done-epoch 1, :idle? true, :validity [[4 1]]},
+     4 {:epoch 1, :done-epoch 1, :idle? true, :validity []}},
+    :kids nil,
+    :complete? false,
+    :owned {},
+    :runs 0,
+    :normalize #{},
+    :released? false}}}
+ {:step :released,
+  :log-length {:w 14},
+  :obs
+  {:w
+   {:scopes {2 {:open? false, :present? true, :complete? false}},
+    :owned-by nil,
+    :pending-joins 0,
+    :holders {},
+    :tasks {},
+    :token nil,
+    :comps {},
+    :kids nil,
+    :complete? true,
+    :owned {},
+    :runs 0,
+    :normalize #{},
+    :released? true}}}]
