@@ -40,7 +40,8 @@
             [spindel.v2.state :as s]
             [spindel.v2.engine :as en]
             [spindel.v2.inv :as inv]
-            [spindel.v2.oracle :as o]))
+            [spindel.v2.oracle :as o]
+            [spindel.v2.sys :as sys]))
 
 (def dir "test/spindel/v2/oracle/")
 (defn- log [n] (o/read-log (str dir "log-sample-" n ".edn")))
@@ -543,3 +544,100 @@
     (is (= [[:normalize] [:release-world]] (b-items "38-instance")) "38: the drain at activation")
     (is (= [[:owned-done 12 16]] (filterv #(= :owned-done (first %)) (items "15-parent"))) "15 regenerated")
     (is (= [[:owned-done 5 9]] (filterv #(= :owned-done (first %)) (items "22-parent"))) "22 regenerated")))
+
+;; ---------------------------------------------------------------------------
+;; C2 samples 39-42 (spec Z#74, engine #289, generator oracle/gen/samples-c2.clj). Seal makes no item: the
+;; child's log is replayed sealed from the commit after its last host change before `seal!` (`:sealed-from`,
+;; the model's `seal-shut`). Values in the logs are interned ids: `c2-val` decodes them for the resolver.
+(defn- c2-fork [p c]
+  (let [pl (log p)
+        pr (o/replay pl :family? true :worlds? true)
+        at (first (keep-indexed (fn [i x] (when (= :fork-host (first (:item x))) i)) pl))]
+    {:pl pl :pr pr :at at :basis (nth (:worlds pr) at) :cl (when c (vec (filter :proj (log c))))}))
+(defn- cur4 [f] (fn [x] (fn [b] (fn [p] (fn [c] (f x b p c))))))
+
+;; 39: [:write 3 7] and [:post 4 8], admitted before the seal and processed after it, are refused in the item
+(deftest sample-39-seal
+  (let [{:keys [pr basis]} (c2-fork "39-parent" nil)
+        cl (log "39-child")
+        cr (o/replay cl :family? true :init basis :sealed-from 1 :worlds? true)]
+    (is (= [3 0 0] ((juxt :checked :n-divergences :resyncs) pr)) "the parent")
+    (is (= [[:write 3 7] [:post 4 8]] (map :item (filter #(false? (:accepted %)) cl))))
+    (is (= [3 0 0] ((juxt :checked :n-divergences :resyncs) cr)) "the child: both refused, as the model's seal")
+    (is (= 2 (:n-divergences (o/replay cl :family? true :init basis))) "unsealed, the model would take both")))
+
+;; 40: three merges of the sealed child; a throwing and a refusing resolver refuse (a throw is a refusal, none),
+;; the value resolver (+ pv (- cv base)) merges: the parent's two writes are the model's merge
+(deftest sample-40-resolver
+  (let [{:keys [pl pr at basis cl]} (c2-fork "40-parent" "40-child")
+        cr (o/replay cl :family? true :init basis :worlds? true)
+        child (peek (:worlds cr))
+        ;; interned value ids of the generator's values: s 1 -> 2, t 10 -> 13 (child), t -> 11 (parent), 14 merged
+        c2-val {3 1 4 10 5 2 6 13 7 11 8 14}
+        c2-id (into {} (map (fn [[k v]] [v k])) c2-val)
+        before (nth (:worlds pr) (+ at 1))
+        after (nth (:worlds pr) (+ at 3))
+        refuse (cur4 (fn [_ _ _ _] nil))
+        value (cur4 (fn [_ b pv cv] (some-> (c2-id (+ (c2-val pv) (- (c2-val cv) (c2-val b)))) vector)))]
+    (is (= [(count pl) 0 0] ((juxt :checked :n-divergences :resyncs) pr)) "the parent")
+    (is (= [(count cl) 0 0] ((juxt :checked :n-divergences :resyncs) cr)) "the child")
+    (is (= [[:write 4 7] [:write 3 5] [:write 4 8]] (map :item (subvec pl (inc at) (+ at 4)))) "the parent's write, then the merge's")
+    (is (= #{3 4} (set (sys/diff child basis))))
+    (is (false? (sys/merge-ok before child basis refuse true)) "throw, ::refuse: refused")
+    (is (true? (sys/merge-ok before child basis value true)))
+    (is (= (o/world->proj after) (o/world->proj (sys/merge-world before child basis value true)))
+        "the model's merge is the engine's: s takes the child's value, t the resolver's")
+    (is (false? (sys/merge-ok before child basis value false)) "and only a sealed child merges")))
+
+;; 41: the §9 guard. Sealed after the host write (commit 3); the merge is refused while the task is parked on its
+;; timer; the timer fires, the body writes (a slice is held: not refused), the run retires, the merge succeeds
+(deftest sample-41-settled-guard
+  (let [{:keys [pl pr at basis cl]} (c2-fork "41-parent" "41-child")
+        cr (o/replay cl :family? true :init basis :sealed-from 4 :worlds? true)
+        ws (:worlds cr)
+        before (nth (:worlds pr) at)
+        after (nth (:worlds pr) (inc at))]
+    (is (= [(count pl) 0 0] ((juxt :checked :n-divergences :resyncs) pr)))
+    (is (= [(count cl) 0 0] ((juxt :checked :n-divergences :resyncs) cr)) "the body write after the seal is taken")
+    (is (= [:write 3 8] (:item (nth cl 8))))
+    (is (false? (sys/settled (nth ws 4))) "parked on the timer: not settled")
+    (is (false? (sys/merge-ok before (nth ws 4) basis sys/refuse-all true)) "the first merge is refused")
+    (is (true? (sys/settled (peek ws))) "retired")
+    (is (= [:write 3 8] (:item (nth pl (inc at)))) "the merge's write")
+    ;; :next-id is the family's allocator (W-NEXT): the child's allocations move it in the parent's projection
+    (is (= (dissoc (o/world->proj after) :next-id)
+           (dissoc (o/world->proj (sys/merge-world before (peek ws) basis sys/refuse-all true)) :next-id))
+        "the second merge is the model's")))
+
+;; 42: transfer of m (5, :owner k1 = 3) to k2 (4): sys-xfer-reserve then sys-xfer-move; k1's release completes it
+;; without m; k2's release releases m (F2: an owner's release releases what it owns), m completes, then k2. The
+;; sidecar's :owner (until completion), pending :kids, :released? and :complete? are the model's at every step.
+(deftest sample-42-transfer
+  (let [obs (o/read-observations "test/spindel/v2/oracle/log-sample-42-observations.edn")
+        rl (log "42-root")
+        w0 (peek (:worlds (o/replay rl :family? true :worlds? true)))
+        cell (fn [parent owner kids] (sys/->Cell w0 true parent owner [] false 0 kids false [] [] false))
+        c0 (fn [k] (case (long k) 1 (cell 0 0 [3 4]) 3 (cell 1 1 [5]) 4 (cell 1 1 []) 5 (cell 1 3 []) (cell 0 0 [])))
+        rel (fn [cs k] (sys/sys-complete (sys/sys-step cs k [(o/ctor-idx :release-world)]) k))
+        c1 (sys/sys-xfer-move (sys/sys-xfer-reserve c0 5 4 [0 0 0 0]) 5 4)
+        c2 (rel c1 3)
+        c3 (sys/sys-complete (rel (sys/sys-step c2 4 [(o/ctor-idx :release-world)]) 5) 4)
+        ids {:root 1 :k1 3 :k2 4 :m 5}
+        model (fn [cs]
+                (into (sorted-map)
+                      (for [[n k] ids :let [c (cs k)]]
+                        [n {:released? (:released (:world c)) :complete? (:complete c)
+                            :owner (when (and (not (:complete c)) (pos? (:owner c))) (:owner c))
+                            :kids (count (remove #(sys/kid-done cs %) (:kids c)))}])))
+        engine (fn [step] (into (sorted-map) (map (fn [[n e]] [n (select-keys e [:released? :complete? :owner :kids])]))
+                                (:obs (first (filter #(= step (:step %)) obs)))))]
+    (is (= [:before :transferred :k1-released :k2-released] (map :step obs)))
+    (is (= [[:fork-host 3] [:fork-host 4] [:fork-host 5]] (map :item rl)))
+    (doseq [[step cs] [[:before c0] [:transferred c1] [:k1-released c2] [:k2-released c3]]]
+      (is (= (engine step) (model cs)) (str "sample 42 " step)))
+    (is (every? #(= [[:release-world]] (map :item (log (str "42-" %)))) ["k1" "k2" "m"]) "no world item besides the releases")))
+
+(deftest projection-roundtrip-c2
+  (doseq [n ["39-parent" "39-child" "40-parent" "40-child" "41-parent" "41-child" "42-root"]]
+    (is (= [] (o/roundtrip (log n))) (str "sample " n))))
+

@@ -1989,3 +1989,15 @@ Option C (decided): the engine owns the mechanism, not the policy. Modelled in s
   in-flight admissions). Otherwise refusing in the item is needed.
 - W-MBASE `[ident base-version base-value]` at own-copy!: the first copy precedes the first change, so it is the
   basis state (Q3). transfer!: as `sys-xfer-reserve`/`sys-xfer-move`.
+
+### Samples 39-42 (engine #289, generator oracle/gen/samples-c2.clj), registered in oracle_test
+- `replay :sealed-from n`: seal makes no item; from commit n an item the model's `seal-shut` refuses is refused
+  unchanged (layer-2 `cstep`). 39: the child's `[:write 3 7]`/`[:post 4 8]` refused as the engine's; unsealed
+  the model would take both (2 divergences).
+- 40: the merges with `sys/merge-world` and a resolver over the decoded values (logs carry interned ids):
+  throw and ::refuse are none; the value resolver gives the parent's two merge writes exactly.
+- 41: the child sealed from commit 4: the body write after the seal is taken (slice held); `settled` false while
+  the task is parked on its timer (first merge refused), true after its retirement; the second merge is the
+  model's (the parent's `:next-id` is the family allocator, not compared).
+- 42: `sys-xfer-reserve`/`sys-xfer-move`, then the releases (k2's release releases m, F2) and completions give
+  the sidecar's :owner (until completion), pending :kids, :released? and :complete? at all four checkpoints.

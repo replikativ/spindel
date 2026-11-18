@@ -692,9 +692,11 @@
   parent's world at the fork commit), :family? (the log is of a world with forks: `align` the
   allocator before every item), :worlds? (keep the model world after every commit as :worlds),
   :unborn? (an instance's log: a `[:release-world]` before its activation, the first
-  `:resource-fire`, is E4's release of an unborn instance, engine.clj `release-unborn`).
-  Returns the summary map."
-  [log & {:keys [format from resync-on-divergence? max-diffs strict? init family? worlds? unborn? owned?] :or {from 0 max-diffs 8}}]
+  `:resource-fire`, is E4's release of an unborn instance, engine.clj `release-unborn`),
+  :sealed-from (C2, Z#74: the world is sealed from this commit on; seal makes no item, and an item the
+  model's `seal-shut` refuses there, a host source change outside a slice, is refused unchanged, as the
+  layer-2 `cstep` does). Returns the summary map."
+  [log & {:keys [format from resync-on-divergence? max-diffs strict? init family? worlds? unborn? owned? sealed-from] :or {from 0 max-diffs 8}}]
   (binding [*deviations* (if strict? {} pending-deviations)]
   (let [fmt (or format (log-format log))
         ;; logs with `[:finally-enter st]`/`[:finally-exit st]` items (sample 4 on) need no
@@ -779,7 +781,10 @@
                 w0 (if s0 (:world s0) w)
                 n0 (:next-id w0)
                 w0 (if (and family? main) (align w0 main proj) w0)
-                s1 (when main (step-checked w0 main))
+                s1 (when main
+                     (if (and sealed-from (>= i sealed-from) (sys/seal-shut true w0 main))
+                       {:world w0 :accepted false}
+                       (step-checked w0 main)))
                 w1 (if s1 (:world s1) w0)
                 m-acc (if main (:accepted s1) true)
                 ;; a refused item carries no projection (oracle contract): only the accepted
