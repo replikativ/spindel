@@ -123,3 +123,25 @@
         c (v2/fork! w)]
     (is (number? (v2/world-id w)))
     (is (not= (v2/world-id w) (v2/world-id c)) "a fork has its own id")))
+
+(deftest a-host-operation-inside-a-slice-starts-no-nested-slice
+  ;; D0: one slice per world. observe!/value-async/pin! of a computation that needs a run,
+  ;; called from a running body, queue its run; an await (which parks first) still runs the
+  ;; debtor inline
+  (let [depths (atom [])
+        orig @#'v2/slice!]
+    (with-redefs [v2/slice! (fn [r g]
+                              (let [r* (#'v2/active-run)]
+                                (swap! depths conj (boolean (and r* (aget ^objects r* rw/R-SLICE)))))
+                              (orig r g))]
+      (checked
+       (let [w (vworld)]
+         (binding [v2/*world* w]
+           (let [c (spin (+ 1 2)) d (spin (+ 3 4)) seen (promise) seen2 (promise)]
+             (is (= :ok (v2/value (task (v2/observe! c (fn [v _] (deliver seen v)))
+                                        (v2/value-async d (fn [v _] (deliver seen2 v)))
+                                        :ok)
+                                  1000 ::timeout)))
+             (is (= [3 7] [(deref seen 1000 ::none) (deref seen2 1000 ::none)]))
+             (is (not-any? true? @depths) "no slice starts while another run holds the slice")
+             (is (= 2 (v2/value (task (inc (await (spin 1)))) 1000 ::timeout)) "awaits unchanged"))))))))
