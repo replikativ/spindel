@@ -194,7 +194,9 @@
 (def ^:const W-NORMALIZE 55) ; C1c stage B: owner scopes a fork inherited counts on {scope id -> scope}, drained at its first turn
 (def ^:const W-SEALED 56)    ; C2 (§9): a flag (SC): host admissions and host source changes refused until unseal!
 (def ^:const W-ADMITTING 57) ; C2: host starts between their seal check and their enqueue (SC counter); §9 waits for 0
-(def ^:const W-SIZE 58)
+(def ^:const W-LOCAL 58)    ; Z#77: unretired runs of fork-local tasks {run id -> run}; a fork starts with none
+(def ^:const W-RETIRE 59)   ; Z#77: the fork-local run sets inherited at the fork, retired at the first gate entry (T28)
+(def ^:const W-SIZE 60)
 
 ;; Scope
 (def ^:const S-PARENT 2)
@@ -208,7 +210,8 @@
 (def ^:const S-HELD 10)      ; a run scope whose run is not retired (Z#52)
 (def ^:const S-TASK 11)      ; C1c: a run scope's task, recorded when the scope is materialized
 (def ^:const S-COMPLETE 12)  ; C1c: the scope row was removed (Z#18); set once
-(def ^:const S-SIZE 13)
+(def ^:const S-LOCAL 13)     ; Z#77: the run scope of a fork-local task or a scope below one (fixed at creation)
+(def ^:const S-SIZE 14)
 
 ;; Debtor rows (computation, source, task)
 (def ^:const WORLD 2)
@@ -257,7 +260,8 @@
 (def ^:const K-LINK 20)      ; a realizer task: the link it realizes (C0)
 (def ^:const K-SROW 21)      ; C1c: its run's scope row, once materialized (outlives the run)
 (def ^:const K-COMPLETE 22)  ; C1c: done, run retired, run scope removed or never made; set once
-(def ^:const K-SIZE 23)
+(def ^:const K-LOCAL 23)     ; Z#77: fork-local (fixed at creation)
+(def ^:const K-SIZE 24)
 
 ;; Source
 (def ^:const X-KIND 12)

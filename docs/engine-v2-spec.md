@@ -326,6 +326,30 @@ prototypes are not acceptance evidence for this smaller operation API.
     from a body already cancels every run: tasks through the root scope,
     computations through their revoked demand; the refusal makes the rule
     explicit rather than a consequence.)
+  - Z#77 (§1, §2, T4, T28, §5.2, I16, §8.1 F6, D3, S3/S8, §13; user decision
+    2026-11-18, dvergr F9, `fork-local-design.md`): **fork-local tasks.**
+    - A task started with `task-with {:fork-local true}` is fork-local, and
+      so is every task its runs spawn under their scopes (fixed at creation;
+      computations and their tasks never).
+    - In every world derived from one that holds fork-local runs (host fork,
+      `(fork)` effect, savepoint basis and instance, a fork of a fork), those
+      runs are retired by the internal item `[:retire-local]` (T28),
+      processed at the child's first gate entry before any other item, turn
+      or activation:
+      - no slice, finalizer, cleanup slice, host callback, resource fire,
+        acknowledgement or timer re-arm happens for them;
+      - their tasks without a result become final with `err ::forked`
+        (`:spindel/fork-local true`), which inherited waiters receive, and
+        complete (Z#70) in the child;
+      - the sources their scopes own are closed (Z#18).
+    - Everything else is inherited live as before.
+    - Refused (`{:spindel/invalid :fork-local}`): `(fork)` in a fork-local
+      run; `instantiate`/`consume` of its publication; the option inside a
+      computation; `detach` of an unmarked task into a fork-local scope (a
+      refused item).
+    - Before this item, the inline fast path could process a host item in a
+      never-entered fork before its first turn. That stays true for dormant
+      activation and normalization; T28 precedes it.
 
 Once approved, this document is the normative contract for the v2 engine. It
 supersedes `engine-formalism.md` Part 4 and `engine-memory-v2.md`. Parts 1–3
@@ -465,6 +489,10 @@ These belong to yggdrasil and dvergr, which build on §9.
   - an uncached body, used for processes, loops, agent turns and pumps;
   - subsumes `spawn!` and the work-admission `task`;
   - every `await` in a task is a one-shot *wait*.
+- **Fork-local** (Z#77): a task created with the fork-local option, or owned
+  by a fork-local scope; a scope is fork-local when its parent chain reaches
+  the run scope of a fork-local task. The mark is fixed at creation.
+  Computations and the tasks they own are never fork-local.
 - **Run** `R`: one execution of a body. Its stamp `R.stamp` is fresh from the
   family allocator (§2) and never reused.
 - **Source** `X`: signal, cell, deferred, mailbox or semaphore. Each kind has
@@ -524,7 +552,8 @@ World  = { scopes  : S ↦ {parent: S?, kind: root|run|explicit, open: Bool}
                           basis: {(C ∪ X ∪ K) × at},           ; creations of the last run
                           adoption: {basis, baselines: (site, X) ↦ baseline}?,   ; T11
                           handles: Nat}
-           tasks   : K ↦ {owner: S|C, run: R?, result: none | ok v | err e, handles: Nat}
+           tasks   : K ↦ {owner: S|C, run: R?, result: none | ok v | err e, handles: Nat,
+                          local: Bool}                         ; Z#77; scope locality is derived (§1)
            runs    : R ↦ {of: C|K, stamp, epoch: Nat, scope: S,
                           act: active | parked | done,
                           mode: normal | unwinding,
@@ -1016,7 +1045,7 @@ Transitions are built from a small set of primitive table edits (§11).
 | T1 | `create-source(kind, v)` | Owner is the current scope; inside a computation run, the computation (§5.2). |
 | T2 | `write(X, v)` | `version += 1`; deltas are logged; mark, fire `dep` edges and deliver to `observe` edges per §4.5.1 (Z#9). |
 | T3 | `create-comp(id, inputs, body)` | **Absent id:** a `fresh` computation is created. **Present, equal inputs** (the conservative capture comparison, formalism §1.6): it is adopted. **Present, different inputs (W#5):** body and inputs are replaced at the same id, and the change is handled exactly like a write to `C`'s rerun source. Marking (§4.5.1) dirties `C`'s transitive dependents. `C.epoch += 1`, and the replacement run starts from the body (restart). An idle entry is replaced by a `fresh` one. In every case the creator records `C` (§5.2) before Rule R. |
-| T4 | `spawn(body)` | Creates task `K` owned per §5.2 and starts its run (fresh stamp, run scope with parent `K.owner`, Z#26). |
+| T4 | `spawn(body, local)` | Creates task `K` owned per §5.2 and starts its run (fresh stamp, run scope with parent `K.owner`, Z#26). `K.local := local ∨ local(K.owner)` (Z#77). Refused (`::fork-local`) when `local` and the creator is a computation run. |
 | T5 | `start(C)` | **Applies to:** a `fresh` computation, or an invalid idle one. The new run starts from the body, with a fresh stamp and `R.epoch := C.epoch`. |
 | T6 | `await(R, ds, mode)` | **Activation:** an activation `A = {run R, mode, slots, remaining = |ds|, cont}` is created. Its id is always allocated, even when the fast path fills every slot in the same commit and `A` is removed at once (Z#28). **Member edges:** in a computation, each debtor's `dep` edge at this site (`at`) is reused or created, with `C` as creditor; in a task, and for consuming operations, a `wait` edge is created with `A` as creditor. **Demand:** debtors that are not running are demanded (T5, or T11 if `needs-run`). The awaiting slice ends here, and the demanded debtor's first slice is the next step; running that slice on the host stack implements this suspend–run–resume sequence (I10). **Fast path:** a member whose debtor is `live` or final fills its slot in the same commit, but only while `A` is unresolved. Once a fill resolves `A` (any fill of an `any`, the first `err` of an `all`, the last fill of a `one`/`all`), a later ready member fills nothing. In a computation, its `dep` edge stays with `C` as a loser's does, and it does not invalidate `C`. **Baseline:** a `dep` member on a signal or cell records the debtor's current value and version at the site when its edge is created. A re-await at the same site re-arms the edge and keeps that baseline (Z#22). **`one`/`all`:** the run resumes when `remaining = 0`; an `all` activation also resumes at its first `err` slot, with that error, and its unfilled members are treated as `any` losers (fail-fast, Z#61). **`any`:** the first filled slot resumes it; loser `wait` edges are removed, and loser tasks created by `R` for this await that have no other creditor are cancelled (T14). Loser computations keep `C`'s `dep` edges, because they are dependencies of `C`. Filling slot `i` removes the entry `(E, i)` from `A.members` (X#4, Z#7). On resume, `A` is removed; `wait` members are removed with it, and `dep` members stay with `C` (W#2). |
 | T7 | `track(R, X)` | **Domain:** `X` is a signal or a cell; otherwise it is refused (Z#17). Inside a computation: a `dep` edge per §4.4, read immediately. Inside a task: a snapshot read with no edge, which allocates nothing (Q1, Z#19). |
@@ -1036,6 +1065,7 @@ Transitions are built from a small set of primitive table edits (§11).
 | T21 | `release-world` | **Request:** sets `released := true`. **Roots revoked:** `observe` callbacks receive `::released`, pins are dropped, `pending-activation` is abandoned. **Host admissions revoked:** remaining handles become released handles, whose operations fail with `::released`, and their rows are removed. **Still admitted (Z#56, Z#66):** B8 cleanup effects, existing/new explicit cleanup waits inside finalizers, their sealed completions, and outstanding resource acknowledgements. Then T16 closes the root scope; it remains the administrative allowance (I11a). Request return does not certify terminal close. **Completion (C1):** the world is *complete* once it is released, none of its runs is unretired (`runs`: +1 at run creation, −1 at T13, every task and computation run, cleanup included) and every child world it owns is complete or was collected (`kids`: one exactly-once token per accepted child, +1 at ownership, −1 when the child completes or is collected; never inherited). Completion runs the host terminal subscriptions (`on-complete`, admitted after release and never revoked) after the gate and acknowledges the owner's token through the owner's ingress. A fork copies its parent's `runs` (it inherits every unretired run) and acknowledges at its first turn the inherited resources that were cancelling or fired but unacknowledged (they have no counterpart in it); an unborn instance released before activation is complete at once (E4). A released marker or emptied owner list is not completion. |
 | T22 | `host-await(d)` / `host-unawait(E)` (Z#27) | **Await:** adds a `wait` edge with creditor host on `d` (demanding it, T5/T11), and validates `d` if it is idle. A root while it exists. **Fire:** when `d` settles or becomes final, the edge is consumed and the host promise receives the result. **Unawait:** a host that stops waiting removes the edge. |
 | T27 | `rerun(C)` (host) | A write to `C`'s rerun source (§4.1). **`C` idle:** its validity becomes invalid, so the next demand starts it (T5). **Otherwise:** the epoch step of §4.5 step 3, `restart := true` (the next run starts from the body, not at a fired edge), `C`'s creditors are marked, and `C` is scheduled if demanded. |
+| T28 | `retire-local` (internal, Z#77) | **Requires:** `W.retire ≠ ⊥` (§8.1 F6), and it is the world's first item. For each `R ∈ W.retire` (resolved in `W`): `R`'s activation (with its `wait` members), resources (with their dormant, discharge and outstanding entries), finalizers, boundary, cleanup entries and queue entries are removed without fire, acknowledgement, slice or callback. A task `K` of such a run without a result gets `err ::forked` (`:spindel/fork-local true`) and is finalized (T10; host waits without callback, Z#45). Then each `R` retires (T13): its run scope closes without cancellation (owned sources closed, Z#18; owned computations `owner := ⊥`, Z#23), the scopes go bottom-up, Z#18 is re-checked at each unmarked owner scope, and task completion (Z#70) and W1 are re-checked. `W.retire := ⊥`. |
 
 **Planned cleanup transitions (Z#66, slice 1; not yet implemented/modelled):**
 
@@ -1059,6 +1089,9 @@ resource acknowledgement (T15), operation completion (T25), finalizer exit
 | computation run | in `basis` with `at`; owner is the computation | in `basis` with `at`; owner is the computation | in `basis` with `at`; owner is the computation; cancelled if a later run does not re-spawn it |
 | task run | owner is the run scope; retained while running or until consumed | owner is the run scope; retained by edges and handles only | structured child of the run scope (Q10); `detach` re-owns it to a named open scope outside its own run-scope subtree (Z#69) |
 | top level | owner is the current scope | owner is the current scope | owner is the current scope |
+
+A fork-local run's children are fork-local (Z#77). `detach` into a fork-local
+scope requires a fork-local task.
 
 **Errors.**
 - A throw completes the run with `err e` after lexical cleanup; Z#66 preserves
@@ -1090,6 +1123,7 @@ Invariants hold after every commit.
 | I13 | **Coherence as guards (A#5, W#1):** T9 fills a slot from a computation only if that computation is `live`. T12 sets a result only for a current run. |
 | I14 | **Validity is acyclic (Z#60):** the graph whose nodes are idle computations and whose edges go from each to the computation debtors in its `validity` has no cycle. Validation (§3.4) relies on it to terminate. Witness: validity entries strictly decrease in the lexicographic pair (demotion pass, rank at demotion). Demotions in one Rule R pass share their pass and are ordered by I12; a later pass is later; I12 raises happen only in allocating steps, so they never reorder entries recorded in one pass. Rank alone is not a witness: a still-live debtor can be raised after its creditor's demotion (proved in the model, together with "no dep edge has an idle debtor"). |
 | I15 | **Coherence of results (Z#64):** (a) a `live` computation's `dep` edges all have `seen` equal to their debtor's current `version`, and its result is the one its current run produced from those reads; (b) an idle computation whose `validity` is not `invalid` has `done-epoch = epoch`, and each entry records the version its current result read of that debtor; (c) hence validation (§3.4) reactivates a result only when every debtor still has the version the result was computed at. A stale read is a violation of (a) or (b). |
+| I16 | **Fork-local closure (Z#77):** a task owned by a fork-local scope is fork-local; no counted fork marker is owned by a fork-local scope; a world with `retire ≠ ⊥` has processed no item. |
 
 | # | Temporal law |
 |---|---|
@@ -1195,6 +1229,8 @@ Independent cross-world joins outside this ownership profile fail explicitly.
 
 **D3 – fork.** `fork(W, mode)` is an effect of the active slice. By D0 that
 slice is the only one executing, so the fork boundary is the effect's commit.
+The effect is refused in a computation body, in a nested slice (Z#47) and
+in a run of a fork-local task (Z#77: the child would retire the forking run).
 
 The child `W′` gets:
 - copy-on-write views of `W`'s layer-1 tables: `W′` sees every row as it was
@@ -1254,7 +1290,26 @@ covers its range.
 
   Computations in `W′` are always local.
 
+**F6 – fork-local runs (Z#77).** Let `W′` be a child of `W` (a host fork, a
+`(fork)` effect, a savepoint basis or one of its instances, or any other
+derived world) and `L` the runs of fork-local tasks unretired in `W′`'s
+source at the fork (`W′.retire`: `W`'s own, with what `W` has not retired
+itself). In `W′` every run in `L` is retired by T28; no body slice,
+finalizer, cleanup slice or host callback runs for it, and no resource of it
+is activated, fired, acknowledged or re-armed. Normatively this holds at the
+fork boundary: no operation on `W′` observes a run in `L`. T28 is `W′`'s
+first item, processed at its first gate entry (the inline fast path, a
+drainer turn, a host operation, `activate`), before the first ingress item,
+the first normalization and the first dormant activation, also in an unborn
+instance (it runs nothing, so E4 holds). A child that is never entered is
+collected or completed without it. Retiring at copy time instead would cost
+`O(|L|)` under the parent's gate on every fork; no operation can observe the
+difference, since every access to `W′`'s rows goes through its gate.
+
 **Inherited work (R#18, R#21, W#8):**
+- **Fork-local runs (Z#77)** are not inherited as work: T28 retires them
+  before anything else happens in `W′` (F6). The remaining bullets apply to
+  every other run.
 - Parked runs, their activations and edges are copied as values (B6).
 - `R`'s copy in `W′` is parked at the `fork` effect and resumes with a
   child-side result (Q4).
@@ -1338,6 +1393,8 @@ A savepoint publishes the rest of a body to a handler (see `savepoints.md`).
     runs as host code (Z#58);
   - until activation `W′` is **unborn** (Z#58): host items commit, but its
     inherited work and dormant resources wait for S4;
+  - refused (`::fork-local`, Z#77) when `R` is a run of a fork-local task:
+    every instance would retire it (F6); S2's in-place resume stays allowed;
   - `R`'s copy in `W′` is parked on its copied `savepoint` edge, which
     becomes `W′.pending-activation`;
   - every other inherited `savepoint` edge fires `err ::forked` (§8.1);
@@ -1369,9 +1426,9 @@ A savepoint publishes the rest of a body to a handler (see `savepoints.md`).
 
 - **S8 – consume (copy).** `consume(P, k, owner)` continues `R` only in `k`
   new instances, never in its own world `W` (2026-11-14):
-  - **Requires:** `E_sp` armed, and `R` holds no resource other than its
-    savepoint (the S6 portable restriction). Otherwise refused, and `P`
-    stays pending.
+  - **Requires:** `E_sp` armed, `R` holds no resource other than its
+    savepoint (the S6 portable restriction), and `R` is not fork-local
+    (Z#77). Otherwise refused, and `P` stays pending.
   - In one commit of `W`: `k` instances of `P` are created (S3, owned by
     `owner`), and `E_sp` becomes *consumed*: `R` stays parked on it, can no
     longer be resumed (S2) or abandoned (S7), and its finalizers never run
@@ -1730,6 +1787,7 @@ Shaped by the ansatz feasibility read (`ansatz/.internal/design/spindel-v2-feasi
 |---|---|
 | `spin` | computation |
 | `spawn!`, work `task` / `submit-work!` | task (structured; `detach` for fire-and-forget) |
+| `task` with options | `task-with {:fork-local true}`: retired in every fork (Z#77) |
 | `run-spin!` (one-shot) | a host `wait`-style delivery |
 | `render-spin!`, subscriptions | `observe` |
 | `parallel` | reactive computation over `await(all)` |

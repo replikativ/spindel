@@ -1130,6 +1130,8 @@
     (when (comp? x) (s! r rw/R-BIND (g x rw/C-BIND)))           ; a task's: start-task!
     (if (comp? x) (s! x rw/C-RUN r) (s! x rw/K-RUN r))
     (s! w rw/W-RUNS (inc (gl w rw/W-RUNS)))     ; C1 W1: until its retirement
+    (when (and (task? x) (g x rw/K-LOCAL))      ; Z#77: retired in every fork of `w`
+      (s! w rw/W-LOCAL (assoc (g w rw/W-LOCAL) (g r rw/ID) r)))
     (register! w r)))
 
 (defn- run-scope!
@@ -1144,7 +1146,8 @@
         (s! r rw/R-SROW s)
         (when (task? x)                     ; C1c: the task completes with this scope
           (s! s rw/S-TASK x)
-          (s! x rw/K-SROW s))
+          (s! x rw/K-SROW s)
+          (when (g x rw/K-LOCAL) (s! s rw/S-LOCAL true)))   ; Z#77
         s)))
 
 (defn- deliver-subs!
@@ -1311,6 +1314,8 @@
       (close-scope! w s))
     (unregister! w r)
     (s! w rw/W-RUNS (dec (gl w rw/W-RUNS)))     ; C1 W1
+    (when (and (task? x) (g x rw/K-LOCAL))      ; Z#77
+      (s! w rw/W-LOCAL (not-empty (dissoc (g w rw/W-LOCAL) (g r rw/ID)))))
     (when (task? x) (task-complete! w x))       ; C1c L1: if its run scope is gone
     ;; the spent task and its owner chain go with the run (Z#56)
     (when (and (task? x) (g x rw/K-DONE)) (release-ownership! w x))
@@ -2536,66 +2541,88 @@
     (aadd! (g w rw/W-START) r)
     r))
 
+(defn- fork-local-opt
+  "The `task-with` options: only `:fork-local` is known (Z#77)."
+  [opts]
+  (when opts
+    (when-let [bad (seq (remove #{:fork-local} (keys opts)))]
+      (throw (invalid-op :task-with (str "task-with: unknown options " (vec bad)))))
+    (boolean (:fork-local opts))))
+
 (defn spawn!
   "T4. Inside a computation run the task is a creation in its basis,
    adopted by later runs (§5.2); inside a task run it is a structured child
-   of the run scope (Q10); at top level it is owned by the root scope."
-  [site inputs body]
-  (if-let [r (active-run)]
-    (when (valid-run)
-      (body-released!)
-      (let [w (cw)
-            x (rv w (g r rw/R-OF))
-            at (next-at! r)]
-        (if (comp? x)
-          (let [key (creation-key! r site)
-                old (adopt! w x key)]
-            (if (and old (task? old) (same-inputs? inputs (g old rw/K-INPUTS))
-                     (= (g r rw/R-PATH) (g old rw/K-PATH)))   ; §8.2 P4
-              (do (s! old rw/AT at)
-                  (do (commit! w [:spawn (g r rw/ID) [:opaque body] (g old rw/ID) [:opaque-seq inputs]])
+   of the run scope (Q10); at top level it is owned by the root scope.
+   `opts` (`task-with`): `{:fork-local true}` makes the task fork-local
+   (Z#77), as is every task created under a fork-local scope; never inside
+   a computation."
+  ([site inputs body] (spawn! site inputs body nil))
+  ([site inputs body opts]
+   (if-let [r (active-run)]
+     (when (valid-run)
+       (body-released!)
+       (let [w (cw)
+             x (rv w (g r rw/R-OF))
+             local (fork-local-opt opts)
+             _ (when (and local (comp? x))
+                 (throw (invalid-op :fork-local "a computation's tasks are never fork-local (Z#77)")))
+             at (next-at! r)]
+         (if (comp? x)
+           (let [key (creation-key! r site)
+                 old (adopt! w x key)]
+             (if (and old (task? old) (same-inputs? inputs (g old rw/K-INPUTS))
+                      (= (g r rw/R-PATH) (g old rw/K-PATH)))   ; §8.2 P4
+               (do (s! old rw/AT at)
+                   (do (commit! w [:spawn (g r rw/ID) [:opaque body] (g old rw/ID) [:opaque-seq inputs]])
                       ;; the item first: its projection is the readoption itself; a new
                       ;; handle (a dead one replaced) follows as its own [:handle-new]
-                      (handle! w old)))
-              (do (when old                       ; changed captures: replace it
-                    (let [basis (gm x rw/C-BASIS)
-                          i (idx-of basis old)]
-                      (hs/remove-at! basis i)
-                      (when-let [or* (rv w (g old rw/K-RUN))] (cancel! w or* ::cancelled))
-                      (ref-dec! w old)))
-                  (let [k (set-origin! (new-task! w x key at inputs body 0) (conj (frame-of x) key) r)]
-                    (aadd! (gm x rw/C-BASIS) k)
-                    (ref-inc! k)
-                    (start-task! w k (thread-frame))
-                    (let [h (handle! w k)]
-                      (commit! w [:spawn (g r rw/ID) [:opaque body] (g k rw/ID) [:opaque-seq inputs]])
-                      h)))))
-          (let [s (current-scope! w r)
-                k (set-origin! (new-task! w s 0 at inputs body 0) (conj (frame-of x) (creation-key! r site)) r)]
-            (hs/oset-add! (gm s rw/S-TASKS) (id-of k) k)
-            (ref-inc! k)
-            (start-task! w k (thread-frame))
-            (let [h (handle! w k)]
-              (commit! w [:spawn (g r rw/ID) [:opaque body] (g k rw/ID) [:opaque-seq inputs]])
-              h)))))
-    (let [w (or *world* (throw (ex-info "no world: bind v2/*world*" {})))
-          h (top-handle w)
-          fr (thread-frame)]             ; the caller's, before the item may move threads
+                       (handle! w old)))
+               (do (when old                       ; changed captures: replace it
+                     (let [basis (gm x rw/C-BASIS)
+                           i (idx-of basis old)]
+                       (hs/remove-at! basis i)
+                       (when-let [or* (rv w (g old rw/K-RUN))] (cancel! w or* ::cancelled))
+                       (ref-dec! w old)))
+                   (let [k (set-origin! (new-task! w x key at inputs body 0) (conj (frame-of x) key) r)]
+                     (aadd! (gm x rw/C-BASIS) k)
+                     (ref-inc! k)
+                     (start-task! w k (thread-frame))
+                     (let [h (handle! w k)]
+                       (commit! w [:spawn (g r rw/ID) [:opaque body] (g k rw/ID) [:opaque-seq inputs]])
+                       h)))))
+           (let [s (current-scope! w r)
+                 local (or local (boolean (g s rw/S-LOCAL)))   ; Z#77: K2 inheritance
+                 k (set-origin! (new-task! w s 0 at inputs body 0) (conj (frame-of x) (creation-key! r site)) r)]
+             (when local (s! k rw/K-LOCAL true))
+             (hs/oset-add! (gm s rw/S-TASKS) (id-of k) k)
+             (ref-inc! k)
+             (start-task! w k (thread-frame))
+             (let [h (handle! w k)]
+               (commit! w (cond-> [:spawn (g r rw/ID) [:opaque body] (g k rw/ID) [:opaque-seq inputs]]
+                            local (conj true)))
+               h)))))
+     (let [w (or *world* (throw (ex-info "no world: bind v2/*world*" {})))
+           local (fork-local-opt opts)
+           h (top-handle w)
+           fr (thread-frame)]             ; the caller's, before the item may move threads
       ;; C2: no new host work in a sealed world
-      (admitting w
-                 #(gated w
-                         (let [s (rv w (g w rw/W-ROOT))]
+       (admitting w
+                  #(gated w
+                          (let [s (rv w (g w rw/W-ROOT))]
                            ;; admitted before T21, processed after it: refused, the handle
                            ;; stays unbound (its operations fail with ::released)
-                           (if (host-released? w)
-                             (refuse! w [:spawn-top (g s rw/ID) [:opaque body] 0 [:opaque-seq inputs]])
-                             (let [k (new-task! w s 0 0 inputs body 1)]
-                               (bind-handle! h k)
-                               (hs/oset-add! (gm s rw/S-TASKS) (id-of k) k)
-                               (ref-inc! k)
-                               (start-task! w k fr)
-                               (commit! w [:spawn-top (g s rw/ID) [:opaque body] (g k rw/ID) [:opaque-seq inputs]]))))))
-      h)))
+                            (if (host-released? w)
+                              (refuse! w (cond-> [:spawn-top (g s rw/ID) [:opaque body] 0 [:opaque-seq inputs]]
+                                           local (conj true)))
+                              (let [k (new-task! w s 0 0 inputs body 1)]
+                                (when local (s! k rw/K-LOCAL true))
+                                (bind-handle! h k)
+                                (hs/oset-add! (gm s rw/S-TASKS) (id-of k) k)
+                                (ref-inc! k)
+                                (start-task! w k fr)
+                                (commit! w (cond-> [:spawn-top (g s rw/ID) [:opaque body] (g k rw/ID) [:opaque-seq inputs]]
+                                             local (conj true))))))))
+       h))))
 
 ;; ---------------------------------------------------------------------------
 ;; Idle validation (§3.4, R#3)
@@ -2809,13 +2836,20 @@
 
 (defn- ingress [w] (g w rw/W-INGRESS))
 
-(declare activate-dormant! normalize!)
+(declare activate-dormant! normalize! retire-local!)
+
+(defn- first-entry!
+  "Z#77: before anything else at a fork's first gate entry, the fork-local
+   runs it inherited are retired (T28, F6)."
+  [w]
+  (when (g w rw/W-RETIRE) (retire-local! w)))
 
 (defn- run-turn!
   "H2: processes ingress items and internal work up to the budget. Returns
    true when work remains."
   [w]
   (s! w rw/W-DRAINING true)
+  (first-entry! w)
   (let [unborn? (g w rw/W-UNBORN)]
     ;; E4: an unborn instance commits host items only: its inherited work and
     ;; dormant resources wait for activate!
@@ -2969,13 +3003,14 @@
                  `(throw (released-ex))])
             (hs/held? ~lk) (if (identical? ~w' (cw))
                              (~f')
-                             (let [~prev (enter-world! ~w')] (try (~f') (finally (leave-world! ~prev)))))
+                             (let [~prev (enter-world! ~w')]
+                               (try (first-entry! ~w') (~f') (finally (leave-world! ~prev)))))
             ;; Fast path: nothing queued and the gate is free, so running the
             ;; item now keeps FIFO order without an ingress node.
             (and (g ~w' rw/W-INLINE) (hs/mpsc-empty? (ingress ~w')) (hs/try-lock! ~lk))
             (let [~prev (enter-world! ~w')
                   ~v (try (s! ~w' rw/W-DRAINING true)
-                          (let [~v (try (~f') (finally (s! ~w' rw/W-DRAINING false)))]
+                          (let [~v (try (first-entry! ~w') (~f') (finally (s! ~w' rw/W-DRAINING false)))]
                             (run-turn! ~w')
                             ~v)
                           (finally
@@ -3710,6 +3745,11 @@
              (refuse! w [:cancel (g k rw/ID)]))))
   nil)
 
+(defn fork-local?
+  "Whether the task of handle `h` is fork-local (Z#77; `task-with`)."
+  [h]
+  (let [w (world-of h)] (host-call! w #(boolean (g (row-of h) rw/K-LOCAL)))))
+
 (defn- holding-gate?
   "This thread is processing a world (a slice, a host item or a callback)."
   []
@@ -4097,6 +4137,66 @@
               (set-ctl! w z (hs/schedule! left (fn [] (join! w z [nil false])))))
             (do (resource-fire! w z [(forked-ex) true])
                 (resource-ack! w z))))))))
+
+(defn forked-local-ex
+  "The error a waiter on a task retired in a fork receives (Z#77)."
+  []
+  (control-ex "forked" {:spindel/forked true :spindel/fork-local true}))
+
+(defn- drop-entries!
+  "Removes the elements `x` of list `l` with `(pred x)`."
+  [l pred]
+  (loop [i (dec (acount l))]
+    (when-not (neg? i)
+      (when (pred (anth l i)) (hs/remove-at! l i))
+      (recur (dec i)))))
+
+(defn- retire-local!
+  "Z#77 T28 `[:retire-local]`, at a fork's first gate entry: the fork-local
+   runs it inherited (W-RETIRE) are removed without running anything: no
+   slice, finalizer, cleanup slice, host callback, resource fire or
+   acknowledgement, timer re-arm. A task without a result fails with
+   ::forked (fork-local), which its inherited waiters receive; the run
+   scopes close with the sources they own (Z#18). Everything else stays."
+  [w]
+  (let [rs (into [] (comp (mapcat vals) (map #(rv w %))) (g w rw/W-RETIRE))
+        ids (into #{} (map id-of) rs)
+        mine? (fn [x] (contains? ids (id-of x)))
+        zids (volatile! #{})]
+    (s! w rw/W-RETIRE nil)
+    ;; every run first, so that no retired run is filled or resumed below:
+    ;; its activation goes (wait members unlinked), its resources with their
+    ;; outstanding/dormant/discharge entries, its finalizers and slice
+    (doseq [r rs]
+      (drop-activation! w r)
+      (when-let [zs (g r rw/R-RES)]
+        (dotimes [i (acount zs)]
+          (let [z (rv w (anth zs i))]
+            (vswap! zids conj (id-of z))
+            (some-> (g w rw/W-OUTSTANDING) (hs/oset-del! (id-of z)))
+            (some-> (g w rw/W-ARMED) (hs/oset-del! (id-of z)))
+            (unregister! w z)))
+        (s! r rw/R-RES nil))
+      (s! r rw/R-ACT rw/ACT-DONE)
+      (s! r rw/R-MODE 1)
+      (s! r rw/R-SLICE false)
+      (s! r rw/R-FINS 0))
+    (let [zids @zids
+          res? (fn [z] (contains? zids (id-of z)))]
+      (when (seq zids)
+        (s! w rw/W-DORMANT (seq (remove res? (g w rw/W-DORMANT))))
+        (s! w rw/W-DISCHARGE (seq (remove res? (g w rw/W-DISCHARGE)))))
+      (drop-entries! (g w rw/W-START) mine?)
+      (drop-entries! (g w rw/W-RESUME) #(mine? (g % rw/A-RUN)))
+      (drop-entries! (g w rw/W-CLEANUP) (fn [[x ek]] (if ek (mine? x) (res? x)))))
+    ;; the debtor side (T10): a task without a result fails; inherited host
+    ;; waits are the parent's and are not called (Z#45)
+    (doseq [r rs] (finish-task! w (rv w (g r rw/R-OF)) (forked-local-ex) true))
+    ;; T13: the runs retire, their scopes close with their sources (Z#18)
+    ;; and go, and the tasks complete (C1c)
+    (doseq [r rs] (retire! w r))
+    (commit! w [:retire-local])
+    (maybe-complete! w)))
 
 (defn- new-resource!
   "T17: an outstanding resource owned by `r`, with `at = R.effect-index`."
@@ -4706,7 +4806,9 @@
   []
   (let [r (or (active-run) (throw (ex-info "with-scope outside a body" {})))
         w (cw)
-        s (new-scope w (alloc-id! w) :explicit (current-scope! w r))]
+        p (current-scope! w r)
+        s (new-scope w (alloc-id! w) :explicit p)]
+    (when (g p rw/S-LOCAL) (s! s rw/S-LOCAL true))   ; Z#77
     (aadd! (or (gm r rw/R-SCOPES) (let [l (alist)] (s! r rw/R-SCOPES l) l)) s)
     (commit! w [:open-scope (g r rw/ID) (g s rw/ID)])
     s))
@@ -4748,7 +4850,9 @@
              (if (or (g k rw/K-DONE) (not (g s rw/S-OPEN))
                      (not (and old (not (fn? old)) (== rw/T-SCOPE (gl old rw/TYPE))))
                      (not (and family? (inherited? w s)))   ; C1c: a scope of this world
-                     (and rs (within? w s rs)))
+                     (and rs (within? w s rs))
+                     ;; Z#77: no unmarked task inside a fork-local subtree (LOC1)
+                     (and (g s rw/S-LOCAL) (not (g k rw/K-LOCAL))))
                (refuse! w [:detach (g k rw/ID) (g s rw/ID)])
                (do
                  (hs/oset-del! (gm old rw/S-TASKS) (id-of k))
@@ -4818,6 +4922,10 @@
     (s! c rw/W-WATCHES (lt/index))
     (s! c rw/W-SWEEP-PENDING (hs/flag false))
     (s! c rw/W-META-CLOSED false)
+    ;; Z#77: the fork-local runs are retired at the child's first gate entry
+    ;; (T28), with what this world has not retired itself (a basis)
+    (s! c rw/W-LOCAL nil)
+    (s! c rw/W-RETIRE (let [l (g w rw/W-LOCAL)] (if l (cons l (g w rw/W-RETIRE)) (g w rw/W-RETIRE))))
     (doseq [i [rw/W-READY rw/W-RESUME rw/W-START rw/W-CLEANUP rw/W-RQ]]
       (s! c i (hs/lcopy (g w i))))
     (s! c rw/W-PINS (hs/mcopy (g w rw/W-PINS)))
@@ -5199,6 +5307,8 @@
             (cond
               (comp? (rv (cw) (g r rw/R-OF)))
               (ek (ex-info "fork in a computation body is not supported" {}))
+              (g (rv (cw) (g r rw/R-OF)) rw/K-LOCAL)
+              (ek (invalid-op :fork-local "fork in a fork-local task: the fork would retire it (Z#77)"))
               (> (long (or (aget (ctx) 2) 0)) 1)
               (ek (ex-info "fork in a nested slice is not supported yet" {}))
               :else
@@ -5245,16 +5355,16 @@
   [^objects cell ww]
   (or (aget cell 0) (hs/deref-weak ww)))
 
-(deftype Publication [^objects cell ww act site payload state]
+(deftype Publication [^objects cell ww act site payload state local]
   ;; cell: [world (strong while pending) basis (nil once disposed)]
   #?@(:clj [clojure.lang.ILookup
             (valAt [this k] (.valAt this k nil))
             (valAt [_ k nf] (case k :world (pub-world cell ww) :act act :site site :payload payload
-                                  :basis (aget cell 1) :state state nf))]
+                                  :basis (aget cell 1) :state state :fork-local local nf))]
       :cljs [ILookup
              (-lookup [this k] (-lookup this k nil))
              (-lookup [_ k nf] (case k :world (pub-world cell ww) :act act :site site :payload payload
-                                     :basis (aget cell 1) :state state nf))]))
+                                     :basis (aget cell 1) :state state :fork-local local nf))]))
 
 (defn- let-go-world!
   "S9: a publication whose savepoint is no longer armed keeps only its basis."
@@ -5267,12 +5377,12 @@
   "S1: a read-only publication (no assoc, so it is never copied by accident).
    Dropping it while pending abandons its run (S7): the collection action
    holds the world, the activation id and the state, never the publication."
-  [w aid site payload basis]
+  [w aid site payload basis local]
   (let [state (clojure.core/atom :pending)
         ;; weakly: the world may reach the publication (a handler storing it),
         ;; and a strong reference here would keep that cycle alive forever
         ww (hs/weak w)
-        p (Publication. (object-array [w basis]) ww aid site payload state)]
+        p (Publication. (object-array [w basis]) ww aid site payload state local)]
     (hs/on-collect! p (fn []
                         (when (= :pending @state)
                           (when-let [w (hs/deref-weak ww)]
@@ -5311,7 +5421,8 @@
                          ;; its run continues with the frame live at the effect
                                  (s! (rv w r) rw/R-BIND (thread-frame))
                                  (let [basis (fork-world* w)
-                                       pub (publication w (id-of z) site payload basis)]
+                                       pub (publication w (id-of z) site payload basis
+                                                        (boolean (g (rv w (g (rv w r) rw/R-OF)) rw/K-LOCAL)))]
                            ;; the parent's own copy of the run keeps no slice (it is parked)
                                    (set-active! (rv w r))
                                    (aadd! (g w rw/W-CALLBACKS) [(fn [_ _] (h pub)) [nil false]]))))))
@@ -5384,6 +5495,8 @@
                                    {:spindel/invalid :owner})))]
      (when-not (identical? (g owner rw/W-FAMILY) (g b rw/W-FAMILY))
        (throw (ex-info "instantiate: the owner belongs to an unrelated world" {:spindel/invalid :lineage})))
+     (when (:fork-local pub)
+       (throw (invalid-op :fork-local "instantiate: the run is fork-local, every instance would retire it (Z#77)")))
      (let [c (instance-world* b)]
        (s! c rw/W-PENDING-ACT (:act pub))
        ;; E4: unborn until activate!: host items commit, but its inherited work
@@ -5417,6 +5530,9 @@
                         (or (nil? z) (not= :pending @(:state pub)))
                         (do (refuse! w [:consume (:act pub)])
                             (throw (ex-info "consume: the savepoint is not pending" {:spindel/invalid :consume})))
+                        (:fork-local pub)
+                        (do (refuse! w [:consume (:act pub)])
+                            (throw (invalid-op :fork-local "consume: the run is fork-local, every instance would retire it (Z#77)")))
                         (and res (> (acount res) 1))
                         (do (refuse! w [:consume (:act pub)])
                             (throw (ex-info "consume: the run holds resources besides its savepoint (S6)"
@@ -5715,6 +5831,15 @@
        [& body]
        (let [frees (vec (sort-by str (filter symbol? (free-vars/free-variables-or-all &env (cons 'do body)))))]
          `(spawn! ~(site-of &form) ~(inputs-form frees) ~(body-fn &env body))))
+     (defmacro task-with
+       "`task` with options, a map evaluated at run time. `{:fork-local true}`
+        (Z#77): the task, and every task its runs create under their scopes,
+        is retired in every fork of the world without running anything (no
+        finalizer); its waiters there get ::forked with :spindel/fork-local.
+        Refused inside a computation."
+       [opts & body]
+       (let [frees (vec (sort-by str (filter symbol? (free-vars/free-variables-or-all &env (cons 'do body)))))]
+         `(spawn! ~(site-of &form) ~(inputs-form frees) ~(body-fn &env body) ~opts)))
      (defmacro body*
        "A body (fn [ok err]) compiled like a spin's, in the enclosing scope."
        [& body]
