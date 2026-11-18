@@ -963,7 +963,7 @@
                            [lo seen] (ledger-obs w (into smat (remove task-scope?) mat) seen)
                            ;; cross-check of question 11: the sidecar's :materialized? is the model's "owned something"
                            lo (update lo :tasks (fn [m] (into (sorted-map) (map (fn [[t o]] [t (assoc o :materialized? (contains? mat (lg/task-srow t)))])) m)))
-                           cell (fn [js] (sys/->Cell w true 0 0 [] (unborn? k) 0 [] (complete? k) js []))
+                           cell (fn [js] (sys/->Cell w true 0 0 [] (unborn? k) 0 [] (complete? k) js [] false))
                            admitted (reduce (fn [c [_ _ t]] (if (sys/join-ok c t) (sys/join-cell c t) c))
                                             (cell js) (filter (fn [[jk js _]] (and (= jk k) (= js step))) joins))
                            withdrawn (reduce (fn [c [_ _ j]] (sys/withdraw-cell c j))

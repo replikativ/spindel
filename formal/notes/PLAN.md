@@ -1898,3 +1898,62 @@ engine follows this model. Mapping and questions 15-18 agreed with the engine se
 - With `complete-no-markers` (a complete born world has no marker), `complete-born-ledger` (question 10 through qh,
   which now has no marker) and step 2b, the stage B proof obligations listed in "Changed statements (model stage)"
   are discharged.
+
+## C2 merge layer, model stage (2026-11-17, branch `formal/c2-merge`, from engine-v2 97514a6)
+
+Option C (decided): the engine owns the mechanism, not the policy. Modelled in sys.clj, in the order asked:
+
+### 1. seal + diff; merge requires sealed and quiescent
+- `Cell.sealed` (fork, fork effect, instance start unsealed); `sys-seal` (irreversible). `cell-step` goes through
+  `cstep`: a sealed cell refuses a `seal-item` outside a slice (`seal-shut`, as `host-shut`: a body's items, held
+  slice, are not host items). `seal-item`: the admissions of spec §9 (spawn-top = T4, host-await = T5 from the
+  host, observe = T8) **and** the host source changes (write, deliver, post, release, append, close). Withdrawals,
+  handles, pins, cancel, close-scope, release and every internal item are taken (propagation continues).
+- `diff c b` is the existing L12 diff (inherited non-link sources whose version moved).
+- `merge-guard`: sealed, not released, `quiescent` (no slice, every run parked or done; the engine's
+  `work-pending?` check is of the same strength). `merge-unsealed`: an unsealed child never merges.
+- Lemmas through the gate: `p3l-cstep`, `wq-cstep`, `rel-cstep`, `qid-cstep`, `qinv-cstep`, `sealed-write`.
+  `own-is-step`/`owned-done-is-step` are now simp (the seal gate is in `sys-step`).
+
+### 2. the resolver step of L12
+- `pick rv p c b x`: the child's value when the parent's version of x is the basis's, else
+  `(rv x base parent-value child-value)` (none = refusal). `merge-writes` picks every diff source against the parent
+  as it is at the merge (the engine's entries under both gates), then `items-run` writes them in diff order. One
+  refusal (resolver, or a write: closed, removed, stream) refuses the merge: `merge-world` is then the parent
+  (`merge-refused`), and `sys-merge-release` (merge!: parent side, then T21 in the child; k = m refused) leaves
+  the system unchanged (`merge-release-refused`).
+- `merge-default`: with `refuse-all`, `merge-ok` is today's L12 (guard, `no-conflict`, every `apply-diff` write
+  accepted); `writes-default-ok`/`-no`, `run-wr`.
+- Invariants: sinv/cinv(-q)/qsinv/jinv of `sys-merge`, `sys-merge-release`, `sys-seal`.
+
+### 3. R6 transfer (dvergr transfer-fork!)
+- `sys-transfer cells m s1 k2 s2 n`: old side first (`sys-disown`: m leaves k1's `kids`; `[:owned-done s1 m]`
+  in k1 then maybe-complete!), then m's `owner` := k2, then k2 counts it (`[:own s2 m]`) unless s2 is a root scope,
+  and accepts the token. Refused unless m live, not complete, not released; k1 live, not complete; k2 live, not
+  complete, not released, not m and not owned by m within the fuel (`owned-under`); k2 accepts the count.
+- Decisions it forces: m's `[:owned-done]` goes to the new owner (the kid token, with its owner scope, is
+  retargeted); the count moves with it (k1's W-OWNED-N for s1 decremented, k2's for s2 incremented, or none for a
+  root-scope owner: weak, uncounted, as a host fork). Without the move the old owner could not complete
+  (`complete-ready` needs no marker) and closing s1 would release the transferred fork (F2).
+- Invariants: `sinv-transfer`, `cinv-transfer`, `qsinv-transfer`, `jinv-transfer`, from per-part lemmas.
+
+### 4. R2 descendant? over lineage
+- `descendant cells a d n` (fuel n) over `parent`: `descendant-refl`, `descendant-fork`, `descendant-par`;
+  `par-transfer`/`descendant-transfer`: a transfer changes no lineage answer (ownership is not lineage).
+
+### Engine findings (for the engine session)
+- F1 seal must refuse host source changes too, not only T4/T5/T8: otherwise a host write after seal changes
+  diff(W′), and a settlement layer's preflight of the diff can differ from what merge! applies.
+- F2 quiescence: merge!'s check (`work-pending?`; the model's `quiescent`) admits a run parked on an armed
+  resource. Fires are internal and not refused by seal, so after seal a timer can resume a parked task that
+  writes: diff(W′) is stable only under spec §9's quiescence (no unretired run, no outstanding resource). merge!
+  itself is atomic, so this matters for a diff read before merge!, not for merge! with the resolver inside.
+- F3 the resolver needs the base value: W-MBASE keeps `[identity version]`; base is the fork-time state
+  (readable through the child's lineage at its ordinal, or kept with the version).
+- F4 the resolver runs under the parent's and the child's gates: it must be a pure function of its four
+  arguments (no world operation, B7); a throw is a refusal.
+- F5 transfer: refuse an owner in the fork's owned subtree (or the fork itself): an ownership cycle and neither
+  world completes. Order in the engine: old side and the token retarget under the old owner's and the fork's
+  gates; k2's acceptance queued before the fork can complete (FIFO ingress puts its `[:owned-done s2 m]` after
+  it); a refused acceptance refuses the transfer (dvergr's prepare/abort expects an unchanged fork).
+- Not modelled yet (as asked): stream append on merge; stock resolvers.

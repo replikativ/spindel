@@ -16,7 +16,7 @@
     p3l-fire-ack p3l-wake-one p3l-wake-all sinv-wake
     sinv-drop sinv-init pinv-publish sinv-resume instantiate-frame instantiate-copy instantiate-indep
     sinv-instantiate sinv-activate activate-born activate-once pinv-abandon
-    p3l-apply-diff p3l-merge-world merge-refused diff-ids-self merge-unchanged merge-frame sinv-merge
+    p3l-items-run p3l-merge-world merge-refused diff-ids-self merge-unchanged merge-frame sinv-merge
     sinv-idle-release drop-step-comm
     cinv-step-q cinv-wake-q cinv-resume-q cinv-merge-q cinv-publish-q cinv-abandon-q
     qsinv-init qpinv-none qsinv-step qsinv-wake qsinv-resume qsinv-merge qsinv-publish qsinv-abandon qsinv-accept
@@ -33,7 +33,13 @@
     drain-clean sys-drain-clean fold-del-out gnf-rule-r
     t-own-inv t-owned-done-inv t-drain-inv t-own-gw t-own-esb inv-fork-del inv-fork-ins-fresh fork-del-ids-ok
     sinv-own sinv-owned-done sinv-drain qsinv-own qsinv-owned-done qsinv-drain cinv-own cinv-owned-done cinv-drain
-    jinv-own jinv-owned-done jinv-drain complete-no-markers])
+    jinv-own jinv-owned-done jinv-drain complete-no-markers
+    ;; C2: seal, resolver, transfer (R6), descendant (R2)
+    p3l-cstep wq-cstep rel-cstep qid-cstep qinv-cstep sealed-write sinv-seal cinv-seal qsinv-seal jinv-seal
+    merge-out-world merge-unsealed writes-refused writes-default-ok writes-default-no run-wr merge-default
+    merge-release-refused sinv-merge-release cinv-merge-release-q qsinv-merge-release jinv-merge-release
+    transfer-refused sinv-transfer cinv-transfer qsinv-transfer jinv-transfer
+    descendant-refl descendant-fork descendant-par par-transfer descendant-transfer])
 
 (deftest theorems-kernel-checked
   (doseq [t theorems]
@@ -82,21 +88,92 @@
   (let [{:keys [basis parent child]} (fork-worlds)
         it (fn [tag & fs] (into [(o/ctor-idx tag)] fs))
         src (fn [w x] ((juxt :state :version) (first (s/source-find w x))))
-        merged (sys/merge-world parent child basis)]
+        merged (sys/merge-world parent child basis sys/refuse-all true)]
     (is (= [3] (sys/diff child basis)) "the child changed signal 3")
     (is (empty? (sys/diff basis basis)))
-    (is (true? (sys/merge-ok parent child basis)) "a quiescent child, no parent write since the fork")
+    (is (true? (sys/merge-ok parent child basis sys/refuse-all true)) "a quiescent child, no parent write since the fork")
     (is (= (first (src child 3)) (first (src merged 3))) "the parent takes the child's value")
     (is (= (inc (second (src parent 3))) (second (src merged 3))) "as one write")
     (is (not= parent merged))
     (let [p2 (:world (en/world-step parent (it :write 3 99)))]
-      (is (false? (sys/merge-ok p2 child basis)) "the parent wrote the same source since the fork")
-      (is (= p2 (sys/merge-world p2 child basis)) "a refused merge changes nothing"))))
+      (is (false? (sys/merge-ok p2 child basis sys/refuse-all true)) "the parent wrote the same source since the fork")
+      (is (= p2 (sys/merge-world p2 child basis sys/refuse-all true)) "a refused merge changes nothing"))))
+
+;; the compiled model applies a function argument one argument at a time
+(defn- cur4 [f] (fn [x] (fn [b] (fn [p] (fn [c] (f x b p c))))))
+
+;; C2 (option C): the resolver is asked for a conflicting source only, with (source base parent-value
+;; child-value); its value is written, its refusal refuses the merge; an unsealed child is never merged
+(deftest c2-resolver
+  (let [{:keys [basis parent child]} (fork-worlds)
+        it (fn [tag & fs] (into [(o/ctor-idx tag)] fs))
+        src (fn [w x] ((juxt :state :version) (first (s/source-find w x))))
+        calls (atom [])
+        rv (cur4 (fn [x b pv cv] (swap! calls conj [x b pv cv]) [(+ pv cv)]))
+        p2 (:world (en/world-step parent (it :write 3 99)))]
+    (is (false? (sys/merge-ok parent child basis sys/refuse-all false)) "unsealed: refused")
+    (is (= parent (sys/merge-world parent child basis rv false)))
+    (is (true? (sys/merge-ok parent child basis rv true)))
+    (is (empty? @calls) "no conflict: the resolver is not asked")
+    (is (= (sys/merge-world parent child basis sys/refuse-all true) (sys/merge-world parent child basis rv true)))
+    (let [m (sys/merge-world p2 child basis rv true)]
+      (is (= [[3 (first (src basis 3)) 99 (first (src child 3))]] (distinct @calls))
+          "asked once per conflicting source: (source base parent-value child-value)")
+      (is (= (+ 99 (first (src child 3))) (first (src m 3))) "the resolver's value is written")
+      (is (= (inc (second (src p2 3))) (second (src m 3))) "as one write"))
+    (is (false? (sys/merge-ok p2 child basis (cur4 (fn [_ _ _ _] nil)) true)) "a resolver refusal refuses the merge")
+    (is (= p2 (sys/merge-world p2 child basis (cur4 (fn [_ _ _ _] nil)) true)) "and changes nothing")))
+
+;; C2 seal (spec §9): a sealed cell refuses host admissions and host source changes, takes the rest;
+;; merge! (the parent side, then the child's release) needs the child sealed
+(deftest c2-seal-and-merge-release
+  (let [{:keys [basis parent child]} (fork-worlds)
+        it (fn [tag & fs] (into [(o/ctor-idx tag)] fs))
+        cell (fn [w sealed] (sys/->Cell w true 1 s/root-scope-id [] false 0 [] false [] [] sealed))
+        cells (fn [sealed] (fn [k] (case (long k) 1 (cell parent false) 2 (cell child sealed) (cell s/empty-world false))))
+        sealed ((sys/sys-seal (cells false) 2) 2)
+        w (:world sealed)]
+    (is (true? (:sealed sealed)))
+    (is (false? (en/slice-held w)) "the host acts between slices")
+    (is (= w (:world (sys/cell-step sealed (it :write 3 7)))) "a host write is refused")
+    (is (not= w (:world (sys/cell-step (cell child false) (it :write 3 7)))) "unsealed it is taken")
+    (is (= w (:world (sys/cell-step sealed (it :spawn-top s/root-scope-id 1 (:next-id w) [])))) "a spawn is refused")
+    (is (true? (:released (:world (sys/cell-step sealed (it :release-world))))) "release is taken")
+    (let [c0 (cells false) c1 (sys/sys-merge-release c0 1 2 basis sys/refuse-all)]
+      (is (= (map c0 [1 2]) (map c1 [1 2])) "unsealed: the system is unchanged"))
+    (let [c0 (sys/sys-seal (cells false) 2) c1 (sys/sys-merge-release c0 1 2 basis sys/refuse-all)]
+      (is (= (sys/merge-world parent child basis sys/refuse-all true) (:world (c1 1))) "the parent is merged")
+      (is (true? (:released (:world (c1 2)))) "the child is released")
+      (is (= (map c0 [1 2]) (map (sys/sys-merge-release c0 2 2 basis sys/refuse-all) [1 2])) "into itself: refused"))))
+
+;; C2 R6/R2: a transfer moves the token (and the count) from the old owner to the new one and changes no
+;; lineage; it is refused into the fork's own owned subtree
+(deftest c2-transfer-and-descendant
+  (let [cell (fn [parent owner kids] (sys/->Cell s/empty-world true parent owner [] false 0 kids false [] [] false))
+        ;; 1 forked 2 (owner 1) and 3 (owner 1); 2 forked 4 (owner 2)
+        cells (fn [k] (case (long k) 1 (cell 0 0 [2 3]) 2 (cell 1 1 [4]) 3 (cell 1 1 []) 4 (cell 2 2 []) (cell 0 0 [])))
+        fuel [0 0 0 0 0]
+        root s/root-scope-id
+        c1 (sys/sys-transfer cells 2 root 3 root fuel)]
+    (is (true? (sys/descendant cells 1 4 fuel)))
+    (is (false? (sys/descendant cells 3 4 fuel)))
+    (is (= 3 (:owner (c1 2))) "the new owner")
+    (is (= [3] (:kids (c1 1))) "the old owner returned the token")
+    (is (= [2] (:kids (c1 3))) "the new owner holds it")
+    (is (= 1 (:parent (c1 2))) "the lineage stays")
+    (is (= (for [a (range 5) d (range 5)] (sys/descendant cells a d fuel))
+           (for [a (range 5) d (range 5)] (sys/descendant c1 a d fuel))) "no lineage answer changes")
+    (let [c2 (sys/sys-transfer cells 2 root 4 root fuel)]
+      (is (= (map cells (range 5)) (map c2 (range 5))) "into the fork's owned subtree: refused"))
+    (let [c3 (sys/sys-transfer cells 2 root 2 root fuel)]
+      (is (= (map cells (range 5)) (map c3 (range 5))) "to itself: refused"))
+    (let [c4 (sys/sys-transfer cells 2 root 3 (+ root 100) fuel)]
+      (is (= (map cells (range 5)) (map c4 (range 5))) "a counted owner whose scope is not open: refused"))))
 
 (deftest idle-release-fires-on-an-idle-world-only
   (let [{:keys [child]} (fork-worlds)
         it (fn [tag & fs] (into [(o/ctor-idx tag)] fs))
-        cell (fn [w] (sys/->Cell w true 1 s/root-scope-id [] false 0 [] false [] []))
+        cell (fn [w] (sys/->Cell w true 1 s/root-scope-id [] false 0 [] false [] [] false))
         cells (fn [w] (fn [k] (cell (if (= k 2) w s/empty-world))))
         step (fn [w i] (let [o (en/world-step w i)] (is (:accepted o) (pr-str i)) (:world o)))
         ;; the host lets go: every handle dropped, every host edge removed
@@ -131,10 +208,10 @@
     (is (= [[:write 5 20] [:write 3 15] [:write 4 18]] (map :item (subvec pl (inc at) (+ at 4))))
         "the parent's own write, then the merge's two writes by ascending id")
     (is (= #{3 4} (set (sys/diff child basis))) "the child changed s and t")
-    (is (true? (sys/merge-ok before child basis)))
-    (is (= (o/world->proj after) (o/world->proj (sys/merge-world before child basis)))
+    (is (true? (sys/merge-ok before child basis sys/refuse-all true)))
+    (is (= (o/world->proj after) (o/world->proj (sys/merge-world before child basis sys/refuse-all true)))
         "the model's merge is the engine's world after the merge")
-    (is (false? (sys/merge-ok after child basis)) "a second merge conflicts: the parent's s and t moved")))
+    (is (false? (sys/merge-ok after child basis sys/refuse-all true)) "a second merge conflicts: the parent's s and t moved")))
 
 ;; C0 (spec §4.3 Links and forks, L12): links are not part of a mergeable fork's basis; a stream the
 ;; fork appended to is, so that merge is refused
@@ -151,11 +228,11 @@
         child2 (step basis (it :append sx 5 (:next-id basis)))]
     (is (pos? (:version (first (s/source-find child l)))) "the child realized the link")
     (is (empty? (sys/diff child basis)) "a realized link is not in the diff")
-    (is (true? (sys/merge-ok basis child basis)))
-    (is (= basis (sys/merge-world basis child basis)) "nothing to adopt")
+    (is (true? (sys/merge-ok basis child basis sys/refuse-all true)))
+    (is (= basis (sys/merge-world basis child basis sys/refuse-all true)) "nothing to adopt")
     (is (= [sx] (sys/diff child2 basis)) "an appended stream is")
     (is (pos? tail))
-    (is (false? (sys/merge-ok basis child2 basis)) "so that merge is refused (stream merge: C2)")))
+    (is (false? (sys/merge-ok basis child2 basis sys/refuse-all true)) "so that merge is refused (stream merge: later in C2)")))
 
 ;; ---------------------------------------------------------------------------
 ;; C1 (T21 completion, Z#67): accepted children, completion, E4, inherited resources (R1)
@@ -179,7 +256,7 @@
     (:world (en/world-step w3 (it :await st [(dec (:next-id w3))] s/am-one 1 (:next-id w3) [])))))
 
 (defn- c1-cell [w & {:keys [parent unborn pending] :or {parent 0 unborn false pending 0}}]
-  (sys/->Cell w true parent s/root-scope-id [] unborn pending [] false [] []))
+  (sys/->Cell w true parent s/root-scope-id [] unborn pending [] false [] [] false))
 (defn- c1-cells [m] (fn [k] (get m k (c1-cell s/empty-world))))
 (defn- released [w] (:world (en/world-step w [(o/ctor-idx :release-world)])))
 

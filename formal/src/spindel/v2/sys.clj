@@ -51,7 +51,13 @@
   `sys-drain` (`[:normalize]`); both end with `sys-complete`, and `complete-ready` requires no marker (questions 15,
   16). Their invariants are the proof stage's.
 
-  Not here: following mode (not in the engine either), sealing, sources created in the child (not merged)."
+  C2 (merge layer, option C): `Cell.sealed`, `sys-seal` (a sealed cell refuses host admissions and host source
+  changes outside a slice, `cstep`); merge with an opaque per-source resolver (`pick`, `merge-writes`; `refuse-all`
+  is today's L12: `merge-default`), guarded by sealed and quiescent; `sys-merge-release` (merge!: the child is
+  released); `sys-transfer` (R6: the token and the count move to the new owner); `descendant` (R2, lineage).
+
+  Not here: following mode (not in the engine either), sources created in the child (not merged), stream append
+  on merge."
   (:require [ansatz.core :as a]
             [spindel.v2.state :refer :all]
             [spindel.v2.step :refer :all]
@@ -96,7 +102,7 @@
 (a/defn pending-joins [js :- (List Join)] Nat (tbl-count jpend js))
 
 (a/structure Cell [] (world World) (live Bool) (parent Nat) (owner Nat) (dormant (List Nat))
-  (unborn Bool) (pending Nat) (kids (List Nat)) (complete Bool) (joins (List Join)) (norm (List Nat)))
+  (unborn Bool) (pending Nat) (kids (List Nat)) (complete Bool) (joins (List Join)) (norm (List Nat)) (sealed Bool))
 
 ;; a publication: the cell and run that published, the savepoint's resource, the frozen basis
 (a/structure Pub [] (cell Nat) (res Nat) (run Nat) (basis World) (live Bool))
@@ -134,9 +140,76 @@
 ;; ---------------------------------------------------------------------------
 ;; L1: a layer-1 item in world k
 
+;; C2 seal (spec §9): a sealed world refuses the host items that admit work (T4/T5 from the host: spawn-top,
+;; host-await; T8 observe) and, so that its diff stays as sealed, the host items that change a source (T2 write,
+;; deliver, post, release, append, close). Propagation continues: a body's items (a slice is held, as for
+;; `host-shut`) and the internal items are not refused, nor are withdrawals, handles, pins, cancel and release.
+(a/defn seal-item [it :- Item] Bool
+  (match it
+    [(create-source st kind v fresh) false]
+    [(create-source-top scope kind v fresh) false]
+    [(write x v) true]
+    [(track st x k fresh) false]
+    [(observe d cb fresh) true]
+    [(unobserve e) false]
+    [(fire e tag val) false]
+    [(resource-ack z) false]
+    [(arm st kind k fresh) false]
+    [(resource-fire z tag val) false]
+    [(handle-drop x) false]
+    [(pin x) false]
+    [(unpin x) false]
+    [(create-comp st c i b) false]
+    [(create-comp-top sc c i b) false]
+    [(spawn st b fresh ins) false]
+    [(spawn-top sc b fresh ins) true]
+    [(start c fresh) false]
+    [(await st ds m k fresh mine) false]
+    [(dispatch-comp c fresh) false]
+    [(complete st tag val) false]
+    [(schedule r) false]
+    [(host-await d fresh) true]
+    [(host-unawait e) false]
+    [(handle-new x) false]
+    [(deliver x v) true]
+    [(post x v) true]
+    [(take st x k fresh) false]
+    [(release x) true]
+    [(finalize r) false]
+    [(cancel r) false]
+    [(release-world) false]
+    [(open-scope st s) false]
+    [(close-scope s) false]
+    [(detach k s) false]
+    [(finally-enter st) false]
+    [(finally-exit st) false]
+    [(slice-exit r) false]
+    [(create-link st l) false]
+    [(create-link-top sc l) false]
+    [(link-demand l k) false]
+    [(link-realize l tag v n) false]
+    [(append x v t) true]
+    [(close x tag v) true]
+    [(finally-leave st) false]
+    [(own s m) false]
+    [(owned-done s c) false]
+    [(drain ids) false]))
+(a/defn seal-shut [sealed :- Bool, w :- World, it :- Item] Bool
+  (Bool.and sealed (Bool.and (seal-item it) (Bool.not (slice-held w)))))
+;; the world after item `it` in a cell sealed or not: a refused item changes nothing
+(a/defn cstep [sealed :- Bool, w :- World, it :- Item] World
+  (if (seal-shut sealed w it) w (:world (world-step w it))))
+
+(a/theorem p3l-cstep [sealed :- Bool, w :- World, it :- Item]
+  (=> (= (p3l w) true) (= (p3l (cstep sealed w it)) true))
+  (intro h)
+  (cases hs (seal-shut sealed w it))
+  (case [false] (simp only [cstep hs]) (exact (step-p3l w it h)))
+  (case [true] (simp only [cstep hs]) (exact h)))
+
 (a/defn cell-step [c :- Cell, it :- Item] Cell
-  (Cell.mk (:world (world-step (:world c) it)) (:live c) (:parent c) (:owner c) (:dormant c)
-           (:unborn c) (:pending c) (:kids c) (:complete c) (:joins c) (:norm c)))
+  (Cell.mk (cstep (:sealed c) (:world c) it) (:live c) (:parent c) (:owner c) (:dormant c)
+           (:unborn c) (:pending c) (:kids c) (:complete c) (:joins c) (:norm c) (:sealed c)))
 
 (a/defn sys-step [cells :- (=> Nat Cell), k :- Nat, it :- Item] (=> Nat Cell)
   (fupd cells k (cell-step (cells k) it)))
@@ -153,7 +226,7 @@
   (intro hl)
   (simp only [cell-step] at hl)
   (simp only [cell-step])
-  (exact (step-p3l (:world (cells k)) it (sinv-live cells k hs hl)))
+  (exact (p3l-cstep (:sealed (cells k)) (:world (cells k)) it (sinv-live cells k hs hl)))
   (simp only [sys-step])
   (exact (sinv-put cells k (cell-step (cells k) it) hs hc)))
 
@@ -176,7 +249,7 @@
   (match rs [nil (List.nil Nat)] [(cons r t) (List.cons Nat (:id r) (res-ids t))]))
 
 (a/defn fork-cell [c :- Cell, k :- Nat, owner :- Nat] Cell
-  (Cell.mk (:world c) true k owner (nat-app (res-ids (:res (:world c))) (:dormant c)) false 0 (List.nil Nat) false (List.nil Join) (marker-ids (:world c))))
+  (Cell.mk (:world c) true k owner (nat-app (res-ids (:res (:world c))) (:dormant c)) false 0 (List.nil Nat) false (List.nil Join) (marker-ids (:world c)) false))
 
 (a/defn sys-fork [cells :- (=> Nat Cell), k :- Nat, m :- Nat, owner :- Nat] (=> Nat Cell)
   (if (:unborn (cells k)) cells (fupd cells m (fork-cell (cells k) k owner))))
@@ -255,7 +328,7 @@
 
 (a/defn wake-cell [c :- Cell] Cell
   (Cell.mk (wake-all (:world c) (:dormant c)) (:live c) (:parent c) (:owner c) (List.nil Nat)
-           (:unborn c) (:pending c) (:kids c) (:complete c) (:joins c) (:norm c)))
+           (:unborn c) (:pending c) (:kids c) (:complete c) (:joins c) (:norm c) (:sealed c)))
 
 ;; an unborn instance is not woken: its inherited work waits for `activate` (S3)
 (a/defn sys-wake [cells :- (=> Nat Cell), k :- Nat] (=> Nat Cell)
@@ -283,7 +356,7 @@
 ;; until m completes or is collected; a complete owner takes none
 (a/defn accept-cell [c :- Cell, m :- Nat] Cell
   (Cell.mk (:world c) (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c)
-           (List.cons Nat m (:kids c)) (:complete c) (:joins c) (:norm c)))
+           (List.cons Nat m (:kids c)) (:complete c) (:joins c) (:norm c) (:sealed c)))
 (a/defn sys-accept [cells :- (=> Nat Cell), k :- Nat, m :- Nat] (=> Nat Cell)
   (if (:complete (cells k)) cells (fupd cells k (accept-cell (cells k) m))))
 
@@ -298,7 +371,7 @@
                                (Bool.and (tbl-all (kid-done cells) (:kids (cells k))) (no-markers (:world (cells k))))))))
 (a/defn complete-cell [c :- Cell] Cell
   (Cell.mk (:world c) (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c) (:kids c) true
-           (joins-map hj-done (:joins c)) (:norm c)))
+           (joins-map hj-done (:joins c)) (:norm c) (:sealed c)))
 (a/defn sys-complete [cells :- (=> Nat Cell), k :- Nat] (=> Nat Cell)
   (if (complete-ready cells k) (fupd cells k (complete-cell (cells k))) cells))
 
@@ -306,7 +379,7 @@
 ;; `release-unborn`); `sys-complete` then completes it. Its invariant: `sinv-release-unborn`.
 (a/defn release-unborn-cell [c :- Cell] Cell
   (Cell.mk (release-unborn (:world c)) (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c)
-           (:kids c) (:complete c) (:joins c) (:norm c)))
+           (:kids c) (:complete c) (:joins c) (:norm c) (:sealed c)))
 (a/defn sys-release-unborn [cells :- (=> Nat Cell), k :- Nat] (=> Nat Cell)
   (if (Bool.and (:unborn (cells k)) (Bool.not (:released (:world (cells k)))))
       (fupd cells k (release-unborn-cell (cells k))) cells))
@@ -331,7 +404,7 @@
            (if (Bool.or (:complete c) (task-complete (:world c) t)) js-delivered js-pending)))
 (a/defn join-cell [c :- Cell, t :- Nat] Cell
   (Cell.mk (:world c) (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c) (:kids c)
-           (:complete c) (List.cons Join (join-new c t) (:joins c)) (:norm c)))
+           (:complete c) (List.cons Join (join-new c t) (:joins c)) (:norm c) (:sealed c)))
 ;; the target is a task id the host holds a handle to: allocated (`t < next-id`) and not 0 (none)
 (a/defn join-ok [c :- Cell, t :- Nat] Bool
   (Bool.and (:live c) (Bool.and (Nat.blt 0 t) (Nat.blt t (:next-id (:world c))))))
@@ -341,14 +414,14 @@
 (a/defn hj-due [w :- World, j :- Join] Join (if (task-complete w (:target j)) (hj-done j) j))
 (a/defn deliver-cell [c :- Cell] Cell
   (Cell.mk (:world c) (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c) (:kids c)
-           (:complete c) (if (:complete c) (joins-map hj-done (:joins c)) (joins-map (hj-due (:world c)) (:joins c))) (:norm c)))
+           (:complete c) (if (:complete c) (joins-map hj-done (:joins c)) (joins-map (hj-due (:world c)) (:joins c))) (:norm c) (:sealed c)))
 (a/defn sys-deliver [cells :- (=> Nat Cell), k :- Nat] (=> Nat Cell)
   (fupd cells k (deliver-cell (cells k))))
 ;; withdrawal (question 12): the withdraw fn `on-joined` returns, a host-side mark on join j (no gate, no item);
 ;; it acts on a pending join only (a delivered join stays delivered)
 (a/defn withdraw-cell [c :- Cell, j :- Nat] Cell
   (Cell.mk (:world c) (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c) (:kids c)
-           (:complete c) (tbl-upd join-id j hj-drop (:joins c)) (:norm c)))
+           (:complete c) (tbl-upd join-id j hj-drop (:joins c)) (:norm c) (:sealed c)))
 (a/defn sys-withdraw [cells :- (=> Nat Cell), k :- Nat, j :- Nat] (=> Nat Cell)
   (fupd cells k (withdraw-cell (cells k) j)))
 
@@ -396,14 +469,14 @@
 ;; System operations; the engine logs the last two as items of the cell's world.
 (a/defn world-cell [c :- Cell, w :- World] Cell
   (Cell.mk w (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c) (:kids c) (:complete c) (:joins c)
-           (:norm c)))
+           (:norm c) (:sealed c)))
 (a/defn sys-own [cells :- (=> Nat Cell), k :- Nat, s :- Nat, m :- Nat] (=> Nat Cell)
   (fupd cells k (world-cell (cells k) (own-world (:world (cells k)) s m))))
 (a/defn sys-owned-done [cells :- (=> Nat Cell), k :- Nat, s :- Nat, c :- Nat] (=> Nat Cell)
   (sys-complete (fupd cells k (world-cell (cells k) (owned-done-world (:world (cells k)) s c))) k))
 (a/defn drain-cell [c :- Cell] Cell
   (Cell.mk (drain-world (:world c) (:norm c)) (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c)
-           (:kids c) (:complete c) (:joins c) (List.nil Nat)))
+           (:kids c) (:complete c) (:joins c) (List.nil Nat) (:sealed c)))
 (a/defn sys-drain [cells :- (=> Nat Cell), k :- Nat] (=> Nat Cell)
   (if (:unborn (cells k)) cells (sys-complete (fupd cells k (drain-cell (cells k))) k)))
 
@@ -411,7 +484,7 @@
 ;; L10/L11: a world leaves the system
 
 (a/defn drop-cell [c :- Cell] Cell
-  (Cell.mk (:world c) false (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c) (:kids c) (:complete c) (:joins c) (:norm c)))
+  (Cell.mk (:world c) false (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c) (:kids c) (:complete c) (:joins c) (:norm c) (:sealed c)))
 
 (a/defn sys-drop [cells :- (=> Nat Cell), k :- Nat] (=> Nat Cell)
   (fupd cells k (drop-cell (cells k))))
@@ -444,7 +517,7 @@
 
 (a/defn fork-effect-cell [c :- Cell, k :- Nat, owner :- Nat, st :- Nat, kont :- Nat, v :- Nat] Cell
   (Cell.mk (fork-effect-world (:world c) st kont v) true k owner
-           (nat-app (res-ids (:res (:world c))) (:dormant c)) false 0 (List.nil Nat) false (List.nil Join) (marker-ids (:world c))))
+           (nat-app (res-ids (:res (:world c))) (:dormant c)) false 0 (List.nil Nat) false (List.nil Join) (marker-ids (:world c)) false))
 
 (a/defn sys-fork-effect [cells :- (=> Nat Cell), k :- Nat, m :- Nat, owner :- Nat, st :- Nat, kont :- Nat, v :- Nat]
   (=> Nat Cell)
@@ -513,7 +586,7 @@
 
 (a/defn resume-cell [c :- Cell, z :- Nat, v :- Nat] Cell
   (Cell.mk (fire-ack (:world c) z res-ok v) (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c)
-           (:kids c) (:complete c) (:joins c) (:norm c)))
+           (:kids c) (:complete c) (:joins c) (:norm c) (:sealed c)))
 
 (a/defn sys-resume [cells :- (=> Nat Cell), pubs :- (=> Nat Pub), p :- Nat, v :- Nat] (=> Nat Cell)
   (fupd cells (:cell (pubs p)) (resume-cell (cells (:cell (pubs p))) (:res (pubs p)) v)))
@@ -535,7 +608,7 @@
 ;; activation is the savepoint's resource.
 
 (a/defn inst-cell [b :- Pub, owner :- Nat] Cell
-  (Cell.mk (:basis b) true (:cell b) owner (res-ids (:res (:basis b))) true (:res b) (List.nil Nat) false (List.nil Join) (marker-ids (:basis b))))
+  (Cell.mk (:basis b) true (:cell b) owner (res-ids (:res (:basis b))) true (:res b) (List.nil Nat) false (List.nil Join) (marker-ids (:basis b)) false))
 
 (a/defn sys-instantiate [cells :- (=> Nat Cell), pubs :- (=> Nat Pub), p :- Nat, m :- Nat, owner :- Nat] (=> Nat Cell)
   (fupd cells m (inst-cell (pubs p) owner)))
@@ -574,7 +647,7 @@
 
 (a/defn act-cell [c :- Cell, v :- Nat] Cell
   (Cell.mk (wake-all (fire-ack (:world c) (:pending c) res-ok v) (:dormant c)) (:live c) (:parent c) (:owner c)
-           (List.nil Nat) false 0 (:kids c) (:complete c) (:joins c) (:norm c)))
+           (List.nil Nat) false 0 (:kids c) (:complete c) (:joins c) (:norm c) (:sealed c)))
 
 (a/defn sys-activate [cells :- (=> Nat Cell), m :- Nat, v :- Nat] (=> Nat Cell)
   (if (act-ok (cells m)) (fupd cells m (act-cell (cells m) v)) cells))
@@ -655,6 +728,7 @@
 (a/defn not-link [s :- SourceRow] Bool (Bool.not (Nat.beq (:kind s) sk-link)))
 (a/defn diff [c :- World, b :- World] (List Nat) (diff-ids c b (tbl-ids source-id (tbl-filter not-link (:sources b)))))
 
+;; today's L12 (no resolver): every changed source must be one the parent has not written since the fork
 (a/defn no-conflict [p :- World, b :- World, ds :- (List Nat)] Bool
   (match ds [nil true]
          [(cons x t) (Bool.and (Nat.beq (version-of p x) (version-of b x)) (no-conflict p b t))]))
@@ -665,36 +739,96 @@
                          (apply-diff (:world (world-step p (Item.write x (state-of c x)))) c t)
                          (Outcome.mk p false))]))
 
-(a/defn merge-ok [p :- World, c :- World, b :- World] Bool
-  (Bool.and (quiescent c)
-            (Bool.and (no-conflict p b (diff c b)) (:accepted (apply-diff p c (diff c b))))))
+;; C2 (option C, decided): the engine owns the mechanism, not the policy. `merge!` takes a per-source
+;; resolver `(rv source base parent-value child-value)`, a value or a refusal (none), opaque to the engine.
+;; It is asked for a conflicting source only (the parent wrote it since the fork); an unconflicted
+;; changed source takes the child's value. Every value is picked against the parent as it is at the merge
+;; (the engine computes the entries under both gates, then writes), then written in id order (T2 each).
+;; One refusal (the resolver's, or a write's: a closed or removed source, a stream) refuses the whole
+;; merge, and a refused merge changes neither world. The default resolver refuses: today's L12
+;; (`merge-default`).
+(a/defn refuse-all [x :- Nat, base :- Nat, pv :- Nat, cv :- Nat] (Option Nat) (Option.none Nat))
 
-(a/defn merge-world [p :- World, c :- World, b :- World] World
-  (if (merge-ok p c b) (:world (apply-diff p c (diff c b))) p))
+(a/defn pick [rv :- (=> Nat Nat Nat Nat (Option Nat)), p :- World, c :- World, b :- World, x :- Nat] (Option Nat)
+  (if (Nat.beq (version-of p x) (version-of b x)) (Option.some Nat (state-of c x))
+      (rv x (state-of b x) (state-of p x) (state-of c x))))
 
-(a/theorem p3l-apply-diff [c :- World, ds :- (List Nat)]
-  (forall [p :- World] (=> (= (p3l p) true) (= (p3l (:world (apply-diff p c ds))) true)))
-  (induction ds)
-  (case [nil] (intros p h) (simp only [apply-diff]) (exact h))
-  (case [cons x t ih]
+(a/defn merge-writes [rv :- (=> Nat Nat Nat Nat (Option Nat)), p :- World, c :- World, b :- World, ds :- (List Nat)]
+  (Option (List Item))
+  (match ds [nil (Option.some (List Item) (List.nil Item))]
+         [(cons x t) (match (pick rv p c b x)
+                       [none (Option.none (List Item))]
+                       [(some v) (match (merge-writes rv p c b t)
+                                   [none (Option.none (List Item))]
+                                   [(some its) (Option.some (List Item) (List.cons Item (Item.write x v) its))])])]))
+
+(a/defn items-run [p :- World, its :- (List Item)] Outcome
+  (match its [nil (Outcome.mk p true)]
+         [(cons it t) (if (:accepted (world-step p it)) (items-run (:world (world-step p it)) t) (Outcome.mk p false))]))
+
+;; C2 (spec §9): the merge entry point refuses unless the child is sealed and quiescent (and not released:
+;; the engine releases a merged child, `sys-merge-release`)
+(a/defn merge-guard [c :- World, sealed :- Bool] Bool
+  (Bool.and sealed (Bool.and (Bool.not (:released c)) (quiescent c))))
+
+(a/defn merge-out [rv :- (=> Nat Nat Nat Nat (Option Nat)), p :- World, c :- World, b :- World, sealed :- Bool] Outcome
+  (if (merge-guard c sealed)
+      (match (merge-writes rv p c b (diff c b)) [none (Outcome.mk p false)] [(some its) (items-run p its)])
+      (Outcome.mk p false)))
+
+;; the items a merge runs in the parent (none when refused before any write)
+(a/defn merge-its [rv :- (=> Nat Nat Nat Nat (Option Nat)), p :- World, c :- World, b :- World, sealed :- Bool] (List Item)
+  (if (merge-guard c sealed)
+      (match (merge-writes rv p c b (diff c b)) [none (List.nil Item)] [(some its) its])
+      (List.nil Item)))
+
+(a/defn merge-ok [p :- World, c :- World, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat)), sealed :- Bool] Bool
+  (:accepted (merge-out rv p c b sealed)))
+
+(a/defn merge-world [p :- World, c :- World, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat)), sealed :- Bool] World
+  (if (merge-ok p c b rv sealed) (:world (merge-out rv p c b sealed)) p))
+
+;; the merged world is the parent after the merge's items
+(a/theorem merge-out-world [rv :- (=> Nat Nat Nat Nat (Option Nat)), p :- World, c :- World, b :- World, sealed :- Bool]
+  (= (:world (merge-out rv p c b sealed)) (:world (items-run p (merge-its rv p c b sealed))))
+  (cases hg (merge-guard c sealed))
+  (case [false] (simp only [merge-out merge-its hg items-run]))
+  (case [true]
+    (cases hw (merge-writes rv p c b (diff c b)))
+    (case [none] (simp only [merge-out merge-its hg hw items-run]))
+    (case [some its] (simp only [merge-out merge-its hg hw]))))
+
+(a/theorem p3l-items-run [its :- (List Item)]
+  (forall [p :- World] (=> (= (p3l p) true) (= (p3l (:world (items-run p its))) true)))
+  (induction its)
+  (case [nil] (intros p h) (simp only [items-run]) (exact h))
+  (case [cons it t ih]
     (intros p h)
-    (cases ha (:accepted (world-step p (Item.write x (state-of c x)))))
-    (case [false] (simp only [apply-diff ha]) (exact h))
-    (case [true]
-      (simp only [apply-diff ha])
-      (exact (ih _ (step-p3l p (Item.write x (state-of c x)) h))))))
+    (cases ha (:accepted (world-step p it)))
+    (case [false] (simp only [items-run ha]) (exact h))
+    (case [true] (simp only [items-run ha]) (exact (ih _ (step-p3l p it h))))))
 
-(a/theorem p3l-merge-world [p :- World, c :- World, b :- World]
-  (=> (= (p3l p) true) (= (p3l (merge-world p c b)) true))
+(a/theorem p3l-merge-world [p :- World, c :- World, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat)), sealed :- Bool]
+  (=> (= (p3l p) true) (= (p3l (merge-world p c b rv sealed)) true))
   (intro h)
-  (cases hm (merge-ok p c b))
+  (cases hm (merge-ok p c b rv sealed))
   (case [false] (simp only [merge-world hm]) (exact h))
-  (case [true] (simp only [merge-world hm]) (exact (p3l-apply-diff c (diff c b) p h))))
+  (case [true] (simp only [merge-world hm merge-out-world]) (exact (p3l-items-run _ p h))))
 
-;; a refused merge changes nothing
-(a/theorem merge-refused [p :- World, c :- World, b :- World]
-  (=> (= (merge-ok p c b) false) (= (merge-world p c b) p))
+;; a refused merge changes nothing (the resolver's refusal included)
+(a/theorem merge-refused [p :- World, c :- World, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat)), sealed :- Bool]
+  (=> (= (merge-ok p c b rv sealed) false) (= (merge-world p c b rv sealed) p))
   (intro hm) (simp only [merge-world hm]))
+
+;; an unsealed child is never merged
+(a/theorem merge-unsealed [p :- World, c :- World, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat))]
+  (= (merge-ok p c b rv false) false)
+  (simp only [merge-ok merge-out merge-guard Bool.false_and]))
+
+;; a resolver refusal on a conflicting changed source refuses the merge
+(a/theorem writes-refused [rv :- (=> Nat Nat Nat Nat (Option Nat)), p :- World, c :- World, b :- World, x :- Nat, ds :- (List Nat)]
+  (=> (= (pick rv p c b x) (Option.none Nat)) (= (merge-writes rv p c b (List.cons Nat x ds)) (Option.none (List Item))))
+  (intro h) (simp only [merge-writes h]))
 
 ;; a child that wrote no inherited source has an empty diff, so its merge changes nothing
 (a/theorem diff-ids-self [w :- World, xs :- (List Nat)]
@@ -703,34 +837,115 @@
   (case [nil] (simp only [diff-ids]))
   (case [cons x t ih] (simp only [diff-ids Nat.beq_refl ih])))
 
-(a/theorem merge-unchanged [p :- World, b :- World]
-  (= (merge-world p b b) p)
-  (cases hm (merge-ok p b b))
+(a/theorem merge-unchanged [p :- World, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat)), sealed :- Bool]
+  (= (merge-world p b b rv sealed) p)
+  (cases hm (merge-ok p b b rv sealed))
   (case [false] (simp only [merge-world hm]))
-  (case [true] (simp only [merge-world hm diff diff-ids-self apply-diff])))
+  (case [true] (simp only [merge-world hm merge-out-world merge-its diff diff-ids-self merge-writes])))
+
+;; ---- the default resolver is today's L12: no conflict, and every write accepted
+(a/defn wr [c :- World, ds :- (List Nat)] (List Item)
+  (match ds [nil (List.nil Item)] [(cons x t) (List.cons Item (Item.write x (state-of c x)) (wr c t))]))
+
+(a/theorem writes-default-ok [p :- World, c :- World, b :- World, ds :- (List Nat)]
+  (=> (= (no-conflict p b ds) true) (= (merge-writes refuse-all p c b ds) (Option.some (List Item) (wr c ds))))
+  (induction ds)
+  (case [nil] (intro h) (simp only [merge-writes wr]))
+  (case [cons x t ih]
+    (intro h)
+    (simp only [no-conflict Bool.and_eq_true] at h)
+    (simp only [merge-writes pick (And.left h) (ih (And.right h)) wr])))
+
+(a/theorem writes-default-no [p :- World, c :- World, b :- World, ds :- (List Nat)]
+  (=> (= (no-conflict p b ds) false) (= (merge-writes refuse-all p c b ds) (Option.none (List Item))))
+  (induction ds)
+  (case [nil] (intro h) (simp only [no-conflict] at h) (cases h))
+  (case [cons x t ih]
+    (intro h)
+    (cases hx (Nat.beq (version-of p x) (version-of b x)))
+    (case [false] (simp only [merge-writes pick hx refuse-all]))
+    (case [true]
+      (simp only [no-conflict hx Bool.true_and] at h)
+      (simp only [merge-writes pick hx (ih h)]))))
+
+(a/theorem run-wr [c :- World, ds :- (List Nat)]
+  (forall [p :- World] (= (items-run p (wr c ds)) (apply-diff p c ds)))
+  (induction ds)
+  (case [nil] (intro p) (simp only [items-run wr apply-diff]))
+  (case [cons x t ih]
+    (intro p)
+    (cases ha (:accepted (world-step p (Item.write x (state-of c x)))))
+    (case [false] (simp only [items-run wr apply-diff ha]))
+    (case [true] (simp only [items-run wr apply-diff ha (ih _)]))))
+
+(a/theorem merge-default [p :- World, c :- World, b :- World, sealed :- Bool]
+  (= (merge-ok p c b refuse-all sealed)
+     (Bool.and (merge-guard c sealed) (Bool.and (no-conflict p b (diff c b)) (:accepted (apply-diff p c (diff c b))))))
+  (cases hg (merge-guard c sealed))
+  (case [false] (simp only [merge-ok merge-out hg Bool.false_and]))
+  (case [true]
+    (cases hn (no-conflict p b (diff c b)))
+    (case [false] (simp only [merge-ok merge-out hg hn (writes-default-no p c b (diff c b) hn) Bool.false_and Bool.and_false]))
+    (case [true] (simp only [merge-ok merge-out hg hn (writes-default-ok p c b (diff c b) hn) run-wr Bool.true_and]))))
 
 (a/defn merge-cell [c :- Cell, w :- World] Cell
-  (Cell.mk w (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c) (:kids c) (:complete c) (:joins c) (:norm c)))
+  (Cell.mk w (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c) (:kids c) (:complete c) (:joins c) (:norm c) (:sealed c)))
 
-(a/defn sys-merge [cells :- (=> Nat Cell), k :- Nat, m :- Nat, b :- World] (=> Nat Cell)
-  (fupd cells k (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b))))
+;; the parent side of a merge of child cell m into cell k
+(a/defn sys-merge [cells :- (=> Nat Cell), k :- Nat, m :- Nat, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat))] (=> Nat Cell)
+  (fupd cells k (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b rv (:sealed (cells m))))))
 
-(a/theorem merge-frame [cells :- (=> Nat Cell), k :- Nat, m :- Nat, b :- World, j :- Nat]
-  (=> (Not (= j k)) (= (sys-merge cells k m b j) (cells j)))
+(a/theorem merge-frame [cells :- (=> Nat Cell), k :- Nat, m :- Nat, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat)), j :- Nat]
+  (=> (Not (= j k)) (= (sys-merge cells k m b rv j) (cells j)))
   (intro hne)
   (simp only [sys-merge fupd (nbeq-ne j k hne)]))
 
-(a/theorem sinv-merge [cells :- (=> Nat Cell), k :- Nat, m :- Nat, b :- World]
-  (=> (sinv cells) (sinv (sys-merge cells k m b)))
+(a/theorem sinv-merge [cells :- (=> Nat Cell), k :- Nat, m :- Nat, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat))]
+  (=> (sinv cells) (sinv (sys-merge cells k m b rv)))
   (intro hs)
-  (have hc (=> (= (:live (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b))) true)
-               (= (p3l (:world (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b)))) true)))
+  (have hc (=> (= (:live (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b rv (:sealed (cells m))))) true)
+               (= (p3l (:world (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b rv (:sealed (cells m)))))) true)))
   (intro hl)
   (simp only [merge-cell] at hl)
   (simp only [merge-cell])
-  (exact (p3l-merge-world (:world (cells k)) (:world (cells m)) b (sinv-live cells k hs hl)))
+  (exact (p3l-merge-world (:world (cells k)) (:world (cells m)) b rv (:sealed (cells m)) (sinv-live cells k hs hl)))
   (simp only [sys-merge])
-  (exact (sinv-put cells k (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b)) hs hc)))
+  (exact (sinv-put cells k (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b rv (:sealed (cells m)))) hs hc)))
+
+;; the engine's merge!: the parent side, then the child is released (T21 in it); refused (k = m included:
+;; merge! of a world into itself is refused), the system is unchanged
+(a/defn merge-acc [cells :- (=> Nat Cell), k :- Nat, m :- Nat, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat))] Bool
+  (Bool.and (Bool.not (Nat.beq k m)) (merge-ok (:world (cells k)) (:world (cells m)) b rv (:sealed (cells m)))))
+(a/defn sys-merge-release [cells :- (=> Nat Cell), k :- Nat, m :- Nat, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat))]
+  (=> Nat Cell)
+  (if (merge-acc cells k m b rv) (sys-step (sys-merge cells k m b rv) m (Item.release-world)) cells))
+
+(a/theorem merge-release-refused [cells :- (=> Nat Cell), k :- Nat, m :- Nat, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat))]
+  (=> (= (merge-acc cells k m b rv) false) (= (sys-merge-release cells k m b rv) cells))
+  (intro h) (simp only [sys-merge-release h]))
+
+(a/theorem sinv-merge-release [cells :- (=> Nat Cell), k :- Nat, m :- Nat, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat))]
+  (=> (sinv cells) (sinv (sys-merge-release cells k m b rv)))
+  (intro hs)
+  (cases h (merge-acc cells k m b rv))
+  (case [false] (simp only [sys-merge-release h]) (exact hs))
+  (case [true] (simp only [sys-merge-release h]) (exact (sinv-step _ m _ (sinv-merge cells k m b rv hs)))))
+
+;; C2 seal (spec §9) of cell k: irreversible; the sealed cell refuses `seal-item`s outside a slice (`cstep`)
+(a/defn seal-cell [c :- Cell] Cell
+  (Cell.mk (:world c) (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c) (:kids c) (:complete c) (:joins c) (:norm c) true))
+(a/defn sys-seal [cells :- (=> Nat Cell), k :- Nat] (=> Nat Cell) (fupd cells k (seal-cell (cells k))))
+
+(a/theorem sinv-seal [cells :- (=> Nat Cell), k :- Nat] (=> (sinv cells) (sinv (sys-seal cells k)))
+  (intro hs)
+  (have hc (=> (= (:live (seal-cell (cells k))) true) (= (p3l (:world (seal-cell (cells k)))) true)))
+  (intro hl) (simp only [seal-cell] at hl) (simp only [seal-cell]) (exact (sinv-live cells k hs hl))
+  (simp only [sys-seal]) (exact (sinv-put cells k (seal-cell (cells k)) hs hc)))
+
+;; a sealed cell refuses a host write: its diff is as sealed
+(a/theorem sealed-write [c :- Cell, x :- Nat, v :- Nat]
+  (=> (= (:sealed c) true) (= (slice-held (:world c)) false) (= (:world (cell-step c (Item.write x v))) (:world c)))
+  (intros hs hn) (simp only [cell-step cstep seal-shut seal-item hs hn Bool.not_false Bool.and_self]))
 
 ;; ---------------------------------------------------------------------------
 ;; L11: idle release. A world with nothing that can act in it or observe it may leave at any time:
@@ -834,27 +1049,34 @@
     (intros w h) (simp only [wake-all])
     (exact (wq-trans _ _ _ (wq-wake-one hq w z h) (ih (wake-one w z) (p3l-wake-one w z h))))))
 
-(a/theorem wq-apply-diff [hq :- (forall [w :- World, it :- Item] (=> (= (p3l w) true) (wq w (:world (world-step w it))))),
-                          c :- World, ds :- (List Nat)]
-  (forall [p :- World] (=> (= (p3l p) true) (wq p (:world (apply-diff p c ds)))))
-  (induction ds)
-  (case [nil] (intros p h) (simp only [apply-diff]) (exact (wq-refl p)))
-  (case [cons x t ih]
+(a/theorem wq-cstep [hq :- (forall [w :- World, it :- Item] (=> (= (p3l w) true) (wq w (:world (world-step w it))))), sealed :- Bool, w :- World, it :- Item]
+  (=> (= (p3l w) true) (wq w (cstep sealed w it)))
+  (intro h)
+  (cases hs (seal-shut sealed w it))
+  (case [false] (simp only [cstep hs]) (exact (hq w it h)))
+  (case [true] (simp only [cstep hs]) (exact (wq-refl w))))
+
+(a/theorem wq-items-run [hq :- (forall [w :- World, it :- Item] (=> (= (p3l w) true) (wq w (:world (world-step w it))))),
+                          its :- (List Item)]
+  (forall [p :- World] (=> (= (p3l p) true) (wq p (:world (items-run p its)))))
+  (induction its)
+  (case [nil] (intros p h) (simp only [items-run]) (exact (wq-refl p)))
+  (case [cons it t ih]
     (intros p h)
-    (cases ha (:accepted (world-step p (Item.write x (state-of c x)))))
-    (case [false] (simp only [apply-diff ha]) (exact (wq-refl p)))
+    (cases ha (:accepted (world-step p it)))
+    (case [false] (simp only [items-run ha]) (exact (wq-refl p)))
     (case [true]
-      (simp only [apply-diff ha])
-      (exact (wq-trans _ _ _ (hq p (Item.write x (state-of c x)) h)
-               (ih _ (step-p3l p (Item.write x (state-of c x)) h)))))))
+      (simp only [items-run ha])
+      (exact (wq-trans _ _ _ (hq p it h)
+               (ih _ (step-p3l p it h)))))))
 
 (a/theorem wq-merge-world [hq :- (forall [w :- World, it :- Item] (=> (= (p3l w) true) (wq w (:world (world-step w it))))),
-                           p :- World, c :- World, b :- World]
-  (=> (= (p3l p) true) (wq p (merge-world p c b)))
+                           p :- World, c :- World, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat)), sealed :- Bool]
+  (=> (= (p3l p) true) (wq p (merge-world p c b rv sealed)))
   (intro h)
-  (cases hm (merge-ok p c b))
+  (cases hm (merge-ok p c b rv sealed))
   (case [false] (simp only [merge-world hm]) (exact (wq-refl p)))
-  (case [true] (simp only [merge-world hm]) (exact (wq-apply-diff hq c (diff c b) p h))))
+  (case [true] (simp only [merge-world hm merge-out-world]) (exact (wq-items-run hq _ p h))))
 
 
 ;; ---- the invariant
@@ -1001,7 +1223,7 @@
   (intros hs hc)
   (simp only [sys-step])
   (exact (cinv-world cells k (cell-step (cells k) it) hc (rfl) (rfl) (rfl) (rfl)
-           (fn [hl :- (= (:live (cells k)) true)] (hq (:world (cells k)) it (sinv-live cells k hs hl))))))
+           (fn [hl :- (= (:live (cells k)) true)] (wq-cstep hq (:sealed (cells k)) (:world (cells k)) it (sinv-live cells k hs hl))))))
 
 (a/theorem cinv-wake [hq :- (forall [w :- World, it :- Item] (=> (= (p3l w) true) (wq w (:world (world-step w it))))), cells :- (=> Nat Cell), k :- Nat]
   (=> (sinv cells) (cinv cells) (cinv (sys-wake cells k)))
@@ -1021,12 +1243,12 @@
            (fn [hl :- (= (:live (cells (:cell (pubs p)))) true)]
              (wq-fire-ack hq (:world (cells (:cell (pubs p)))) (:res (pubs p)) res-ok v (sinv-live cells (:cell (pubs p)) hs hl))))))
 
-(a/theorem cinv-merge [hq :- (forall [w :- World, it :- Item] (=> (= (p3l w) true) (wq w (:world (world-step w it))))), cells :- (=> Nat Cell), k :- Nat, m :- Nat, b :- World]
-  (=> (sinv cells) (cinv cells) (cinv (sys-merge cells k m b)))
+(a/theorem cinv-merge [hq :- (forall [w :- World, it :- Item] (=> (= (p3l w) true) (wq w (:world (world-step w it))))), cells :- (=> Nat Cell), k :- Nat, m :- Nat, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat))]
+  (=> (sinv cells) (cinv cells) (cinv (sys-merge cells k m b rv)))
   (intros hs hc)
   (simp only [sys-merge])
-  (exact (cinv-world cells k (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b)) hc (rfl) (rfl) (rfl) (rfl)
-           (fn [hl :- (= (:live (cells k)) true)] (wq-merge-world hq (:world (cells k)) (:world (cells m)) b (sinv-live cells k hs hl))))))
+  (exact (cinv-world cells k (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b rv (:sealed (cells m)))) hc (rfl) (rfl) (rfl) (rfl)
+           (fn [hl :- (= (:live (cells k)) true)] (wq-merge-world hq (:world (cells k)) (:world (cells m)) b rv (:sealed (cells m)) (sinv-live cells k hs hl))))))
 
 (a/theorem cinv-publish [hq :- (forall [w :- World, it :- Item] (=> (= (p3l w) true) (wq w (:world (world-step w it))))), cells :- (=> Nat Cell), k :- Nat, st :- Nat, kont :- Nat, fresh :- Nat]
   (=> (sinv cells) (cinv cells) (cinv (sys-publish cells k st kont fresh)))
@@ -1222,23 +1444,29 @@
   (induction zs)
   (case [nil] (intros w h hr) (simp only [wake-all]) (exact hr))
   (case [cons z t ih] (intros w h hr) (simp only [wake-all]) (exact (ih (wake-one w z) (p3l-wake-one w z h) (rel-wake-one w z h hr)))))
-(a/theorem rel-apply-diff [c :- World, ds :- (List Nat)]
-  (forall [p :- World] (=> (= (p3l p) true) (= (:released p) true) (= (:released (:world (apply-diff p c ds))) true)))
-  (induction ds)
-  (case [nil] (intros p h hr) (simp only [apply-diff]) (exact hr))
-  (case [cons x t ih]
-    (intros p h hr)
-    (cases ha (:accepted (world-step p (Item.write x (state-of c x)))))
-    (case [false] (simp only [apply-diff ha]) (exact hr))
-    (case [true]
-      (simp only [apply-diff ha])
-      (exact (ih _ (step-p3l p (Item.write x (state-of c x)) h) (rel-step p (Item.write x (state-of c x)) h hr))))))
-(a/theorem rel-merge-world [p :- World, c :- World, b :- World]
-  (=> (= (p3l p) true) (= (:released p) true) (= (:released (merge-world p c b)) true))
+(a/theorem rel-cstep [sealed :- Bool, w :- World, it :- Item]
+  (=> (= (p3l w) true) (= (:released w) true) (= (:released (cstep sealed w it)) true))
   (intros h hr)
-  (cases hm (merge-ok p c b))
+  (cases hs (seal-shut sealed w it))
+  (case [false] (simp only [cstep hs]) (exact (rel-step w it h hr)))
+  (case [true] (simp only [cstep hs]) (exact hr)))
+(a/theorem rel-items-run [its :- (List Item)]
+  (forall [p :- World] (=> (= (p3l p) true) (= (:released p) true) (= (:released (:world (items-run p its))) true)))
+  (induction its)
+  (case [nil] (intros p h hr) (simp only [items-run]) (exact hr))
+  (case [cons it t ih]
+    (intros p h hr)
+    (cases ha (:accepted (world-step p it)))
+    (case [false] (simp only [items-run ha]) (exact hr))
+    (case [true]
+      (simp only [items-run ha])
+      (exact (ih _ (step-p3l p it h) (rel-step p it h hr))))))
+(a/theorem rel-merge-world [p :- World, c :- World, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat)), sealed :- Bool]
+  (=> (= (p3l p) true) (= (:released p) true) (= (:released (merge-world p c b rv sealed)) true))
+  (intros h hr)
+  (cases hm (merge-ok p c b rv sealed))
   (case [false] (simp only [merge-world hm]) (exact hr))
-  (case [true] (simp only [merge-world hm]) (exact (rel-apply-diff c (diff c b) p h hr))))
+  (case [true] (simp only [merge-world hm merge-out-world]) (exact (rel-items-run _ p h hr))))
 
 ;; ---- a quiet qinv world: every composite is the identity
 (a/theorem qid-fire-ack [w :- World, z :- Nat, tag :- Nat, v :- Nat] (=> (= (qh w) true) (= (fire-ack w z tag v) w))
@@ -1256,16 +1484,21 @@
   (induction zs)
   (case [nil] (intros w h) (simp only [wake-all]))
   (case [cons z t ih] (intros w h) (simp only [wake-all]) (rw [(qid-wake-one w z h)]) (exact (ih w h))))
-(a/theorem qid-apply-diff [p :- World, c :- World, ds :- (List Nat)] (=> (= (qh p) true) (= (:world (apply-diff p c ds)) p))
+(a/theorem qid-cstep [sealed :- Bool, w :- World, it :- Item] (=> (= (qh w) true) (= (cstep sealed w it) w))
   (intro h)
-  (cases ds)
-  (case [nil] (simp only [apply-diff]))
-  (case [cons x t] (simp only [apply-diff (qacc p (Item.write x (state-of c x)) h)])))
-(a/theorem qid-merge-world [p :- World, c :- World, b :- World] (=> (= (qh p) true) (= (merge-world p c b) p))
+  (cases hs (seal-shut sealed w it))
+  (case [false] (simp only [cstep hs]) (exact (quiet-step w it h)))
+  (case [true] (simp only [cstep hs])))
+(a/theorem qid-items-run [p :- World, its :- (List Item)] (=> (= (qh p) true) (= (:world (items-run p its)) p))
   (intro h)
-  (cases hm (merge-ok p c b))
+  (cases its)
+  (case [nil] (simp only [items-run]))
+  (case [cons it t] (simp only [items-run (qacc p it h)])))
+(a/theorem qid-merge-world [p :- World, c :- World, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat)), sealed :- Bool] (=> (= (qh p) true) (= (merge-world p c b rv sealed) p))
+  (intro h)
+  (cases hm (merge-ok p c b rv sealed))
   (case [false] (simp only [merge-world hm]))
-  (case [true] (simp only [merge-world hm]) (exact (qid-apply-diff p c (diff c b) h))))
+  (case [true] (simp only [merge-world hm merge-out-world]) (exact (qid-items-run p _ h))))
 
 ;; ---- qinv through the composites
 (a/theorem qinv-fire-ack [w :- World, z :- Nat, tag :- Nat, v :- Nat] (=> (= (qinv w) true) (= (qinv (fire-ack w z tag v)) true))
@@ -1282,20 +1515,25 @@
   (induction zs)
   (case [nil] (intros w h) (simp only [wake-all]) (exact h))
   (case [cons z t ih] (intros w h) (simp only [wake-all]) (exact (ih (wake-one w z) (qinv-wake-one w z h)))))
-(a/theorem qinv-apply-diff [c :- World, ds :- (List Nat)]
-  (forall [p :- World] (=> (= (qinv p) true) (= (qinv (:world (apply-diff p c ds))) true)))
-  (induction ds)
-  (case [nil] (intros p h) (simp only [apply-diff]) (exact h))
-  (case [cons x t ih]
-    (intros p h)
-    (cases ha (:accepted (world-step p (Item.write x (state-of c x)))))
-    (case [false] (simp only [apply-diff ha]) (exact h))
-    (case [true] (simp only [apply-diff ha]) (exact (ih _ (step-qinv p (Item.write x (state-of c x)) h))))))
-(a/theorem qinv-merge-world [p :- World, c :- World, b :- World] (=> (= (qinv p) true) (= (qinv (merge-world p c b)) true))
+(a/theorem qinv-cstep [sealed :- Bool, w :- World, it :- Item] (=> (= (qinv w) true) (= (qinv (cstep sealed w it)) true))
   (intro h)
-  (cases hm (merge-ok p c b))
+  (cases hs (seal-shut sealed w it))
+  (case [false] (simp only [cstep hs]) (exact (step-qinv w it h)))
+  (case [true] (simp only [cstep hs]) (exact h)))
+(a/theorem qinv-items-run [its :- (List Item)]
+  (forall [p :- World] (=> (= (qinv p) true) (= (qinv (:world (items-run p its))) true)))
+  (induction its)
+  (case [nil] (intros p h) (simp only [items-run]) (exact h))
+  (case [cons it t ih]
+    (intros p h)
+    (cases ha (:accepted (world-step p it)))
+    (case [false] (simp only [items-run ha]) (exact h))
+    (case [true] (simp only [items-run ha]) (exact (ih _ (step-qinv p it h))))))
+(a/theorem qinv-merge-world [p :- World, c :- World, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat)), sealed :- Bool] (=> (= (qinv p) true) (= (qinv (merge-world p c b rv sealed)) true))
+  (intro h)
+  (cases hm (merge-ok p c b rv sealed))
   (case [false] (simp only [merge-world hm]) (exact h))
-  (case [true] (simp only [merge-world hm]) (exact (qinv-apply-diff c (diff c b) p h))))
+  (case [true] (simp only [merge-world hm merge-out-world]) (exact (qinv-items-run _ p h))))
 (a/theorem qinv-fork-effect-world [w :- World, st :- Nat, kont :- Nat, v :- Nat]
   (=> (= (qinv w) true) (= (qinv (fork-effect-world w st kont v)) true))
   (intro h) (simp only [fork-effect-world])
@@ -1361,8 +1599,8 @@
   (simp only [sys-step])
   (exact (cinv-world-q cells k (cell-step (cells k) it) hc (rfl) (rfl) (rfl) (rfl)
            (fn [hl :- (= (:live (cells k)) true)]
-             (wqc-of (cells k) _ (qsinv-live cells k hq hl) (rel-step (:world (cells k)) it (sinv-live cells k hs hl))
-               (fn [h :- (= (qh (:world (cells k))) true)] (quiet-step (:world (cells k)) it h)))))))
+             (wqc-of (cells k) _ (qsinv-live cells k hq hl) (rel-cstep (:sealed (cells k)) (:world (cells k)) it (sinv-live cells k hs hl))
+               (fn [h :- (= (qh (:world (cells k))) true)] (qid-cstep (:sealed (cells k)) (:world (cells k)) it h)))))))
 
 (a/theorem cinv-wake-q [cells :- (=> Nat Cell), k :- Nat]
   (=> (sinv cells) (qsinv cells) (cinv cells) (cinv (sys-wake cells k)))
@@ -1386,14 +1624,14 @@
                (rel-fire-ack (:world (cells (:cell (pubs p)))) (:res (pubs p)) res-ok v (sinv-live cells (:cell (pubs p)) hs hl))
                (fn [h :- (= (qh (:world (cells (:cell (pubs p))))) true)] (qid-fire-ack (:world (cells (:cell (pubs p)))) (:res (pubs p)) res-ok v h)))))))
 
-(a/theorem cinv-merge-q [cells :- (=> Nat Cell), k :- Nat, m :- Nat, b :- World]
-  (=> (sinv cells) (qsinv cells) (cinv cells) (cinv (sys-merge cells k m b)))
+(a/theorem cinv-merge-q [cells :- (=> Nat Cell), k :- Nat, m :- Nat, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat))]
+  (=> (sinv cells) (qsinv cells) (cinv cells) (cinv (sys-merge cells k m b rv)))
   (intros hs hq hc)
   (simp only [sys-merge])
-  (exact (cinv-world-q cells k (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b)) hc (rfl) (rfl) (rfl) (rfl)
+  (exact (cinv-world-q cells k (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b rv (:sealed (cells m)))) hc (rfl) (rfl) (rfl) (rfl)
            (fn [hl :- (= (:live (cells k)) true)]
-             (wqc-of (cells k) _ (qsinv-live cells k hq hl) (rel-merge-world (:world (cells k)) (:world (cells m)) b (sinv-live cells k hs hl))
-               (fn [h :- (= (qh (:world (cells k))) true)] (qid-merge-world (:world (cells k)) (:world (cells m)) b h)))))))
+             (wqc-of (cells k) _ (qsinv-live cells k hq hl) (rel-merge-world (:world (cells k)) (:world (cells m)) b rv (:sealed (cells m)) (sinv-live cells k hs hl))
+               (fn [h :- (= (qh (:world (cells k))) true)] (qid-merge-world (:world (cells k)) (:world (cells m)) b rv (:sealed (cells m)) h)))))))
 
 (a/theorem cinv-publish-q [cells :- (=> Nat Cell), k :- Nat, st :- Nat, kont :- Nat, fresh :- Nat]
   (=> (sinv cells) (qsinv cells) (cinv cells) (cinv (sys-publish cells k st kont fresh)))
@@ -1417,8 +1655,8 @@
   (apply (qsinv-put cells k (cell-step (cells k) it) hq))
   (intro hl) (simp only [cell-step] at hl)
   (exact (cq-trans (cells k) (cell-step (cells k) it) (rfl)
-           (fn [r :- (= (:released (:world (cells k))) true)] (rel-step (:world (cells k)) it (sinv-live cells k hs hl) r))
-           (fn [q :- (= (qinv (:world (cells k))) true)] (step-qinv (:world (cells k)) it q)) (qsinv-live cells k hq hl))))
+           (fn [r :- (= (:released (:world (cells k))) true)] (rel-cstep (:sealed (cells k)) (:world (cells k)) it (sinv-live cells k hs hl) r))
+           (fn [q :- (= (qinv (:world (cells k))) true)] (qinv-cstep (:sealed (cells k)) (:world (cells k)) it q)) (qsinv-live cells k hq hl))))
 
 (a/theorem qsinv-wake [cells :- (=> Nat Cell), k :- Nat]
   (=> (sinv cells) (qsinv cells) (qsinv (sys-wake cells k)))
@@ -1445,15 +1683,15 @@
            (fn [q :- (= (qinv (:world (cells (:cell (pubs p))))) true)] (qinv-fire-ack (:world (cells (:cell (pubs p)))) (:res (pubs p)) res-ok v q))
            (qsinv-live cells (:cell (pubs p)) hq hl))))
 
-(a/theorem qsinv-merge [cells :- (=> Nat Cell), k :- Nat, m :- Nat, b :- World]
-  (=> (sinv cells) (qsinv cells) (qsinv (sys-merge cells k m b)))
+(a/theorem qsinv-merge [cells :- (=> Nat Cell), k :- Nat, m :- Nat, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat))]
+  (=> (sinv cells) (qsinv cells) (qsinv (sys-merge cells k m b rv)))
   (intros hs hq)
   (simp only [sys-merge])
-  (apply (qsinv-put cells k (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b)) hq))
+  (apply (qsinv-put cells k (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b rv (:sealed (cells m)))) hq))
   (intro hl) (simp only [merge-cell] at hl)
-  (exact (cq-trans (cells k) (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b)) (rfl)
-           (fn [r :- (= (:released (:world (cells k))) true)] (rel-merge-world (:world (cells k)) (:world (cells m)) b (sinv-live cells k hs hl) r))
-           (fn [q :- (= (qinv (:world (cells k))) true)] (qinv-merge-world (:world (cells k)) (:world (cells m)) b q)) (qsinv-live cells k hq hl))))
+  (exact (cq-trans (cells k) (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b rv (:sealed (cells m)))) (rfl)
+           (fn [r :- (= (:released (:world (cells k))) true)] (rel-merge-world (:world (cells k)) (:world (cells m)) b rv (:sealed (cells m)) (sinv-live cells k hs hl) r))
+           (fn [q :- (= (qinv (:world (cells k))) true)] (qinv-merge-world (:world (cells k)) (:world (cells m)) b rv (:sealed (cells m)) q)) (qsinv-live cells k hq hl))))
 
 (a/theorem qsinv-publish [cells :- (=> Nat Cell), k :- Nat, st :- Nat, kont :- Nat, fresh :- Nat]
   (=> (sinv cells) (qsinv cells) (qsinv (sys-publish cells k st kont fresh)))
@@ -1816,8 +2054,8 @@
   (cases ha (act-ok (cells m)))
   (case [false] (simp only [sys-activate ha]) (exact h))
   (case [true] (simp only [sys-activate ha]) (exact (jinv-same cells m (act-cell (cells m) v) h (rfl) (rfl) (rfl)))))
-(a/theorem jinv-merge [cells :- (=> Nat Cell), k :- Nat, m :- Nat, b :- World] (=> (jinv cells) (jinv (sys-merge cells k m b)))
-  (intro h) (simp only [sys-merge]) (exact (jinv-same cells k (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b)) h (rfl) (rfl) (rfl))))
+(a/theorem jinv-merge [cells :- (=> Nat Cell), k :- Nat, m :- Nat, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat))] (=> (jinv cells) (jinv (sys-merge cells k m b rv)))
+  (intro h) (simp only [sys-merge]) (exact (jinv-same cells k (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b rv (:sealed (cells m)))) h (rfl) (rfl) (rfl))))
 (a/theorem jinv-fork [cells :- (=> Nat Cell), k :- Nat, m :- Nat, owner :- Nat] (=> (jinv cells) (jinv (sys-fork cells k m owner)))
   (intro h)
   (cases hu (:unborn (cells k)))
@@ -2047,10 +2285,10 @@
 ;; the owned-fork operations are system steps with the items (sys-owned-done and sys-drain then maybe-complete!)
 (a/theorem own-is-step [cells :- (=> Nat Cell), k :- Nat, s :- Nat, m :- Nat]
   (= (sys-own cells k s m) (sys-step cells k (Item.own s m)))
-  (rfl))
+  (simp only [sys-own sys-step cell-step cstep seal-shut seal-item Bool.false_and Bool.and_false world-cell own-world]))
 (a/theorem owned-done-is-step [cells :- (=> Nat Cell), k :- Nat, s :- Nat, c :- Nat]
   (= (sys-owned-done cells k s c) (sys-complete (sys-step cells k (Item.owned-done s c)) k))
-  (rfl))
+  (simp only [sys-owned-done sys-step cell-step cstep seal-shut seal-item Bool.false_and Bool.and_false world-cell owned-done-world]))
 (a/theorem hbw-p3l [w :- World, w2 :- World] (=> (hb-world w w2) (= (p3l w) true) (= (p3l w2) true))
   (intros h p) (simp only [hb-world] at h) (exact ((And.left h) p)))
 (a/theorem hbw-qinv [w :- World, w2 :- World] (=> (hb-world w w2) (= (qinv w) true) (= (qinv w2) true))
@@ -2190,3 +2428,263 @@
   (cases hr (complete-ready (fupd cells k (drain-cell (cells k))) k))
   (case [false] (simp only [sys-drain hu sys-complete hr fupd-same drain-cell true_and]) (exact c))
   (case [true] (simp only [sys-drain hu sys-complete hr fupd-same complete-cell drain-cell true_and]) (exact c)))
+
+;; ---------------------------------------------------------------------------
+;; C2 R6: transfer of a fork to another owner (dvergr `transfer-fork!` re-owns a fork after its creation).
+;; The fork m keeps its lineage (`parent`: merge still targets its parent, `descendant` is unchanged) and
+;; changes its owner: the old owner k1 returns m's completion token (m leaves `kids`) and its marker (the
+;; scope s1 the kid token names: `[:owned-done s1 m]`, nothing when m was not counted); the new owner k2
+;; accepts the token, and counts m under scope s2 (`[:own s2 m]`) unless s2 is a root scope (a host or
+;; durable owner holds a fork weakly, uncounted, as a host fork). So the count moves with the token, and
+;; m's own `[:owned-done]` goes to k2 at s2. The transfer is refused, the system unchanged, unless m is live,
+;; not complete, not released; k1 and k2 are live and not complete; k2 is not released, not m and not owned
+;; by m (within the fuel n: an owner in m's owned subtree is a cycle, and neither world could complete);
+;; and k2 accepts the count. Atomic here; in the engine the old side and the token's retarget go under
+;; the old owner's and m's gates, and the acceptance is an item queued to k2 before m can complete (FIFO
+;; ingress puts m's acknowledgement after it).
+(a/defn disown-cell [c :- Cell, m :- Nat] Cell
+  (Cell.mk (:world c) (:live c) (:parent c) (:owner c) (:dormant c) (:unborn c) (:pending c) (nat-del m (:kids c))
+           (:complete c) (:joins c) (:norm c) (:sealed c)))
+(a/defn sys-disown [cells :- (=> Nat Cell), k :- Nat, m :- Nat] (=> Nat Cell) (fupd cells k (disown-cell (cells k) m)))
+(a/defn reown-cell [c :- Cell, k :- Nat] Cell
+  (Cell.mk (:world c) (:live c) (:parent c) k (:dormant c) (:unborn c) (:pending c) (:kids c)
+           (:complete c) (:joins c) (:norm c) (:sealed c)))
+(a/defn sys-reown [cells :- (=> Nat Cell), m :- Nat, k :- Nat] (=> Nat Cell) (fupd cells m (reown-cell (cells m) k)))
+
+;; x is m or owned by m within the fuel (one step per element)
+(a/defn owned-under [cells :- (=> Nat Cell), m :- Nat, x :- Nat, n :- (List Nat)] Bool
+  (match n [nil (Nat.beq x m)]
+         [(cons h t) (Bool.or (Nat.beq x m) (owned-under cells m (:owner (cells x)) t))]))
+
+(a/defn counted [s :- Nat] Bool (Bool.not (Nat.beq s root-scope-id)))
+(a/defn live-open [c :- Cell] Bool
+  (Bool.and (:live c) (Bool.and (Bool.not (:complete c)) (Bool.not (:released (:world c))))))
+;; the old side: the token and the marker go, then maybe-complete! of k1
+(a/defn xfer-old [cells :- (=> Nat Cell), m :- Nat, s1 :- Nat] (=> Nat Cell)
+  (sys-owned-done (sys-disown cells (:owner (cells m)) m) (:owner (cells m)) s1 m))
+(a/defn xfer-ok [cells :- (=> Nat Cell), m :- Nat, s1 :- Nat, k2 :- Nat, s2 :- Nat, n :- (List Nat)] Bool
+  (Bool.and (live-open (cells m))
+    (Bool.and (live-open (cells k2))
+      (Bool.and (:live (cells (:owner (cells m))))
+        (Bool.and (Bool.not (:complete (cells (:owner (cells m)))))
+          (Bool.and (Bool.not (owned-under cells m k2 n))
+            (Bool.or (Bool.not (counted s2))
+                     (:accepted (world-step (:world (xfer-old cells m s1 k2)) (Item.own s2 m))))))))))
+(a/defn xfer-new [cells :- (=> Nat Cell), m :- Nat, k2 :- Nat, s2 :- Nat] (=> Nat Cell)
+  (sys-accept (sys-reown (if (counted s2) (sys-own cells k2 s2 m) cells) m k2) k2 m))
+(a/defn sys-transfer [cells :- (=> Nat Cell), m :- Nat, s1 :- Nat, k2 :- Nat, s2 :- Nat, n :- (List Nat)] (=> Nat Cell)
+  (if (xfer-ok cells m s1 k2 s2 n) (xfer-new (xfer-old cells m s1) m k2 s2) cells))
+
+(a/theorem transfer-refused [cells :- (=> Nat Cell), m :- Nat, s1 :- Nat, k2 :- Nat, s2 :- Nat, n :- (List Nat)]
+  (=> (= (xfer-ok cells m s1 k2 s2 n) false) (= (sys-transfer cells m s1 k2 s2 n) cells))
+  (intro h) (simp only [sys-transfer h]))
+
+;; ---- invariants of the parts
+(a/theorem sinv-disown [cells :- (=> Nat Cell), k :- Nat, m :- Nat] (=> (sinv cells) (sinv (sys-disown cells k m)))
+  (intro hs)
+  (have hc (=> (= (:live (disown-cell (cells k) m)) true) (= (p3l (:world (disown-cell (cells k) m))) true)))
+  (intro hl) (simp only [disown-cell] at hl) (simp only [disown-cell]) (exact (sinv-live cells k hs hl))
+  (simp only [sys-disown]) (exact (sinv-put cells k (disown-cell (cells k) m) hs hc)))
+(a/theorem sinv-reown [cells :- (=> Nat Cell), m :- Nat, k :- Nat] (=> (sinv cells) (sinv (sys-reown cells m k)))
+  (intro hs)
+  (have hc (=> (= (:live (reown-cell (cells m) k)) true) (= (p3l (:world (reown-cell (cells m) k))) true)))
+  (intro hl) (simp only [reown-cell] at hl) (simp only [reown-cell]) (exact (sinv-live cells m hs hl))
+  (simp only [sys-reown]) (exact (sinv-put cells m (reown-cell (cells m) k) hs hc)))
+
+;; a complete owner never gives a token back (the transfer requires k1 not complete)
+(a/theorem cinv-disown [cells :- (=> Nat Cell), k :- Nat, m :- Nat]
+  (=> (cinv cells) (= (:complete (cells k)) false) (cinv (sys-disown cells k m)))
+  (intros hc hk)
+  (simp only [sys-disown])
+  (apply (cinv-put cells k (disown-cell (cells k) m) hc))
+  (intro h) (simp only [kid-done-c disown-cell]) (simp only [kid-done-c] at h) (exact h)
+  (intros hl hj) (simp only [disown-cell hk] at hj) (cases hj))
+(a/theorem cinv-reown [cells :- (=> Nat Cell), m :- Nat, k :- Nat]
+  (=> (cinv cells) (cinv (sys-reown cells m k)))
+  (intro hc)
+  (simp only [sys-reown])
+  (exact (cinv-world cells m (reown-cell (cells m) k) hc (rfl) (rfl) (rfl) (rfl) (fn [hl :- (= (:live (cells m)) true)] (wq-refl (:world (cells m)))))))
+
+(a/theorem qsinv-disown [cells :- (=> Nat Cell), k :- Nat, m :- Nat] (=> (qsinv cells) (qsinv (sys-disown cells k m)))
+  (intro hq) (simp only [sys-disown])
+  (apply (qsinv-put cells k (disown-cell (cells k) m) hq))
+  (intro hl) (simp only [disown-cell] at hl) (simp only [cq disown-cell]) (exact (qsinv-live cells k hq hl)))
+(a/theorem qsinv-reown [cells :- (=> Nat Cell), m :- Nat, k :- Nat] (=> (qsinv cells) (qsinv (sys-reown cells m k)))
+  (intro hq) (simp only [sys-reown])
+  (apply (qsinv-put cells m (reown-cell (cells m) k) hq))
+  (intro hl) (simp only [reown-cell] at hl) (simp only [cq reown-cell]) (exact (qsinv-live cells m hq hl)))
+
+(a/theorem jinv-disown [cells :- (=> Nat Cell), k :- Nat, m :- Nat] (=> (jinv cells) (jinv (sys-disown cells k m)))
+  (intro h) (simp only [sys-disown]) (exact (jinv-same cells k (disown-cell (cells k) m) h (rfl) (rfl) (rfl))))
+(a/theorem jinv-reown [cells :- (=> Nat Cell), m :- Nat, k :- Nat] (=> (jinv cells) (jinv (sys-reown cells m k)))
+  (intro h) (simp only [sys-reown]) (exact (jinv-same cells m (reown-cell (cells m) k) h (rfl) (rfl) (rfl))))
+
+;; ---- the transfer keeps every system invariant
+(a/theorem sinv-transfer [cells :- (=> Nat Cell), m :- Nat, s1 :- Nat, k2 :- Nat, s2 :- Nat, n :- (List Nat)]
+  (=> (sinv cells) (sinv (sys-transfer cells m s1 k2 s2 n)))
+  (intro hs)
+  (cases ho (xfer-ok cells m s1 k2 s2 n))
+  (case [false] (simp only [sys-transfer ho]) (exact hs))
+  (case [true]
+    (simp only [sys-transfer ho xfer-new xfer-old])
+    (have h1 := (sinv-owned-done _ (:owner (cells m)) s1 m (sinv-disown cells (:owner (cells m)) m hs)))
+    (cases hc (counted s2))
+    (case [false] (simp only [hc]) (exact (sinv-accept _ k2 m (sinv-reown _ m k2 h1))))
+    (case [true] (simp only [hc]) (exact (sinv-accept _ k2 m (sinv-reown _ m k2 (sinv-own _ k2 s2 m h1)))))))
+
+(a/theorem cinv-transfer [cells :- (=> Nat Cell), m :- Nat, s1 :- Nat, k2 :- Nat, s2 :- Nat, n :- (List Nat)]
+  (=> (sinv cells) (cinv cells) (cinv (sys-transfer cells m s1 k2 s2 n)))
+  (intros hs hc)
+  (cases ho (xfer-ok cells m s1 k2 s2 n))
+  (case [false] (simp only [sys-transfer ho]) (exact hc))
+  (case [true]
+    (cases hk1 (:complete (cells (:owner (cells m)))))
+    (case [true] (simp only [xfer-ok live-open hk1 Bool.not_true Bool.false_and Bool.and_false] at ho) (cases ho))
+    (case [false]
+    (simp only [sys-transfer ho xfer-new xfer-old])
+    (have h1 := (cinv-owned-done _ (:owner (cells m)) s1 m (sinv-disown cells (:owner (cells m)) m hs)
+                  (cinv-disown cells (:owner (cells m)) m hc hk1)))
+    (have s1h := (sinv-owned-done _ (:owner (cells m)) s1 m (sinv-disown cells (:owner (cells m)) m hs)))
+    (cases hct (counted s2))
+    (case [false] (simp only [hct]) (exact (cinv-accept _ k2 m (cinv-reown _ m k2 h1))))
+    (case [true] (simp only [hct]) (exact (cinv-accept _ k2 m (cinv-reown _ m k2 (cinv-own _ k2 s2 m h1))))))))
+
+(a/theorem qsinv-transfer [cells :- (=> Nat Cell), m :- Nat, s1 :- Nat, k2 :- Nat, s2 :- Nat, n :- (List Nat)]
+  (=> (sinv cells) (qsinv cells) (qsinv (sys-transfer cells m s1 k2 s2 n)))
+  (intros hs hq)
+  (cases ho (xfer-ok cells m s1 k2 s2 n))
+  (case [false] (simp only [sys-transfer ho]) (exact hq))
+  (case [true]
+    (simp only [sys-transfer ho xfer-new xfer-old])
+    (have s0 := (sinv-disown cells (:owner (cells m)) m hs))
+    (have h1 := (qsinv-owned-done _ (:owner (cells m)) s1 m s0 (qsinv-disown cells (:owner (cells m)) m hq)))
+    (have s1h := (sinv-owned-done _ (:owner (cells m)) s1 m s0))
+    (cases hct (counted s2))
+    (case [false] (simp only [hct]) (exact (qsinv-accept _ k2 m (qsinv-reown _ m k2 h1))))
+    (case [true] (simp only [hct]) (exact (qsinv-accept _ k2 m (qsinv-reown _ m k2 (qsinv-own _ k2 s2 m s1h h1)))))))
+
+(a/theorem jinv-transfer [cells :- (=> Nat Cell), m :- Nat, s1 :- Nat, k2 :- Nat, s2 :- Nat, n :- (List Nat)]
+  (=> (jinv cells) (jinv (sys-transfer cells m s1 k2 s2 n)))
+  (intro hj)
+  (cases ho (xfer-ok cells m s1 k2 s2 n))
+  (case [false] (simp only [sys-transfer ho]) (exact hj))
+  (case [true]
+    (simp only [sys-transfer ho xfer-new xfer-old])
+    (have h1 := (jinv-owned-done _ (:owner (cells m)) s1 m (jinv-disown cells (:owner (cells m)) m hj)))
+    (cases hct (counted s2))
+    (case [false] (simp only [hct]) (exact (jinv-accept _ k2 m (jinv-reown _ m k2 h1))))
+    (case [true] (simp only [hct]) (exact (jinv-accept _ k2 m (jinv-reown _ m k2 (jinv-own _ k2 s2 m h1)))))))
+
+;; ---------------------------------------------------------------------------
+;; C2 R2: `descendant?` over lineage: d is a or a fork (transitively) of a, within the fuel (one parent
+;; step per element). Ownership is not lineage: a transfer changes no `parent`, so no answer.
+(a/defn descendant [cells :- (=> Nat Cell), a :- Nat, d :- Nat, n :- (List Nat)] Bool
+  (match n [nil (Nat.beq d a)]
+         [(cons h t) (Bool.or (Nat.beq d a) (descendant cells a (:parent (cells d)) t))]))
+
+(a/theorem descendant-refl [cells :- (=> Nat Cell), a :- Nat, n :- (List Nat)] (= (descendant cells a a n) true)
+  (cases n)
+  (case [nil] (simp only [descendant Nat.beq_refl]))
+  (case [cons h t] (simp only [descendant Nat.beq_refl Bool.true_or])))
+
+;; the fork is a descendant of the forking world
+(a/theorem descendant-fork [cells :- (=> Nat Cell), k :- Nat, m :- Nat, owner :- Nat, h :- Nat, n :- (List Nat)]
+  (=> (= (:unborn (cells k)) false)
+      (= (descendant (sys-fork cells k m owner) k m (List.cons Nat h n)) true))
+  (intro hu)
+  (simp only [descendant sys-fork hu fupd-same fork-cell descendant-refl Bool.or_true]))
+
+;; lineage only: two systems with the same parents answer alike
+(a/theorem descendant-par [cells :- (=> Nat Cell), cells2 :- (=> Nat Cell), a :- Nat, n :- (List Nat)]
+  (=> (forall [j :- Nat] (= (:parent (cells2 j)) (:parent (cells j))))
+      (forall [d :- Nat] (= (descendant cells2 a d n) (descendant cells a d n))))
+  (intro hp)
+  (induction n)
+  (case [nil] (intro d) (simp only [descendant]))
+  (case [cons h t ih] (intro d) (simp only [descendant (hp d) (ih (:parent (cells d)))])))
+
+(a/theorem par-put [cells :- (=> Nat Cell), k :- Nat, c2 :- Cell]
+  (=> (= (:parent c2) (:parent (cells k))) (forall [j :- Nat] (= (:parent (fupd cells k c2 j)) (:parent (cells j)))))
+  (intros h j)
+  (cases hj (Nat.beq j k))
+  (case [false] (simp only [fupd hj]))
+  (case [true]
+    (have e (= j k)) (exact (Nat.eq_of_beq_eq_true hj))
+    (rw [e]) (simp only [fupd-same]) (exact h)))
+
+(a/theorem par-complete [cells :- (=> Nat Cell), k :- Nat] (forall [j :- Nat] (= (:parent (sys-complete cells k j)) (:parent (cells j))))
+  (intro j)
+  (cases hr (complete-ready cells k))
+  (case [false] (simp only [sys-complete hr]))
+  (case [true] (simp only [sys-complete hr]) (exact (par-put cells k (complete-cell (cells k)) (rfl) j))))
+(a/theorem par-accept [cells :- (=> Nat Cell), k :- Nat, m :- Nat] (forall [j :- Nat] (= (:parent (sys-accept cells k m j)) (:parent (cells j))))
+  (intro j)
+  (cases hc (:complete (cells k)))
+  (case [true] (simp only [sys-accept hc]))
+  (case [false] (simp only [sys-accept hc]) (exact (par-put cells k (accept-cell (cells k) m) (rfl) j))))
+
+(a/theorem par-disown [cells :- (=> Nat Cell), k :- Nat, m :- Nat] (forall [j :- Nat] (= (:parent (sys-disown cells k m j)) (:parent (cells j))))
+  (intro j) (simp only [sys-disown]) (exact (par-put cells k (disown-cell (cells k) m) (rfl) j)))
+(a/theorem par-reown [cells :- (=> Nat Cell), m :- Nat, k :- Nat] (forall [j :- Nat] (= (:parent (sys-reown cells m k j)) (:parent (cells j))))
+  (intro j) (simp only [sys-reown]) (exact (par-put cells m (reown-cell (cells m) k) (rfl) j)))
+(a/theorem par-own [cells :- (=> Nat Cell), k :- Nat, s :- Nat, m :- Nat] (forall [j :- Nat] (= (:parent (sys-own cells k s m j)) (:parent (cells j))))
+  (intro j) (simp only [sys-own]) (exact (par-put cells k (world-cell (cells k) (own-world (:world (cells k)) s m)) (rfl) j)))
+(a/theorem par-owned-done [cells :- (=> Nat Cell), k :- Nat, s :- Nat, c :- Nat] (forall [j :- Nat] (= (:parent (sys-owned-done cells k s c j)) (:parent (cells j))))
+  (intro j) (simp only [sys-owned-done])
+  (rw [(par-complete _ k j)])
+  (exact (par-put cells k (world-cell (cells k) (owned-done-world (:world (cells k)) s c)) (rfl) j)))
+
+(a/theorem par-transfer [cells :- (=> Nat Cell), m :- Nat, s1 :- Nat, k2 :- Nat, s2 :- Nat, n :- (List Nat)]
+  (forall [j :- Nat] (= (:parent (sys-transfer cells m s1 k2 s2 n j)) (:parent (cells j))))
+  (intro j)
+  (cases ho (xfer-ok cells m s1 k2 s2 n))
+  (case [false] (simp only [sys-transfer ho]))
+  (case [true]
+    (simp only [sys-transfer ho xfer-new xfer-old])
+    (cases hct (counted s2))
+    (case [false]
+      (simp only [hct])
+      (rw [(par-accept _ k2 m j) (par-reown _ m k2 j) (par-owned-done _ _ s1 m j) (par-disown cells _ m j)]))
+    (case [true]
+      (simp only [hct])
+      (rw [(par-accept _ k2 m j) (par-reown _ m k2 j) (par-own _ k2 s2 m j) (par-owned-done _ _ s1 m j) (par-disown cells _ m j)]))))
+
+;; Theorem (R2 x R6): a transfer changes no lineage answer
+(a/theorem descendant-transfer [cells :- (=> Nat Cell), m :- Nat, s1 :- Nat, k2 :- Nat, s2 :- Nat, n :- (List Nat), a :- Nat, d :- Nat, f :- (List Nat)]
+  (= (descendant (sys-transfer cells m s1 k2 s2 n) a d f) (descendant cells a d f))
+  (exact (descendant-par cells (sys-transfer cells m s1 k2 s2 n) a f (par-transfer cells m s1 k2 s2 n) d)))
+
+;; ---------------------------------------------------------------------------
+;; C2: seal and merge! keep every system invariant
+(a/theorem cinv-seal [cells :- (=> Nat Cell), k :- Nat] (=> (cinv cells) (cinv (sys-seal cells k)))
+  (intro hc) (simp only [sys-seal])
+  (exact (cinv-world cells k (seal-cell (cells k)) hc (rfl) (rfl) (rfl) (rfl) (fn [hl :- (= (:live (cells k)) true)] (wq-refl (:world (cells k)))))))
+(a/theorem qsinv-seal [cells :- (=> Nat Cell), k :- Nat] (=> (qsinv cells) (qsinv (sys-seal cells k)))
+  (intro hq) (simp only [sys-seal])
+  (apply (qsinv-put cells k (seal-cell (cells k)) hq))
+  (intro hl) (simp only [seal-cell] at hl) (simp only [cq seal-cell]) (exact (qsinv-live cells k hq hl)))
+(a/theorem jinv-seal [cells :- (=> Nat Cell), k :- Nat] (=> (jinv cells) (jinv (sys-seal cells k)))
+  (intro h) (simp only [sys-seal]) (exact (jinv-same cells k (seal-cell (cells k)) h (rfl) (rfl) (rfl))))
+
+(a/theorem cinv-merge-release-q [cells :- (=> Nat Cell), k :- Nat, m :- Nat, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat))]
+  (=> (sinv cells) (qsinv cells) (cinv cells) (cinv (sys-merge-release cells k m b rv)))
+  (intros hs hq hc)
+  (cases h (merge-acc cells k m b rv))
+  (case [false] (simp only [sys-merge-release h]) (exact hc))
+  (case [true]
+    (simp only [sys-merge-release h])
+    (exact (cinv-step-q _ m _ (sinv-merge cells k m b rv hs) (qsinv-merge cells k m b rv hs hq) (cinv-merge-q cells k m b rv hs hq hc)))))
+(a/theorem qsinv-merge-release [cells :- (=> Nat Cell), k :- Nat, m :- Nat, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat))]
+  (=> (sinv cells) (qsinv cells) (qsinv (sys-merge-release cells k m b rv)))
+  (intros hs hq)
+  (cases h (merge-acc cells k m b rv))
+  (case [false] (simp only [sys-merge-release h]) (exact hq))
+  (case [true]
+    (simp only [sys-merge-release h])
+    (exact (qsinv-step _ m _ (sinv-merge cells k m b rv hs) (qsinv-merge cells k m b rv hs hq)))))
+(a/theorem jinv-merge-release [cells :- (=> Nat Cell), k :- Nat, m :- Nat, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat))]
+  (=> (jinv cells) (jinv (sys-merge-release cells k m b rv)))
+  (intro hj)
+  (cases h (merge-acc cells k m b rv))
+  (case [false] (simp only [sys-merge-release h]) (exact hj))
+  (case [true] (simp only [sys-merge-release h]) (exact (jinv-step _ m _ (jinv-merge cells k m b rv hj)))))
