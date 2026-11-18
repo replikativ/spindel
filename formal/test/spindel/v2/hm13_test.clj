@@ -25,7 +25,7 @@
   [w1 :- World a :- ActRow]
   Bool
   (Bool.and
-   (Nat.beq (:mode a) am-any)
+   (group-mode (:mode a))
    (Bool.and
     (Bool.not (act-has w1 (:id a)))
     (Bool.and
@@ -298,9 +298,10 @@
         all-world (update w :acts #(mapv (fn [x] (if (= a (:id x)) all-old x)) %))]
     ;; w0 has no theorem premise; altered old all-mode row is a generic input,
     ;; not a new accepted trace. w1's complete support/H3 are checked by check-post.
-    (is (false? (engine/any-resolved w1 all-old)))
-    (is (empty? (loser-jobs all-world w1)))
-    (is (= before-post (check-post all-world before-post [])))
+    ;; Z#61: a resolved `all` (fail-fast at its first err slot) cancels its losers as an `any`
+    (is (true? (engine/any-resolved w1 all-old)))
+    (is (seq (loser-jobs all-world w1)))
+    (is (not= before-post (check-post all-world before-post [])))
     (is (false? (engine/any-resolved w old)))
     (is (empty? (loser-jobs w w)))
     (is (= (step/->Outcome w true) (check-post w (step/->Outcome w true) [])))
