@@ -218,7 +218,8 @@
           (when (= mode s/am-any)
             (is (nil? (row (:raw out) :acts (:next-id (:w f)))))
             (when (= kind :comp)
-              (is (false? (fill/current-run? (:raw out) (:rid f)))))))))))
+              ;; the fast path stops at the winner: no invalidation of the awaiting computation
+              (is (true? (fill/current-run? (:raw out) (:rid f)))))))))))
 
 (deftest accepted-reused-edges-duplicates-and-overlapping-exemptions
   (let [{:keys [w reused-source second-source reused-edge fresh deferred] :as f} (wiring/reuse-fixture)

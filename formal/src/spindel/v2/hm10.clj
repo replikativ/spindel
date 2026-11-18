@@ -530,7 +530,10 @@
   (h3-fm w (fast-fill ps w d))
   (cases ready (fast-ready w d))
   (case [false] (simp only [fast-fill ready]) (exact (fm-refl w)))
-  (case [true] (simp only [fast-fill ready]) (exact (fm-fire-edge (deb-result w d) w (pair-edge d ps)))))
+  (case [true]
+    (cases hm (still-member w (pair-edge d ps)))
+    (case [false] (simp only [fast-fill ready hm]) (exact (fm-refl w)))
+    (case [true] (simp only [fast-fill ready hm]) (exact (fm-fire-edge (deb-result w d) w (pair-edge d ps))))))
 
 (a/theorem h10-fm-prefix [a :- Nat, ds :- (List Nat), acc :- AwAcc, pre :- (List Nat)]
   (h3-fm (h10-install a ds acc) (h10-fill-prefix a ds acc pre))
@@ -970,7 +973,10 @@
   (intro h)
   (cases ready (fast-ready w d))
   (case [false] (simp only [fast-fill ready]) (exact h))
-  (case [true] (simp only [fast-fill ready]) (exact (h10-es-fire-edge P phase rearm seen (deb-result w d) w (pair-edge d ps) h))))
+  (case [true]
+    (cases hm (still-member w (pair-edge d ps)))
+    (case [false] (simp only [fast-fill ready hm]) (exact h))
+    (case [true] (simp only [fast-fill ready hm]) (exact (h10-es-fire-edge P phase rearm seen (deb-result w d) w (pair-edge d ps) h)))))
 
 (a/theorem h10-es-fold [P :- (=> EdgeRow Bool),
                       phase :- (forall [p :- Nat, e :- EdgeRow]
@@ -1230,6 +1236,17 @@
     (simp only [fast-ready found not-idle Bool.false_and Bool.or_false] at ready)
     (simp only [deb-avail found]) (exact ready)))
 
+;; Z#61: an edge that is no unfilled member of any activation is free
+(a/theorem h10-free-nonmember [xm :- (List Nat), w :- World, x :- Nat]
+  (=> (= (still-member w x) false) (= (h3-free xm w x) true))
+  (intro hm)
+  (apply h3-free-by)
+  (intros b r mb mr ir hx hc hc2 hxx)
+  (simp only [act-contrib h3-rm-members] at hc2)
+  (have hb (= (act-has-member x b) true)) (simp only [act-has-member]) (exact hc2)
+  (have z := (any-elim-of ActRow (act-has-member x) b (:acts w) mb hb))
+  (simp only [still-member] at hm) (rw [hm] at z) (cases z))
+
 (a/theorem h10-fast-fill-free [xm :- (List Nat), ps :- (List DE), w :- World, d :- Nat]
   (=> (= (h3 xm w) true) (= (awake (:comps w) d) true) (= (fast-ready w d) true)
       (forall [e :- EdgeRow]
@@ -1237,9 +1254,11 @@
             (And (= (:debtor e) d) (Or (= (Nat.beq (:kind e) ek-dep) true) (= (Nat.beq (:kind e) ek-wait) true)))))
       (= (h3-free xm (fast-fill ps w d) (pair-edge d ps)) true))
   (intros h awake ready fields)
+  (cases hm (still-member w (pair-edge d ps)))
+  (case [false] (simp only [fast-fill ready hm]) (exact (h10-free-nonmember xm w _ hm)))
   (cases found (edge-find w (pair-edge d ps)))
   (case [none]
-    (simp only [fast-fill ready fire-edge found])
+    (simp only [fast-fill ready hm fire-edge found])
     (exact (h3-free-noedge xm w (pair-edge d ps) (h3-rest-of xm w h)
              (tbl-find-none-has EdgeRow edge-id _ (:edges w) found))))
   (case [some e]
@@ -1247,7 +1266,7 @@
     (have found-id (= (edge-find w (:id e)) (Option.some EdgeRow e))) (rw [id]) (exact found)
     (cases phase (Nat.beq (:phase e) ph-armed))
     (case [false]
-      (simp only [fast-fill ready fire-edge found phase])
+      (simp only [fast-fill ready hm fire-edge found phase])
       (rw [← id]) (exact (h10-free-not-armed xm w e h found-id phase)))
     (case [true]
       (have facts := (fields e found))
@@ -1255,13 +1274,13 @@
       (have kind := (And.right facts))
       (cases kind)
       (case [inl dep]
-        (simp only [fast-fill ready fire-edge found phase dep])
+        (simp only [fast-fill ready hm fire-edge found phase dep])
         (rw [← id])
         (have available (= (deb-avail w (:debtor e)) true)) (rw [debtor]) (exact (h10-ready-available w d awake ready))
         (exact (h10-fire-dep-free xm w e h found-id dep available)))
       (case [inr wait]
         (have not-dep (= (Nat.beq (:kind e) ek-dep) false)) (rw [(Nat.eq_of_beq_eq_true wait)])
-        (simp only [fast-fill ready fire-edge found phase not-dep wait])
+        (simp only [fast-fill ready hm fire-edge found phase not-dep wait])
         (rw [← id]) (exact (h10-fire-wait-free xm (deb-result w d) w e h found-id wait))))))
 
 (a/theorem h10-prefix-pair-row [xm :- (List Nat), w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat,

@@ -1296,7 +1296,9 @@
   (intro h)
   (cases hr (fast-ready w d))
   (simp only [fast-fill hr]) (exact h)
-  (simp only [fast-fill hr]) (exact (sl-fire-edge x _ w _ h)))
+  (cases hm (still-member w (pair-edge d ps)))
+  (simp only [fast-fill hr hm]) (exact h)
+  (simp only [fast-fill hr hm]) (exact (sl-fire-edge x _ w _ h)))
 
 (a/theorem sl-park-if [x :- Nat, w :- World, a :- Nat, rid :- Nat]
   (=> (= (i10-slice-at x w) true) (= (i10-slice-at x (park-if w a rid)) true))
@@ -3225,7 +3227,9 @@
   (intro h)
   (cases hr (fast-ready w d))
   (simp only [fast-fill hr]) (exact h)
-  (simp only [fast-fill hr]) (exact (s9-fire-edge _ w _ h)))
+  (cases hm (still-member w (pair-edge d ps)))
+  (simp only [fast-fill hr hm]) (exact h)
+  (simp only [fast-fill hr hm]) (exact (s9-fire-edge _ w _ h)))
 
 (a/theorem s9-park-if [w :- World, a :- Nat, rid :- Nat]
   (=> (= (inv-i9 w) true) (= (inv-i9 (park-if w a rid)) true))
