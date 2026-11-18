@@ -267,6 +267,13 @@ prototypes are not acceptance evidence for this smaller operation API.
     host item may precede the first-turn drain (the inline fast path), and
     the release of a child may precede its owner's `[:owned-done]`: neither
     completes a world early.
+  - Z#73 (Z#68, H2; found by the foerster re-pin): Z#68's refusal goes to the
+    caller only while that caller still waits on the operation. An observe or
+    pin admitted before T21 but processed after it, in a turn another thread
+    drains, is revoked as T21 revokes roots: its observe callback receives
+    `::released`, its pin is dropped; no item either way. Before, the refusal
+    was thrown into the draining thread (foerster: `release-world!` threw an
+    observer's refusal).
 
 Once approved, this document is the normative contract for the v2 engine. It
 supersedes `engine-formalism.md` Part 4 and `engine-memory-v2.md`. Parts 1–3
