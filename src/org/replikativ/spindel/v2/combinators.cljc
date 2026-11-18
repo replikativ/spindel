@@ -68,7 +68,10 @@
    world's executor. The calling thread's dynamic bindings are conveyed (JVM);
    on JS a returned promise is awaited. Cancellation interrupts the worker. A
    pool that would run the work on the caller (CallerRunsPolicy) is refused;
-   a pool that rejects the work fails the computation."
+   a pool that rejects the work fails the computation. It is a computation,
+   retained by demand: a task that awaits it does not own it, so the task's
+   join (C1c) does not wait for the work. In a task body use the `offload`
+   effect (`(v2/offload f)`), which the task's run owns."
   ([f] (blocking f nil))
   ([f opts]
    #?(:clj (when-let [p (:pool opts)]
