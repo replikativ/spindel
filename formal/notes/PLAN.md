@@ -2042,3 +2042,56 @@ Option C (decided): the engine owns the mechanism, not the policy. Modelled in s
   `s9-t20-pin`); pins enter retention as generic roots.
 - Tests: `z62_test` (release at and below the maximum, refused for other kinds; a pinned task is accepted and a
   retention root).
+
+## Correctness stage 1, item 4: headline statements (2026-11-18, branch `formal/top`)
+- `spindel.v2.top` (layer 1, loaded before sys): `inv w := p3m ∧ svb ∧ inv-i9 ∧ inv-i10-slice ∧ i3`; `inv-empty`,
+  `inv-step` (every item keeps inv; `step-inv` is the older inv-sample statement of engine.clj, kept), `Reach1`
+  (start: the empty world; step: any item) and `reach-inv`. `inv-p3l` projects to the old layer-2 bundle.
+- Layer 2 carries `inv`: `sinv`/`pinv` read `inv` instead of p3l. `sinv-live-inv` gives inv; `sinv-live` keeps its
+  p3l statement (through `inv-p3l`) for the qinv/released lemmas. New `inv-cstep`, `inv-fire-ack`, `inv-wake-one`,
+  `inv-wake-all`, `inv-fork-effect-world`, `inv-items-run`, `inv-merge-world`, `inv-own`, `inv-owned-done`,
+  `inv-drain` (compositions of `inv-step`), `top-inv-release-unborn` (rfl: no part of inv reads `released`).
+  `sinv-world-cell` takes `inv w2`.
+- `spindel.v2.systop`: `sysinv cells pubs := sinv ∧ pinv ∧ cinv ∧ qsinv ∧ qpinv ∧ jinv`; `SysReach` with an `init`
+  constructor (live cells hold the empty world, none complete, no join, no live publication) and one constructor
+  per operation of sys.clj (28), each with the premises its theorems take, which are the guards the model leaves to
+  the caller: fork and fork effect from a live cell, and with an id no cell has accepted; instantiate of a live
+  publication with such an id; publish from a live cell; disown of a cell that is not complete. `sys-reach-inv`:
+  SysReach ⇒ sysinv, by induction, chaining the per-operation theorems (sinv-*, pinv-*, cinv-*(-q), qsinv-*,
+  qpinv-*, jinv-*).
+- Deleted the theorems under the refuted premise HQ (a p3l step keeps a quiet world quiet, false: C1 quiet half
+  above): `cinv-step`, `cinv-wake`, `cinv-resume`, `cinv-merge`, `cinv-publish`, `cinv-abandon` and their only
+  supports `wq-fire-ack`, `wq-wake-one`, `wq-wake-all`, `wq-cstep`, `wq-items-run`, `wq-merge-world`. The `-q`
+  forms stay; `wq`, `wq-refl`, `wq-trans`, `ready-put`, `cinv-world` stay (used by the cell-only operations).
+- Not done here: the merge still takes its basis `b` as a free argument (no `Cell.mbase`), so SysReach's merge
+  constructor admits any b (investigation S2-c); the guards that layer 2 does not have (fork of a released
+  world, merge without a parent relation, join on any id) are not premises either.
+- Tests: `top_test` (the constants; `inv` evaluated on the empty world and on every world of samples 4, 5, 13),
+  sys_test's list.
+
+## Correctness stage 1, item 3 (model-only guards) and item 6 (scopes and finally in a cleanup slice): status
+Not done in this stage; each needs a proof campaign of its own (estimates below) or an engine/spec decision.
+- `cur-closed` (P10, I8): reduced to `rso` (i14 Part J: an alive normal task run's run scope is open). Proving
+  `tbl-all (rso w) (:runs w)` through the step is a new copier bundle on top of p3m with overrides at least for T4/T5
+  (new runs and run scopes), T12, T14 (unwinding), T16 close-scope and its cascade (`jclose` closes a subtree: it must
+  be shown to reach no alive normal run's run scope, or to cancel such runs first), Q10 detach, T21 and Rule R's
+  retirement. Estimate 2-4 days; then drop the guard and re-prove I8 (i8.clj takes `cur-closed w st = false` in
+  t4/t1 overrides: those become `rso`-derived facts). `rso` holds on every replayed world (investigation S2-a).
+- `res-tag-ok` on complete: kept. It checks the logged item, not the world (a body completes with ok v or err e;
+  the item's tag is never none): the same kind of check as `fresh = next-id`. No reachability statement applies.
+- `fins-open` on complete (Z#43): kept. The engine's CPS body closes its regions before it completes; that is a
+  property of the body compiler's item stream, which the model does not describe (bodies are opaque).
+- `root-shut` in `body-shut` (spawn/create-source in a run) and the C0 `c0-gate` root check: kept, but it is NOT
+  unreachable: a normal run can exist in a released world (a computation started after T21, notes above, C1 quiet
+  half), and the engine's `host-shut?` exempts a run's own slice while `spawn!`/`create-source-in-run!` have no
+  released check (engine-v2 c1a47bb). So the model refuses a body creation after release that the engine commits.
+  Engine/spec decision (C1 Q5/Q8: does "a released world takes no new creation" cover body creations of a run
+  that started after the release?).
+- Item 6: the engine commits `open-scope!` and `enter-finally!` with no run-mode check (core.cljc 4454, 1691). The
+  model's `t-open-scope` (`open-ok`: run-normal) and `t-finally-enter` (run-normal) refuse them in a cleanup slice.
+  Admitting them needs: the current scope of an unwinding run (the model's T14 cascade cancels the subtree's runs;
+  whether it closes the run's own scopes before retirement must match the engine, which removes scopes only at
+  retirement), a new open explicit scope under a possibly closed parent (I1 scope parents, I8 g8 "nothing new under a
+  closed scope", oscope's scope ledger), and a pushed region on an unwinding run (I9 unwinding-acts-ok, acts.clj's
+  finalizer facts, progress's mu-f measure). Estimate 3-5 days of proofs through the copier bundles (g1, g8, oscope,
+  gx/acts, i9, progress).

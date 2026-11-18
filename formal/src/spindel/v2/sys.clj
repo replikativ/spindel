@@ -4,7 +4,9 @@
   A cell holds one layer-1 `World`. A fork is a value copy of the parent's world; the child's
   inherited armed resources are recorded as dormant and settled by `wake`, which is a sequence of
   layer-1 items (a timer stays armed; any other resource fires `err ::forked` and is acknowledged).
-  So every world of every reachable system satisfies the layer-1 bundle `p3l` (F5), by `step-p3l`.
+  So every world of every reachable system satisfies the layer-1 top invariant `inv` (F5,
+  spindel.v2.top: p3m, I5 observe, I9, I10 slice, I3), by `inv-step`; the system reachability
+  `SysReach` and `sys-reach-inv` are in spindel.v2.systop.
 
   The marker of a fork (spec §8.1: `{child, owner}` in the parent, retained by its owner scope) is
   the child cell's `parent` and `owner` fields here: a marker retains nothing in the parent, so
@@ -27,15 +29,14 @@
     merge   sinv-merge, merge-frame, merge-refused (a refused merge changes nothing), merge-unchanged
             (a child that wrote no inherited source merges to the same parent)
     release sinv-idle-release, drop-step-comm (dropping a world commutes with every step elsewhere)
-    C1      sinv-accept, sinv-complete, sinv-release-unborn (p3l-release-unborn: p3l reads no
+    C1      sinv-accept, sinv-complete, sinv-release-unborn (top-inv-release-unborn: inv reads no
             `released`), complete-latch. Completion soundness `cinv` (a live complete cell is
             ready: released and: unborn, or no run and every accepted child complete or
             collected): cinv-none, and kept by accept, complete, release-unborn, activate, drop,
             idle-release unconditionally; by fork, fork-effect, instantiate for an id no cell has
-            accepted; by step, wake, resume, merge, publish, abandon under the premise `hq` (a
-            layer-1 step keeps a released world released and a quiet world quiet; false of an
-            arbitrary p3l world, kept as stated). Without hq (`cinv-step-q`, `cinv-wake-q`,
-            `cinv-resume-q`, `cinv-merge-q`, `cinv-publish-q`, `cinv-abandon-q`): under `qsinv` (every
+            accepted; by step, wake, resume, merge, publish, abandon (`cinv-step-q`, `cinv-wake-q`,
+            `cinv-resume-q`, `cinv-merge-q`, `cinv-publish-q`, `cinv-abandon-q`; their earlier forms
+            under the premise HQ were vacuous, HQ being false, and are deleted): under `qsinv` (every
             live cell is an E4-released unborn instance or holds spindel.v2.qworld's `qinv`) and
             `qpinv` (every live publication's basis is released or holds qinv), both kept by every
             operation (`qsinv-*`, `qpinv-*`). A fork or fork effect of an unborn cell (E4-released
@@ -70,7 +71,8 @@
             [spindel.v2.qworld]
             [spindel.v2.ledger :refer [task-complete]]
             [spindel.v2.owned :refer :all]
-            [spindel.v2.drained :refer [fork-out]]))
+            [spindel.v2.drained :refer [fork-out]]
+            [spindel.v2.top :refer [inv]]))
 
 (a/defn err-forked [] Nat 1)
 ;; layer 1 arms timers and offloads only (`arm-kind-ok`): a savepoint is an offload-kind resource,
@@ -109,14 +111,15 @@
 (a/structure Pub [] (cell Nat) (res Nat) (run Nat) (basis World) (live Bool))
 
 ;; every live world satisfies the layer-1 bundle; so does every live publication's basis
+;; (the top invariant `inv` of spindel.v2.top: p3m, I5 observe, I9, I10 slice, I3)
 (a/defn sinv [cells :- (=> Nat Cell)] Prop
-  (forall [k :- Nat] (=> (= (:live (cells k)) true) (= (p3l (:world (cells k))) true))))
+  (forall [k :- Nat] (=> (= (:live (cells k)) true) (= (inv (:world (cells k))) true))))
 
 (a/defn pinv [pubs :- (=> Nat Pub)] Prop
-  (forall [p :- Nat] (=> (= (:live (pubs p)) true) (= (p3l (:basis (pubs p))) true))))
+  (forall [p :- Nat] (=> (= (:live (pubs p)) true) (= (inv (:basis (pubs p))) true))))
 
 (a/theorem sinv-put [cells :- (=> Nat Cell), k :- Nat, c2 :- Cell]
-  (=> (sinv cells) (=> (= (:live c2) true) (= (p3l (:world c2)) true)) (sinv (fupd cells k c2)))
+  (=> (sinv cells) (=> (= (:live c2) true) (= (inv (:world c2)) true)) (sinv (fupd cells k c2)))
   (intros hs hc)
   (simp only [sinv] at hs)
   (simp only [sinv])
@@ -134,9 +137,12 @@
     (simp only [fupd-same])
     (exact (hc hl))))
 
+(a/theorem sinv-live-inv [cells :- (=> Nat Cell), k :- Nat]
+  (=> (sinv cells) (= (:live (cells k)) true) (= (inv (:world (cells k))) true))
+  (intros hs hl) (simp only [sinv] at hs) (exact (hs k hl)))
 (a/theorem sinv-live [cells :- (=> Nat Cell), k :- Nat]
   (=> (sinv cells) (= (:live (cells k)) true) (= (p3l (:world (cells k))) true))
-  (intros hs hl) (simp only [sinv] at hs) (exact (hs k hl)))
+  (intros hs hl) (exact (inv-p3l _ (sinv-live-inv cells k hs hl))))
 
 ;; ---------------------------------------------------------------------------
 ;; L1: a layer-1 item in world k
@@ -209,6 +215,12 @@
   (cases hs (seal-shut sealed w it))
   (case [false] (simp only [cstep hs]) (exact (step-p3l w it h)))
   (case [true] (simp only [cstep hs]) (exact h)))
+(a/theorem inv-cstep [sealed :- Bool, w :- World, it :- Item]
+  (=> (= (inv w) true) (= (inv (cstep sealed w it)) true))
+  (intro h)
+  (cases hs (seal-shut sealed w it))
+  (case [false] (simp only [cstep hs]) (exact (inv-step w it h)))
+  (case [true] (simp only [cstep hs]) (exact h)))
 
 (a/defn cell-step [c :- Cell, it :- Item] Cell
   (Cell.mk (cstep (:sealed c) (:world c) it) (:live c) (:parent c) (:owner c) (:dormant c)
@@ -225,11 +237,11 @@
 (a/theorem sinv-step [cells :- (=> Nat Cell), k :- Nat, it :- Item]
   (=> (sinv cells) (sinv (sys-step cells k it)))
   (intro hs)
-  (have hc (=> (= (:live (cell-step (cells k) it)) true) (= (p3l (:world (cell-step (cells k) it))) true)))
+  (have hc (=> (= (:live (cell-step (cells k) it)) true) (= (inv (:world (cell-step (cells k) it))) true)))
   (intro hl)
   (simp only [cell-step] at hl)
   (simp only [cell-step])
-  (exact (p3l-cstep (:sealed (cells k)) (:world (cells k)) it (sinv-live cells k hs hl)))
+  (exact (inv-cstep (:sealed (cells k)) (:world (cells k)) it (sinv-live-inv cells k hs hl)))
   (simp only [sys-step])
   (exact (sinv-put cells k (cell-step (cells k) it) hs hc)))
 
@@ -280,10 +292,10 @@
   (cases hu (:unborn (cells k)))
   (case [true] (simp only [sys-fork hu]) (exact hs))
   (case [false]
-    (have hc (=> (= (:live (fork-cell (cells k) k owner)) true) (= (p3l (:world (fork-cell (cells k) k owner))) true)))
+    (have hc (=> (= (:live (fork-cell (cells k) k owner)) true) (= (inv (:world (fork-cell (cells k) k owner))) true)))
     (intro hl)
     (simp only [fork-cell])
-    (exact (sinv-live cells k hs hlk))
+    (exact (sinv-live-inv cells k hs hlk))
     (simp only [sys-fork hu])
     (exact (sinv-put cells m (fork-cell (cells k) k owner) hs hc))))
 
@@ -298,6 +310,11 @@
   (intro h)
   (simp only [fire-ack])
   (exact (step-p3l _ (Item.resource-ack z) (step-p3l w (Item.resource-fire z tag v) h))))
+(a/theorem inv-fire-ack [w :- World, z :- Nat, tag :- Nat, v :- Nat]
+  (=> (= (inv w) true) (= (inv (fire-ack w z tag v)) true))
+  (intro h)
+  (simp only [fire-ack])
+  (exact (inv-step _ (Item.resource-ack z) (inv-step w (Item.resource-fire z tag v) h))))
 
 ;; C1 R1: an inherited timer stays armed (it is rescheduled); any other inherited resource is settled
 ;; at the first turn: armed, it fails with ::forked and is acknowledged; cancelling or fired but
@@ -322,12 +339,28 @@
     (case [false]
       (simp only [wake-one hf hk])
       (exact (p3l-fire-ack w z res-err err-forked h)))))
+(a/theorem inv-wake-one [w :- World, z :- Nat]
+  (=> (= (inv w) true) (= (inv (wake-one w z)) true))
+  (intro h)
+  (cases hf (resource-find w z))
+  (case [none] (simp only [wake-one hf]) (exact h))
+  (case [some r]
+    (cases hk (timer-kept r))
+    (case [true] (simp only [wake-one hf hk]) (exact h))
+    (case [false]
+      (simp only [wake-one hf hk])
+      (exact (inv-fire-ack w z res-err err-forked h)))))
 
 (a/theorem p3l-wake-all [zs :- (List Nat)]
   (forall [w :- World] (=> (= (p3l w) true) (= (p3l (wake-all w zs)) true)))
   (induction zs)
   (case [nil] (intros w h) (simp only [wake-all]) (exact h))
   (case [cons z t ih] (intros w h) (simp only [wake-all]) (exact (ih (wake-one w z) (p3l-wake-one w z h)))))
+(a/theorem inv-wake-all [zs :- (List Nat)]
+  (forall [w :- World] (=> (= (inv w) true) (= (inv (wake-all w zs)) true)))
+  (induction zs)
+  (case [nil] (intros w h) (simp only [wake-all]) (exact h))
+  (case [cons z t ih] (intros w h) (simp only [wake-all]) (exact (ih (wake-one w z) (inv-wake-one w z h)))))
 
 (a/defn wake-cell [c :- Cell] Cell
   (Cell.mk (wake-all (:world c) (:dormant c)) (:live c) (:parent c) (:owner c) (List.nil Nat)
@@ -343,11 +376,11 @@
   (cases hu (:unborn (cells k)))
   (case [true] (simp only [sys-wake hu]) (exact hs))
   (case [false]
-    (have hc (=> (= (:live (wake-cell (cells k))) true) (= (p3l (:world (wake-cell (cells k)))) true)))
+    (have hc (=> (= (:live (wake-cell (cells k))) true) (= (inv (:world (wake-cell (cells k)))) true)))
     (intro hl)
     (simp only [wake-cell] at hl)
     (simp only [wake-cell])
-    (exact (p3l-wake-all (:dormant (cells k)) (:world (cells k)) (sinv-live cells k hs hl)))
+    (exact (inv-wake-all (:dormant (cells k)) (:world (cells k)) (sinv-live-inv cells k hs hl)))
     (simp only [sys-wake hu])
     (exact (sinv-put cells k (wake-cell (cells k)) hs hc))))
 
@@ -434,8 +467,8 @@
   (cases hc (:complete (cells k)))
   (case [true] (simp only [sys-accept hc]) (exact hs))
   (case [false]
-    (have h1 (=> (= (:live (accept-cell (cells k) m)) true) (= (p3l (:world (accept-cell (cells k) m))) true)))
-    (intro hl) (simp only [accept-cell] at hl) (simp only [accept-cell]) (exact (sinv-live cells k hs hl))
+    (have h1 (=> (= (:live (accept-cell (cells k) m)) true) (= (inv (:world (accept-cell (cells k) m))) true)))
+    (intro hl) (simp only [accept-cell] at hl) (simp only [accept-cell]) (exact (sinv-live-inv cells k hs hl))
     (simp only [sys-accept hc])
     (exact (sinv-put cells k (accept-cell (cells k) m) hs h1))))
 
@@ -445,8 +478,8 @@
   (cases hc (complete-ready cells k))
   (case [false] (simp only [sys-complete hc]) (exact hs))
   (case [true]
-    (have h1 (=> (= (:live (complete-cell (cells k))) true) (= (p3l (:world (complete-cell (cells k)))) true)))
-    (intro hl) (simp only [complete-cell] at hl) (simp only [complete-cell]) (exact (sinv-live cells k hs hl))
+    (have h1 (=> (= (:live (complete-cell (cells k))) true) (= (inv (:world (complete-cell (cells k)))) true)))
+    (intro hl) (simp only [complete-cell] at hl) (simp only [complete-cell]) (exact (sinv-live-inv cells k hs hl))
     (simp only [sys-complete hc])
     (exact (sinv-put cells k (complete-cell (cells k)) hs h1))))
 
@@ -495,7 +528,7 @@
 (a/theorem sinv-drop [cells :- (=> Nat Cell), k :- Nat]
   (=> (sinv cells) (sinv (sys-drop cells k)))
   (intro hs)
-  (have hc (=> (= (:live (drop-cell (cells k))) true) (= (p3l (:world (drop-cell (cells k)))) true)))
+  (have hc (=> (= (:live (drop-cell (cells k))) true) (= (inv (:world (drop-cell (cells k)))) true)))
   (intro hl)
   (simp only [drop-cell] at hl)
   (simp at hl)
@@ -517,6 +550,11 @@
   (intro h)
   (simp only [fork-effect-world])
   (exact (p3l-fire-ack _ (:next-id w) res-ok v (step-p3l w (Item.arm st rk-offload kont (:next-id w)) h))))
+(a/theorem inv-fork-effect-world [w :- World, st :- Nat, kont :- Nat, v :- Nat]
+  (=> (= (inv w) true) (= (inv (fork-effect-world w st kont v)) true))
+  (intro h)
+  (simp only [fork-effect-world])
+  (exact (inv-fire-ack _ (:next-id w) res-ok v (inv-step w (Item.arm st rk-offload kont (:next-id w)) h))))
 
 (a/defn fork-effect-cell [c :- Cell, k :- Nat, owner :- Nat, st :- Nat, kont :- Nat, v :- Nat] Cell
   (Cell.mk (fork-effect-world (:world c) st kont v) true k owner
@@ -546,10 +584,10 @@
   (case [true] (simp only [sys-fork-effect hu]) (exact hs))
   (case [false]
     (have hc (=> (= (:live (fork-effect-cell (cells k) k owner st kont v)) true)
-                 (= (p3l (:world (fork-effect-cell (cells k) k owner st kont v))) true)))
+                 (= (inv (:world (fork-effect-cell (cells k) k owner st kont v))) true)))
     (intro hl)
     (simp only [fork-effect-cell])
-    (exact (p3l-fork-effect-world (:world (cells k)) st kont v (sinv-live cells k hs hlk)))
+    (exact (inv-fork-effect-world (:world (cells k)) st kont v (sinv-live-inv cells k hs hlk)))
     (simp only [sys-fork-effect hu])
     (exact (sinv-put cells m (fork-effect-cell (cells k) k owner st kont v) hs hc))))
 
@@ -582,7 +620,7 @@
     (have e (= q p)) (exact (Nat.eq_of_beq_eq_true hqp))
     (rw [e])
     (simp only [pubs-publish fupd-same])
-    (exact (step-p3l (:world (cells k)) (publish-item st kont fresh) (sinv-live cells k hs hlk)))))
+    (exact (inv-step (:world (cells k)) (publish-item st kont fresh) (sinv-live-inv cells k hs hlk)))))
 
 ;; ---------------------------------------------------------------------------
 ;; L6 (S2): resume in place: the savepoint fires with `ok v` in the publishing world and is acknowledged
@@ -598,11 +636,11 @@
   (=> (sinv cells) (sinv (sys-resume cells pubs p v)))
   (intro hs)
   (have hc (=> (= (:live (resume-cell (cells (:cell (pubs p))) (:res (pubs p)) v)) true)
-               (= (p3l (:world (resume-cell (cells (:cell (pubs p))) (:res (pubs p)) v))) true)))
+               (= (inv (:world (resume-cell (cells (:cell (pubs p))) (:res (pubs p)) v))) true)))
   (intro hl)
   (simp only [resume-cell] at hl)
   (simp only [resume-cell])
-  (exact (p3l-fire-ack (:world (cells (:cell (pubs p)))) (:res (pubs p)) res-ok v (sinv-live cells (:cell (pubs p)) hs hl)))
+  (exact (inv-fire-ack (:world (cells (:cell (pubs p)))) (:res (pubs p)) res-ok v (sinv-live-inv cells (:cell (pubs p)) hs hl)))
   (simp only [sys-resume])
   (exact (sinv-put cells (:cell (pubs p)) (resume-cell (cells (:cell (pubs p))) (:res (pubs p)) v) hs hc)))
 
@@ -635,7 +673,7 @@
   (=> (sinv cells) (pinv pubs) (= (:live (pubs p)) true) (sinv (sys-instantiate cells pubs p m owner)))
   (intros hs hp hlp)
   (simp only [pinv] at hp)
-  (have hc (=> (= (:live (inst-cell (pubs p) owner)) true) (= (p3l (:world (inst-cell (pubs p) owner))) true)))
+  (have hc (=> (= (:live (inst-cell (pubs p) owner)) true) (= (inv (:world (inst-cell (pubs p) owner))) true)))
   (intro hl)
   (simp only [inst-cell])
   (exact (hp p hlp))
@@ -661,12 +699,12 @@
   (cases hg (act-ok (cells m)))
   (case [false] (simp only [sys-activate hg]) (exact hs))
   (case [true]
-    (have hc (=> (= (:live (act-cell (cells m) v)) true) (= (p3l (:world (act-cell (cells m) v))) true)))
+    (have hc (=> (= (:live (act-cell (cells m) v)) true) (= (inv (:world (act-cell (cells m) v))) true)))
     (intro hl)
     (simp only [act-cell] at hl)
     (simp only [act-cell])
-    (exact (p3l-wake-all (:dormant (cells m)) _
-              (p3l-fire-ack (:world (cells m)) (:pending (cells m)) res-ok v (sinv-live cells m hs hl))))
+    (exact (inv-wake-all (:dormant (cells m)) _
+              (inv-fire-ack (:world (cells m)) (:pending (cells m)) res-ok v (sinv-live-inv cells m hs hl))))
     (simp only [sys-activate hg])
     (exact (sinv-put cells m (act-cell (cells m) v) hs hc))))
 
@@ -817,6 +855,15 @@
     (cases ha (:accepted (world-step p it)))
     (case [false] (simp only [items-run ha]) (exact h))
     (case [true] (simp only [items-run ha]) (exact (ih _ (step-p3l p it h))))))
+(a/theorem inv-items-run [its :- (List Item)]
+  (forall [p :- World] (=> (= (inv p) true) (= (inv (:world (items-run p its))) true)))
+  (induction its)
+  (case [nil] (intros p h) (simp only [items-run]) (exact h))
+  (case [cons it t ih]
+    (intros p h)
+    (cases ha (:accepted (world-step p it)))
+    (case [false] (simp only [items-run ha]) (exact h))
+    (case [true] (simp only [items-run ha]) (exact (ih _ (inv-step p it h))))))
 
 (a/theorem p3l-merge-world [p :- World, c :- World, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat)), sealed :- Bool]
   (=> (= (p3l p) true) (= (p3l (merge-world p c b rv sealed)) true))
@@ -824,6 +871,12 @@
   (cases hm (merge-ok p c b rv sealed))
   (case [false] (simp only [merge-world hm]) (exact h))
   (case [true] (simp only [merge-world hm merge-out-world]) (exact (p3l-items-run _ p h))))
+(a/theorem inv-merge-world [p :- World, c :- World, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat)), sealed :- Bool]
+  (=> (= (inv p) true) (= (inv (merge-world p c b rv sealed)) true))
+  (intro h)
+  (cases hm (merge-ok p c b rv sealed))
+  (case [false] (simp only [merge-world hm]) (exact h))
+  (case [true] (simp only [merge-world hm merge-out-world]) (exact (inv-items-run _ p h))))
 
 ;; a refused merge changes nothing (the resolver's refusal included)
 (a/theorem merge-refused [p :- World, c :- World, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat)), sealed :- Bool]
@@ -914,11 +967,11 @@
   (=> (sinv cells) (sinv (sys-merge cells k m b rv)))
   (intro hs)
   (have hc (=> (= (:live (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b rv (seals-ok (cells k) (cells m))))) true)
-               (= (p3l (:world (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b rv (seals-ok (cells k) (cells m)))))) true)))
+               (= (inv (:world (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b rv (seals-ok (cells k) (cells m)))))) true)))
   (intro hl)
   (simp only [merge-cell] at hl)
   (simp only [merge-cell])
-  (exact (p3l-merge-world (:world (cells k)) (:world (cells m)) b rv (seals-ok (cells k) (cells m)) (sinv-live cells k hs hl)))
+  (exact (inv-merge-world (:world (cells k)) (:world (cells m)) b rv (seals-ok (cells k) (cells m)) (sinv-live-inv cells k hs hl)))
   (simp only [sys-merge])
   (exact (sinv-put cells k (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b rv (seals-ok (cells k) (cells m)))) hs hc)))
 
@@ -948,8 +1001,8 @@
 
 (a/theorem sinv-seal [cells :- (=> Nat Cell), k :- Nat] (=> (sinv cells) (sinv (sys-seal cells k)))
   (intro hs)
-  (have hc (=> (= (:live (seal-cell (cells k))) true) (= (p3l (:world (seal-cell (cells k)))) true)))
-  (intro hl) (simp only [seal-cell] at hl) (simp only [seal-cell]) (exact (sinv-live cells k hs hl))
+  (have hc (=> (= (:live (seal-cell (cells k))) true) (= (inv (:world (seal-cell (cells k)))) true)))
+  (intro hl) (simp only [seal-cell] at hl) (simp only [seal-cell]) (exact (sinv-live-inv cells k hs hl))
   (simp only [sys-seal]) (exact (sinv-put cells k (seal-cell (cells k)) hs hc)))
 
 ;; a sealed cell refuses a host write: its diff is as sealed
@@ -1030,64 +1083,6 @@
   (apply And.intro)
   (intro h) (exact ((And.left h2) ((And.left h1) h)))
   (intro h) (exact ((And.right h2) ((And.right h1) h))))
-
-(a/theorem wq-fire-ack [hq :- (forall [w :- World, it :- Item] (=> (= (p3l w) true) (wq w (:world (world-step w it))))),
-                        w :- World, z :- Nat, tag :- Nat, v :- Nat]
-  (=> (= (p3l w) true) (wq w (fire-ack w z tag v)))
-  (intro h)
-  (simp only [fire-ack])
-  (exact (wq-trans _ _ _ (hq w (Item.resource-fire z tag v) h)
-           (hq _ (Item.resource-ack z) (step-p3l w (Item.resource-fire z tag v) h)))))
-
-(a/theorem wq-wake-one [hq :- (forall [w :- World, it :- Item] (=> (= (p3l w) true) (wq w (:world (world-step w it))))),
-                        w :- World, z :- Nat]
-  (=> (= (p3l w) true) (wq w (wake-one w z)))
-  (intro h)
-  (cases hf (resource-find w z))
-  (case [none] (simp only [wake-one hf]) (exact (wq-refl w)))
-  (case [some r]
-    (cases hk (timer-kept r))
-    (case [true] (simp only [wake-one hf hk]) (exact (wq-refl w)))
-    (case [false] (simp only [wake-one hf hk]) (exact (wq-fire-ack hq w z res-err err-forked h)))))
-
-(a/theorem wq-wake-all [hq :- (forall [w :- World, it :- Item] (=> (= (p3l w) true) (wq w (:world (world-step w it))))),
-                        zs :- (List Nat)]
-  (forall [w :- World] (=> (= (p3l w) true) (wq w (wake-all w zs))))
-  (induction zs)
-  (case [nil] (intros w h) (simp only [wake-all]) (exact (wq-refl w)))
-  (case [cons z t ih]
-    (intros w h) (simp only [wake-all])
-    (exact (wq-trans _ _ _ (wq-wake-one hq w z h) (ih (wake-one w z) (p3l-wake-one w z h))))))
-
-(a/theorem wq-cstep [hq :- (forall [w :- World, it :- Item] (=> (= (p3l w) true) (wq w (:world (world-step w it))))), sealed :- Bool, w :- World, it :- Item]
-  (=> (= (p3l w) true) (wq w (cstep sealed w it)))
-  (intro h)
-  (cases hs (seal-shut sealed w it))
-  (case [false] (simp only [cstep hs]) (exact (hq w it h)))
-  (case [true] (simp only [cstep hs]) (exact (wq-refl w))))
-
-(a/theorem wq-items-run [hq :- (forall [w :- World, it :- Item] (=> (= (p3l w) true) (wq w (:world (world-step w it))))),
-                          its :- (List Item)]
-  (forall [p :- World] (=> (= (p3l p) true) (wq p (:world (items-run p its)))))
-  (induction its)
-  (case [nil] (intros p h) (simp only [items-run]) (exact (wq-refl p)))
-  (case [cons it t ih]
-    (intros p h)
-    (cases ha (:accepted (world-step p it)))
-    (case [false] (simp only [items-run ha]) (exact (wq-refl p)))
-    (case [true]
-      (simp only [items-run ha])
-      (exact (wq-trans _ _ _ (hq p it h)
-               (ih _ (step-p3l p it h)))))))
-
-(a/theorem wq-merge-world [hq :- (forall [w :- World, it :- Item] (=> (= (p3l w) true) (wq w (:world (world-step w it))))),
-                           p :- World, c :- World, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat)), sealed :- Bool]
-  (=> (= (p3l p) true) (wq p (merge-world p c b rv sealed)))
-  (intro h)
-  (cases hm (merge-ok p c b rv sealed))
-  (case [false] (simp only [merge-world hm]) (exact (wq-refl p)))
-  (case [true] (simp only [merge-world hm merge-out-world]) (exact (wq-items-run hq _ p h))))
-
 
 ;; ---- the invariant
 (a/defn cinv [cells :- (=> Nat Cell)] Prop
@@ -1226,48 +1221,10 @@
       (have k2 := (kids-fresh cells m c2 (:kids (cells j)) (hf j) (And.left (And.right q))))
       (simp only [(And.left r0) (And.left q) k2 (And.right (And.right q)) Bool.and_self Bool.or_true]))))
 
-;; ---- every system operation keeps cinv (HQ: a layer-1 step keeps a released world released and a
-;; quiet one quiet; fork, fork effect and instance take an id no cell has accepted)
-(a/theorem cinv-step [hq :- (forall [w :- World, it :- Item] (=> (= (p3l w) true) (wq w (:world (world-step w it))))), cells :- (=> Nat Cell), k :- Nat, it :- Item]
-  (=> (sinv cells) (cinv cells) (cinv (sys-step cells k it)))
-  (intros hs hc)
-  (simp only [sys-step])
-  (exact (cinv-world cells k (cell-step (cells k) it) hc (rfl) (rfl) (rfl) (rfl)
-           (fn [hl :- (= (:live (cells k)) true)] (wq-cstep hq (:sealed (cells k)) (:world (cells k)) it (sinv-live cells k hs hl))))))
-
-(a/theorem cinv-wake [hq :- (forall [w :- World, it :- Item] (=> (= (p3l w) true) (wq w (:world (world-step w it))))), cells :- (=> Nat Cell), k :- Nat]
-  (=> (sinv cells) (cinv cells) (cinv (sys-wake cells k)))
-  (intros hs hc)
-  (cases hu (:unborn (cells k)))
-  (case [true] (simp only [sys-wake hu]) (exact hc))
-  (case [false]
-    (simp only [sys-wake hu])
-    (exact (cinv-world cells k (wake-cell (cells k)) hc (rfl) (rfl) (rfl) (rfl)
-             (fn [hl :- (= (:live (cells k)) true)] (wq-wake-all hq (:dormant (cells k)) (:world (cells k)) (sinv-live cells k hs hl)))))))
-
-(a/theorem cinv-resume [hq :- (forall [w :- World, it :- Item] (=> (= (p3l w) true) (wq w (:world (world-step w it))))), cells :- (=> Nat Cell), pubs :- (=> Nat Pub), p :- Nat, v :- Nat]
-  (=> (sinv cells) (cinv cells) (cinv (sys-resume cells pubs p v)))
-  (intros hs hc)
-  (simp only [sys-resume])
-  (exact (cinv-world cells (:cell (pubs p)) (resume-cell (cells (:cell (pubs p))) (:res (pubs p)) v) hc (rfl) (rfl) (rfl) (rfl)
-           (fn [hl :- (= (:live (cells (:cell (pubs p)))) true)]
-             (wq-fire-ack hq (:world (cells (:cell (pubs p)))) (:res (pubs p)) res-ok v (sinv-live cells (:cell (pubs p)) hs hl))))))
-
-(a/theorem cinv-merge [hq :- (forall [w :- World, it :- Item] (=> (= (p3l w) true) (wq w (:world (world-step w it))))), cells :- (=> Nat Cell), k :- Nat, m :- Nat, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat))]
-  (=> (sinv cells) (cinv cells) (cinv (sys-merge cells k m b rv)))
-  (intros hs hc)
-  (simp only [sys-merge])
-  (exact (cinv-world cells k (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b rv (seals-ok (cells k) (cells m)))) hc (rfl) (rfl) (rfl) (rfl)
-           (fn [hl :- (= (:live (cells k)) true)] (wq-merge-world hq (:world (cells k)) (:world (cells m)) b rv (seals-ok (cells k) (cells m)) (sinv-live cells k hs hl))))))
-
-(a/theorem cinv-publish [hq :- (forall [w :- World, it :- Item] (=> (= (p3l w) true) (wq w (:world (world-step w it))))), cells :- (=> Nat Cell), k :- Nat, st :- Nat, kont :- Nat, fresh :- Nat]
-  (=> (sinv cells) (cinv cells) (cinv (sys-publish cells k st kont fresh)))
-  (intros hs hc) (simp only [sys-publish]) (exact (cinv-step hq cells k _ hs hc)))
-
-(a/theorem cinv-abandon [hq :- (forall [w :- World, it :- Item] (=> (= (p3l w) true) (wq w (:world (world-step w it))))), cells :- (=> Nat Cell), pubs :- (=> Nat Pub), p :- Nat]
-  (=> (sinv cells) (cinv cells) (cinv (sys-abandon cells pubs p)))
-  (intros hs hc) (simp only [sys-abandon]) (exact (cinv-step hq cells _ _ hs hc)))
-
+;; ---- cinv through the operations that need no layer-1 fact (fork, fork effect and instance take an id no
+;; cell has accepted). The step, wake, resume, merge, publish and abandon are the `-q` theorems below, under
+;; qsinv/qpinv: their earlier forms under the premise HQ ("a p3l step keeps a quiet world quiet") were vacuous,
+;; HQ being false (notes/PLAN.md, C1 quiet half), and are deleted.
 (a/theorem cinv-drop [cells :- (=> Nat Cell), k :- Nat]
   (=> (cinv cells) (cinv (sys-drop cells k)))
   (intro hc)
@@ -1378,6 +1335,7 @@
 ;; ---- E4: the release of an unborn instance keeps the system invariant. `p3l` reads no `released`
 ;; flag (it is checked definitionally: every bundle of p3l is a function of the other tables).
 (a/theorem p3l-release-unborn [w :- World] (= (p3l (release-unborn w)) (p3l w)) (rfl))
+(a/theorem top-inv-release-unborn [w :- World] (= (inv (release-unborn w)) (inv w)) (rfl))
 
 (a/theorem sinv-release-unborn [cells :- (=> Nat Cell), k :- Nat]
   (=> (sinv cells) (sinv (sys-release-unborn cells k)))
@@ -1386,11 +1344,11 @@
   (case [false] (simp only [sys-release-unborn hg]) (exact hs))
   (case [true]
     (simp only [sys-release-unborn hg])
-    (have hc (=> (= (:live (release-unborn-cell (cells k))) true) (= (p3l (:world (release-unborn-cell (cells k)))) true)))
+    (have hc (=> (= (:live (release-unborn-cell (cells k))) true) (= (inv (:world (release-unborn-cell (cells k)))) true)))
     (intro hl)
     (simp only [release-unborn-cell] at hl)
-    (simp only [release-unborn-cell p3l-release-unborn])
-    (exact (sinv-live cells k hs hl))
+    (simp only [release-unborn-cell top-inv-release-unborn])
+    (exact (sinv-live-inv cells k hs hl))
     (exact (sinv-put cells k (release-unborn-cell (cells k)) hs hc))))
 
 ;; ---------------------------------------------------------------------------
@@ -2111,11 +2069,11 @@
   (intro h)
   (cases hj (join-ok (cells k) t))
   (case [false] (simp only [sys-join hj]) (exact h))
-  (case [true] (simp only [sys-join hj]) (exact (sinv-put cells k _ h (fn [hl :- (= (:live (join-cell (cells k) t)) true)] (sinv-live cells k h hl))))))
+  (case [true] (simp only [sys-join hj]) (exact (sinv-put cells k _ h (fn [hl :- (= (:live (join-cell (cells k) t)) true)] (sinv-live-inv cells k h hl))))))
 (a/theorem sinv-deliver [cells :- (=> Nat Cell), k :- Nat] (=> (sinv cells) (sinv (sys-deliver cells k)))
-  (intro h) (simp only [sys-deliver]) (exact (sinv-put cells k _ h (fn [hl :- (= (:live (deliver-cell (cells k))) true)] (sinv-live cells k h hl)))))
+  (intro h) (simp only [sys-deliver]) (exact (sinv-put cells k _ h (fn [hl :- (= (:live (deliver-cell (cells k))) true)] (sinv-live-inv cells k h hl)))))
 (a/theorem sinv-withdraw [cells :- (=> Nat Cell), k :- Nat, x :- Nat] (=> (sinv cells) (sinv (sys-withdraw cells k x)))
-  (intro h) (simp only [sys-withdraw]) (exact (sinv-put cells k _ h (fn [hl :- (= (:live (withdraw-cell (cells k) x)) true)] (sinv-live cells k h hl)))))
+  (intro h) (simp only [sys-withdraw]) (exact (sinv-put cells k _ h (fn [hl :- (= (:live (withdraw-cell (cells k) x)) true)] (sinv-live-inv cells k h hl)))))
 (a/theorem qsinv-join [cells :- (=> Nat Cell), k :- Nat, t :- Nat] (=> (qsinv cells) (qsinv (sys-join cells k t)))
   (intro h)
   (cases hj (join-ok (cells k) t))
@@ -2313,20 +2271,26 @@
   (intro h) (simp only [world-quiet Bool.and_eq_true] at h) (exact (And.left h)))
 
 ;; ---- sinv
+(a/theorem inv-own [w :- World, s :- Nat, m :- Nat] (=> (= (inv w) true) (= (inv (own-world w s m)) true))
+  (intro h) (simp only [own-world]) (exact (inv-step w (Item.own s m) h)))
+(a/theorem inv-owned-done [w :- World, s :- Nat, c :- Nat] (=> (= (inv w) true) (= (inv (owned-done-world w s c)) true))
+  (intro h) (simp only [owned-done-world]) (exact (inv-step w (Item.owned-done s c) h)))
+(a/theorem inv-drain [w :- World, ids :- (List Nat)] (=> (= (inv w) true) (= (inv (drain-world w ids)) true))
+  (intro h) (simp only [drain-world]) (exact (inv-step w (Item.drain ids) h)))
 (a/theorem sinv-world-cell [cells :- (=> Nat Cell), k :- Nat, w2 :- World]
-  (=> (sinv cells) (=> (= (:live (cells k)) true) (= (p3l w2) true)) (sinv (fupd cells k (world-cell (cells k) w2))))
+  (=> (sinv cells) (=> (= (:live (cells k)) true) (= (inv w2) true)) (sinv (fupd cells k (world-cell (cells k) w2))))
   (intros hs hw)
   (apply (sinv-put cells k (world-cell (cells k) w2) hs))
   (intro hl) (simp only [world-cell] at hl) (simp only [world-cell]) (exact (hw hl)))
 (a/theorem sinv-own [cells :- (=> Nat Cell), k :- Nat, s :- Nat, m :- Nat]
   (=> (sinv cells) (sinv (sys-own cells k s m)))
   (intro hs) (simp only [sys-own])
-  (exact (sinv-world-cell cells k _ hs (fn [hl :- (= (:live (cells k)) true)] (hbw-p3l _ _ (hb-own _ s m) (sinv-live cells k hs hl))))))
+  (exact (sinv-world-cell cells k _ hs (fn [hl :- (= (:live (cells k)) true)] (inv-own _ s m (sinv-live-inv cells k hs hl))))))
 (a/theorem sinv-owned-done [cells :- (=> Nat Cell), k :- Nat, s :- Nat, c :- Nat]
   (=> (sinv cells) (sinv (sys-owned-done cells k s c)))
   (intro hs) (simp only [sys-owned-done])
   (exact (sinv-complete _ k (sinv-world-cell cells k _ hs
-           (fn [hl :- (= (:live (cells k)) true)] (hbw-p3l _ _ (hb-owned-done _ s c) (sinv-live cells k hs hl)))))))
+           (fn [hl :- (= (:live (cells k)) true)] (inv-owned-done _ s c (sinv-live-inv cells k hs hl)))))))
 (a/theorem sinv-drain [cells :- (=> Nat Cell), k :- Nat]
   (=> (sinv cells) (sinv (sys-drain cells k)))
   (intro hs)
@@ -2337,7 +2301,7 @@
     (apply (sinv-complete _ k))
     (apply (sinv-put cells k (drain-cell (cells k)) hs))
     (intro hl) (simp only [drain-cell] at hl) (simp only [drain-cell])
-    (exact (hbw-p3l _ _ (hb-drain _ (:norm (cells k))) (sinv-live cells k hs hl)))))
+    (exact (inv-drain _ (:norm (cells k)) (sinv-live-inv cells k hs hl)))))
 
 ;; ---- qsinv (with sinv: an unborn released cell's world stays released)
 (a/theorem cq-world [c :- Cell, c2 :- Cell]
@@ -2464,13 +2428,13 @@
 ;; ---- invariants of the parts
 (a/theorem sinv-disown [cells :- (=> Nat Cell), k :- Nat, m :- Nat] (=> (sinv cells) (sinv (sys-disown cells k m)))
   (intro hs)
-  (have hc (=> (= (:live (disown-cell (cells k) m)) true) (= (p3l (:world (disown-cell (cells k) m))) true)))
-  (intro hl) (simp only [disown-cell] at hl) (simp only [disown-cell]) (exact (sinv-live cells k hs hl))
+  (have hc (=> (= (:live (disown-cell (cells k) m)) true) (= (inv (:world (disown-cell (cells k) m))) true)))
+  (intro hl) (simp only [disown-cell] at hl) (simp only [disown-cell]) (exact (sinv-live-inv cells k hs hl))
   (simp only [sys-disown]) (exact (sinv-put cells k (disown-cell (cells k) m) hs hc)))
 (a/theorem sinv-reown [cells :- (=> Nat Cell), m :- Nat, k :- Nat] (=> (sinv cells) (sinv (sys-reown cells m k)))
   (intro hs)
-  (have hc (=> (= (:live (reown-cell (cells m) k)) true) (= (p3l (:world (reown-cell (cells m) k))) true)))
-  (intro hl) (simp only [reown-cell] at hl) (simp only [reown-cell]) (exact (sinv-live cells m hs hl))
+  (have hc (=> (= (:live (reown-cell (cells m) k)) true) (= (inv (:world (reown-cell (cells m) k))) true)))
+  (intro hl) (simp only [reown-cell] at hl) (simp only [reown-cell]) (exact (sinv-live-inv cells m hs hl))
   (simp only [sys-reown]) (exact (sinv-put cells m (reown-cell (cells m) k) hs hc)))
 
 ;; a complete owner never gives a token back (the transfer requires k1 not complete)
@@ -2733,8 +2697,8 @@
   (intro hs) (cases h (:released (:world (cells k))))
   (case [true] (simp only [sys-unseal h]) (exact hs))
   (case [false]
-    (have hc (=> (= (:live (unseal-cell (cells k))) true) (= (p3l (:world (unseal-cell (cells k)))) true)))
-    (intro hl) (simp only [unseal-cell] at hl) (simp only [unseal-cell]) (exact (sinv-live cells k hs hl))
+    (have hc (=> (= (:live (unseal-cell (cells k))) true) (= (inv (:world (unseal-cell (cells k)))) true)))
+    (intro hl) (simp only [unseal-cell] at hl) (simp only [unseal-cell]) (exact (sinv-live-inv cells k hs hl))
     (simp only [sys-unseal h]) (exact (sinv-put cells k (unseal-cell (cells k)) hs hc))))
 (a/theorem cinv-unseal [cells :- (=> Nat Cell), k :- Nat] (=> (cinv cells) (cinv (sys-unseal cells k)))
   (intro hc) (cases h (:released (:world (cells k))))

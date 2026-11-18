@@ -8,7 +8,8 @@
             [spindel.v2.oracle :as o]
             [spindel.v2.state :as s]
             [spindel.v2.ledger :as lg]
-            [spindel.v2.sys :as sys]))
+            [spindel.v2.sys :as sys]
+            [spindel.v2.systop]))
 
 (def theorems
   '[sinv-put step-frame sinv-step fork-refused fork-effect-refused fork-frame fork-copy sinv-fork p3l-fork-effect-world
@@ -35,14 +36,17 @@
     sinv-own sinv-owned-done sinv-drain qsinv-own qsinv-owned-done qsinv-drain cinv-own cinv-owned-done cinv-drain
     jinv-own jinv-owned-done jinv-drain complete-no-markers
     ;; C2: seal, resolver, transfer (R6), descendant (R2)
-    p3l-cstep wq-cstep rel-cstep qid-cstep qinv-cstep sealed-write sinv-seal cinv-seal qsinv-seal jinv-seal
+    p3l-cstep rel-cstep qid-cstep qinv-cstep sealed-write sinv-seal cinv-seal qsinv-seal jinv-seal
     merge-out-world merge-unsealed writes-refused writes-default-ok writes-default-no run-wr merge-default
     merge-release-refused sinv-merge-release cinv-merge-release-q qsinv-merge-release jinv-merge-release
     descendant-refl descendant-fork descendant-par par-xfer-reserve par-xfer-move descendant-xfer-reserve
     descendant-xfer-move
     tbl-all-nat-del cinv-disown-any sinv-xfer-reserve cinv-xfer-reserve qsinv-xfer-reserve jinv-xfer-reserve
     sinv-xfer-move cinv-xfer-move qsinv-xfer-move jinv-xfer-move
-    sinv-unseal cinv-unseal qsinv-unseal jinv-unseal merge-seal-same])
+    sinv-unseal cinv-unseal qsinv-unseal jinv-unseal merge-seal-same
+    ;; correctness stage 1: layer 2 on the top invariant `inv` (spindel.v2.top), the system reachability
+    inv-cstep inv-fire-ack inv-wake-one inv-wake-all inv-fork-effect-world inv-items-run inv-merge-world
+    top-inv-release-unborn sinv-live-inv sysinv-mk sys-reach-inv])
 
 (deftest theorems-kernel-checked
   (doseq [t theorems]
