@@ -1103,7 +1103,12 @@ scope requires a fork-local task.
 
 ## 6. Invariants and temporal laws
 
-Invariants hold after every commit.
+Invariants hold after every commit. Inside a commit, a constraint may be
+violated for the rows the commit is still processing, for example a cancelled
+run's task before its result is written, or the live runs of a closed scope
+before the cascade cancels them. No uncommitted state is observable: a commit
+runs under the world's gate, and every reader goes through the gate. The
+formal model calls these parts "deferred within a step" (`formal/README.md`).
 
 | # | Invariant |
 |---|---|
