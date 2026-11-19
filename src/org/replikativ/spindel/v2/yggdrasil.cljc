@@ -1285,7 +1285,9 @@
       handles, overlays and policies it holds, without `:cleanup` and without
       hooks: branches and child-only stores stay for the caller's boot cleanup,
       and the parent-ended rule no longer finds the record. The child world is
-      not released (the caller has closed it). Allowed on an `:open`,
+      not released: call `abandon!` before closing the fork's world, since a
+      fork's world ending is the parent end of its own forks, which discards
+      them (F11). Allowed on an `:open`,
       `:transferred` or `:incomplete` record (a partitioned record: abandon its
       leaves); refused while settling (`::settling`) and once settled
       (`::settled`). Later `merge!`/`discard!`/`recover!` refuse it. Returns

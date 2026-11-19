@@ -45,10 +45,13 @@
           f (ygg/fork! w {:journal #(swap! events conj [:f (:event %)])})
           g (ygg/fork! (:world f) {:journal #(swap! events conj [:g (:event %)])})]
       (put! (ygg/system (:world g) "kb") :x "grandchild")
-      (close-world! (:world g))
-      (close-world! (:world f))
+      ;; daemon stop: abandon first, then close the worlds. Closing f's world
+      ;; first ends g's parent, and the parent-ended rule would discard g.
       (ygg/abandon! f)
       (is (= [:abandoned :abandoned] [(st f) (st g)]))
+      (close-world! (:world g))
+      (close-world! (:world f))
+      (Thread/sleep 100)
       (is (= [[:g :abandoned] [:f :abandoned]] (filterv #(= :abandoned (second %)) @events))
           "the fork's forks first")
       (done! w)
