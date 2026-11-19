@@ -283,5 +283,7 @@ says how to run it).
   `notes/ansatz-gaps.md`: their repros.
 - `notes/history/PLAN.md`: the journal of the proof campaign in order (per branch: what was proved,
   model changes, questions to and answers from the engine session). It uses the old namespace names.
+- `notes/generic-preservation.md`: replacing the lemma copier by one generic preservation theorem over a
+  structure of per-primitive obligations; a prototype (`notes/generic-preservation-proto.clj`) and the path.
 - `notes/hm13-contracts.edn`, `notes/hm14-contracts.edn`: working contracts of two h-mem2 stages
   (`inv.members.await-raw`, `inv.members.dispatch`).
