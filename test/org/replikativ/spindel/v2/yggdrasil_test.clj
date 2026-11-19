@@ -70,9 +70,9 @@
           (is (= ::ygg/unmanaged-world (caught #(ygg/system u "kb"))))
           (is (= ::ygg/unmanaged-world (caught #(ygg/register! u (dh-system "x") {}))))
           (is (= ::ygg/unmanaged-world (caught #(ygg/fork! u {})))))
-        (testing "an engine fork of the registering world reads its snapshot"
+        (testing "an engine fork of the registering world has no frozen base to read"
           (is (identical? w (ygg/managed-ancestor r)))
-          (is (= "b" (val-in (ygg/view r "kb") :b)))
+          (is (= ::ygg/no-frozen-base (caught #(ygg/view r "kb"))))
           (is (= ::ygg/unmanaged-world (caught #(ygg/system r "kb")))))
         (testing "a world with no managed ancestor resolves nothing"
           (let [fresh (v2/world)]

@@ -163,7 +163,8 @@
         (is (= [:discarded :failed] ((juxt :status :hook-status) res)))
         (is (zero? @settled) "the standing hook waits for the one before it"))
       (is (= ::ygg/settled (caught #(ygg/merge! f {:owner :governance}))))
-      (is (= [:discarded :completed] ((juxt :status :hook-status) (ygg/recover! f))))
+      (is (= ::ygg/not-owner (caught #(ygg/recover! f))))
+      (is (= [:discarded :completed] ((juxt :status :hook-status) (ygg/recover! f {:owner :governance}))))
       (is (= [2 1] [@calls @settled]) "each hook completed once")
       (done! w))))
 

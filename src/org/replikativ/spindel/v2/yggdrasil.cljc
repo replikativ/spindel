@@ -44,6 +44,10 @@
 ;; parent-ended) is taken under this lock; it guards no I/O
 (defonce ^:private claim-lock #?(:clj (Object.) :cljs #js {}))
 
+;; a world gets its holder once: the check, the mint and the state write are
+;; one step (review 6)
+(defonce ^:private holder-lock #?(:clj (Object.) :cljs #js {}))
+
 (def ^:private default-deadline-ms 30000)
 
 (defrecord Fork [id world record])
@@ -129,6 +133,7 @@
     (let [m @e]
       (when (and (or (:complete? m) (some-> (deref-weak (:world m)) v2/complete?))
                  (empty? (:pending-cleanup m))
+                 (empty? (:cleanup-owed m))
                  (not-any? #(= hk (:child @%)) (vals @settlements)))
         (drop-holder! hk)))))
 
@@ -256,11 +261,13 @@
   "`w`'s own holder, minted when `w` has none; refused in an unmanaged world."
   [w op]
   (or (own-holder w)
-      (if (inherited-holder w)
-        (throw (refusal ::unmanaged-world (str op ": a world the layer did not make (F10)") {}))
-        (let [hk (mint-holder! w nil nil nil)]
-          (v2/swap-world! w assoc ::holder hk)
-          hk))))
+      (locking holder-lock
+        (or (own-holder w)
+            (if (inherited-holder w)
+              (throw (refusal ::unmanaged-world (str op ": a world the layer did not make (F10)") {}))
+              (let [hk (mint-holder! w nil nil nil)]
+                (v2/swap-world! w assoc ::holder hk)
+                hk))))))
 
 (defn register!
   "Registers `sys` in world `w` and returns its id (default
@@ -277,12 +284,21 @@
         _ (check-forkable! sys sid)
         hk (holder-for-write! w "register!")
         e (entry hk)]
-    (check-record-open! (:record @e) "register!")
-    (when (contains? (:systems @e) sid)
-      (throw (refusal ::already-registered "register!: the world already has this system" {:sid sid})))
-    (v2/swap-world! w assoc-in [::systems sid] {:base nil :meta meta})
-    (swap! e #(-> % (assoc-in [:systems sid] {:base nil :meta meta}) (assoc-in [:handles sid] sys)))
-    (if policy (swap! policies assoc [hk sid] policy) (swap! policies dissoc [hk sid]))
+    ;; admission and the reservation of the id are one step under the
+    ;; record's serialization point (review 6): a settlement claim either
+    ;; sees the system or refuses it
+    (locking claim-lock
+      (check-record-open! (:record @e) "register!")
+      (when (contains? (:systems @e) sid)
+        (throw (refusal ::already-registered "register!: the world already has this system" {:sid sid})))
+      (swap! e #(-> % (assoc-in [:systems sid] {:base nil :meta meta}) (assoc-in [:handles sid] sys)))
+      (if policy (swap! policies assoc [hk sid] policy) (swap! policies dissoc [hk sid])))
+    (try (v2/swap-world! w assoc-in [::systems sid] {:base nil :meta meta})
+         (catch #?(:clj Throwable :cljs :default) t
+           (locking claim-lock
+             (swap! e #(-> % (update :systems dissoc sid) (update :handles dissoc sid)))
+             (swap! policies dissoc [hk sid]))
+           (throw t)))
     sid))
 
 (defn unregister!
@@ -295,13 +311,15 @@
   (let [hk (own-holder w)
         e (entry hk)]
     (when e
-      (check-record-open! (:record @e) "unregister!")
-      (when-let [s (get-in @e [:systems sid])]
-        (when (:base s)
-          (throw (refusal ::inherited-system "unregister!: the system is inherited from the parent" {:sid sid})))
+      (when (locking claim-lock
+              (check-record-open! (:record @e) "unregister!")
+              (when-let [s (get-in @e [:systems sid])]
+                (when (:base s)
+                  (throw (refusal ::inherited-system "unregister!: the system is inherited from the parent" {:sid sid})))
+                (swap! e #(-> % (update :systems dissoc sid) (update :handles dissoc sid)))
+                (swap! policies dissoc [hk sid])
+                true))
         (v2/swap-world! w update ::systems dissoc sid)
-        (swap! e #(-> % (update :systems dissoc sid) (update :handles dissoc sid)))
-        (swap! policies dissoc [hk sid])
         true))))
 
 (defn systems
@@ -362,6 +380,7 @@
   (let [id (:fork/id r)
         st (:status r)
         internal? (::internal opts)
+        merging? (or (= :merge op) (and (= :recover op) (= :merge (:operation r))))
         allowed (case op
                   (:merge :transfer :partition) #{:open :transferred}
                   :discard #{:open :transferred :incomplete}
@@ -377,9 +396,9 @@
       (refusal ::fork-not-open (str (name op) ": the fork's settlement is not open") {:fork/id id :status st})
       (and (#{:transferred :incomplete} st) (some? (:owner r)) (not internal?) (not= (:owner opts) (:owner r)))
       (refusal ::not-owner "the fork was transferred: its owner settles it" {:fork/id id :owner (:owner r)})
-      (and (= :merge op) (not (parent-live? r)))
+      (and merging? (or (::parent-ended r) (not (parent-live? r))))
       (refusal ::parent-ended "the parent's runtime ended: the fork cannot merge (F4)" {:fork/id id})
-      (and (= :merge op) (some-> (entry (:parent r)) deref :record deref :status (not= :open)))
+      (and merging? (some-> (entry (:parent r)) deref :record deref :status (not= :open)))
       (refusal ::parent-not-open "the parent's settlement is not open (F4)" {:fork/id id})
       (and (#{:merge :transfer :partition} op) (seq (unsettled-children r)))
       (refusal ::open-children "the fork has unsettled forks: settle them first (F4)"
@@ -406,11 +425,14 @@
 
 (defn- let-go!
   "Ends a claim with `changes` (a non-terminal status). A parent that ended
-   meanwhile discards the fork now."
+   meanwhile discards the fork now, unless the claim released was that
+   discard itself (an `:incomplete` discard waits for `recover!` or
+   `discard!`, it does not reschedule itself)."
   [rec changes]
   (let [ended? (locking claim-lock
                  (swap! rec #(-> % (merge changes) (dissoc ::prior)))
                  (and (::parent-ended @rec)
+                      (not= :discard (:operation @rec))
                       (contains? #{:open :transferred :incomplete} (:status @rec))))]
     (when ended? (run-later! #(discard-internal! rec (::parent-ended @rec))))))
 
@@ -426,12 +448,14 @@
         (leaf-settled! prec)))))
 
 (defn- terminal!
-  "Fixes the outcome `st`: the record leaves the registry, is journaled, and
-   its holder may go."
+  "Fixes the outcome `st`: the record leaves the registry and its parent's
+   `:children` (review 10), is journaled, and its holder may go."
   [rec st]
   (locking claim-lock
     (swap! rec #(-> % (assoc :status st :phase nil) (dissoc ::prior)))
-    (swap! settlements dissoc (:fork/id @rec)))
+    (swap! settlements dissoc (:fork/id @rec))
+    (when-let [p (get @settlements (:parent-fork @rec))]
+      (swap! p update :children disj (:fork/id @rec))))
   (journal-quietly! rec st)
   (leaf-settled! rec)
   (maybe-drop-holder! (:child @rec)))
@@ -506,9 +530,21 @@
                  (throw (refusal ::parent-ended "system: the parent's holder is gone" {:sid sid})))
                (let [ph (resolve-system! parent sid)
                      ov (open-overlay ph base)
-                     h (ovl/overlay-system ov)]
-                 (swap! e #(-> % (assoc-in [:handles sid] h) (assoc-in [:overlays sid] ov)
-                               (update :pending dissoc sid)))
+                     h (ovl/overlay-system ov)
+                     ;; the settlement claim serializes with this install: a
+                     ;; resolution that lost the race (the fork was claimed or
+                     ;; settled meanwhile) discards the overlay it opened, so
+                     ;; no branch escapes settlement (review 2)
+                     installed? (locking claim-lock
+                                  (when (and (identical? e (entry hk))
+                                             (or (nil? record) (= :open (:status @record))))
+                                    (swap! e #(-> % (assoc-in [:handles sid] h) (assoc-in [:overlays sid] ov)
+                                                  (update :pending dissoc sid)))
+                                    true))]
+                 (when-not installed?
+                   (try (yp/discard! ov) (catch Throwable _ nil))
+                   (throw (refusal ::fork-not-open "system: the fork was claimed or settled while branching"
+                                   {:sid sid})))
                  (when record
                    (try (journal! record :branched)
                         (catch Throwable t
@@ -564,8 +600,8 @@
        "A read-only view of system `sid` in world `w` that never branches: `w`'s
         handle when it has one, else the store at `w`'s recorded base (`as-of`).
         An unmanaged world reads its nearest managed ancestor's store at the
-        base that ancestor recorded (F10), or, when that ancestor registered
-        the system, its snapshot at the time of the call; a world with no
+        base that ancestor recorded (F10); it is refused (`::no-frozen-base`)
+        when that ancestor registered the system itself, and a world with no
         managed ancestor reads none."
        [w sid]
        (host-only! "view")
@@ -583,9 +619,11 @@
              (cond
                (nil? s) (throw (unknown-system sid))
                (:base s) (as-of-base ihk sid (:base s))
-               :else (let [h (get-in @(entry ihk) [:handles sid])]
-                       (when-not h (throw (unknown-system sid)))
-                       (yp/as-of h (yp/snapshot-id h))))))))
+               ;; the ancestor registered the system: there is no frozen
+               ;; base, and its moving head is never read (F10, review 9)
+               :else (throw (refusal ::no-frozen-base
+                                     "view: the managed ancestor recorded no base for this system (F10)"
+                                     {:sid sid})))))))
 
      (defn snapshot-ids
        "{sid snapshot-id} of world `w`: a branched or registered system's head,
@@ -807,18 +845,25 @@
         nil, or the first failure."
        [rec]
        (let [r @rec
-             ce @(entry (:child r))
-             todo (remove (:cleaned r) (cleanup-plan r ce))]
-         (try
-           (doseq [sid todo]
-             (cleanup-system! @rec sid)
-             (swap! rec update :cleaned conj sid)
-             (journal! rec :cleaned))
-           (swap! rec assoc :cleanup :done)
-           nil
-           (catch Throwable t
+             e (entry (:child r))]
+         (if-not e
+           (let [t (refusal ::holder-gone "cleanup: the fork's holder is gone" {:fork/id (:fork/id r)})]
              (swap! rec assoc :cleanup :failed :last-error t)
-             t))))
+             t)
+           (let [todo (remove (:cleaned r) (cleanup-plan r @e))]
+             (try
+               (doseq [sid todo]
+                 (cleanup-system! @rec sid)
+                 (swap! rec update :cleaned conj sid)
+                 (journal! rec :cleaned))
+               (swap! rec assoc :cleanup :done)
+               (swap! e update :cleanup-owed disj (:fork/id r))
+               nil
+               (catch Throwable t
+                 ;; the holder keeps the overlays and policies the retry needs
+                 (swap! e update :cleanup-owed (fnil conj #{}) (:fork/id r))
+                 (swap! rec assoc :cleanup :failed :last-error t)
+                 t))))))
 
      (defn- defer-cleanup!
        "Cleanup waits for the child world to complete (§2.5): it runs from
@@ -1054,39 +1099,55 @@
                                            true (assoc :on-discard (or (:on-discard opts) (::on-discard @rec)))))
                (run-discard! fork opts)))))
 
+     (defn- retry-claim!
+       "Takes the record's retry claim for a failed hook or cleanup of a
+        settled fork, under the record's serialization point (review 4): one
+        retry at a time, by the owner of an owned record. Returns the record."
+       [rec opts]
+       (locking claim-lock
+         (let [r @rec]
+           (when (and (:owner r) (not= (:owner opts) (:owner r)))
+             (throw (refusal ::not-owner "the fork was transferred: its owner settles it"
+                             {:fork/id (:fork/id r) :owner (:owner r)})))
+           (when (or (::retrying r) (= :settling (:status r)))
+             (throw (refusal ::settling "another settlement or retry holds the fork" {:fork/id (:fork/id r)})))
+           (swap! rec assoc ::retrying true)
+           r)))
+
      (defn recover!
        "Resumes `fork`'s `:incomplete` settlement in this process: a merge from
-        the first system not done (then close, cleanup, hook), a discard's
-        remaining cleanup; or reruns a failed hook or cleanup of a settled
-        fork. Every per-system step is idempotent (the adapter contract).
-        Returns `status`."
-       [fork]
-       (host-only! "recover!")
-       (let [rec (:record fork)
-             child (:world fork)
-             r @rec]
-         (cond
-           (= :incomplete (:status r))
-           (let [opts (::resume r)]
-             (claim! rec :recover {})
-             (if (= :merge (:operation r))
-               (do (swap! rec assoc :phase :mutating)
-                   (try (merge-systems! rec opts)
-                        (catch Throwable t (throw (incomplete! rec t))))
-                   (finish! rec child opts (not (v2/complete? child)) :merged (:on-merge opts)))
-               (do (swap! rec assoc :phase :mutating)
-                   (finish! rec child opts false :discarded (:on-discard opts)))))
-
-           (= :failed (:cleanup r))
-           (do (run-cleanup! rec) (journal-quietly! rec :cleanup)
-               (when (= :failed (:hook-status @rec)) (run-hook! rec))
-               (maybe-drop-holder! (:child r))
-               (status fork))
-
-           (= :failed (:hook-status r))
-           (do (run-hook! rec) (status fork))
-
-           :else (status fork))))
+        the first system not done (then close, cleanup, hook; refused like
+        `merge!` when the parent's runtime ended or its settlement is not
+        open), a discard's remaining cleanup; or reruns a failed hook or
+        cleanup of a settled fork, one retry at a time. Every per-system step
+        is idempotent (the adapter contract). An owned (transferred) record
+        needs `{:owner owner}`. Returns `status`."
+       ([fork] (recover! fork nil))
+       ([fork opts]
+        (host-only! "recover!")
+        (let [rec (:record fork)
+              child (:world fork)
+              r @rec]
+          (if (= :incomplete (:status r))
+            (let [claimed (claim! rec :recover (select-keys opts [:owner]))
+                  ropts (::resume claimed)]
+              (swap! rec assoc :phase :mutating)
+              (if (= :merge (:operation claimed))
+                (do (try (merge-systems! rec ropts)
+                         (catch Throwable t (throw (incomplete! rec t))))
+                    (finish! rec child ropts (not (v2/complete? child)) :merged (:on-merge ropts)))
+                (finish! rec child ropts false :discarded (:on-discard ropts))))
+            (if (or (= :failed (:cleanup r)) (= :failed (:hook-status r)))
+              (do (retry-claim! rec opts)
+                  (try
+                    (when (= :failed (:cleanup @rec))
+                      (run-cleanup! rec)
+                      (journal-quietly! rec :cleanup))
+                    (when (= :failed (:hook-status @rec)) (run-hook! rec))
+                    (finally (swap! rec dissoc ::retrying)))
+                  (maybe-drop-holder! (:child r))
+                  (status fork))
+              (status fork))))))
 
      ;; ------------------------------------------------------------------------
      ;; Transfer and partition (F3; forks whose runtime ended)
@@ -1166,29 +1227,41 @@
              (when (not= (set named) all)
                (throw (refusal ::incomplete-partition "partition!: the leaves must cover the fork's systems exactly"
                                {:unknown (remove all named) :omitted (remove (set named) all)})))
-             (claim! rec :partition opts)
-             (when-not (parent-live? @rec)
-               (let [ex (refused-ex rec :parent-ended nil {})]
-                 (swap! rec assoc ::parent-ended :parent-ended)
-                 (let-go! rec {:status (prior-status @rec) :phase nil})
-                 (throw ex)))
-             (let [prior (::prior @rec)
-                   made (into {} (map (fn [[k sids]]
-                                        [k (atom {:fork/id (leaf-id (:fork/id r) k) :partition-of (:fork/id r)
-                                                  :leaf k :systems sids
-                                                  :parent (:parent r) :child (:child r) :parent-fork (:parent-fork r)
-                                                  :parent-world-id (:parent-world-id r) :child-world-id (:child-world-id r)
-                                                  :status (:status prior) :owner (:owner r) :meta (:meta r)
-                                                  :plan nil :done #{} :cleaned #{} :children #{}
-                                                  ::journal (::journal r)
-                                                  ::on-discard (or on-discard (::on-discard r))
-                                                  ::on-settled (or on-settled (::on-settled r))})]))
-                              leaves)]
-               (locking claim-lock
-                 (doseq [[_ a] made] (swap! settlements assoc (:fork/id @a) a)))
-               (let-go! rec {:status :partitioned :phase nil :operation nil :leaf-spec leaves
-                             :leaves (into #{} (map (comp :fork/id deref)) (vals made))
-                             ::leaf-records made})
-               (journal-quietly! rec :partitioned)
-               (doseq [[_ a] made] (journal-quietly! a :created))
-               (leaf-forks fork rec))))))))
+             ;; the leaves inherit the record this call claimed (its status
+             ;; and owner), not the one read before the claim (review 1)
+             (let [claimed (claim! rec :partition opts)]
+               (when-not (parent-live? @rec)
+                 (let [ex (refused-ex rec :parent-ended nil {})]
+                   (swap! rec assoc ::parent-ended :parent-ended)
+                   (let-go! rec {:status (prior-status @rec) :phase nil})
+                   (throw ex)))
+               (let [made (into {} (map (fn [[k sids]]
+                                          [k (atom {:fork/id (leaf-id (:fork/id claimed) k) :partition-of (:fork/id claimed)
+                                                    :leaf k :systems sids
+                                                    :parent (:parent claimed) :child (:child claimed)
+                                                    :parent-fork (:parent-fork claimed)
+                                                    :parent-world-id (:parent-world-id claimed)
+                                                    :child-world-id (:child-world-id claimed)
+                                                    :status (:status claimed) :owner (:owner claimed) :meta (:meta claimed)
+                                                    :plan nil :done #{} :cleaned #{} :children #{}
+                                                    ::journal (::journal claimed)
+                                                    ::on-discard (or on-discard (::on-discard claimed))
+                                                    ::on-settled (or on-settled (::on-settled claimed))})]))
+                                leaves)
+                     ;; publishing the leaves and resolving a parent end flagged
+                     ;; during the claim are one transition (review 7)
+                     ended (locking claim-lock
+                             (let [ended (::parent-ended @rec)]
+                               (doseq [[_ a] made]
+                                 (when ended (swap! a assoc ::parent-ended ended))
+                                 (swap! settlements assoc (:fork/id @a) a))
+                               (swap! rec #(-> % (merge {:status :partitioned :phase nil :operation nil :leaf-spec leaves
+                                                         :leaves (into #{} (map (comp :fork/id deref)) (vals made))
+                                                         ::leaf-records made})
+                                               (dissoc ::prior)))
+                               ended))]
+                 (journal-quietly! rec :partitioned)
+                 (doseq [[_ a] made] (journal-quietly! a :created))
+                 (when ended
+                   (doseq [[_ a] made] (run-later! #(discard-internal! a ended))))
+                 (leaf-forks fork rec)))))))))
