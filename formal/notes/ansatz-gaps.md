@@ -213,7 +213,7 @@ Lean 4.33: the equation lemmas of a structural definition on Nat are stated at `
 ;; ansatz: Elaboration error: Unknown constant: by
 ```
 
-Lean: `fun x hx => by simp [hx]` elaborates. Workaround used in `spindel.v2.rank`: a named
+Lean: `fun x hx => by simp [hx]` elaborates. Workaround used in `spindel.v2.inv.rank`: a named
 auxiliary lemma (`pend-of-edge`) passed as the function.
 
 ## sources (ergonomics): `case` failures do not show the goal
@@ -224,7 +224,7 @@ the goal. Lean reports the unsolved goal in both forms. (Related to tracker #12.
 
 ## oblig: `(fn [x :- T] (rfl))` as a term argument does not elaborate
 
-Ansatz 0.2.604. `(rfl)` works as a term when its expected type is an equation (spindel.v2.rank
+Ansatz 0.2.604. `(rfl)` works as a term when its expected type is an equation (spindel.v2.inv.rank
 passes it as an argument), but not under a `fn` binder whose body type is `(= (:b (f g)) (:b g))`
 with `f` a concrete row function (definitionally equal sides):
 
@@ -240,7 +240,7 @@ with `f` a concrete row function (definitionally equal sides):
 
 Lean: `gap_rk_use (gapRkSet 3) (fun g => rfl)` elaborates (`rfl` is checked against
 `(gapRkSet 3 g).b = g.b` by `isDefEq`, which unfolds `gapRkSet`). Workaround used in
-`spindel.v2.rank-step`: `(fn [c :- CompRow] (Eq.refl (:rank c)))`.
+`spindel.v2.inv.rank-step`: `(fn [c :- CompRow] (Eq.refl (:rank c)))`.
 
 ## oblig (recipe, with #12): a failed `require` keeps its declarations in the env
 
@@ -262,7 +262,7 @@ Ansatz 0.2.604:
 Lean 4.33 (checked with `lean_run_code`): `example (n : Nat) (h : n < 0) : 1 = 2 := by simp at h`
 succeeds: `Nat.not_lt_zero` is a simp lemma, `h` becomes `False` and the goal closes. The constant
 `Nat.not_lt_zero` is in the bundled env, so the default simp set does not use it. Workaround used in
-spindel.v2.casc (`casc-empties`, `norm-loop-ok`): `(simp only [List.length] at hp) (omega)`.
+spindel.v2.progress.casc (`casc-empties`, `norm-loop-ok`): `(simp only [List.length] at hp) (omega)`.
 
 ## p4 (recipe): name clashes across namespaces surface as "Type mismatch" in a REPL loader
 
@@ -293,7 +293,7 @@ Ansatz 0.2.604:
 ```
 
 Lean 4.33: `simp only [← h]` rewrites `b` to `a` (the reversed equation), the goal becomes `P a = true` and `exact hp`
-closes it. In spindel.v2.lit (`find-witness`) `simp only [← hf]` with `hf : h = r0` rewrote `h` to `r0`, i.e. the
+closes it. In spindel.v2.inv.copier (`find-witness`) `simp only [← hf]` with `hf : h = r0` rewrote `h` to `r0`, i.e. the
 arrow was dropped. Workaround used: rewrite the hypothesis forward (`simp only [hf] at hp`) or `rw [← h]` on the goal.
 
 ## lit (pitfalls, not gaps)
@@ -322,7 +322,7 @@ arrow was dropped. Workaround used: rewrite the hypothesis forward (`simp only [
 - Bundle parameter names must not clash with the binder names of the copied source theorems (`rid` as a bundle
   parameter shadowed `inv-cancel-acts`'s `rid` and broke every copy that used it); use unusual names (`awc`, `awr`,
   `kc0`, `kd0`, `mkm`, `nax`).
-- Name clashes across namespaces with the skip-loader: `has-false-all` (acts.clj), `of-at` (lit.clj). A clash check
+- Name clashes across namespaces with the skip-loader: `has-false-all` (inv/acts.clj), `of-at` (inv/copier.clj). A clash check
   over the file's declared names against the pre-namespace env (scratch `clashes`) catches them.
 
 ## i10 (pitfalls and ergonomics)
@@ -538,7 +538,7 @@ Lean 4.33 (checked with lean_run_code): `cases h.2 with | inl a => exact Or.inr 
 ```
 
 Lean 4.33 (checked with lean_run_code): `example (n : Nat) : ∃ m, m = n := by exact Exists.intro n (Eq.refl n)`
-succeeds (α and p are implicit and unified with the goal). Workaround used in spindel.v2.i14 (`vsucc-mem`,
+succeeds (α and p are implicit and unified with the goal). Workaround used in spindel.v2.inv.i14 (`vsucc-mem`,
 `idle-row-c`): `(apply (Exists.intro x))` then `(exact ..)`.
 
 ## i14 (pitfalls, no new tracker row)
@@ -584,7 +584,7 @@ succeeds (α and p are implicit and unified with the goal). Workaround used in s
   namespace; the next `a/defn` whose body calls it fails to compile ("No such var"). Recipe: intern stub vars for the
   declared defns before loading later forms (REPL only), or rebuild the env.
 - Rebuilding the env in the same JVM: `(reset! ansatz.core/ansatz-env nil)` then `(a/load-init!)` gives a fresh Init env
-  (`load-init!` on an existing env with the same manifest keeps it), then `(require 'spindel.v2.hmk2 :reload-all)`
+  (`load-init!` on an existing env with the same manifest keeps it), then `(require 'spindel.v2.inv.marks-step :reload-all)`
   (about 4 minutes) and a snapshot before the new namespace; this avoids giving up a JVM slot.
 - `rw [e1 e2]` where `e2`'s left side is a projection of a structure built by a function (`(:of (rk3 r))`) failed after
   `e1` had exposed the reduced projection `(:of r)` ("Did not find an occurrence"); `(exact (Eq.trans e1 e2))` works.
@@ -630,7 +630,7 @@ succeeds (α and p are implicit and unified with the goal). Workaround used in s
 - REPL vs file: `lcopy-try!` in the REPL registers copies (`hm3-take-now`, `hm3-arm-raw`, ...) that a file load lacks;
   add the `lcopy!` calls to the file and check the namespace standalone (`clojure -M:test -n <ns>-test`).
 
-## mvcc (2026-11-15, ansatz 0.2.634): tactic gaps met while proving spindel.v2.mvcc
+## mvcc (2026-11-15, ansatz 0.2.634): tactic gaps met while proving spindel.v2.layer2.mvcc
 
 Workarounds are in the proofs; each is a divergence from Lean 4.33.1 to fix in ansatz.
 - `simp only [f] at h` does not apply the `reduceCtorEq` simproc to a hypothesis: `none = some y` or
@@ -648,7 +648,7 @@ Workarounds are in the proofs; each is a divergence from Lean 4.33.1 to fix in a
 ## fork-local (2026-11-18, ansatz 0.2.634): Z#77 model stage
 
 - Another instance of the p3 pitfall (an explicit `_` for a structure argument fixed only by the expected type is
-  not postponed). Minimal shape, in spindel.v2.sys:
+  not postponed). Minimal shape, in spindel.v2.layer2.sys:
 
   ```clojure
   (a/theorem rinv-off2 [cells :- (=> Nat Cell), k :- Nat, c2 :- Cell]

@@ -12,7 +12,7 @@
   Normalization. A fork is a value copy of its parent's world, so it holds the parent's markers: the
   parent's counted ones and its own still undrained inherited ones, which is v4's union (the source's
   pending `W-NORMALIZE` and its scopes with a non-zero count). In the child they are inherited markers
-  (spindel.v2.sys `Cell.norm`), keep reasons until drained (question 17: `s ∉ W-NORMALIZE` is a
+  (spindel.v2.layer2.sys `Cell.norm`), keep reasons until drained (question 17: `s ∉ W-NORMALIZE` is a
   condition of remove-scope-if-empty!). `[:normalize]` drains them, once, at the first turn or the
   activation; a host item may come first (the fast path, question 15).
 
@@ -21,7 +21,7 @@
   (`fork-owned-in`), and Rule R's filter (a model encoding: the engine has no filter over scope rows,
   question 17) keeps the owner while it has one.
 
-  Completion (questions 15, 16): a world completes only without markers (`no-markers`, spindel.v2.sys
+  Completion (questions 15, 16): a world completes only without markers (`no-markers`, spindel.v2.layer2.sys
   `complete-ready`): W-OWNED-N all zero and W-NORMALIZE empty. The drain and owned-done both end with
   maybe-complete! (the system operation `sys-complete` after them)."
   (:require [ansatz.core :as a]

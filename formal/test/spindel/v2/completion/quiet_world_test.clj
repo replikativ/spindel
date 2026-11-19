@@ -1,0 +1,43 @@
+(ns spindel.v2.completion.quiet-world-test
+  (:require [clojure.test :refer [deftest is]]
+            [ansatz.core :as a]
+            [spindel.v2.state :as s]
+            [spindel.v2.engine :as en]
+            [spindel.v2.completion.quiet :as q]
+            [spindel.v2.completion.quiet-world :as qw]
+            [spindel.v2.completion.open-scopes]
+            [spindel.v2.engine-test :as et]))
+
+(def theorems '[step-gc step-gc-rest gc-empty step-qinv qinv-empty quiet-rows raw0-quiet quiet-refused quiet-step quiet-stays
+                quiet-no-open live-root quiet-root-only quiet-task-complete quiet-scope-complete qh-forks])
+
+(deftest theorems-kernel-checked
+  (doseq [t theorems]
+    (is (some? (.lookup ^ansatz.kernel.Env @a/ansatz-env (ansatz.kernel.Name/fromString (str t)))) (str t))))
+
+;; the Q5 trace (engine_test c1-no-roots-after-release): after the cleanup slice exits the world is
+;; quiet, K, gc and I3 hold, it holds only scopes, and items of every kind are refused
+(deftest quiet-world-runtime
+  (let [w0 s/empty-world
+        c (:next-id w0)
+        w (:world (en/world-step w0 (et/create-comp-top et/root c 1 1)))
+        w (:world (en/world-step w (et/observe c 1 (:next-id w))))
+        w (:world (en/world-step w (et/start c (:next-id w))))
+        r (:run (et/find-row w :comps c))
+        w (:world (en/world-step w (et/schedule r)))
+        w (:world (en/world-step w (et/release-world)))
+        w (:world (en/world-step w (et/slice-exit r)))]
+    (is (true? (en/world-quiet w)))
+    (is (true? (q/gk-rest w)) "K")
+    (is (true? (qw/gc-rest w)) "every cleanup entry has its run")
+    (is (true? (qw/i3 w)) "I3")
+    (is (true? (spindel.v2.completion.open-scopes/gos-rest w)) "C1c: every open non-root scope has a run (none open: no run)")
+    (is (= [s/root-scope-id] (map :id (:scopes w))) "C1c: the root scope only")
+    (is (every? empty? ((juxt :comps :tasks :runs :sources :edges :acts :res :cleanup :pubs :forks) w)) "only scopes")
+    (doseq [it [(et/start c (:next-id w)) (et/handle-new c) (et/close-scope et/root) (et/append* 3 1 0)
+                (et/create-comp-top et/root (:next-id w) 1 1) (et/schedule r) (et/release-world) (et/write 3 1)]]
+      (is (= {:accepted false :world w} (into {} (en/world-step w it))) (pr-str it)))
+    ;; C1c stage B: a fork marker (an owned fork still counted) keeps the world from being quiet
+    (let [wm (assoc w :forks [(s/->ForkRow (:next-id w) 0 s/root-scope-id)])]
+      (is (false? (en/world-quiet wm)) "a marker: not quiet")
+      (is (false? (qw/qh wm)) "a marker: not qh"))))

@@ -6,10 +6,10 @@
       p3m            the bundle chain p3b ⊂ … ⊂ p3m (hm18): activations, I12 ranks, I10, I11a and the
                      fork markers, I1, I5 dep-final, I8, the L5 computation facts, I14, h-mark, the
                      alive runs and edge kinds, h-mem2
-      svb            I5 observe (`seen` never ahead of the debtor's version)          (p3.clj)
+      svb            I5 observe (`seen` never ahead of the debtor's version)          (inv/base.clj)
       inv-i9         I9 (no activation of an unwinding run outside its cleanup)        (inv.clj)
       inv-i10-slice  I10, D0 half (one slice holder)                                    (inv.clj)
-      i3             I3 (every row live, storage, in a cleanup entry or admitted)      (qworld.clj)
+      i3             I3 (every row live, storage, in a cleanup entry or admitted)      (completion/quiet_world.clj)
 
     inv-empty   inv empty-world
     inv-step    inv w -> inv (world-step w it)            (every item, accepted or refused; `step-inv`
@@ -20,11 +20,11 @@
             [spindel.v2.state :refer :all]
             [spindel.v2.step :refer :all]
             [spindel.v2.engine :refer :all]
-            [spindel.v2.p3 :refer [svb]]
+            [spindel.v2.inv.base :refer [svb]]
             [spindel.v2.inv :refer [inv-i9 inv-i10-slice]]
-            [spindel.v2.hmk2 :refer [p3l]]
-            [spindel.v2.hm18 :refer [p3m]]
-            [spindel.v2.qworld :refer [i3]]))
+            [spindel.v2.inv.marks-step :refer [p3l]]
+            [spindel.v2.inv.members.step :refer [p3m]]
+            [spindel.v2.completion.quiet-world :refer [i3]]))
 
 ;; ===========================================================================
 ;; Layer 1: one world

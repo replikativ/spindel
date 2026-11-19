@@ -41,7 +41,7 @@
             [spindel.v2.engine :as en]
             [spindel.v2.inv :as inv]
             [spindel.v2.oracle :as o]
-            [spindel.v2.sys :as sys]
+            [spindel.v2.layer2.sys :as sys]
             [spindel.v2.local :as lc]))
 
 (def dir "test/spindel/v2/oracle/")
@@ -274,7 +274,7 @@
 ;; a task parked on a timer and a task parked on an offload. The child's first turn settles the
 ;; inherited offload with err ::forked (the timer stays armed) and the child writes the signal;
 ;; the parent's offload completes on its own. The worlds share one allocator: the replay raises
-;; `next-id` between items (`o/align`, kept by `spindel.v2.skip/p3l-skip-ids`).
+;; `next-id` between items (`o/align`, kept by `spindel.v2.layer2.skip/p3l-skip-ids`).
 (deftest sample-14-fork
   (let [pl (o/read-log "test/spindel/v2/oracle/log-sample-14-parent.edn")
         cl (vec (filter :proj (o/read-log "test/spindel/v2/oracle/log-sample-14-child.edn")))
@@ -427,7 +427,7 @@
 ;; C1c stage A samples 29-32 (engine 1aac850, spec Z#70, generator oracle/gen/samples-c1c-a.clj): no new item;
 ;; the sidecars add the completion ledger (per task :done? :retired? :srow-present? :complete?, per scope
 ;; :open? :present? :complete?) and :pending-joins, compared exactly by `check-observations` (spindel.v2.ledger,
-;; sys.clj host joins). Host joins are no item: `:joins [[step target]]` per world, admitted before that checkpoint.
+;; layer2/sys.clj host joins). Host joins are no item: `:joins [[step target]]` per world, admitted before that checkpoint.
 ;;   29  a run scope never materialized: task 3 is complete when it settles; await-joined fires at once
 ;;   30  nested explicit scope: tasks 4, 8, 13 and scopes 6, 7, 10 complete only when the grandchild retires
 ;;   31a a pending join, then release-world!: T21 cancels task 4, which completes; the join is delivered

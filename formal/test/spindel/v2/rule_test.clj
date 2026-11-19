@@ -172,7 +172,7 @@
     ;; Y#2: cancel(R, replace) is T11's replacement of a computation's run ("the computation's
     ;; creditors keep waiting"); it is never issued for a task run, where the model applies the
     ;; ordinary debtor side (the task gets err ::cancelled), so a cancelled task always has its
-    ;; result (literal I10, spindel.v2.lit). Before branch `lit` this test asserted no debtor side.
+    ;; result (literal I10, spindel.v2.inv.copier). Before branch `lit` this test asserted no debtor side.
     (testing "a replacement cancel of a task run is an ordinary cancel"
       (let [w5 (:world (r/t14-cancel w rk true))
             w6 (:world (r/t14-cancel w rk false))]
