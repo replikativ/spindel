@@ -684,20 +684,37 @@
   (doseq [n ["43-root" "43-hostfork" "43-effect" "44-w" "45-w" "46-w" "47-w" "48-w" "49-w" "50-w"]]
     (is (= [] (o/roundtrip (log n))) (str "sample " n))))
 
-;; Z#77 fork-local samples 51-56 (engine feat/v2-fork-local 869bf29+, generator oracle/gen/samples-fork-local.clj;
-;; 57-60 of the design's table are not generated yet). Each family: the root and the derived world; the child's
-;; first item is `[:retire-local]`; the sidecars add per task :local (the mark, kept after the row goes).
+;; Z#77 fork-local samples 51-60 (engine feat/v2-fork-local e758834, generator oracle/gen/samples-fork-local.clj).
+;; The projections carry each task's :local, compared by `o/diff`; a [:retire-local] commit gives one ::forked value
+;; to every task it fails. Each family: the root and the derived world (:child, :instance for 57), whose first item
+;; is `[:retire-local]`; the sidecars add per task :local (the mark, kept after the row goes).
 ;;   51  a local task parked on a deferred, an unmarked awaiter; the child entered by a write
 ;;   52  a local clock on a timer      53  a local and an unmarked run mid-offload
 ;;   54  an untouched child released   55  the (fork) effect of an unmarked run beside a local sibling (the
 ;;       sibling's own (fork) was refused, no item)   56  an unmarked and a local task on one deferred
+;;   57  an instance of an unmarked publication retires a local sibling before its activation; instantiate of a
+;;       local run's publication refused (a throw, no item)
+;;   58  detach of an unmarked task into a local scope refused; a local task detached to root keeps its mark and
+;;       is retired in the fork
+;;   59  a local scope's mailbox closed in the child, its unmarked taker woken; its computation still observed
+;;   60  cancel-task! of an inherited local task in a never-entered child: [:retire-local] first, the cancel refused
 (def ^:private fork-local-specs
   (into {}
-        (for [[n kind tag] [["51" :fork-host :fork-host] ["52" :fork-host :fork-host] ["53" :fork-host :fork-host]
-                            ["54" :fork-host :fork-host] ["55" :fork :fork] ["56" :fork-host :fork-host]]]
-          [n (let [r (log (str n "-root"))]
-               {:root {:log r :kind :root}
-                :child {:log (log (str n "-child")) :from :root :kind kind :at (c1-idx r #(= tag (first %)))}})])))
+        (concat
+         (for [[n kind tag] [["51" :fork-host :fork-host] ["52" :fork-host :fork-host] ["53" :fork-host :fork-host]
+                             ["54" :fork-host :fork-host] ["55" :fork :fork] ["56" :fork-host :fork-host]
+                             ["58" :fork-host :fork-host] ["59" :fork-host :fork-host] ["60" :fork-host :fork-host]]]
+           [n (let [r (log (str n "-root"))]
+                {:root {:log r :kind :root}
+                 :child {:log (log (str n "-child")) :from :root :kind kind :at (c1-idx r #(= tag (first %)))}})])
+         ;; 57: the instance of the unmarked task's publication (the first savepoint arm)
+         [["57" (let [r (log "57-root")]
+                  {:root {:log r :kind :root}
+                   :instance {:log (log "57-instance") :from :root :kind :instance
+                           :at (c1-idx r #(= [:arm :savepoint] [(first %) (nth % 2 nil)]))}})]])))
+
+;; the derived world of a fork-local family (:child, or :instance for 57)
+(defn- derived [m] (or (:child m) (:instance m)))
 
 (deftest fork-local-samples
   (doseq [[n spec] fork-local-specs]
@@ -709,11 +726,19 @@
       (is (= [] (o/check-observations spec fam obs)) (str "sample " n ": host observations")))))
 
 (deftest fork-local-sample-shapes
-  (doseq [n ["51" "52" "53" "54" "55" "56"]]
-    (is (= :retire-local (first (:item (first (log (str n "-child")))))) (str n ": the child's first item is [:retire-local]"))
-    (is (some #(= [true] (drop 5 (:item %))) (filter #(#{:spawn :spawn-top} (first (:item %))) (log (str n "-root"))))
-        (str n ": a fork-local spawn carries the trailing true")))
-  (is (= [:retire-local :release-world] (map (comp first :item) (log "54-child"))) "54: the untouched child retires, then releases"))
+  (doseq [[n spec] fork-local-specs]
+    (is (= :retire-local (first (:item (first (:log (derived spec)))))) (str n ": the derived world's first item is [:retire-local]"))
+    (is (some #(= [true] (drop 5 (:item %))) (filter #(#{:spawn :spawn-top} (first (:item %))) (:log (:root spec))))
+        (str n ": a fork-local spawn carries the trailing true"))
+    (is (every? #(contains? % :local) (mapcat (comp vals :tasks :proj) (concat (:log (:root spec)) (:log (derived spec)))))
+        (str n ": every projected task carries :local (compared by o/diff)")))
+  (is (= [:retire-local :release-world] (map (comp first :item) (log "54-child"))) "54: the untouched child retires, then releases")
+  (let [refused (fn [n] (mapv (comp first :item) (filter #(false? (:accepted %)) (log n))))]
+    (is (= [:detach] (refused "58-root")) "58: the detach of an unmarked task into a local scope, the only refusal")
+    (is (= [:retire-local :cancel] (map (comp first :item) (take 2 (log "60-child")))) "60: retirement precedes the host cancel")
+    (is (= [:cancel] (refused "60-child")) "60: the cancel of the retired (done) task is refused")
+    (doseq [n ["51-root" "57-root" "57-instance" "59-root" "59-child"]]
+      (is (= [] (refused n)) (str n ": no refusal (instantiate of a local publication throws without an item)")))))
 
 ;; Z#77 tripwires on every replayed world of the fork-local samples: LOC1 and LOC2 (spindel.v2.local; their
 ;; preservation by the step is not proved yet), and the retirement's post-condition right after the child's
@@ -726,7 +751,7 @@
           w (cons init (:worlds res))]
     (is (and (lc/loc1 w) (lc/loc2 w)) (str "sample " n " " k ": LOC1, LOC2")))
   (doseq [[n spec] fork-local-specs
-          :let [{:keys [res]} (:child (o/replay-family spec))
+          :let [{:keys [res]} (derived (o/replay-family spec))
                 w (first (:worlds res))]]
     (is (not-any? #(en/run-of-local w %) (:runs w)) (str n ": no run of a fork-local task after [:retire-local]"))
     (is (empty? (:cleanup w)) (str n ": no cleanup entry after [:retire-local]"))

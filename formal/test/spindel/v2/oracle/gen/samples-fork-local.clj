@@ -25,8 +25,10 @@
 ;; (K-LOCAL, the fork-local mark).
 ;;
 ;; From the repository root, with the engine branch's `src` first on the classpath (one -Xmx1g JVM), e.g.
-;;   clojure -J-Xmx1g -Sdeps '{:paths ["../spindel-v2-aseq/src" "src" "test"]}' -M:bench \
+;;   clojure -J-Xmx1g -Sdeps '{:paths ["../spindel-v2-aseq/src" "../spindel-v2-aseq/test"]}' -M \
 ;;     -i formal/test/spindel/v2/oracle/gen/samples-fork-local.clj
+;; (no :bench alias: its extra path test/ would put this worktree's verify.clj, without the task's :local, ahead of
+;; the engine's). Generated from e758834.
 ;; Generated logs are registered in oracle_test.clj (`fork-local-specs`).
 (ns samples-fork-local
   (:refer-clojure :exclude [await])
@@ -231,9 +233,104 @@
     (checkpoint! sc ws :released)
     (finish! 56 ws sc acc)))
 
-;; 57-60: TODO (scenario table above). 57 needs a savepoint publication of an unmarked run beside a local sibling,
-;; its instance (`v2/instantiate`) and `activate!`, and a refused instantiate of a local run's publication; 58 a
-;; `v2/detach!` refused into a local scope and a local task detached to root; 59 a mailbox and a computation created
-;; by a local run with an unmarked taker and a host observer; 60 `cancel-task!` through `in-world` in a never-entered
-;; child. Each as the scenarios above: worlds {:root ..} plus the derived one, checkpoints before/after the first
-;; entry, `finish!`.
+;; 57
+(let [acc (atom []) sc (sidecar) w (vworld acc) pubs (atom [])]
+  (v2/install-handlers! w {:sp (fn [pub] (swap! pubs conj pub))})
+  (let [d (in w #(v2/deferred))
+        _ (in w #(task-with {:fork-local true} (try (await d) (finally :sibling-finally))))
+        _ (settle)
+        h (in w #(task (inc (v2/savepoint :sp 1))))
+        _ (settle)
+        pub (first @pubs)
+        inst (v2/instantiate pub)
+        ws {:root w :instance inst}]
+    (checkpoint! sc ws :instantiated)
+    (v2/activate! inst 10)
+    (prn :57-instance-value (v2/value (v2/in-world inst h) 1000 :timeout))
+    (settle)
+    (checkpoint! sc ws :activated)
+    ;; a fork-local run's publication: instantiate is refused (a throw, no item)
+    (let [lh (in w #(task-with {:fork-local true} (inc (v2/savepoint :sp 2))))
+          _ (settle)
+          lpub (second @pubs)]
+      (prn :57-local-instantiate (try (v2/instantiate lpub) :accepted (catch clojure.lang.ExceptionInfo e (ex-data e))))
+      (v2/resume! lpub 41)
+      (prn :57-local-in-place (v2/value lh 1000 :timeout)))
+    (v2/release-world! inst)
+    (v2/await-complete inst 2000 :timeout)
+    (v2/resume! pub 1)
+    (v2/deliver! d 1)
+    (v2/release-world! w)
+    (settle)
+    (checkpoint! sc ws :released)
+    (finish! 57 ws sc acc)))
+
+;; 58
+(let [acc (atom []) sc (sidecar) w (vworld acc)]
+  (let [d (in w #(v2/deferred))
+        s (in w #(v2/signal 0))
+        scope (promise) inner (promise) linner (promise)
+        _ (in w #(task-with {:fork-local true}
+                   (let [x (v2/open-scope!)] (deliver scope x) (await d) (v2/close-scope-fx! x))))
+        _ (in w #(task (deliver inner (task (await d))) (await d)))
+        _ (in w #(task-with {:fork-local true} (deliver linner (task (await d))) (await d)))
+        k (deref inner 1000 nil)
+        lk (deref linner 1000 nil)
+        _ (settle)
+        _ (v2/detach! k (deref scope 1000 nil))
+        _ (v2/detach! lk (v2/root-scope w))
+        _ (settle)
+        _ (prn :58-marks (v2/fork-local? k) (v2/fork-local? lk))
+        c (v2/fork! w)
+        ws {:root w :child c}]
+    (checkpoint! sc ws :forked)
+    (v2/write! (v2/in-world c s) 1)
+    (settle)
+    (checkpoint! sc ws :entered)
+    (v2/release-world! c) (v2/deliver! d 1) (v2/release-world! w)
+    (settle)
+    (checkpoint! sc ws :released)
+    (finish! 58 ws sc acc)))
+
+;; 59
+(let [acc (atom []) sc (sidecar) w (vworld acc)]
+  (let [d (in w #(v2/deferred))
+        s (in w #(v2/signal 0))
+        mb (promise) cp (promise)
+        _ (in w #(task-with {:fork-local true} (deliver mb (v2/mailbox)) (deliver cp (spin 7)) (await d)))
+        m (deref mb 1000 nil)
+        cmp (deref cp 1000 nil)
+        taker (in w #(task (try (v2/take! m) (catch Throwable e (ex-data e)))))
+        _ (v2/observe! cmp (fn [_ _]))
+        _ (settle)
+        c (v2/fork! w)
+        ws {:root w :child c}]
+    (checkpoint! sc ws :forked)
+    (v2/write! (v2/in-world c s) 1)
+    (settle)
+    (prn :59-child-taker (v2/value (v2/in-world c taker) 1000 :timeout))
+    (checkpoint! sc ws :entered)
+    (v2/release-world! c)
+    (v2/post! m :x)
+    (v2/deliver! d 1)
+    (v2/release-world! w)
+    (settle)
+    (checkpoint! sc ws :released)
+    (finish! 59 ws sc acc)))
+
+;; 60
+(let [acc (atom []) sc (sidecar) w (vworld acc)]
+  (let [d (in w #(v2/deferred))
+        lh (in w #(task-with {:fork-local true} (try (await d) (finally :loop-finally))))
+        _ (in w #(task (try (await lh) (catch Throwable e (ex-data e)))))
+        _ (settle)
+        c (v2/fork! w)
+        ws {:root w :child c}]
+    (checkpoint! sc ws :forked)
+    (v2/cancel-task! (v2/in-world c lh))
+    (settle)
+    (checkpoint! sc ws :cancelled)
+    (v2/release-world! c) (v2/deliver! d 1) (v2/release-world! w)
+    (settle)
+    (checkpoint! sc ws :released)
+    (finish! 60 ws sc acc)))

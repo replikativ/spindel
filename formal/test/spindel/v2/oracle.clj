@@ -514,7 +514,7 @@
   "Z#77 `[:retire-local]` (T28): the model's item carries the error value v (::forked with
   :spindel/fork-local) the retired tasks without a result get. The engine logs no payload: v is read off
   the commit's projection, the result of a task that had none in the model world before (0 when no task
-  got one; the engine must give every task of one commit the same error value for this to be exact)."
+  got one; the engine gives every task of one commit the same error value, e758834)."
   [{:keys [w post]} args]
   (if (seq args)
     {:item (item :retire-local (payload (first args)))}

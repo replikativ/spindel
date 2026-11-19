@@ -15,7 +15,13 @@
      :handles 1}},
    :pending-act nil,
    :tasks
-   {4 {:owner 2, :run nil, :inputs [4], :result [:err 6], :handles 1}},
+   {4
+    {:owner 2,
+     :run nil,
+     :inputs [4],
+     :result [:err 6],
+     :handles 1,
+     :local true}},
    :comps {},
    :released false,
    :forks {},
