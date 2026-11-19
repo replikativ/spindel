@@ -4210,7 +4210,9 @@
       (drop-entries! (g w rw/W-CLEANUP) (fn [[x ek]] (if ek (mine? x) (res? x)))))
     ;; the debtor side (T10): a task without a result fails; inherited host
     ;; waits are the parent's and are not called (Z#45)
-    (doseq [r rs] (finish-task! w (rv w (g r rw/R-OF)) (forked-local-ex) true))
+    ;; (one error per commit: the item's value, as the model's `retire-local v`)
+    (let [ex (forked-local-ex)]
+      (doseq [r rs] (finish-task! w (rv w (g r rw/R-OF)) ex true)))
     ;; T13: the runs retire, their scopes close with their sources (Z#18)
     ;; and go, and the tasks complete (C1c)
     (doseq [r rs] (retire! w r))
