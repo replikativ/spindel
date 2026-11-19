@@ -4,7 +4,7 @@
   (EDN space, id-keyed, only fields the model holds) and the model's honest flags and invariant
   tripwire.
 
-  Log format (oracle contract, notes/PLAN.md): a vector of
+  Log format (oracle contract, notes/history/PLAN.md): a vector of
   `{:item [:tag ...] :accepted bool :proj {table {id row-map}}}`; nil = none (model 0), enums as
   keywords, values/continuations opaque Nats (interned by the engine's verify ns).
 
@@ -32,10 +32,10 @@
             [spindel.v2.inv :as inv]
             [spindel.v2.rule :as r]
             [spindel.v2.engine :as en]
-            [spindel.v2.casc :as casc]
-            [spindel.v2.acts :as acts]
+            [spindel.v2.progress.casc :as casc]
+            [spindel.v2.inv.acts :as acts]
             [spindel.v2.ledger :as lg]
-            [spindel.v2.sys :as sys]
+            [spindel.v2.layer2.sys :as sys]
             [spindel.v2.owned :as ow]))
 
 ;; ===========================================================================
@@ -62,7 +62,7 @@
 (def item-codes
   "Keyword payloads of items: the enum sets are disjoint, so one map suffices."
   (merge (zipmap source-kinds (range)) (zipmap res-kinds (range)) (zipmap act-modes (range))
-         ;; a savepoint is an offload-kind resource in the model (sys.clj `rk-savepoint`)
+         ;; a savepoint is an offload-kind resource in the model (layer2/sys.clj `rk-savepoint`)
          {:none 0 :ok 1 :err 2 :savepoint (.indexOf ^java.util.List res-kinds :offload)}))
 
 (defn- opt0 [x] (when-not (or (nil? x) (zero? x)) x))
@@ -600,7 +600,7 @@
     {:world (:world (last steps)) :accepted (every? :accepted steps)}))
 
 (defn skip-to
-  "`w` with its allocator raised to `n` (`spindel.v2.skip/skip-ids`: iterated `bump`, which
+  "`w` with its allocator raised to `n` (`spindel.v2.layer2.skip/skip-ids`: iterated `bump`, which
   keeps `p3l`). The worlds of a family draw their ids from one allocator, so a world's log shows
   `next-id` jump between its own items."
   [w n]
@@ -915,7 +915,7 @@
 ;;   :pending-joins                                              live host joins: admitted, not yet delivered, not
 ;;                                                               withdrawn (engine #275; question 12)
 ;; Model side: spindel.v2.ledger (`task-complete`, `scope-complete`; the run scope of task k is k + 2) and the
-;; layer-2 host joins of spindel.v2.sys (`join-ok`/`join-cell` admission, `deliver-cell`). A removed task or scope
+;; layer-2 host joins of spindel.v2.layer2.sys (`join-ok`/`join-cell` admission, `deliver-cell`). A removed task or scope
 ;; reads as the ledger says: no task row = done and retired (its completion then needs only its run scope gone),
 ;; no scope row = complete. The engine materializes a run scope only when it immediately owns something (question
 ;; 11) and registers it then; the model creates it with the run. A task's run scope (k + 2) counts as seen, and
