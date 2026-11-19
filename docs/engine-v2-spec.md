@@ -1648,8 +1648,9 @@ Shaped by the ansatz feasibility read (`ansatz/.internal/design/spindel-v2-feasi
      per proof campaign.
    - No Mathlib: Init's `List` lemmas suffice.
 
-   Size: about 78k lines in 63 namespaces, most of it bundle copies
-   (kernel-checked like the rest).
+   Size: about 77.5k lines in 64 namespaces grouped by topic
+   (`formal/README.md` has the map, including the old names); about 10,000 of
+   the 16,119 kernel theorems are bundle copies (kernel-checked like the rest).
 
 2. **Safety.** The model's top invariant is
    `inv w := p3m w ∧ svb w ∧ inv-i9 w ∧ inv-i10-slice w ∧ i3 w`
@@ -1670,9 +1671,14 @@ Shaped by the ansatz feasibility read (`ansatz/.internal/design/spindel-v2-feasi
      refused when the run's current scope is closed. The obligation that the
      guard never fires (P10) is open.
    - Rule R's lemma obligation (§3.3) is proved once.
+   - I16 (Z#77): the run half of LOC1 (`loc1-runs`) and LOC3
+     (`sys-reach-rinv`: nothing runs in a cell before its retirement) are
+     proved; LOC1's task half and LOC2 are not proved as step invariants
+     (the oracle checks them on samples 51–60); `retire-clean` and
+     `retire-quiet` are checked on replayed worlds, not proved.
 
-   **Layer 2** (`spindel.v2.systop`): `SysReach` (the systems reachable from
-   an initial one by the 28 operations of `spindel.v2.sys`, each with the
+   **Layer 2** (`spindel.v2.layer2.top`): `SysReach` (the systems reachable from
+   an initial one by the operations of `spindel.v2.layer2.sys`, each with the
    premises its theorems take, e.g. a fresh id for fork, fork effect and
    instance) and `sys-reach-inv`. Every reachable system satisfies `sysinv`:
    - every live world and every live publication's basis satisfies `inv`;
@@ -1681,7 +1687,7 @@ Shaped by the ansatz feasibility read (`ansatz/.internal/design/spindel-v2-feasi
    - every live world is quiet-compatible;
    - host joins are well formed.
 
-   **Physical:** `mv-refinement` (`spindel.v2.mvcc`). In every MVCC family
+   **Physical:** `mv-refinement` (`spindel.v2.layer2.mvcc`). In every MVCC family
    state reachable from the initial one, every active world reads each id as
    the value-copy model of layer 2 has it.
 
@@ -1705,9 +1711,9 @@ Shaped by the ansatz feasibility read (`ansatz/.internal/design/spindel-v2-feasi
    these lemmas nor the existing Z#64/I15 obligation.
 
 4. **Oracle.**
-   - The model and its proofs load together today (one namespace per proof
-     campaign); the split into a fast definitions namespace and a proofs gate
-     is planned (the restructure).
+   - The model and its proofs load together; namespaces are grouped by topic
+     (2026-11-18); a definitions-only namespace for a fast oracle gate is
+     still open.
    - The engine writes a test-only commit log. Each item carries the stamps
      and ids the engine allocated, and the model checks their freshness.
    - Scheduling choices are items, so the model refuses inadmissible ones.
