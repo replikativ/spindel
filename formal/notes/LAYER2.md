@@ -1,7 +1,7 @@
 # Layer 2 (forks, savepoints, merge): formal design, draft 1 (2026-11-13, for sign-off)
 
 > Status note (2026-11-18): the physical model `spindel.v2.cow` described in §1 and §7 was superseded by
-> `spindel.v2.mvcc` (§9) and has been retired; it is in git history. Its function update `fupd` lives in
+> `spindel.v2.layer2.mvcc` (§9) and has been retired; it is in git history. Its function update `fupd` lives in
 > `spindel.v2.util`. The current map of the model is formal/README.md.
 
 Sources: spec §8/§9 at `feat/m6-phase-a` (277e1c9), engine `fork-world*`, `activate-dormant!`,
@@ -12,7 +12,7 @@ yggdrasil `DESIGN.md` (Overlayable, overlay-as-prepare).
 
 | Layer | State | What a fork is | Theorems |
 |---|---|---|---|
-| **Semantic** (`spindel.v2.sys`) | a system: table of worlds, publications, one allocator | a *value copy* of the parent's tables, then a fix-up made of layer-1 items | every world keeps the layer-1 bundle; no cross-world reference; release leaves nothing; activation at most once; merge laws |
+| **Semantic** (`spindel.v2.layer2.sys`) | a system: table of worlds, publications, one allocator | a *value copy* of the parent's tables, then a fix-up made of layer-1 items | every world keeps the layer-1 bundle; no cross-world reference; release leaves nothing; activation at most once; merge laws |
 | **Physical** (`spindel.v2.cow`) | a heap of rows, each with an owner epoch; per world an epoch and a forward map | epoch rotation, O(1); copy on first access | the heap read through a world's view *is* that world's tables (refinement); a write in one world changes no other view; storage bound F5 |
 
 In the semantic layer isolation of frozen forks holds by construction (worlds are separate
@@ -100,11 +100,11 @@ markers). Both must be lifted first: savepoint edges as a fourth edge kind throu
    copy/write/fork/alloc/release).
 2. Layer 1 lift of `ekb`/`gw`: **not needed.** Fork markers live on the child cell (a marker retains nothing in
    the parent); a savepoint is a resource of kind `rk-savepoint`, so S1/S2/S7 are T17/T18+T15/T14.
-3. `spindel.v2.sys`: **done** for L1 step, L2/L3 fork, L4 wake, L5 publish, L6 resume, L7 instantiate, L8 activate,
+3. `spindel.v2.layer2.sys`: **done** for L1 step, L2/L3 fork, L4 wake, L5 publish, L6 resume, L7 instantiate, L8 activate,
    L9 abandon, L10 drop, L11 idle release, L12 merge. Proved: every live world and every live basis keeps `p3l`
    (F5); frames; fork and instance start from the parent's world / the basis; a second activation changes nothing;
    a refused merge changes nothing; a merge without child writes changes nothing; a drop commutes with steps elsewhere.
-   `spindel.v2.skip`: skipping ids keeps `p3l` (`p3l-skip`, `p3l-skip-ids`). The worlds of a family share one
+   `spindel.v2.layer2.skip`: skipping ids keeps `p3l` (`p3l-skip`, `p3l-skip-ids`). The worlds of a family share one
    allocator in the engine; a world's log replays in the model with `skip-ids` between items.
    **Correction (2026-11-13):** the first version armed savepoints with a resource kind of their own (4). Layer 1
    arms timers and offloads only, so every publish was refused and the savepoint theorems held of nothing. A
@@ -142,11 +142,11 @@ markers). Both must be lifted first: savepoint edges as a fourth edge kind throu
 - Merge conflict rule (§4 L12) is the minimal one: version at fork must equal the parent's version.
   Yggdrasil's per-system merge sits above it (system values are source values).
 
-## 9. Physical layer, MVCC representation (`spindel.v2.mvcc`, 2026-11-15)
+## 9. Physical layer, MVCC representation (`spindel.v2.layer2.mvcc`, 2026-11-15)
 
 Engine engine-v2 3eb18b7 (#260) + e2bd63e replaced the forward-map representation `cow` models by MVCC rows
 (spec §8.1 "Representation (MVCC, 2026-11-15)", `v2-fork-memory-design` §2, §7; spec answers A1–A8 from the
-spindel session, recorded below). `spindel.v2.mvcc` models the new one; `sys` (a fork is a value copy) is
+spindel session, recorded below). `spindel.v2.layer2.mvcc` models the new one; `sys` (a fork is a value copy) is
 unchanged and remains the semantics; `cow` stayed as the model of the old representation (since retired).
 
 **State** (`MSt`): heap `h : address -> MRow` (`[id ow so val vers]`, versions `[k m img]`), next address `n`

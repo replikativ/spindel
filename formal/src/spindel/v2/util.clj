@@ -6,10 +6,10 @@
     fupd-other    x /= k -> (fupd f k v) x = f x
     nbeq-ne       a /= b -> Nat.beq a b = false
 
-  Used by spindel.v2.sys (a system's cells and publications are functions Nat -> Cell / Pub). These
-  were part of spindel.v2.cow, the forward-map physical model that spindel.v2.mvcc superseded; cow is
+  Used by spindel.v2.layer2.sys (a system's cells and publications are functions Nat -> Cell / Pub). These
+  were part of spindel.v2.cow, the forward-map physical model that spindel.v2.layer2.mvcc superseded; cow is
   retired (see git history before this namespace) and only these four are kept, with unchanged names
-  and statements. spindel.v2.mvcc has its own copies (`mv-upd`, `mv-nbeq-ne`) and needs nothing here."
+  and statements. spindel.v2.layer2.mvcc has its own copies (`mv-upd`, `mv-nbeq-ne`) and needs nothing here."
   (:require [ansatz.core :as a]))
 
 (a/load-init!)

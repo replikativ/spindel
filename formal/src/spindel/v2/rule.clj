@@ -20,7 +20,7 @@
   a cancel acts on a non-done run, a retire on a retirable one). A cancel queues the cancels of
   the work owned by R.scope's subtree and then T13 on R; T13 and T16 queue the cancels of the
   subtree's remaining work. `casc-done` says the worklist emptied: proved for every world with
-  acts-alive (P4, spindel.v2.casc `casc-done-ok`); the tests also check it.
+  acts-alive (P4, spindel.v2.progress.casc `casc-done-ok`); the tests also check it.
 
   Transitions (Part F): `t14-cancel w r rep`, `t16-close-scope w s`, `retire-full w r` (T13),
   `t15-full w z` (T15 with the Z#6 token `ack-tok-ok`: resource row and no edge with debtor z).
@@ -65,9 +65,9 @@
   Premises here (Bool flags, also checked by the tests after every step), each discharged later:
   `live-converged` before and after the filter (P1: fuel sufficiency of live, spindel.v2.retain
   `live-converged-all`), `normalized` of the normalized world (P2: the loop terminates within its
-  fuel, spindel.v2.casc `normalized-ok` / `rule-r-normalized-ok`), and `filter-safe` (a kept edge
+  fuel, spindel.v2.progress.casc `normalized-ok` / `rule-r-normalized-ok`), and `filter-safe` (a kept edge
   keeps its endpoints, a marked edge with a kept creditor is kept: P3, from I7 and the §3.2 edges,
-  which inv-sample does not carry; spindel.v2.lit `filter-safe-of-refs`, spindel.v2.p3
+  which inv-sample does not carry; spindel.v2.inv.copier `filter-safe-of-refs`, spindel.v2.inv.base
   `step-rule-r-safe`).
 
   Readings (spec ambiguities, see the report):
@@ -401,7 +401,7 @@
 (a/defn scope-closed-in [sub :- (List Nat), s :- ScopeRow] Bool
   (Bool.or (Bool.not (reach-mem (:id s) sub)) (Bool.not (:open s))))
 ;; and no scope outside it has its parent in it (always so for a converged subtree; the guard keeps
-;; every remaining scope's parent without the convergence argument, literal I1, spindel.v2.i1)
+;; every remaining scope's parent without the convergence argument, literal I1, spindel.v2.inv.i1-scopes)
 (a/defn parent-outside [sub :- (List Nat), s :- ScopeRow] Bool
   (Bool.or (reach-mem (:id s) sub) (Bool.not (reach-mem (:parent s) sub))))
 ;; a done task whose run has retired is a tombstone: it no longer holds its owner scope (engine
@@ -475,7 +475,7 @@
 (a/defn cancel-res [w :- World, r :- RunRow] World (nat-fold res-cancel w (:resources r)))
 ;; cancel(R, replace) (Y#2, T11's predecessor) skips the debtor side of a computation run; it is
 ;; never issued for a task run, where the debtor side runs as for an ordinary cancel (so a
-;; cancelled task always gets its result: the literal I10 proof, spindel.v2.lit)
+;; cancelled task always gets its result: the literal I10 proof, spindel.v2.inv.copier)
 (a/defn cancel-debtor [rep :- Bool, w :- World, r :- RunRow] World
   (if (Bool.and rep (comp-has w (:of r))) w (debtor-side w r)))
 
@@ -770,7 +770,7 @@
 
 ;; fuel: a cancel or retire acts once per run (the guards); each acting job queues at most
 ;; #runs + 1 jobs, and each initial job at most #runs. `casc-done` is the flag; that it holds is
-;; P4 (spindel.v2.casc `casc-done-ok`).
+;; P4 (spindel.v2.progress.casc `casc-done-ok`).
 (a/defn rep-list [xs :- (List Nat), unit :- (List Nat)] (List Nat)
   (match xs [nil (List.nil Nat)] [(cons h t) (List.append Nat unit (rep-list t unit))]))
 (a/defn job-zeros [js :- (List Job)] (List Nat)

@@ -112,7 +112,7 @@
   (drive 20261105 20 60 true))
 
 ;; ---------------------------------------------------------------------------
-;; Found by the literal I10 proof (spindel.v2.lit): `complete` with a result tag other than
+;; Found by the literal I10 proof (spindel.v2.inv.copier): `complete` with a result tag other than
 ;; ok/err (tag 0 = none) was accepted, so task 14 (spawned by computation 4's run 6, kept by its
 ;; basis) ended with result none and no run, against I10 ("a task has a run until it
 ;; completes"). The model now refuses such a malformed item (`complete-refused`).

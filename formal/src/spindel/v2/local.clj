@@ -14,7 +14,7 @@
             [spindel.v2.state :refer :all]
             [spindel.v2.retain :refer :all]
             [spindel.v2.engine :refer :all]
-            [spindel.v2.lit]))
+            [spindel.v2.inv.copier]))
 
 (a/load-init!)
 

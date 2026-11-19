@@ -65,11 +65,11 @@
                  step's world is normalized and every non-done run is in its live set (I4)
   Premises of these per-step theorems: the flags of rule.clj, plus `settle-done`/`fin-done` for the
   worklists. All are discharged for every step: live-converged (P1, spindel.v2.retain
-  `live-converged-all`), normalized (P2, spindel.v2.casc `rule-r-normalized-ok`), rule-r-safe /
-  filter-safe (P3, spindel.v2.p3 `step-rule-r-safe`), casc-done (P4, spindel.v2.casc
-  `casc-done-ok`), settle-done (spindel.v2.l5 `settle-done-ok`); fin-done holds trivially (comp-final
+  `live-converged-all`), normalized (P2, spindel.v2.progress.casc `rule-r-normalized-ok`), rule-r-safe /
+  filter-safe (P3, spindel.v2.inv.base `step-rule-r-safe`), casc-done (P4, spindel.v2.progress.casc
+  `casc-done-ok`), settle-done (spindel.v2.progress.l5 `settle-done-ok`); fin-done holds trivially (comp-final
   is false, so the worklist is [d]). The forms without premises are the bundle theorems
-  (`step-inv-total`, spindel.v2.p3; `inv-step`, spindel.v2.top). The tests still check the flags.
+  (`step-inv-total`, spindel.v2.inv.base; `inv-step`, spindel.v2.top). The tests still check the flags.
 
   Readings (numbered; the rule.clj list continues to apply):
     B1. Demand (T6, T8, T22): only the reactive revalidation of a valid idle computation
@@ -96,7 +96,7 @@
         awaiting itself or one that reaches it through dep edges, which on a ranks-ok world is
         exactly \"the propagation reaches the debtor\"). A reactivation edge whose raise fails
         (a cycle through validity, not expected) is dropped together with its raise (`react-add`);
-        `ranks-ok` is preserved by every step (spindel.v2.rank-step `step-ranks`).
+        `ranks-ok` is preserved by every step (spindel.v2.inv.rank-step `step-ranks`).
     B8. T6 debtors: in a computation run a dep edge for computation, task and source
         debtors, a wait edge for a resource (Z#6); in a task run wait edges. Fast-ready: a
         live (or valid idle) computation, a completed task, a closed source, a delivered
@@ -385,7 +385,7 @@
 ;; top computation was declared invalid and re-run where the engine reactivates it (engine_test
 ;; `p6-validity-chain`). With `seen` every computation is expanded at most once, so the pops are
 ;; bounded by its own entries plus all validity entries: fuel 2 + #entries (`valid-done-ok`,
-;; spindel.v2.react).
+;; spindel.v2.progress.react).
 
 (a/defn run-busy [w :- World, c :- CompRow] Bool
   (match (run-find w (:run c)) [none false] [(some r) (run-alive r)]))
@@ -477,7 +477,7 @@
   (simp only [raise-for raise-run hd]) (exact h)
   (simp only [raise-for raise-run hd]) (exact (inv-raise-loop (raise-fuel w) d w _ h)))
 
-;; the I12 condition on one edge, and over the world (executable; preservation: spindel.v2.rank)
+;; the I12 condition on one edge, and over the world (executable; preservation: spindel.v2.inv.rank)
 (a/defn rank-edge-ok [w :- World, e :- EdgeRow] Bool
   (Bool.or (Bool.not (Nat.beq (:kind e) ek-dep))
    (Bool.or (Bool.not (comp-has w (:debtor e)))
@@ -2396,7 +2396,7 @@
 ;; effect index step, as the engine); close is T16 on an explicit scope (the engine logs it
 ;; without a token at the end of with-scope; closing a closed scope repeats the cascade)
 ;; the run's current scope must exist (it always does: a run's scope exists, I1; the guard keeps
-;; the new scope's parent existing without that invariant, literal I1 proof spindel.v2.i1)
+;; the new scope's parent existing without that invariant, literal I1 proof spindel.v2.inv.i1-scopes)
 (a/defn open-ok [w :- World, r :- RunRow] Bool (Bool.and (run-normal r) (scope-has w (cur-scope w r))))
 (a/defn t-open-scope [w :- World, st :- Nat, s :- Nat] Outcome
   (match (tok-run w st)
@@ -2534,14 +2534,14 @@
 ;; C1 world completion (T21, Z#67), layer 1 part: the world's unretired runs (the engine's W-RUNS:
 ;; +1 at run creation, -1 at T13; every task and computation run, cleanup included) and the local
 ;; test; a world is complete once released, with no run left and every owned child world complete
-;; or collected (layer 2, the owner relation of spindel.v2.sys; an unborn instance released before
+;; or collected (layer 2, the owner relation of spindel.v2.layer2.sys; an unborn instance released before
 ;; its activation is complete at once)
 (a/defn world-runs [w :- World] Nat (List.length (:runs w)))
 ;; C1c stage B: and no fork marker (the engine's W-OWNED-N all zero and W-NORMALIZE empty, questions 15, 16)
 (a/defn forks-nil [fs :- (List ForkRow)] Bool (match fs [nil true] [(cons h t) false]))
 (a/defn world-quiet [w :- World] Bool (Bool.and (:released w) (Bool.and (Nat.beq (world-runs w) 0) (forks-nil (:forks w)))))
 
-;; C1/E4: an unborn instance (layer 2, sys.clj `Cell.unborn`) released before its activation: nothing
+;; C1/E4: an unborn instance (layer 2, layer2/sys.clj `Cell.unborn`) released before its activation: nothing
 ;; in it runs, its copied work and finalizers included; the engine logs `[:release-world]` and only
 ;; sets the flag (the instance is complete at once, layer 2)
 (a/defn release-unborn [w :- World] World (set-released w true))
@@ -2654,7 +2654,7 @@
 ;; ---- B8 for spawn and create-comp: refused in a cleanup slice (a valid token of an
 ;; unwinding run)
 (a/defn in-cleanup [w :- World, st :- Nat] Bool (opt-test run-unwinding (tok-run w st)))
-;; I8 (spindel.v2.i8): a task run spawns a task / creates a source owned by its current scope; refused
+;; I8 (spindel.v2.inv.i8): a task run spawns a task / creates a source owned by its current scope; refused
 ;; when that scope is not open. A reachable-equivalent guard (an alive task run's current scope is
 ;; open: tripwire `cur-open-ok` on the random drivers and the oracle; its proof is obligation P10) that
 ;; keeps I8's proof local: no new task or source is owned by a closed scope.
@@ -3230,7 +3230,7 @@
   (case [true] (simp [t-drain hm accept] at ha)))
 
 ;; ---- Z#77 T28 `[:retire-local]` (internal; the first item of a world derived from one with fork-local runs:
-;; layer 2 applies it at the world's first entry, sys.clj `sys-retire`). Every run of a fork-local task is retired
+;; layer 2 applies it at the world's first entry, layer2/sys.clj `sys-retire`). Every run of a fork-local task is retired
 ;; and nothing runs for it. Per run R (in `local-order`, deepest run scope first, so a subtree is empty when its
 ;; run retires): R's activations go with their wait/savepoint members (`cancel-acts`, as T14); R's resources are
 ;; deleted without a fire and without an acknowledgement item (`ack-raw`, guarded as T15); R loses its finalizers
