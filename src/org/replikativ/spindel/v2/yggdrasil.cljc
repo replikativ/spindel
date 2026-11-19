@@ -184,6 +184,15 @@
   [r ce]
   (or (:systems r) (set (keys (:systems ce)))))
 
+(defn- located
+  "What the `:locate` policy (or, by default, the adapter's branch name)
+   says identifies a branched system's overlay for a cleanup after a crash."
+  [hk sid h meta]
+  (if-let [f (:locate (policy-of hk sid))]
+    (try (f {:sid sid :handle h :meta meta})
+         (catch #?(:clj Throwable :cljs :default) _ nil))
+    (when-let [b (branch-name h)] {:branch b})))
+
 (defn- locators* [r]
   (when-let [e (entry (:child r))]
     (let [ce @e]
@@ -193,16 +202,16 @@
                       [sid (cond
                              (nil? base) {:base nil :child-only true :meta meta}
                              (get-in ce [:overlays sid])
-                             (cond-> {:base base}
-                               (branch-name (get-in ce [:handles sid]))
-                               (assoc :branch (branch-name (get-in ce [:handles sid]))))
+                             (merge {:base base} (located (:child r) sid (get-in ce [:handles sid]) meta))
                              :else {:base base})])))
             (scope r ce)))))
 
 (defn locators
   "F6a: per system of `fork`, what a durable fork row needs to clean up after
-   a crash: `{sid {:base b}}`, plus `:branch` once branched (the adapter's
-   branch name), or `{:base nil :child-only true :meta m}` for a system
+   a crash: `{sid {:base b}}`, plus, once branched, what the system's
+   `:locate` policy returns (`(f {:sid :handle :meta})`, a map merged into
+   the locator; e.g. a workspace id), by default `{:branch (yp/current-branch
+   overlay)}`; or `{:base nil :child-only true :meta m}` for a system
    registered in the fork (its store config is the registrant's, in `meta`)."
   [fork]
   (locators* @(:record fork)))
@@ -274,7 +283,8 @@
    `(yp/system-id sys)`). `w` holds the canonical handle; in a fork it is a
    child-only system, adopted by the parent on merge. `:policy` overrides
    per-system settlement hooks (`:conflicts`, `:diff`, `:merge`, `:cleanup`,
-   each called with a map, §2.6); `:meta` is the registrant's plain data
+   each called with a map, §2.6) and `:locate` (what identifies a branched
+   overlay in `locators`); `:meta` is the registrant's plain data
    (`:merge-rank` orders merges). Refused in a body, in an unmanaged world,
    in a fork whose settlement is not `:open`, for an id `w` already has and
    for a system without owned snapshot or checkpoint overlays."
@@ -1265,3 +1275,47 @@
                  (when ended
                    (doseq [[_ a] made] (run-later! #(discard-internal! a ended))))
                  (leaf-forks fork rec)))))))))
+
+#?(:clj
+   (defn abandon!
+     "F11/F6a, daemon stop: forgets `fork` without settling it. Its unsettled
+      forks are abandoned first, recursively; then the record leaves the
+      registry and its parent's `:children` as `:abandoned`, is journaled once
+      (`:abandoned`, locators intact), and its holder is dropped with the
+      handles, overlays and policies it holds, without `:cleanup` and without
+      hooks: branches and child-only stores stay for the caller's boot cleanup,
+      and the parent-ended rule no longer finds the record. The child world is
+      not released: call `abandon!` before closing the fork's world, since a
+      fork's world ending is the parent end of its own forks, which discards
+      them (F11). Allowed on an `:open`,
+      `:transferred` or `:incomplete` record (a partitioned record: abandon its
+      leaves); refused while settling (`::settling`) and once settled
+      (`::settled`). Later `merge!`/`discard!`/`recover!` refuse it. Returns
+      `status`."
+     [fork]
+     (host-only! "abandon!")
+     (letfn [(abandon-rec! [rec]
+               (doseq [c (unsettled-children @rec)] (abandon-rec! c))
+               (let [hk (:child @rec)]
+                 (locking claim-lock
+                   (let [r @rec st (:status r) id (:fork/id r)]
+                     (cond
+                       (= :settling st)
+                       (throw (refusal ::settling "abandon!: another settlement holds the fork"
+                                       {:fork/id id :operation (:operation r)}))
+                       (= :partitioned st)
+                       (throw (refusal ::partitioned "abandon!: the fork is partitioned: abandon its leaves"
+                                       {:fork/id id :leaves (:leaves r)}))
+                       (not (contains? #{:open :transferred :incomplete} st))
+                       (throw (refusal ::settled "abandon!: the fork is settled" {:fork/id id :status st})))
+                     (swap! rec #(-> % (assoc :status :abandoned :phase nil) (dissoc ::prior ::hooks)))
+                     (swap! settlements dissoc id)
+                     (when-let [p (get @settlements (:parent-fork r))]
+                       (swap! p update :children disj id))))
+                 (journal-quietly! rec :abandoned)
+                 (leaf-settled! rec)
+                 ;; leaves share their partition's child holder: it goes with the last record naming it
+                 (when (not-any? #(= hk (:child @%)) (vals @settlements))
+                   (drop-holder! hk))))]
+       (abandon-rec! (:record fork))
+       (status fork))))
