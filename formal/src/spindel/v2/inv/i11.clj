@@ -18,6 +18,7 @@
   Theorems: step-gw, i11a-of, p3d = p3c && gw && inv-i11a with step-p3d, p3d-empty and
   step-i11a-total (no honest hypothesis)."
   (:require [ansatz.core :as a]
+            [spindel.v2.pres.frames :as frames]
             [clojure.string :as str]
             [spindel.v2.state :refer :all]
             [spindel.v2.edits :refer :all]
@@ -177,25 +178,10 @@
            'inv-scope-upd ['(fn [s :- ScopeRow] (Eq.refl (skw s))) 4]
            'inv-scope-ins-fresh ['(Eq.refl false) 2]}))
 (swap! (:renames GW) assoc 'inv-parts 'gw-parts 'inv-run-upd 'gw-run-upd 'inv-scope-upd 'gw-scope-upd 'inv-scope-ins-fresh 'gw-scope-ins-fresh)
-(doseq [o '[inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-task-upd inv-comp-upd
-            inv-set-pins inv-resource-del inv-cleanup-ins inv-act-upd inv-edge-upd inv-drop-cred inv-drop-edges inv-drop-act
-            inv-comp-del-unref]]
-  (prim! GW o nil))
-(a/theorem gw-rest-mark-edge [w :- World, x :- Nat] (= (gw-rest (mark-edge w x)) (gw-rest w))
-  (cases hf (edge-find w x))
-  (case [none] (simp only [mark-edge hf]))
-  (case [some e] (cases hm (:marked e)) (all_goals (simp only [mark-edge hf hm]))))
-(a/theorem gw-rest-unmark-edge [w :- World, x :- Nat] (= (gw-rest (unmark-edge w x)) (gw-rest w))
-  (cases hf (edge-find w x))
-  (case [none] (simp only [unmark-edge hf]))
-  (case [some e] (cases hm (:marked e)) (all_goals (simp only [unmark-edge hf hm]))))
-(a/theorem gw-rest-remove-edge [w :- World, x :- Nat] (= (gw-rest (remove-edge w x)) (gw-rest w))
-  (cases hf (edge-find w x))
-  (case [none] (simp only [remove-edge hf]))
-  (case [some e] (cases hm (:marked e)) (all_goals (simp only [remove-edge hf hm]))))
-(prim! GW 'mark-edge-inv-sample '(Eq.trans (gw-rest-mark-edge w x) R))
-(prim! GW 'unmark-edge-inv-sample '(Eq.trans (gw-rest-unmark-edge w x) R))
-(prim! GW 'inv-remove-edge '(Eq.trans (gw-rest-remove-edge w x) R))
+(defpart GW :reads '[forks next-id runs scopes])
+(frames/frame-theorem! 'gw-rest-mark-edge 'gw-rest 'mark-edge-inv-sample)
+(frames/frame-theorem! 'gw-rest-unmark-edge 'gw-rest 'unmark-edge-inv-sample)
+(frames/frame-theorem! 'gw-rest-remove-edge 'gw-rest 'inv-remove-edge)
 (doseq [o '[inv-source-ins-fresh inv-resource-ins-fresh inv-act-ins-fresh inv-comp-ins-fresh inv-task-ins-fresh]]
   (prim! GW o (list 'gw-rest-bump (list (symbol (str/replace (subs (name o) 4) "-fresh" "")) 'w 'r) (list 'Eq.trans '(rfl) 'R))))
 (prim! GW 'inv-bump '(gw-rest-bump w R))

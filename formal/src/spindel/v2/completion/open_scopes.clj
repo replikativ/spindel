@@ -22,6 +22,7 @@
 
   Theorems: step-gos (ga, gr0, gos, rule-r-safe raw -> gos after the step), gos-empty."
   (:require [ansatz.core :as a]
+            [spindel.v2.pres.frames :as frames]
             [clojure.string :as str]
             [spindel.v2.state :refer :all]
             [spindel.v2.edits :refer :all]
@@ -926,31 +927,15 @@
 ;; Part G. The copy of gos
 ;; ===========================================================================
 
-(a/theorem gos-rest-mark-edge [w :- World, x :- Nat] (= (gos-rest (mark-edge w x)) (gos-rest w))
-  (cases hf (edge-find w x))
-  (case [none] (simp only [mark-edge hf]))
-  (case [some e] (cases hm (:marked e)) (all_goals (simp only [mark-edge hf hm]))))
-(a/theorem gos-rest-unmark-edge [w :- World, x :- Nat] (= (gos-rest (unmark-edge w x)) (gos-rest w))
-  (cases hf (edge-find w x))
-  (case [none] (simp only [unmark-edge hf]))
-  (case [some e] (cases hm (:marked e)) (all_goals (simp only [unmark-edge hf hm]))))
-(a/theorem gos-rest-remove-edge [w :- World, x :- Nat] (= (gos-rest (remove-edge w x)) (gos-rest w))
-  (cases hf (edge-find w x))
-  (case [none] (simp only [remove-edge hf]))
-  (case [some e] (cases hm (:marked e)) (all_goals (simp only [remove-edge hf hm]))))
 
 (def GOS (mk-bundle 'gos [] "gos-"
            {'inv-run-upd ['(fn [r :- RunRow] (Eq.refl (:scope r))) 4]
             'inv-scope-upd ['(fn [s :- ScopeRow] (And.intro (Eq.refl (:parent s)) (fn [q :- (= (os-need s) true)] q))) 4]}))
 (swap! (:renames GOS) assoc 'inv-parts 'gos-parts 'inv-run-upd 'gos-run-upd 'inv-scope-upd 'gos-scope-upd)
-(doseq [o '[inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-comp-upd inv-task-upd
-            inv-set-pins inv-resource-del inv-cleanup-ins inv-act-upd inv-edge-upd inv-drop-cred inv-drop-edges inv-drop-act
-            inv-comp-del-unref inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-act-ins-fresh inv-comp-ins-fresh
-            inv-task-ins-fresh inv-bump insert-edge-fresh-inv-sample inv-fork-del]]
-  (prim! GOS o nil))
-(prim! GOS 'mark-edge-inv-sample '(Eq.trans (gos-rest-mark-edge w x) R))
-(prim! GOS 'unmark-edge-inv-sample '(Eq.trans (gos-rest-unmark-edge w x) R))
-(prim! GOS 'inv-remove-edge '(Eq.trans (gos-rest-remove-edge w x) R))
+(defpart GOS :reads '[runs scopes])
+(frames/frame-theorem! 'gos-rest-mark-edge 'gos-rest 'mark-edge-inv-sample)
+(frames/frame-theorem! 'gos-rest-unmark-edge 'gos-rest 'unmark-edge-inv-sample)
+(frames/frame-theorem! 'gos-rest-remove-edge 'gos-rest 'inv-remove-edge)
 (prim! GOS 'inv-run-ins-fresh '(gos-rest-run-ins w r R))
 (prim! GOS 'inv-close-scope-id '(gos-rest-scope-upd w x scope-close scope-close-scope-id close-hk R))
 

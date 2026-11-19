@@ -48,7 +48,9 @@
             [spindel.v2.inv.i1-scopes :refer :all]
             [spindel.v2.inv.i5 :refer :all]
             [spindel.v2.inv.i1-owners :refer :all]
-            [spindel.v2.inv.i1-runs :refer :all]))
+            [spindel.v2.inv.i1-runs :refer :all]
+            [spindel.v2.pres.frames :as frames]
+            [spindel.v2.pres.exempt :as exempt]))
 
 ;; ===========================================================================
 ;; Part A. Keys and the bundle
@@ -409,8 +411,6 @@
   (exact (g8-intro x8s _ (inv-filter-world w K (g8-sample x8s w h) hf) (g8-rest-filter x8s w K (g8-rest-of x8s w h)))))
 
 ;; ---- the allocator and insertions
-(a/theorem g8-bump [x8s :- (List Nat), w :- World] (=> (= (g8 x8s w) true) (= (g8 x8s (bump w)) true))
-  (intro h) (exact (g8-intro x8s _ (inv-bump w (g8-sample x8s w h)) (g8-rest-of x8s w h))))
 (a/theorem r8-all-mono [xs :- (List Nat), tks :- (List T8K), sks :- (List S8K), tks2 :- (List T8K), sks2 :- (List S8K),
                         ht :- (forall [t :- Nat] (=> (= (tclosed tks2 sks2 t) true) (= (tclosed tks sks t) true))), rks :- (List RKey)]
   (=> (= (tbl-all (r8 xs tks sks) rks) true) (= (tbl-all (r8 xs tks2 sks2) rks) true))
@@ -896,19 +896,6 @@
 ;; Part E. The copy over the raw transition and Rule R
 ;; ===========================================================================
 
-(a/theorem g8-rest-mark-edge [x8s :- (List Nat), w :- World, x :- Nat] (= (g8-rest x8s (mark-edge w x)) (g8-rest x8s w))
-  (cases hf (edge-find w x))
-  (case [none] (simp only [mark-edge hf]))
-  (case [some e] (cases hm (:marked e)) (all_goals (simp only [mark-edge hf hm]))))
-(a/theorem g8-rest-unmark-edge [x8s :- (List Nat), w :- World, x :- Nat] (= (g8-rest x8s (unmark-edge w x)) (g8-rest x8s w))
-  (cases hf (edge-find w x))
-  (case [none] (simp only [unmark-edge hf]))
-  (case [some e] (cases hm (:marked e)) (all_goals (simp only [unmark-edge hf hm]))))
-(a/theorem g8-rest-remove-edge [x8s :- (List Nat), w :- World, x :- Nat] (= (g8-rest x8s (remove-edge w x)) (g8-rest x8s w))
-  (cases hf (edge-find w x))
-  (case [none] (simp only [remove-edge hf]))
-  (case [some e] (cases hm (:marked e)) (all_goals (simp only [remove-edge hf hm]))))
-
 ;; a run row made alive that was alive already (every row with that id is alive)
 (a/theorem rkeys-upd-al [x :- Nat, f :- (=> RunRow RunRow), rs :- (List RunRow)]
   (=> (= (tbl-all (run-ok-for x) rs) true) (forall [r :- RunRow] (=> (= (run-alive r) true) (= (rkey (f r)) (rkey r))))
@@ -937,24 +924,52 @@
   (have e2 (= (kw8 (run-upd w x f)) (kw8 w))) (simp only [kw8 run-upd set-runs e])
   (exact (g8-of-kw x8s w _ (inv-run-upd w x f hf (g8-sample x8s w h)) e2 h)))
 
+;; ---------------------------------------------------------------------------
+;; The part g8: I8, closed scopes (spec §6 I8; formal/notes/proof-layout.md §4.6)
+;;
+;; 1. In words: a closed scope owns no alive run (of its tasks) and no open source; `g8-rest x8s`
+;;    allows the alive runs in the escape list x8s (Part A, over the key lists `kw8`).
+;; 2. View: runs, tasks, scopes, sources (`g8-rest-frame-<field>` for every other field, from
+;;    `defpart`). Finer, column level: `kw8` = run keys (id, of, alive), task (id, owner), scope
+;;    (id, open), source (id, owner, open), frame `g8-of-kw`.
+;; 3. Exempt form: the bundle parameter x8s, run ids (`g8 []` is the part; `defexempt 'g8` at the
+;;    end of Part F gives the uniform names `g8-exempt-<role>`). Break `g8-close-local` (closing a
+;;    subtree adds the alive runs of its tasks: the cancel jobs the cascade queues next); repair: a
+;;    cancel job kills its run (`g8-job-cancel`); loop invariant `g8-cascade` (the escape list is
+;;    base ++ the runs of the pending cancel jobs, `cj`); exit `g8-cascade-done` (the worklist is
+;;    empty: P4, `casc-done-ga`).
+;; 4. Cells, the edits that write the view: updates that keep the keys (`g8-run-upd`, `g8-task-upd`,
+;;    `g8-scope-upd`, `g8-source-upd`; key equations `rfl` at the call sites), a new scope is open
+;;    (`g8-scope-ins`), deletes (`g8-rest-run-del`, `g8-rest-scope-del`), Rule R's filter
+;;    (`g8-filter-world`); new tasks, sources and runs (`g8-task-ins`, `g8-source-ins`, `g8-run-ins`,
+;;    Part G: the owner is not closed). Every other primitive is a frame.
+;; 5. Deferred within a step: the cascade (`inv-run-cascade`: break inside the close and retire
+;;    jobs, repair by the cancel jobs, ghost `cj`, exit by P4). The other overrides pass a guard
+;;    (owners are open: `cur-closed`, `root-ok-if`, `scope-open-at`), revival facts (a run made
+;;    alive was alive) or the companion `ga` down to a cell (`g8-patch`, `g8-add-ga`).
+;; 6. Companions: `ga` (`step-g8`).
+
 (def G8 (mk-bundle 'g8 '[x8s :- (List Nat)] "g8-"
           {'inv-run-upd ['(fn [r :- RunRow] (Eq.refl (rkey r))) 4]
            'inv-task-upd ['(fn [t :- TaskRow] (Eq.refl (t8k t))) 4]
            'inv-scope-upd ['(fn [s :- ScopeRow] (Eq.refl (s8k s))) 4]
            'inv-source-upd ['(fn [s :- SourceRow] (Eq.refl (x8k s))) 4]
            'inv-scope-ins-fresh ['(Eq.refl true) 2]}))
-(swap! (:renames G8) assoc 'inv-parts 'g8-parts 'inv-run-upd 'g8-run-upd 'inv-task-upd 'g8-task-upd
-       'inv-scope-upd 'g8-scope-upd 'inv-source-upd 'g8-source-upd 'inv-scope-ins-fresh 'g8-scope-ins
-       'inv-bump 'g8-bump 'inv-filter-world 'g8-filter-world)
-(doseq [o '[inv-pub-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-cleanup-ins inv-set-pins inv-resource-del
-            inv-act-upd inv-comp-upd inv-edge-upd inv-drop-cred inv-drop-act inv-drop-edges inv-comp-del-unref
-            inv-act-ins-fresh inv-comp-ins-fresh inv-resource-ins-fresh insert-edge-fresh-inv-sample inv-fork-del inv-fork-ins-fresh]]
-  (prim! G8 o nil))
-(prim! G8 'mark-edge-inv-sample '(Eq.trans (g8-rest-mark-edge x8s w x) R))
-(prim! G8 'unmark-edge-inv-sample '(Eq.trans (g8-rest-unmark-edge x8s w x) R))
-(prim! G8 'inv-remove-edge '(Eq.trans (g8-rest-remove-edge x8s w x) R))
-(prim! G8 'inv-run-del '(g8-rest-run-del x8s w x R))
-(prim! G8 'inv-scope-del '(g8-rest-scope-del x8s w x R))
+(swap! (:renames G8) assoc 'inv-parts 'g8-parts)
+(defpart G8
+  :reads '[runs tasks scopes sources]
+  :cells '{inv-run-upd g8-run-upd                       ; keeps the run key
+           inv-task-upd g8-task-upd                     ; keeps (id, owner)
+           inv-scope-upd g8-scope-upd                   ; keeps (id, open)
+           inv-source-upd g8-source-upd                 ; keeps (id, owner, open)
+           inv-scope-ins-fresh g8-scope-ins             ; a new scope is open
+           inv-filter-world g8-filter-world             ; Rule R's filter only drops rows
+           inv-run-del (g8-rest-run-del x8s w x R)      ; a deleted run escapes nothing
+           inv-scope-del (g8-rest-scope-del x8s w x R)}); a deleted scope closes nothing
+;; the per-edit frame lemmas of the edge edits, now from the view
+(frames/frame-theorem! 'g8-rest-mark-edge 'g8-rest 'mark-edge-inv-sample)
+(frames/frame-theorem! 'g8-rest-unmark-edge 'g8-rest 'unmark-edge-inv-sample)
+(frames/frame-theorem! 'g8-rest-remove-edge 'g8-rest 'inv-remove-edge)
 
 ;; ===========================================================================
 ;; Part F. The cascade: the escape list is the list of pending cancel jobs
@@ -1305,6 +1320,15 @@
 (a/theorem g8-run-cascade-ga [x8s :- (List Nat), w :- World, js :- (List Job)]
   (=> (= (ga w) true) (= (g8 x8s w) true) (= (g8 x8s (run-cascade w js)) true))
   (intros hga h) (exact (g8-cascade-done x8s w js (casc-done-ga w js hga) h)))
+;; ---- g8's exempt form, uniform names (spindel.v2.pres.exempt): the escape list x8s holds the
+;; deferred violations of I8; `inv` uses g8 [] (p3i)
+(exempt/defexempt 'g8
+  :form "g8 x8s w" :ids "run ids: alive runs of tasks owned by a closed scope" :commit "g8 [] (p3i)"
+  :mono 'g8-esc-mono                           ; a longer escape list is weaker
+  :break '{close-local g8-close-local}         ; closing a subtree: its tasks' alive runs escape
+  :repair '{cancel-job g8-job-cancel}          ; a cancel job kills its run (one loop step)
+  :loop 'g8-cascade                            ; escape list = base ++ runs of the pending cancel jobs
+  :exit 'g8-cascade-done)                      ; the worklist is empty at the end (P4)
 
 ;; ===========================================================================
 ;; Part G. Owners of new tasks and sources; task owners that change

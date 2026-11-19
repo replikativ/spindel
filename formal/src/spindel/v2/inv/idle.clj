@@ -633,10 +633,7 @@
        'insert-edge-fresh-inv-sample 'g7-insert-edge-fresh 'inv-comp-ins-fresh 'g7-comp-ins-fresh
        'mark-edge-inv-sample 'g7-mark-edge-o)
 
-(doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del
-            inv-set-pins inv-resource-del inv-scope-del inv-cleanup-ins inv-act-upd inv-task-upd
-            inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-act-ins-fresh inv-task-ins-fresh inv-bump inv-fork-del]]
-  (prim! G7 o nil))
+(defpart G7 :reads '[comps edges runs])
 (prim! G7 'inv-edge-upd '(g7-rest-edge-upd w x f hk hc hm R))
 (prim! G7 'inv-drop-cred '(g7-rest-drop-cred w a R))
 (prim! G7 'inv-drop-act '(g7-rest-drop-act w a R))

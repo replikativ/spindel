@@ -5,6 +5,7 @@
   `<` makes every epoch step a frame (no dle needed); with gd's dle it is the same as waiting.
   Marked edges' debtors are waiting (h-mark) when hxm = [] (`hk-h-mark`)."
   (:require [ansatz.core :as a]
+            [spindel.v2.pres.exempt :as exempt]
             [clojure.string :as str]
             [clojure.walk :as walk]
             [spindel.v2.state :refer :all]
@@ -584,14 +585,15 @@
 ;; Part C. The bundle copy
 ;; ===========================================================================
 
+;; hmk's exempt form (spindel.v2.pres.exempt; recorded, no aliases yet)
+(exempt/defexempt 'hmk
+  :form "hmk hxm w" :ids "debtor ids: a marked dep edge on a debtor in hxm need not be strongly waiting"
+  :commit "hmk [] (p3l)")
 (def HMK (mk-bundle 'hmk '[hxm :- (List Nat)] "hmk-" {'inv-comp-ins-fresh ['(Eq.refl true) 2]}))
 (swap! (:renames HMK) assoc 'inv-parts 'hmk-parts 'inv-comp-ins-fresh 'hmk-comp-ins
        'mark-edge-inv-sample 'hmk-mark-edge 'unmark-edge-inv-sample 'hmk-unmark-edge 'inv-remove-edge 'hmk-remove-edge
        'inv-drop-cred 'hmk-drop-cred 'inv-drop-act 'hmk-drop-act 'inv-drop-edges 'hmk-drop-edges)
-(doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del
-            inv-set-pins inv-resource-del inv-scope-del inv-cleanup-ins inv-act-upd inv-task-upd inv-run-upd inv-run-del
-            inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-act-ins-fresh inv-task-ins-fresh inv-bump inv-run-ins-fresh inv-fork-del]]
-  (prim! HMK o nil))
+(defpart HMK :reads '[comps edges])
 (prim! HMK 'inv-edge-upd '(hkr-edge-upd hxm w x f hk hd hm R))
 (prim! HMK 'inv-filter-world '(hkr-filter-world hxm w K h1 R))
 (prim! HMK 'inv-comp-del-unref '(hkr-comp-del hxm w x h0 R))

@@ -80,6 +80,7 @@
   schedule, finalize) only touch an alive run, or a cleanup-ready one (`mb-run-upd-ne`,
   `mb-run-upd-q`); their callers are overridden."
   (:require [ansatz.core :as a]
+            [spindel.v2.pres.frames :as frames]
             [clojure.string :as str]
             [spindel.v2.state :refer :all]
             [spindel.v2.edits :refer :all]
@@ -357,21 +358,6 @@
   (=> (= (mb-rest mux mf mz mg w) true) (= (mb-rest mux mf mz mg (bump w)) true))
   (intro h) (simp only [bump]) (exact (mb-rest-next mux mf mz mg w (+ (:next-id w) 1) h (Nat.le_succ (:next-id w)))))
 
-(a/theorem mb-rest-mark-edge [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, x :- Nat]
-  (= (mb-rest mux mf mz mg (mark-edge w x)) (mb-rest mux mf mz mg w))
-  (cases hf (edge-find w x))
-  (case [none] (simp only [mark-edge hf]))
-  (case [some e] (cases hm (:marked e)) (all_goals (simp only [mark-edge hf hm]))))
-(a/theorem mb-rest-unmark-edge [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, x :- Nat]
-  (= (mb-rest mux mf mz mg (unmark-edge w x)) (mb-rest mux mf mz mg w))
-  (cases hf (edge-find w x))
-  (case [none] (simp only [unmark-edge hf]))
-  (case [some e] (cases hm (:marked e)) (all_goals (simp only [unmark-edge hf hm]))))
-(a/theorem mb-rest-remove-edge [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, x :- Nat]
-  (= (mb-rest mux mf mz mg (remove-edge w x)) (mb-rest mux mf mz mg w))
-  (cases hf (edge-find w x))
-  (case [none] (simp only [remove-edge hf]))
-  (case [some e] (cases hm (:marked e)) (all_goals (simp only [remove-edge hf hm]))))
 
 ;; a run edit by a row function that keeps the row predicate
 (a/theorem mb-run-upd [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, x :- Nat, f :- (=> RunRow RunRow),
@@ -556,17 +542,14 @@
          mb-run-upd-m mb-run-upd mb-run-upd-ne-src mb-run-upd-ne}
        (into {} (map (fn [l] [l l]) (vals mb-fns))))
 
-(doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-set-pins
-            inv-resource-del inv-scope-del inv-cleanup-ins inv-act-upd inv-edge-upd inv-drop-cred inv-drop-edges
-            inv-comp-del-unref inv-comp-upd inv-drop-act inv-task-upd inv-fork-del]]
-  (prim! MB o nil))
+(defpart MB :reads '[next-id runs])
+(frames/frame-theorem! 'mb-rest-mark-edge 'mb-rest 'mark-edge-inv-sample)
+(frames/frame-theorem! 'mb-rest-unmark-edge 'mb-rest 'unmark-edge-inv-sample)
+(frames/frame-theorem! 'mb-rest-remove-edge 'mb-rest 'inv-remove-edge)
 (doseq [o '[inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-comp-ins-fresh inv-act-ins-fresh inv-task-ins-fresh]]
   (prim! MB o (list 'mb-rest-bump 'mux 'mf 'mz 'mg (list (symbol (str/replace (subs (name o) 4) "-fresh" "")) 'w 'r)
                     (list 'Eq.trans '(rfl) 'R))))
 (prim! MB 'inv-bump '(mb-rest-bump mux mf mz mg w R))
-(prim! MB 'mark-edge-inv-sample '(Eq.trans (mb-rest-mark-edge mux mf mz mg w x) R))
-(prim! MB 'unmark-edge-inv-sample '(Eq.trans (mb-rest-unmark-edge mux mf mz mg w x) R))
-(prim! MB 'inv-remove-edge '(Eq.trans (mb-rest-remove-edge mux mf mz mg w x) R))
 (prim! MB 'insert-edge-fresh-inv-sample '(mb-rest-bump mux mf mz mg (insert-edge w (edge-set-id (:next-id w) e)) (Eq.trans (rfl) R)))
 (prim! MB 'inv-run-del '(mb-rest-run-del mux mf mz mg w x R))
 (prim! MB 'inv-filter-world '(mb-rest-filter mux mf mz mg w K R))

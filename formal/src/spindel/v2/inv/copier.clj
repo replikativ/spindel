@@ -46,7 +46,9 @@
             [spindel.v2.inv.rank :refer :all]
             [spindel.v2.progress.casc :refer :all]
             [spindel.v2.inv.acts :refer :all]
-            [spindel.v2.inv :refer :all]))
+            [spindel.v2.inv :refer :all]
+            [spindel.v2.pres.frames :as frames]
+            [spindel.v2.pres.exempt :as exempt]))
 
 ;; ===========================================================================
 ;; Part A. Keys and the invariant
@@ -198,6 +200,8 @@
 
 ;; a primitive: the inv-sample lemma plus a proof of the bundle's rest part; `rest-f` is a form
 ;; over the binder names, premise names h0..hn and R = the rest part of the input world; nil = frame
+;; by `rfl`; :frame = frame from the primitive's footprint and the part's declared view
+;; (spindel.v2.pres.frames/frame-term)
 (defn- prim-form [B orig nm rest-f]
   (let [[_ _ binders stmt] (theorem-source orig)
         prems (butlast (rest stmt))
@@ -209,7 +213,15 @@
         hi (nth hs i)
         args (concat (binder-names binders) (assoc hs i (papp B (bsym B "-sample") w hi)))
         R (papp B (bsym B "-rest-of") w hi)
-        rest-term (if rest-f (walk/postwalk-replace {'R R} rest-f) (list 'Eq.trans 'e-frame R))]
+        rest-term (cond
+                    (= rest-f :frame)
+                    (let [used (set (filter symbol? (flatten (list w2))))
+                          t (frames/frame-term (bsym B "-rest") (pargs B) orig w w2
+                                               (filter used (binder-names binders)))]
+                      (when-not t (throw (ex-info (str orig " is not a frame of " (bsym B "-rest")) {})))
+                      (list 'Eq.trans t R))
+                    rest-f (walk/postwalk-replace {'R R} rest-f)
+                    :else (list 'Eq.trans 'e-frame R))]
     (concat
      (list 'a/theorem nm (into (vec (:params B)) binders) (pred-subst B stmt) (cons 'intros hs))
      (when-not rest-f [(list 'have 'e-frame (list '= (papp B (bsym B "-rest") w2) (papp B (bsym B "-rest") w))) '(rfl)])
@@ -316,12 +328,75 @@
     (let [[head nm binders & more] form]
       (apply list head (if (dsym? nm) (dname nm) nm) (into (vec (:params B)) (walk binders)) (map walk more)))))
 
+;; ---------------------------------------------------------------------------
+;; Parts: the declaration front end (formal/notes/proof-layout.md, stage 1)
+;;
+;; A part declares what its rest predicate reads (its view) and only the primitive cells that need an
+;; argument. Every other primitive is a frame of the view, and its cell is generated from the
+;; primitive's footprint and the view (spindel.v2.pres.frames). `defpart` emits the same copier calls
+;; as before (prim!, renames), so the generated theorems keep their names and statements.
+
+;; pred -> {:reads #{fields}, :cells [base lemmas given by hand], :frames [base lemmas generated]}
+(defonce parts (atom {}))
+
+(defn frame!
+  "The frame cell of primitive `orig` for bundle B, from the footprint and B's declared view."
+  [B orig] (prim! B orig :frame))
+
+(defn defpart
+  "Declare a part's view and its primitive cells, and emit the copier calls:
+    :reads  the World fields the rest predicate reads (`spindel.v2.pres.frames/defview` states and
+            checks `<pred>-rest-frame-<f>` for every other field f).
+    :cells  {base-lemma cell} for the primitives whose footprint meets the view. A cell is a symbol
+            (a hand lemma with the bundle's statement, used as the copy), a form (prim!'s rest form,
+            over the binders and R, the rest part of the input world), or nil (prim!'s `rfl` frame:
+            the edit keeps the columns the part reads).
+  Every primitive not in :cells whose footprint misses the view gets a generated frame cell, unless
+  the bundle already has a copy of it."
+  [B & {:keys [reads cells]}]
+  (let [rest-sym (bsym B "-rest")]
+    (frames/defview rest-sym (:params B) reads)
+    (doseq [[p c] (sort-by key cells)]
+      (if (symbol? c) (swap! (:renames B) assoc p c) (prim! B p c)))
+    (let [fs (vec (for [p (sort (keys @frames/footprints))
+                        :when (and (not (contains? cells p)) (not (contains? @(:renames B) p))
+                                   (frames/frame? rest-sym p))]
+                    (do (when (contains? (:extra-args B) p)
+                          (throw (ex-info (str (:pred B) ": " p " has extra args but is a frame of the view") {})))
+                        p)))]
+      (doseq [p fs] (frame! B p))
+      (swap! parts assoc (:pred B) {:reads (set reads) :cells (vec (sort (keys cells))) :frames fs})
+      B)))
+
+;; ---------------------------------------------------------------------------
+;; The part gl: I10, task part (spec §6 I10; formal/notes/proof-layout.md §4.5)
+;;
+;; 1. In words: (a) every run's `of` is below the allocator; (b) a run R of a task K is K.run; (c) a
+;;    task without a result has an alive run. `gl-rest` is `l10k` over the run keys, the task keys
+;;    and the allocator (Part A).
+;; 2. View: runs, tasks, next-id (`gl-rest-frame-<field>` for every other field, from `defpart`).
+;;    Finer, column level: the key lists `kw` (run key id/of/alive, task key id/run/done, next-id),
+;;    frame `gl-rest-kw` (Part C).
+;; 3. Exempt form: `glx k` (Part C), (c) may fail for task k. Break `glx-kill` (a run made done);
+;;    repairs `gl-task-done-x` (the task gets its result), `gl-of-glx-comp` (k is a computation),
+;;    `gl-of-glx-find` (no task k); transport `glx-kw`. Uniform names `gl-exempt-<role>` (Part C).
+;; 4. Cells, the edits that write the view: a run or task update that keeps the keys (`gl-run-upd`,
+;;    `gl-task-upd`; the key equation is `rfl` at every call site, the bundle's extra args); a fresh
+;;    insert and `bump` (`gl-rest-bump`: (a) only gains room). Run creation, run death and the
+;;    filter are composite-level (5.). Every other primitive is a frame.
+;; 5. Deferred within a step (overrides): T14's local part (`gl-cancel-run-local-o`: break at the
+;;    run's cancel, repair in `cancel-debtor`) and T12 (`gl-complete-body-mid`: break at the run's
+;;    completion, repair at `complete-task`). Content without a break: T13 (`gl-retire-local-o`,
+;;    `retire-rest`), new runs (`gl-spawn-rows-o`, `gl-comp-run-o`), Rule R's filter (`gl-rule-r-round`).
+;;    The other overrides and the patches pass a fact down to those (proof-layout.md §4.5).
+;; 6. Companions: `ga` (`step-gl`).
+
 (def GL (mk-bundle 'gl [] "gl-"
           {'inv-run-upd ['(fn [r :- RunRow] (Eq.refl (rkey r))) 4]
            'inv-task-upd ['(fn [t :- TaskRow] (Eq.refl (tkey t))) 4]}))
 (swap! (:renames GL) assoc 'inv-parts 'gl-parts)
 
-;; ---- the primitives
+;; ---- the cells
 
 (a/theorem gl-run-upd [w :- World, x :- Nat, f :- (=> RunRow RunRow),
                        hf :- (forall [r :- RunRow] (= (run-id (f r)) (run-id r))),
@@ -341,33 +416,21 @@
   (simp only [gl-rest task-upd set-tasks (tkeys-upd x f hk (:tasks w))])
   (exact (gl-intro _ (inv-task-upd w x f hf (gl-sample w h)) (Eq.trans e (gl-rest-of w h)))))
 
-(swap! (:renames GL) assoc 'inv-run-upd 'gl-run-upd 'inv-task-upd 'gl-task-upd)
+(defpart GL
+  :reads '[runs tasks next-id]
+  :cells (into {'inv-run-upd 'gl-run-upd                ; keeps the run key
+                'inv-task-upd 'gl-task-upd              ; keeps the task key
+                'inv-bump '(gl-rest-bump w R)           ; (a) only gains room
+                'insert-edge-fresh-inv-sample '(gl-rest-bump (insert-edge w (edge-set-id (:next-id w) e)) (Eq.trans (rfl) R))}
+               (for [o '[inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh
+                         inv-comp-ins-fresh inv-act-ins-fresh]]      ; a row that gl does not read, and bump
+                 [o (list 'gl-rest-bump (list (symbol (str/replace (subs (name o) 4) "-fresh" "")) 'w 'r)
+                          (list 'Eq.trans '(rfl) 'R))])))
 
-(a/theorem gl-rest-mark-edge [w :- World, x :- Nat] (= (gl-rest (mark-edge w x)) (gl-rest w))
-  (cases hf (edge-find w x))
-  (case [none] (simp only [mark-edge hf]))
-  (case [some e] (cases hm (:marked e)) (all_goals (simp only [mark-edge hf hm]))))
-(a/theorem gl-rest-unmark-edge [w :- World, x :- Nat] (= (gl-rest (unmark-edge w x)) (gl-rest w))
-  (cases hf (edge-find w x))
-  (case [none] (simp only [unmark-edge hf]))
-  (case [some e] (cases hm (:marked e)) (all_goals (simp only [unmark-edge hf hm]))))
-(a/theorem gl-rest-remove-edge [w :- World, x :- Nat] (= (gl-rest (remove-edge w x)) (gl-rest w))
-  (cases hf (edge-find w x))
-  (case [none] (simp only [remove-edge hf]))
-  (case [some e] (cases hm (:marked e)) (all_goals (simp only [remove-edge hf hm]))))
-
-(doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del
-            inv-set-pins inv-resource-del inv-scope-del inv-cleanup-ins inv-act-upd
-            inv-edge-upd inv-drop-cred inv-drop-edges inv-comp-del-unref inv-comp-upd inv-drop-act inv-fork-del]]
-  (prim! GL o nil))
-(doseq [o '[inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-comp-ins-fresh inv-act-ins-fresh]]
-  (prim! GL o (list 'gl-rest-bump (list (symbol (str/replace (subs (name o) 4) "-fresh" "")) 'w 'r)
-                    (list 'Eq.trans '(rfl) 'R))))
-(prim! GL 'inv-bump '(gl-rest-bump w R))
-(prim! GL 'mark-edge-inv-sample '(Eq.trans (gl-rest-mark-edge w x) R))
-(prim! GL 'unmark-edge-inv-sample '(Eq.trans (gl-rest-unmark-edge w x) R))
-(prim! GL 'inv-remove-edge '(Eq.trans (gl-rest-remove-edge w x) R))
-(prim! GL 'insert-edge-fresh-inv-sample '(gl-rest-bump (insert-edge w (edge-set-id (:next-id w) e)) (Eq.trans (rfl) R)))
+;; the per-edit frame lemmas of the edge edits, now from the view
+(frames/frame-theorem! 'gl-rest-mark-edge 'gl-rest 'mark-edge-inv-sample)
+(frames/frame-theorem! 'gl-rest-unmark-edge 'gl-rest 'unmark-edge-inv-sample)
+(frames/frame-theorem! 'gl-rest-remove-edge 'gl-rest 'inv-remove-edge)
 
 ;; ===========================================================================
 ;; Part C. The invariant under key changes
@@ -1342,6 +1405,15 @@
            (fn [t :- TKey] (Eq.refl true)) hx))
   (exact (gl-intro _ (inv-task-upd w k f hf hs) hr)))
 
+;; ---- gl's exempt form, uniform names (spindel.v2.pres.exempt): `glx k` waives clause (c) for task k
+(exempt/defexempt 'gl
+  :form "glx k w (gl-rest with (c) waived for task k)" :ids "one task id" :commit "gl (no task waived)"
+  :break '{run-done glx-kill}                  ; a run of task k is made done: k may lack a run
+  :repair '{task-done gl-task-done-x           ; task k gets its result
+            comp gl-of-glx-comp                ; k is a computation, not a task
+            no-task gl-of-glx-find}            ; there is no task k
+  :transport '{kw glx-kw})                     ; edits that keep the key lists keep glx
+
 ;; ---- T14's local part (cancel): the run is done, its task gets err ::cancelled
 
 (a/defn cancel-mid [w :- World, r :- RunRow] World
@@ -2085,18 +2157,6 @@
 (a/theorem g9-rest-bump [w :- World] (=> (= (g9-rest w) true) (= (g9-rest (bump w)) true))
   (intro h) (simp only [bump]) (exact (g9-rest-next w (+ (:next-id w) 1) h (Nat.le_succ (:next-id w)))))
 
-(a/theorem g9-rest-mark-edge [w :- World, x :- Nat] (= (g9-rest (mark-edge w x)) (g9-rest w))
-  (cases hf (edge-find w x))
-  (case [none] (simp only [mark-edge hf]))
-  (case [some e] (cases hm (:marked e)) (all_goals (simp only [mark-edge hf hm]))))
-(a/theorem g9-rest-unmark-edge [w :- World, x :- Nat] (= (g9-rest (unmark-edge w x)) (g9-rest w))
-  (cases hf (edge-find w x))
-  (case [none] (simp only [unmark-edge hf]))
-  (case [some e] (cases hm (:marked e)) (all_goals (simp only [unmark-edge hf hm]))))
-(a/theorem g9-rest-remove-edge [w :- World, x :- Nat] (= (g9-rest (remove-edge w x)) (g9-rest w))
-  (cases hf (edge-find w x))
-  (case [none] (simp only [remove-edge hf]))
-  (case [some e] (cases hm (:marked e)) (all_goals (simp only [remove-edge hf hm]))))
 
 (a/theorem g9-unw-res-del [x :- Nat, w :- World, r :- RunRow]
   (=> (= (unwinding-res-ok w r) true) (= (unwinding-res-ok (resource-del w x) r) true))
@@ -2619,16 +2679,14 @@
 
 ;; ---- the G9 copy
 
-(doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-task-upd inv-cleanup-upd inv-cleanup-del inv-set-pins inv-scope-del
-            inv-cleanup-ins inv-act-upd inv-edge-upd inv-drop-cred inv-drop-edges inv-comp-del-unref inv-comp-upd inv-drop-act inv-fork-del]]
-  (prim! G9 o nil))
+(defpart G9 :reads '[next-id res runs])
+(frames/frame-theorem! 'g9-rest-mark-edge 'g9-rest 'mark-edge-inv-sample)
+(frames/frame-theorem! 'g9-rest-unmark-edge 'g9-rest 'unmark-edge-inv-sample)
+(frames/frame-theorem! 'g9-rest-remove-edge 'g9-rest 'inv-remove-edge)
 (doseq [o '[inv-source-ins-fresh inv-fork-ins-fresh inv-scope-ins-fresh inv-comp-ins-fresh inv-act-ins-fresh inv-task-ins-fresh]]
   (prim! G9 o (list 'g9-rest-bump (list (symbol (str/replace (subs (name o) 4) "-fresh" "")) 'w 'r)
                     (list 'Eq.trans '(rfl) 'R))))
 (prim! G9 'inv-bump '(g9-rest-bump w R))
-(prim! G9 'mark-edge-inv-sample '(Eq.trans (g9-rest-mark-edge w x) R))
-(prim! G9 'unmark-edge-inv-sample '(Eq.trans (g9-rest-unmark-edge w x) R))
-(prim! G9 'inv-remove-edge '(Eq.trans (g9-rest-remove-edge w x) R))
 (prim! G9 'insert-edge-fresh-inv-sample '(g9-rest-bump (insert-edge w (edge-set-id (:next-id w) e)) (Eq.trans (rfl) R)))
 (prim! G9 'inv-run-ins-fresh '(g9-run-ins w r h0 R))
 (prim! G9 'inv-run-del '(g9-rest-run-del w x R))
