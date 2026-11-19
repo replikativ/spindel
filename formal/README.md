@@ -51,7 +51,8 @@ copies are a sound abstraction of the way the engine shares rows between forks.
 | Completion (C1, C1c) | released and quiet worlds, completion stability, open scopes, draining of inherited markers | `quiet`, `qworld`, `lstab`, `oscope`, `drained` |
 | Headline, layer 1 | `inv`, `inv-step`, `Reach1`, `reach-inv` | `top` |
 | Layer 2 | cells, publications and their operations; `skip` (an id taken by a sibling world); `sysinv`, `SysReach`, `sys-reach-inv` | `sys`, `skip`, `systop` |
-| Physical | the MVCC row representation (tokens, versions, copy maps) | `mvcc`; `cow` (the superseded forward-map version) |
+| Physical | the MVCC row representation (tokens, versions, copy maps) | `mvcc` |
+| Utilities | function update at a Nat key (`fupd`) | `util` |
 | Oracle (tests) | replays commit logs recorded from the engine through the model, compares every committed state | `test/spindel/v2/oracle.clj`, `oracle_test.clj`, `oracle/` |
 
 Files are `src/spindel/v2/<name>.clj` (`-` in a namespace name is `_` in the file name). Kernel names are

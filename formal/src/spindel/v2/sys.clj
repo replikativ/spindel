@@ -68,7 +68,7 @@
             [spindel.v2.engine :refer :all]
             [spindel.v2.hmk2 :refer [p3l]]
             [spindel.v2.progress :refer [quiescent]]
-            [spindel.v2.cow :refer [fupd]]
+            [spindel.v2.util :refer [fupd]]
             [spindel.v2.quiet]
             [spindel.v2.qworld]
             [spindel.v2.ledger :refer [task-complete]]

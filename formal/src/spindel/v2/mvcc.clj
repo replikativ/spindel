@@ -2,16 +2,16 @@
   "Layer 2, physical, MVCC representation (spec §8.1 \"Representation (MVCC, 2026-11-15)\",
   `v2-fork-memory-design` §2, §7; engine `core.cljc` `preserve!`, `version-of`, `view`, `resolve-row`,
   `peek-row`, `own-copy!`, `fork-world*`, `instance-world*`, `register-token!`, `prune-cell!`,
-  `finish-token!`/`maybe-finish-token!`), kernel-checked (Init only). Replaces `spindel.v2.cow`'s
-  forward-map representation; the semantic layer (`spindel.v2.sys`: a fork is a value copy) is
-  unchanged. See notes/LAYER2.md §9.
+  `finish-token!`/`maybe-finish-token!`), kernel-checked (Init only). It replaced the model of the
+  engine's earlier forward-map representation (`spindel.v2.cow`, retired: in git history); the
+  semantic layer (`spindel.v2.sys`: a fork is a value copy) is unchanged. See notes/LAYER2.md §9.
 
   State (`MSt`): a heap `h : address -> MRow` (id, owner world `ow`, stamp ordinal `so`, value,
   versions `[k m img]`), the next free address `n`, `home : id -> address` (the row its creator made),
   per world an `MW` (ordinal, copy map `fwd : id -> address`, lineage `[own f tok mp]` nearest first,
   the owner's token cells `[o tok]`), token states `ts` (0 live, 1 shared, 2 dead), the active worlds,
   the savepoint bases, and as ghost state the semantic tables `dom`/`tab` (the value-copy model).
-  Values are opaque Nats; references abstract to ids (as in `cow`), so path compression is invisible;
+  Values are opaque Nats; references abstract to ids, so path compression is invisible;
   the lineage cut is the domain (`inherited?` is not modelled here).
 
   Reading (`mv-res`): an owned row, else the world's own copy, else the lineage nearest first: an

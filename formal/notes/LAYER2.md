@@ -1,5 +1,9 @@
 # Layer 2 (forks, savepoints, merge): formal design, draft 1 (2026-11-13, for sign-off)
 
+> Status note (2026-11-18): the physical model `spindel.v2.cow` described in §1 and §7 was superseded by
+> `spindel.v2.mvcc` (§9) and has been retired; it is in git history. Its function update `fupd` lives in
+> `spindel.v2.util`. The current map of the model is formal/README.md.
+
 Sources: spec §8/§9 at `feat/m6-phase-a` (277e1c9), engine `fork-world*`, `activate-dormant!`,
 `instantiate`, `activate!` in `core.cljc`, `rows.cljc` (`rv`, `resolve-row`, `own-copy!`),
 yggdrasil `DESIGN.md` (Overlayable, overlay-as-prepare).
@@ -143,7 +147,7 @@ markers). Both must be lifted first: savepoint edges as a fourth edge kind throu
 Engine engine-v2 3eb18b7 (#260) + e2bd63e replaced the forward-map representation `cow` models by MVCC rows
 (spec §8.1 "Representation (MVCC, 2026-11-15)", `v2-fork-memory-design` §2, §7; spec answers A1–A8 from the
 spindel session, recorded below). `spindel.v2.mvcc` models the new one; `sys` (a fork is a value copy) is
-unchanged and remains the semantics; `cow` stays as the model of the old representation.
+unchanged and remains the semantics; `cow` stayed as the model of the old representation (since retired).
 
 **State** (`MSt`): heap `h : address -> MRow` (`[id ow so val vers]`, versions `[k m img]`), next address `n`
 (address 0 = "no copy"), `home : id -> address` (the creator's row), per world `MW` `[ord fwd lin cells]` (ordinal,
