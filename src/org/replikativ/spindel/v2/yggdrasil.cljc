@@ -1086,4 +1086,109 @@
            (= :failed (:hook-status r))
            (do (run-hook! rec) (status fork))
 
-           :else (status fork))))))
+           :else (status fork))))
+
+     ;; ------------------------------------------------------------------------
+     ;; Transfer and partition (F3; forks whose runtime ended)
+
+     (defn transfer!
+       "Moves the settlement authority of `fork`, whose runtime has ended, to
+        `owner` (an opaque host value): the record becomes `:transferred`,
+        and only `merge!`/`discard!`/`transfer!`/`partition!` passing
+        `{:owner owner}` settle it from then on (`:owner` in `opts` names the
+        current owner of an already transferred record). `:on-discard`
+        replaces the hook the layer runs when it discards the fork itself, and
+        `(on-settled {:fork/id :status :reason})` runs at its terminal outcome,
+        whoever settles it (the parent-ended discard included). The caller
+        persists the move itself (before the call, compensating in its own
+        catch; the `:journal` hook sees `:transferred`). Repeating the
+        transfer to the record's current owner returns at once. Refused
+        unchanged when the fork is not open to this caller, its runtime is
+        live, its parent's has ended, or it has unsettled forks. Returns
+        `fork`."
+       [fork owner {:keys [on-discard on-settled] :as opts}]
+       (host-only! "transfer!")
+       (when (nil? owner) (throw (refusal ::invalid-owner "transfer!: the owner cannot be nil" {})))
+       (let [rec (:record fork)
+             r @rec]
+         (if (and (= :transferred (:status r)) (= owner (:owner r)))
+           fork
+           (do (claim! rec :transfer opts)
+               (if-not (parent-live? @rec)
+                 (let [ex (refused-ex rec :parent-ended nil {})]
+                   (swap! rec assoc ::parent-ended :parent-ended)
+                   (let-go! rec {:status (prior-status @rec) :phase nil})
+                   (throw ex))
+                 (do (let-go! rec (cond-> {:status :transferred :owner owner :phase nil :operation nil}
+                                    on-discard (assoc ::on-discard on-discard)
+                                    on-settled (assoc ::on-settled on-settled)))
+                     (journal-quietly! rec :transferred)
+                     fork))))))
+
+     (defn leaf-id
+       "The id of leaf `leaf-key` of a partition of the fork `fork-id`: the same
+        for every call, so a caller can name a leaf before partitioning."
+       [fork-id leaf-key]
+       (java.util.UUID/nameUUIDFromBytes
+        (.getBytes (pr-str [::leaf fork-id leaf-key]) java.nio.charset.StandardCharsets/UTF_8)))
+
+     (defn- leaf-forks [fork rec]
+       (into {} (map (fn [[k a]] [k (->Fork (:fork/id @a) (:world fork) a)])) (::leaf-records @rec)))
+
+     (defn partition!
+       "Splits the settlement of `fork`, whose runtime has ended, into leaves:
+        `leaves` is `{leaf-key #{sid ...}}` with caller-chosen keys, disjoint
+        and exhaustive over the fork's systems (its scope, for a leaf). Leaf
+        `k` gets the id `(leaf-id (:id fork) k)`. Each leaf is a `Fork` of the
+        same child world that settles once, merging or discarding its systems
+        only, with the fork's status (`:open`, or `:transferred` and its
+        owner); `:on-discard` and `:on-settled` are as for `transfer!` (each
+        leaf inherits the fork's when not given). The fork becomes
+        `:partitioned`, settled once every leaf is. Repeating the same split
+        returns the same leaves (idempotent); a different one is refused.
+        Refused unchanged as `transfer!`, and for a split that overlaps, omits
+        or names unknown systems. Returns `{leaf-key Fork}`."
+       [fork leaves {:keys [on-discard on-settled] :as opts}]
+       (host-only! "partition!")
+       (let [rec (:record fork)
+             r @rec]
+         (when (or (not (map? leaves)) (empty? leaves) (some #(or (not (set? %)) (empty? %)) (vals leaves)))
+           (throw (refusal ::invalid-partition "partition!: leaves map keys to non-empty system sets" {})))
+         (if (and (= :partitioned (:status r)) (= leaves (:leaf-spec r)))
+           (if (and (:owner r) (not= (:owner opts) (:owner r)))
+             (throw (refusal ::not-owner "the fork was transferred: its owner settles it" {:fork/id (:fork/id r)}))
+             (leaf-forks fork rec))
+           (let [all (scope r (some-> (entry (:child r)) deref))
+                 named (apply concat (vals leaves))]
+             (when (not= (count named) (count (set named)))
+               (throw (refusal ::overlapping-partition "partition!: the leaves overlap"
+                               {:systems (into #{} (keep (fn [[s n]] (when (> n 1) s))) (frequencies named))})))
+             (when (not= (set named) all)
+               (throw (refusal ::incomplete-partition "partition!: the leaves must cover the fork's systems exactly"
+                               {:unknown (remove all named) :omitted (remove (set named) all)})))
+             (claim! rec :partition opts)
+             (when-not (parent-live? @rec)
+               (let [ex (refused-ex rec :parent-ended nil {})]
+                 (swap! rec assoc ::parent-ended :parent-ended)
+                 (let-go! rec {:status (prior-status @rec) :phase nil})
+                 (throw ex)))
+             (let [prior (::prior @rec)
+                   made (into {} (map (fn [[k sids]]
+                                        [k (atom {:fork/id (leaf-id (:fork/id r) k) :partition-of (:fork/id r)
+                                                  :leaf k :systems sids
+                                                  :parent (:parent r) :child (:child r) :parent-fork (:parent-fork r)
+                                                  :parent-world-id (:parent-world-id r) :child-world-id (:child-world-id r)
+                                                  :status (:status prior) :owner (:owner r) :meta (:meta r)
+                                                  :plan nil :done #{} :cleaned #{} :children #{}
+                                                  ::journal (::journal r)
+                                                  ::on-discard (or on-discard (::on-discard r))
+                                                  ::on-settled (or on-settled (::on-settled r))})]))
+                              leaves)]
+               (locking claim-lock
+                 (doseq [[_ a] made] (swap! settlements assoc (:fork/id @a) a)))
+               (let-go! rec {:status :partitioned :phase nil :operation nil :leaf-spec leaves
+                             :leaves (into #{} (map (comp :fork/id deref)) (vals made))
+                             ::leaf-records made})
+               (journal-quietly! rec :partitioned)
+               (doseq [[_ a] made] (journal-quietly! a :created))
+               (leaf-forks fork rec))))))))
