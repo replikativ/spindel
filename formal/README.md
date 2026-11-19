@@ -40,6 +40,132 @@ row heap reachable by the engine's operations (write, own-copy, create, fork, in
 drop, collect), every active world reads every id exactly as the value-copy model has it. So layer 2's
 value copies are a sound abstraction of the way the engine shares rows between forks.
 
+## How the step proof works
+
+The headline `inv-step` (every step keeps `inv`) is a large proof. This section gives its idea, then the
+names, then a reading list. `notes/proof-layout.md` has the measurements behind the numbers and the plan
+for making the proofs read the way this section describes them.
+
+### The idea
+
+Think of one world-step as a database transaction and of `inv` as its integrity constraints. `inv` must
+hold at commit: in the world before the step and in the world after it. Nobody sees a world in the middle
+of a step: the engine commits whole steps, no other world reads a half-done one, and the oracle compares
+committed states only. So inside a step the proof may let a constraint fail for a few named ids, provided
+the same step repairs them before it ends. That is a constraint declared `DEFERRABLE INITIALLY DEFERRED`,
+or an `ON DELETE CASCADE` that deletes row by row and is consistent again only when the cascade is done.
+
+The proof has four layers.
+
+1. **A step is a raw transition followed by Rule R.** `world-step w it = finish (raw w it)`. `raw` applies
+   the item (`raw0`, a case split over the 49 constructors of `Item`; then `post` cancels the losers of an
+   accepted await). `finish` runs Rule R (`rule-r`: rounds of `normalize` then `rule-r-filter`, bounded
+   by fuel) if the item was accepted, and keeps the input world if it was refused.
+2. **Every transition is glue around primitive edits.** The glue is case splits on a lookup or a guard,
+   sequencing, folds over a list, and loops bounded by fuel (the cancel cascade, normalization, Rule R's
+   rounds, the finalizer loop). The primitive edits are 39 small table edits: insert, delete or update a
+   row of one table; mark, unmark, remove or insert an edge; bump the allocator; `set-pins`,
+   `set-released`, `set-pending-act`; and Rule R's `filter-world`. The base proof `step-inv` reaches them
+   through about 220 composite lemmas, with 154 call sites of primitives.
+3. **`inv` is a base plus parts.** The base is `inv-sample` (`edits`): exact pending counts, every edge
+   references existing rows of the right kind, ids are unique and below the allocator. On top of it sit
+   about 45 *parts*, each a Bool predicate on a world, for example `gl-rest` (I10, task part) or
+   `g8-rest` (I8). A part together with the base is a *bundle*: `gl w = inv-sample w && gl-rest w`.
+4. **A part survives each primitive edit for one of four reasons.**
+   - **Frame.** The edit does not change what the part reads. `g1` (I1, scope parents) reads only the
+     scope table, so every edit of runs, tasks or edges keeps it, by `rfl`. About two thirds of the
+     (edit, part) pairs are frames.
+   - **Local obligation.** The edit changes what the part reads, and a short argument at that edit shows
+     that the part still holds. The argument may use the base, the part itself, the facts on the path to
+     the edit (a guard that was checked, a row that was found) and companion parts (below). Example: a new
+     scope keeps `g1` if its parent exists (`g1-scope-ins-fresh`); at T16's open that premise comes from
+     the guard `open-ok` on the path, at a run's new scope from `task-scope-parent`.
+   - **Deferred within a step.** An edit breaks the part for a named set of ids, and a later edit of the
+     same step repairs it. The part then has an *exempt form* with that set as a parameter: `Q[X]`, with
+     `Q = Q[∅]`. The set holds the pending deferred violations and is empty at commit. Example: T14
+     cancels a run, and for a moment its task has neither a result nor an alive run, which `gl` forbids.
+     `glx-kill` weakens `gl` to `glx k` (task `k` exempt), and `gl-task-done-x` gives back `gl` when the
+     task gets its result, in the same transition (`gl-cancel-run-local-o`). In a loop the set is ghost
+     state equal to the pending work: in the cancel cascade `g8`'s escape list is the runs of the queued
+     cancel jobs (`g8-cascade`), and it is empty when the worklist is (P4, `g8-cascade-done`). Deferral is
+     per part and per transition, not one relaxed invariant for the whole step: each part has its own
+     kind of exempt id (tasks, runs, computations, members), and each violation is repaired inside the
+     composite that made it (a raw transition, or one round of Rule R). The literature analogue is seL4's
+     `invs_except`.
+   - **Companions.** The argument for one part may use other parts of the input world: `g8` needs `ga`
+     for P4 (the cascade's worklist empties), `gd` needs `g7` and `g10r`. No part is inductive on its own;
+     the conjunction is, because the "uses" relation is acyclic (each part is inductive *relative to* the
+     parts before it).
+
+Each part has a step theorem `step-<part>`: from the part, its companions and `rule-r-safe (raw w it)`
+(P3: Rule R's filter is safe), the part holds after the step. The chain links `p3b` … `p3m` (below)
+conjoin the parts in one order that respects the companions, and `inv-step` is the last link plus the
+invariants proved alongside the chain.
+
+**Companions** (the premises of `step-<part>` besides the part itself and `rule-r-safe`; `rule-r-safe`
+comes from `p3b` by `step-rule-r-safe`):
+
+| Part | Companions | Part | Companions |
+|------|------------|------|------------|
+| `ga`, `inv-rank`, `g9`, `mdb`, `esb`, `gw`, `g1`, `g5`, `gso`, `ekb`, `svb` | none | `gd` | `g7`, `g10r` |
+| `gl`, `g7`, `aha`, `gr0`, `g8` | `ga` | `v14` | `ga`, `gy`, `g7`, `inv-rank` |
+| `gy`, `ar` | `ga`, `g7` | `hmk` | `ga`, `gy`, `g7`, `gd`, `g10r`, `inv-rank`, `v14` |
+| `g10r` | `p3b` (all of `ga`, `inv-rank`, `gl`, `g9`, `ri`) | `h3` | `p3la` (every part above, with `ar` and `ekb`) |
+
+### How the code expresses it today
+
+The proofs are not written part by part and edit by edit. A bundle's step theorem is obtained by
+re-checking the base proof once per bundle (`spindel.v2.inv.copier`):
+
+- `mk-bundle` declares a bundle and its parameters (an exemption set such as `g8`'s escape list `x8s`, or
+  a fixed id that a helper bundle talks about).
+- `prim!` fills one cell: the base lemma of one primitive edit, plus a proof of the part. `nil` means a
+  frame, proved by `rfl`. Hand lemmas renamed into the bundle (`swap! (:renames B) …`) fill cells that need
+  an extra premise.
+- `lcopy!` copies every composite lemma of the base proof that `step-inv` needs, with `inv-sample`
+  replaced by the bundle and every callee by its copy: the glue is re-checked once per bundle.
+- `override!` replaces the copy of one composite lemma by a hand proof. Overrides are where a part is
+  deferred within a step (they use an exempt form), and where a leaf needs a fact the base proof does not
+  pass down (a guard, a found row, a companion): then every lemma from the item down to that leaf is
+  overridden to pass it.
+- `patch!` rewrites the text of a base proof before it is copied, for the same purpose.
+
+So the four reasons appear as: frames are the `nil` cells (969 of the 1,357 cells); local obligations
+are the other cells and some overrides; deferred violations are overrides that use an exempt form;
+companions are bundle premises passed down by patches and overrides. About 10,000 of the 16,119
+theorems in the environment are copies. `notes/proof-layout.md` gives the counts and the target layout,
+in which a part declares what it reads (frames follow), its exempt form, and only the cells and
+composites that matter to it.
+
+### Reading list: the whole proof in 14 stops
+
+Kernel names are global; find a name with `grep -rn "(a/theorem NAME \["` (or `a/defn`) under `src/`.
+
+1. `inv`, `inv-step`, `Reach1`, `reach-inv` (`top`): the headline and its four-line induction.
+2. `World` (`state`), `Item` (`step`): the state (11 row tables, `pins`, `pending-act`, `released`,
+   `next-id`) and the 49 items.
+3. `world-step`, `raw`, `post`, `finish`, `raw0` (`engine`), `rule-r`, `rule-r-round` (`rule`): what a
+   step is.
+4. `inv-sample`, `inv-parts`, `inv-intro` (`edits`): the base every part sits on.
+5. `step-inv` → `raw0-inv` (`engine`) → `inv-cancel-run-local` (`rule`) → `inv-run-upd`: the base proof
+   from an item down to one primitive edit.
+6. `filter-safe-of-refs` (`inv.copier`), `step-rule-r-safe` (`inv.base`): P3, Rule R's filter is safe;
+   the premise every part shares.
+7. `p3b`, `step-p3b` (`inv.base`): how parts are assembled with their companions.
+8. `step-gl` (`inv.copier`): one part's step theorem: a refused item, then raw, then Rule R, with the
+   companion `ga`.
+9. `gl-rest`, `l10k`, `kw`, `gl-rest-kw` (`inv.copier`): a part, its view (what it reads) and its frame.
+10. `glx`, `glx-kill`, `gl-task-done-x`, `gl-cancel-run-local-o` (`inv.copier`): a violation deferred
+    within a step: its break and its repair.
+11. `mk-bundle`, `prim-form`, `copy-subst`, `lcopy!` (`inv.copier`): how a part reuses the base proof
+    today.
+12. `g8-close-local`, `g8-cascade`, `g8-cascade-done` (`inv.i8`), `casc-done-ga` (`inv.acts`): an
+    exemption set as ghost state in a loop, emptied by P4.
+13. `step-p3m`, `l5-safety-total` (`inv.members.step`): the end of the chain and what it buys (L5's
+    safety half). The `inv.members.bundle` docstring describes `h3`, the most complex part.
+14. `notes/generic-preservation.md` and its prototype: proving the glue once over an abstract part
+    instead of once per bundle.
+
 ## Map of the namespaces
 
 Namespaces are `spindel.v2.<name>` in `src/spindel/v2/<name>.clj` (a `.` in the name is a directory,
@@ -283,6 +409,9 @@ says how to run it).
   `notes/ansatz-gaps.md`: their repros.
 - `notes/history/PLAN.md`: the journal of the proof campaign in order (per branch: what was proved,
   model changes, questions to and answers from the engine session). It uses the old namespace names.
+- `notes/proof-layout.md`: how to make the preservation proofs readable: the proof idea of "How the step
+  proof works" with measurements, the options (views and frames, exemption forms for deferred
+  violations, a generic step tree, transition summaries), the target layout, staging and risks.
 - `notes/generic-preservation.md`: replacing the lemma copier by one generic preservation theorem over a
   structure of per-primitive obligations; a prototype (`notes/generic-preservation-proto.clj`) and the path.
 - `notes/hm13-contracts.edn`, `notes/hm14-contracts.edn`: working contracts of two h-mem2 stages
