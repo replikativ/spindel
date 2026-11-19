@@ -100,7 +100,9 @@
                                                         (:adopt-baselines c))})
                           :handles (:handles c)}))
      :tasks (tbl (:tasks w) (fn [k] (cond-> {:owner (opt0 (:owner k)) :run (opt0 (:run k))
-                                             :result (result->edn (:result k)) :handles (:handles k)}
+                                             :result (result->edn (:result k)) :handles (:handles k)
+                                             ;; Z#77: compared once the engine projects the mark (K-LOCAL)
+                                             :local (boolean (:local k))}
                                       (contains? k :inputs) (assoc :inputs (vec (:inputs k))))))
      :runs (tbl (:runs w)
                 (fn [x] {:of (:of x) :stamp (:stamp x) :epoch (:epoch x) :scope (:scope x)
@@ -212,7 +214,8 @@
             :tasks (rows :tasks (fn [id k] (with-new-fields s/map->TaskRow
                                                   {:id id :owner (nil0 (:owner k)) :run (nil0 (:run k))
                                                    :result (edn->result (:result k)) :handles (:handles k)}
-                                                  {:inputs (vec (:inputs k))})))
+                                                  ;; Z#77: the fork-local mark (false when the engine does not project it)
+                                                  {:inputs (vec (:inputs k)) :local (boolean (:local k))})))
             :runs (rows :runs
                         (fn [id x]
                           (s/map->RunRow {:id id :of (:of x) :stamp (:stamp x) :epoch (:epoch x) :scope (:scope x)
@@ -462,7 +465,7 @@
                     {:item (item :create-comp rid c (inputs-val (:inputs row)) (nil0 (:body row)))}))
    ;; [:spawn-top k]: the owner scope from the committed row, body opaque (0)
    :spawn-top (fn [{:keys [post]} [k]]
-                {:item (item :spawn-top (or (:owner (row-of post :tasks k)) s/root-scope-id) 0 k [])})
+                {:item (item :spawn-top (or (:owner (row-of post :tasks k)) s/root-scope-id) 0 k [] false)})
    ;; [:observe d e]: callback not projected (0 = the restart code the engine projects)
    :observe (fn [_ [d e]] {:item (item :observe d 0 e)})
    ;; [:track r x e] (computation) / [:track r x] (task snapshot): cont from the committed edge;
@@ -499,9 +502,27 @@
 
 (defn- add-inputs
   "`[:spawn st body fresh]` / `[:spawn-top scope body fresh]` (sample 3, before the inputs field):
-  the model's T4 takes the task inputs as a last field; none logged = []."
+  the model's T4 takes the task inputs as a field; none logged = []. Z#77: the engine logs the fork-local
+  option as a trailing `true` only for a fork-local task (`[:spawn st body fresh inputs true]`), so a
+  4-field item is an unmarked one (local false)."
   [tag]
-  (fn [_ args] {:item (conj (into [(ctor-idx tag)] (map payload args)) [])}))
+  (fn [_ args]
+    (let [args (vec (map payload args))]
+      {:item (into [(ctor-idx tag)] (case (count args) 3 (conj args [] false) 4 (conj args false) args))})))
+
+(defn retire-local-item
+  "Z#77 `[:retire-local]` (T28): the model's item carries the error value v (::forked with
+  :spindel/fork-local) the retired tasks without a result get. The engine logs no payload: v is read off
+  the commit's projection, the result of a task that had none in the model world before (0 when no task
+  got one; the engine gives every task of one commit the same error value, e758834)."
+  [{:keys [w post]} args]
+  (if (seq args)
+    {:item (item :retire-local (payload (first args)))}
+    (let [pending (set (keep #(when (= s/res-none (:tag (:result %))) (:id %)) (:tasks w)))
+          vs (keep (fn [[k row]] (let [[tag v] (:result row)]
+                                   (when (and (contains? pending k) (= :err tag)) v)))
+                   (:tasks post))]
+      {:item (item :retire-local (or (first vs) 0))})))
 
 (defn- inputs-list
   "`[:create-comp(-top) x c inputs body]` with inputs a single interned Nat (sample 3): the
@@ -518,6 +539,7 @@
 (def table-adapters
   "Table-format items the model cannot take verbatim (delete when the engine catches up)."
   {:spawn (add-inputs :spawn) :spawn-top (add-inputs :spawn-top)
+   :retire-local retire-local-item
    :create-comp (inputs-list :create-comp) :create-comp-top (inputs-list :create-comp-top)
    :take take-item
    ;; a refused fire is logged as `[:resource-fire z]` (engine `refuse!`, sample 9 commit 21: the
@@ -887,7 +909,8 @@
 
 ;; ---------------------------------------------------------------------------
 ;; C1c stage A (spec Z#70): the completion ledger and host joins, derived as well. Sidecar fields (when present):
-;;   :tasks  {id {:done? :retired? :materialized? :srow-present? :complete?}}  every task seen at a checkpoint so far
+;;   :tasks  {id {:done? :retired? :materialized? :srow-present? :complete? :local}}  every task seen at a checkpoint so far
+;;           (:local: Z#77, the fork-local mark)
 ;;   :scopes {id {:open? :present? :complete?}}                  every scope seen so far
 ;;   :pending-joins                                              live host joins: admitted, not yet delivered, not
 ;;                                                               withdrawn (engine #275; question 12)
@@ -915,13 +938,17 @@
   (let [scope-row (fn [s] (first (s/scope-find w s)))
         shown? (fn [x] (or (not= 1 (:kind x)) (contains? mat (:id x))))
         seen {:tasks (into (:tasks seen) (map :id (:tasks w)))
-              :scopes (into (:scopes seen) (map :id (filter shown? (:scopes w))))}
+              :scopes (into (:scopes seen) (map :id (filter shown? (:scopes w))))
+              ;; Z#77: the mark of every task seen so far (a removed task keeps the one it had)
+              :local-of (into (or (:local-of seen) {}) (map (juxt :id #(boolean (:local %))) (:tasks w)))}
         task (fn [k] (let [t (first (s/task-find w k))
                            sr (scope-row (lg/task-srow k))]
                        {:done? (if t (not= s/res-none (:tag (:result t))) true)
                         :retired? (if t (zero? (:run t)) true)
                         :srow-present? (boolean (and sr (contains? mat (:id sr))))
-                        :complete? (lg/task-complete w k)}))
+                        :complete? (lg/task-complete w k)
+                        ;; Z#77: the task's fork-local mark (fixed at creation; a removed task keeps it)
+                        :local (boolean (get (:local-of seen) k))}))
         scope (fn [x] (let [r (scope-row x)]
                         {:open? (boolean (and r (:open r))) :present? (some? r) :complete? (lg/scope-complete w x)}))]
     [{:tasks (into (sorted-map) (map (juxt identity task)) (:tasks seen))
@@ -994,7 +1021,7 @@
                            [lo seen] (ledger-obs w (into smat (remove task-scope?) mat) seen)
                            ;; cross-check of question 11: the sidecar's :materialized? is the model's "owned something"
                            lo (update lo :tasks (fn [m] (into (sorted-map) (map (fn [[t o]] [t (assoc o :materialized? (contains? mat (lg/task-srow t)))])) m)))
-                           cell (fn [js] (sys/->Cell w true 0 0 [] (unborn? k) 0 [] (complete? k) js [] false))
+                           cell (fn [js] (sys/->Cell w true 0 0 [] (unborn? k) 0 [] (complete? k) js [] false false w))
                            admitted (reduce (fn [c [_ _ t]] (if (sys/join-ok c t) (sys/join-cell c t) c))
                                             (cell js) (filter (fn [[jk js _]] (and (= jk k) (= js step))) joins))
                            withdrawn (reduce (fn [c [_ _ j]] (sys/withdraw-cell c j))

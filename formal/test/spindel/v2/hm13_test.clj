@@ -64,8 +64,8 @@
    [(unpin x) true]
    [(create-comp st c i b) false]
    [(create-comp-top sc c i b) true]
-   [(spawn st b fresh ins) false]
-   [(spawn-top sc b fresh ins) true]
+   [(spawn st b fresh ins loc) false]
+   [(spawn-top sc b fresh ins loc) true]
    [(start c fresh) false]
    [(await st ds m k fresh mine) false]
    [(dispatch-comp c fresh) false]
@@ -96,7 +96,8 @@
    [(finally-leave st) false]
    [(own s m) false]
    [(owned-done s c) false]
-   [(drain ids) false])),
+   [(drain ids) false]
+   [(retire-local v) false])),
  loser-task
  (a/defn
   loser-task
@@ -254,8 +255,8 @@
 
 (defn cancellation-input []
   (let [{:keys [w rid] :as f} (fixture/fixture :task), st (:stamp (row w :runs rid))
-        k1 (:next-id w), w (fixture/accepted-step w [15 st 1 k1 []])
-        k2 (:next-id w), w (fixture/accepted-step w [15 st 2 k2 []])
+        k1 (:next-id w), w (fixture/accepted-step w [15 st 1 k1 [] false])
+        k2 (:next-id w), w (fixture/accepted-step w [15 st 2 k2 [] false])
         a (:next-id w), w (fixture/accepted-step w [18 st [k1 k2] s/am-any 511 a [k1 k2]])
         w (fixture/accepted-step w [21 (inc k1)]), item [20 (:stamp (row w :runs (inc k1))) s/res-ok 1]]
     {:w w :f f :rid rid :k1 k1 :k2 k2 :a a :item item}))

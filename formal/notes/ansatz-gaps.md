@@ -644,3 +644,25 @@ Workarounds are in the proofs; each is a divergence from Lean 4.33.1 to fix in a
   unfolds the def (`reduceProjFn` with delta), so later rewrites stated with the folded form no longer match.
   Workaround: introduce binders without simp (`intros` sees through the def) or restate with `show`.
 - `(by (omega))` is not accepted as a term argument inside a tactic. Workaround: a named `have` first.
+
+## fork-local (2026-11-18, ansatz 0.2.634): Z#77 model stage
+
+- Another instance of the p3 pitfall (an explicit `_` for a structure argument fixed only by the expected type is
+  not postponed). Minimal shape, in spindel.v2.sys:
+
+  ```clojure
+  (a/theorem rinv-off2 [cells :- (=> Nat Cell), k :- Nat, c2 :- Cell]
+    (=> (rinv cells) (= (:rpend c2) (:rpend (cells k))) (= (:rpend (cells k)) false) (rinv (fupd cells k c2))) ...)
+  ;; goal: rinv (fupd cells k (cell-step (cells k) it)), h : rinv cells, g : (:rpend (cells k)) = false
+  (exact (rinv-off2 cells k _ h (rfl) g))                       ; "Elaboration error: Type mismatch"
+  (apply (rinv-off2 cells k _ h)) (rfl) (exact g)               ; proved
+  ```
+
+  Lean elaborates the first (the `_` is unified with the expected type before `rfl` is checked). Status: open,
+  workaround `apply` and close the remaining goals in order (used for every `rinv-*` lemma).
+- Status update for "progress: no `sorry` tactic": 0.2.634 has it (`(sorry)` proves with "declaration uses `sorry`").
+  No `sorry` remains in the model.
+- Workflow (not a gap): a failed form-by-form load of one namespace can be resumed without restarting the JVM when
+  the namespace is created by its `ns` form first and every top-level form after the failure is evaluated in order;
+  `ns` marks the lib loaded at once, so a loader must unmark it until the last form evaluated (the scripts are in
+  `.internal/fork-local-model/bin/init.clj`).

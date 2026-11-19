@@ -265,10 +265,10 @@
 (a/defn source-detach-row [s :- SourceRow] SourceRow
   (SourceRow.mk (:id s) 0 (:kind s) (:state s) (:version s) false (:handles s) (:queue s)
                 (:rtask s) (:next s) (:tail s) (:fail s) (:max s)))
-(a/defn task-detach-row [t :- TaskRow] TaskRow (TaskRow.mk (:id t) 0 (:run t) (:result t) (:handles t) (:inputs t)))
+(a/defn task-detach-row [t :- TaskRow] TaskRow (TaskRow.mk (:id t) 0 (:run t) (:result t) (:handles t) (:inputs t) (:local t)))
 ;; a cancelled task that has no result completes with err ::cancelled (reading 4)
 (a/defn task-cancel-result [t :- TaskRow] TaskRow
-  (if (Nat.beq (:tag (:result t)) res-none) (TaskRow.mk (:id t) (:owner t) (:run t) res-cancelled (:handles t) (:inputs t)) t))
+  (if (Nat.beq (:tag (:result t)) res-none) (TaskRow.mk (:id t) (:owner t) (:run t) res-cancelled (:handles t) (:inputs t) (:local t)) t))
 
 (a/theorem run-cancel-row-id [r :- RunRow] (= (run-id (run-cancel-row r)) (run-id r)) (rfl))
 (a/theorem res-cancel-row-id [z :- ResRow] (= (resource-id (res-cancel-row z)) (resource-id z))
@@ -491,7 +491,7 @@
 ;; cancels are cascade jobs); (3) the run row and cleanup[R] go; (4) R.scope's subtree goes
 ;; when it is empty
 ;; Z#25(b): T13 step 1 clears C.run or K.run
-(a/defn task-clear-run [t :- TaskRow] TaskRow (TaskRow.mk (:id t) (:owner t) 0 (:result t) (:handles t) (:inputs t)))
+(a/defn task-clear-run [t :- TaskRow] TaskRow (TaskRow.mk (:id t) (:owner t) 0 (:result t) (:handles t) (:inputs t) (:local t)))
 (a/defn clear-task-run [w :- World, r :- RunRow] World
   (match (task-find w (:of r))
     [none w]

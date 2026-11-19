@@ -38,6 +38,15 @@
 (defn dq-push! [q x] #?(:clj (.addLast ^java.util.ArrayDeque q x) :cljs (.push q x)) nil)
 (defn dq-poll! [q] #?(:clj (.pollFirst ^java.util.ArrayDeque q) :cljs (.shift q)))
 (defn dq-empty? [q] #?(:clj (.isEmpty ^java.util.ArrayDeque q) :cljs (zero? (.-length q))))
+(defn dq-remove-if!
+  "Removes the elements `x` of deque `q` with `(pred x)`."
+  [q pred]
+  #?(:clj (.removeIf ^java.util.ArrayDeque q (reify java.util.function.Predicate (test [_ x] (boolean (pred x)))))
+     :cljs (loop [i (dec (.-length q))]
+             (when-not (neg? i)
+               (when (pred (aget q i)) (.splice q i 1))
+               (recur (dec i)))))
+  nil)
 
 (defn mpsc [] #?(:clj (java.util.concurrent.ConcurrentLinkedQueue.) :cljs (array)))
 (defn mpsc-add! [q x] #?(:clj (.add ^java.util.concurrent.ConcurrentLinkedQueue q x) :cljs (.push q x)) nil)

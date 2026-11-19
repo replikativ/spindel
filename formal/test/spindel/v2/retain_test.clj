@@ -143,7 +143,7 @@
                                             :pending 0 :rank 0 :version 0 :result nores :idle false
                                             :validity [] :basis [] :adopt-basis [] :adopt-baselines []
                                             :handles 0 :tomb false} m)))
-(defn task [id owner run result handles] (s/->TaskRow id owner run result handles []))
+(defn task [id owner run result handles] (s/->TaskRow id owner run result handles [] false))
 (defn run-row [m] (s/map->RunRow (merge {:id 0 :of 0 :stamp 0 :epoch 1 :scope 0 :act s/act-active :mode 0
                                           :slice false :effect-index 0 :finalizers [] :resources []} m)))
 (defn source [id owner handles] (s/->SourceRow id owner s/sk-signal 0 0 true handles [] 0 0 0 false 0))

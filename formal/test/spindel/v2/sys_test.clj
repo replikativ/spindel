@@ -59,7 +59,7 @@
 ;; savepoint is refused, which would make every savepoint statement empty.
 (deftest savepoint-and-fork-effect-are-not-refused
   (let [it (fn [tag & fs] (into [(o/ctor-idx tag)] fs))
-        w0 (:world (en/world-step s/empty-world (it :spawn-top s/root-scope-id 0 (:next-id s/empty-world) [])))
+        w0 (:world (en/world-step s/empty-world (it :spawn-top s/root-scope-id 0 (:next-id s/empty-world) [] false)))
         r (first (:runs w0))
         w1 (:world (en/world-step w0 (it :schedule (:id r))))
         run (fn [w] ((juxt :act :slice :resources) (first (s/run-find w (:id r)))))
@@ -136,7 +136,7 @@
 (deftest c2-seal-and-merge-release
   (let [{:keys [basis parent child]} (fork-worlds)
         it (fn [tag & fs] (into [(o/ctor-idx tag)] fs))
-        cell (fn [w sealed] (sys/->Cell w true 1 s/root-scope-id [] false 0 [] false [] [] sealed))
+        cell (fn [w sealed] (sys/->Cell w true 1 s/root-scope-id [] false 0 [] false [] [] sealed false w))
         cells (fn [sealed] (fn [k] (case (long k) 1 (cell parent false) 2 (cell child sealed) (cell s/empty-world false))))
         sealed ((sys/sys-seal (cells false) 2) 2)
         w (:world sealed)]
@@ -145,7 +145,7 @@
     (is (= w (:world (sys/cell-step sealed (it :write 3 7)))) "a host write is refused")
     (is (not= w (:world (sys/cell-step (cell child false) (it :write 3 7)))) "unsealed it is taken")
     (is (= w (:world (sys/cell-step sealed (it :post 3 7)))) "so is any host source change")
-    (is (not= w (:world (sys/cell-step sealed (it :spawn-top s/root-scope-id 1 (:next-id w) []))))
+    (is (not= w (:world (sys/cell-step sealed (it :spawn-top s/root-scope-id 1 (:next-id w) [] false))))
         "a spawn item is processed: admissions are refused at admission, before any item (Z#74)")
     (is (true? (:released (:world (sys/cell-step sealed (it :release-world))))) "release is taken")
     (let [c0 (cells false) c1 (sys/sys-merge-release c0 1 2 basis sys/refuse-all)]
@@ -161,7 +161,7 @@
 (deftest idle-release-fires-on-an-idle-world-only
   (let [{:keys [child]} (fork-worlds)
         it (fn [tag & fs] (into [(o/ctor-idx tag)] fs))
-        cell (fn [w] (sys/->Cell w true 1 s/root-scope-id [] false 0 [] false [] [] false))
+        cell (fn [w] (sys/->Cell w true 1 s/root-scope-id [] false 0 [] false [] [] false false w))
         cells (fn [w] (fn [k] (cell (if (= k 2) w s/empty-world))))
         step (fn [w i] (let [o (en/world-step w i)] (is (:accepted o) (pr-str i)) (:world o)))
         ;; the host lets go: every handle dropped, every host edge removed
@@ -236,7 +236,7 @@
 (defn- prefix-world-c1 []
   (let [it (fn [tag & fs] (into [(o/ctor-idx tag)] fs))
         w0 s/empty-world k (:next-id w0)
-        w1 (:world (en/world-step w0 (it :spawn-top s/root-scope-id 0 k [])))
+        w1 (:world (en/world-step w0 (it :spawn-top s/root-scope-id 0 k [] false)))
         r (:run (first (filter #(= k (:id %)) (:tasks w1))))
         w2 (:world (en/world-step w1 (it :schedule r)))
         st (:stamp (first (filter #(= r (:id %)) (:runs w2))))
@@ -244,7 +244,7 @@
     (:world (en/world-step w3 (it :await st [(dec (:next-id w3))] s/am-one 1 (:next-id w3) [])))))
 
 (defn- c1-cell [w & {:keys [parent unborn pending] :or {parent 0 unborn false pending 0}}]
-  (sys/->Cell w true parent s/root-scope-id [] unborn pending [] false [] [] false))
+  (sys/->Cell w true parent s/root-scope-id [] unborn pending [] false [] [] false false w))
 (defn- c1-cells [m] (fn [k] (get m k (c1-cell s/empty-world))))
 (defn- released [w] (:world (en/world-step w [(o/ctor-idx :release-world)])))
 
@@ -503,7 +503,7 @@
 ;; C2 R6, the engine's protocol: reserve in the new owner, then move; a completion in between, a counted fork
 ;; or a cycle undoes or refuses it; lineage stays; unseal clears the flag unless released
 (deftest c2-transfer-protocol
-  (let [cell (fn [parent owner kids] (sys/->Cell s/empty-world true parent owner [] false 0 kids false [] [] false))
+  (let [cell (fn [parent owner kids] (sys/->Cell s/empty-world true parent owner [] false 0 kids false [] [] false false s/empty-world))
         cells (fn [k] (case (long k) 1 (cell 0 0 [2 3]) 2 (cell 1 1 []) 3 (cell 1 1 []) (cell 0 0 [])))
         fuel [0 0 0 0]
         root s/root-scope-id

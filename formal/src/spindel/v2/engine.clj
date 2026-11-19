@@ -348,7 +348,7 @@
 ;; run stamp = run id (oracle contract)
 (a/defn new-run-row [id :- Nat, of :- Nat, epoch :- Nat, scope :- Nat, ei :- Nat] RunRow
   (RunRow.mk id of id epoch scope act-active mode-normal false ei (List.nil Finalizer) (List.nil Nat)))
-(a/defn new-task-row [id :- Nat, owner :- Nat, run :- Nat, inputs :- (List Nat)] TaskRow (TaskRow.mk id owner run none-result 1 inputs))
+(a/defn new-task-row [id :- Nat, owner :- Nat, run :- Nat, inputs :- (List Nat), loc :- Bool] TaskRow (TaskRow.mk id owner run none-result 1 inputs loc))
 
 ;; a run R (id next-id) of entity `of`, with its run scope S (next-id + 1, parent `parent`)
 (a/defn add-run-scope [w :- World, of :- Nat, epoch :- Nat, parent :- Nat, ei :- Nat] World
@@ -608,16 +608,16 @@
 (a/defn task-scope-parent [w :- World, owner :- Nat] Nat (if (scope-has w owner) owner 0))
 
 ;; T4 rows: task K = next-id, run R = K + 1, run scope S = K + 2 (fresh-id order)
-(a/defn spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat)] World
-  (add-run-scope (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs)))
+(a/defn spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat), loc :- Bool] World
+  (add-run-scope (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc)))
                  (:next-id w) 0 (task-scope-parent w owner) 0))
 
-(a/theorem inv-spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat)]
-  (=> (= (inv-sample w) true) (= (inv-sample (spawn-rows w owner inputs)) true))
+(a/theorem inv-spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat), loc :- Bool]
+  (=> (= (inv-sample w) true) (= (inv-sample (spawn-rows w owner inputs loc)) true))
   (intro h)
   (simp only [spawn-rows])
   (exact (inv-add-run-scope _ (:next-id w) 0 (task-scope-parent w owner) 0
-           (inv-task-ins-fresh w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs) (rfl) h))))
+           (inv-task-ins-fresh w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc) (rfl) h))))
 
 ;; the run's current scope (engine `current-scope!`): its innermost open explicit scope, else
 ;; its run scope. Explicit scopes of a run are opened LIFO (with-scope), so the innermost one is
@@ -655,22 +655,41 @@
 (a/defn respawn-raw [w :- World, r :- RunRow, x :- Nat] World
   (run-upd (comp-upd w (:of r) (comp-rebasis (Created.mk x (:effect-index r)))) (:id r) run-tick))
 
+;; Z#77 fork-local tasks (K2): a scope is fork-local when it or a scope on its parent chain is the run
+;; scope of a run of a fork-local task; a new task is fork-local when it is created with the option
+;; (`flag`) or its owner is a fork-local scope (a computation owner never is: its id names no scope, and
+;; a computation run's scope has no parent, Z#26). The mark is fixed at creation.
+(a/defn task-is-local [t :- TaskRow] Bool (:local t))
+(a/defn task-local-id [w :- World, k :- Nat] Bool (opt-test task-is-local (task-find w k)))
+(a/defn run-scope-of-local [w :- World, x :- Nat, r :- RunRow] Bool
+  (Bool.and (Nat.beq (:scope r) x) (task-local-id w (:of r))))
+(a/defn local-run-scope [w :- World, x :- Nat] Bool (tbl-any (run-scope-of-local w x) (:runs w)))
+(a/defn scope-local [w :- World, s :- Nat] Bool
+  (tbl-any (local-run-scope w) (List.cons Nat s (scope-ancestors w s))))
+(a/defn spawn-loc [w :- World, owner :- Nat, flag :- Bool] Bool (Bool.or flag (scope-local w owner)))
+;; Z#77 (Q4): an unmarked task is not detached into a fork-local scope (the mark is the creator's: a fork-local
+;; task detached elsewhere keeps it)
+(a/defn detach-local-bad [w :- World, k :- Nat, s :- Nat] Bool (Bool.and (scope-local w s) (Bool.not (task-local-id w k))))
+;; the option inside a computation body is refused (raw0, Z#77: `{:spindel/invalid :fork-local}`)
+(a/defn spawn-local-bad [w :- World, st :- Nat, flag :- Bool] Bool
+  (Bool.and flag (match (tok-run w st) [none false] [(some r) (in-comp w r)])))
+
 ;; inside a run (body effect): a re-spawn (above), or a new task (fresh = next-id) owned per
 ;; §5.2, recorded in a computation's basis; effect tick either way
-(a/defn t4-spawn [w :- World, st :- Nat, body :- Nat, fresh :- Nat, inputs :- (List Nat)] Outcome
+(a/defn t4-spawn [w :- World, st :- Nat, body :- Nat, fresh :- Nat, inputs :- (List Nat), flag :- Bool] Outcome
   (match (tok-run w st)
     [none (refuse w)]
     [(some r) (match (respawn-target w r fresh)
                 [none (if (Nat.beq fresh (:next-id w))
-                          (accept (run-upd (record-basis (spawn-rows w (spawn-owner w r) inputs) r fresh) (:id r) run-tick))
+                          (accept (run-upd (record-basis (spawn-rows w (spawn-owner w r) inputs (spawn-loc w (spawn-owner w r) flag)) r fresh) (:id r) run-tick))
                           (refuse w))]
                 [(some t) (if (nat-list-eq inputs (:inputs t)) (accept (respawn-raw w r fresh)) (refuse w))])]))
 ;; at top level: owned by the given open scope
-(a/defn t4-spawn-top [w :- World, scope :- Nat, body :- Nat, fresh :- Nat, inputs :- (List Nat)] Outcome
-  (if (Bool.and (Nat.beq fresh (:next-id w)) (scope-open-at w scope)) (accept (spawn-rows w scope inputs)) (refuse w)))
+(a/defn t4-spawn-top [w :- World, scope :- Nat, body :- Nat, fresh :- Nat, inputs :- (List Nat), flag :- Bool] Outcome
+  (if (Bool.and (Nat.beq fresh (:next-id w)) (scope-open-at w scope)) (accept (spawn-rows w scope inputs (spawn-loc w scope flag))) (refuse w)))
 
-(a/theorem t4-inv [w :- World, st :- Nat, body :- Nat, fresh :- Nat, inputs :- (List Nat)]
-  (=> (= (inv-sample w) true) (= (inv-sample (:world (t4-spawn w st body fresh inputs))) true))
+(a/theorem t4-inv [w :- World, st :- Nat, body :- Nat, fresh :- Nat, inputs :- (List Nat), flag :- Bool]
+  (=> (= (inv-sample w) true) (= (inv-sample (:world (t4-spawn w st body fresh inputs flag))) true))
   (intro h)
   (cases ht (tok-run w st)) (case' [some r]) (case' [none])
   (simp only [t4-spawn ht refuse]) (exact h)
@@ -681,7 +700,7 @@
     (case [true]
       (simp only [t4-spawn ht hp hf accept])
       (exact (inv-run-upd _ (:id r) run-tick run-tick-run-id
-               (inv-record-basis _ r fresh (inv-spawn-rows w (spawn-owner w r) inputs h))))))
+               (inv-record-basis _ r fresh (inv-spawn-rows w (spawn-owner w r) inputs (spawn-loc w (spawn-owner w r) flag) h))))))
   (case [some t]
     (cases he (nat-list-eq inputs (:inputs t)))
     (case [false] (simp only [t4-spawn ht hp he refuse]) (exact h))
@@ -690,8 +709,8 @@
       (exact (inv-run-upd _ (:id r) run-tick run-tick-run-id
                (inv-comp-upd w (:of r) _ (comp-rebasis-id _) (comp-rebasis-pending _) h))))))
 
-(a/theorem t4-refuse [w :- World, st :- Nat, body :- Nat, fresh :- Nat, inputs :- (List Nat)]
-  (=> (= (:accepted (t4-spawn w st body fresh inputs)) false) (= (:world (t4-spawn w st body fresh inputs)) w))
+(a/theorem t4-refuse [w :- World, st :- Nat, body :- Nat, fresh :- Nat, inputs :- (List Nat), flag :- Bool]
+  (=> (= (:accepted (t4-spawn w st body fresh inputs flag)) false) (= (:world (t4-spawn w st body fresh inputs flag)) w))
   (intro ha)
   (cases ht (tok-run w st)) (case' [some r]) (case' [none])
   (simp only [t4-spawn ht refuse])
@@ -705,15 +724,15 @@
     (case [false] (simp only [t4-spawn ht hp he refuse]))
     (case [true] (simp [t4-spawn ht hp he accept] at ha))))
 
-(a/theorem t4-top-inv [w :- World, scope :- Nat, body :- Nat, fresh :- Nat, inputs :- (List Nat)]
-  (=> (= (inv-sample w) true) (= (inv-sample (:world (t4-spawn-top w scope body fresh inputs))) true))
+(a/theorem t4-top-inv [w :- World, scope :- Nat, body :- Nat, fresh :- Nat, inputs :- (List Nat), flag :- Bool]
+  (=> (= (inv-sample w) true) (= (inv-sample (:world (t4-spawn-top w scope body fresh inputs flag))) true))
   (intro h)
   (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (scope-open-at w scope)))
   (simp only [t4-spawn-top hg refuse]) (exact h)
-  (simp only [t4-spawn-top hg accept]) (exact (inv-spawn-rows w scope inputs h)))
+  (simp only [t4-spawn-top hg accept]) (exact (inv-spawn-rows w scope inputs (spawn-loc w scope flag) h)))
 
-(a/theorem t4-top-refuse [w :- World, scope :- Nat, body :- Nat, fresh :- Nat, inputs :- (List Nat)]
-  (=> (= (:accepted (t4-spawn-top w scope body fresh inputs)) false) (= (:world (t4-spawn-top w scope body fresh inputs)) w))
+(a/theorem t4-top-refuse [w :- World, scope :- Nat, body :- Nat, fresh :- Nat, inputs :- (List Nat), flag :- Bool]
+  (=> (= (:accepted (t4-spawn-top w scope body fresh inputs flag)) false) (= (:world (t4-spawn-top w scope body fresh inputs flag)) w))
   (intro ha)
   (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (scope-open-at w scope)))
   (simp only [t4-spawn-top hg refuse])
@@ -1222,7 +1241,7 @@
               (:validity c) (:basis c) (List.nil Created) (List.nil AdoptBase) (:handles c) (:tomb c)))
 (a/theorem comp-result-row-id [res :- RunResult, ep :- Nat, c :- CompRow] (= (comp-id (comp-result-row res ep c)) (comp-id c)) (rfl))
 (a/theorem comp-result-row-pending [res :- RunResult, ep :- Nat, c :- CompRow] (= (:pending (comp-result-row res ep c)) (:pending c)) (rfl))
-(a/defn task-result-row [res :- RunResult, t :- TaskRow] TaskRow (TaskRow.mk (:id t) (:owner t) (:run t) res (:handles t) (:inputs t)))
+(a/defn task-result-row [res :- RunResult, t :- TaskRow] TaskRow (TaskRow.mk (:id t) (:owner t) (:run t) res (:handles t) (:inputs t) (:local t)))
 (a/theorem task-result-row-id [res :- RunResult, t :- TaskRow] (= (task-id (task-result-row res t)) (task-id t)) (rfl))
 
 ;; creations of the predecessor that this run did not re-create are released: the tasks
@@ -1722,7 +1741,7 @@
   (CompRow.mk (:id c) (:owner c) (:inputs c) (:body c) (:run c) (:epoch c) (:done-epoch c)
               (:pending c) (:rank c) (:version c) (:result c) (:idle c) (:validity c) (:basis c)
               (:adopt-basis c) (:adopt-baselines c) 1 (:tomb c)))
-(a/defn task-h1 [t :- TaskRow] TaskRow (TaskRow.mk (:id t) (:owner t) (:run t) (:result t) 1 (:inputs t)))
+(a/defn task-h1 [t :- TaskRow] TaskRow (TaskRow.mk (:id t) (:owner t) (:run t) (:result t) 1 (:inputs t) (:local t)))
 (a/defn source-h1 [s :- SourceRow] SourceRow
   (SourceRow.mk (:id s) (:owner s) (:kind s) (:state s) (:version s) (:open s) 1 (:queue s) (:rtask s) (:next s) (:tail s) (:fail s) (:max s)))
 (a/defn pub-h1 [p :- PubRow] PubRow (PubRow.mk (:id p) (:edge p) (:basis p) 1))
@@ -2428,7 +2447,7 @@
 ;; under s (Z#41, Z#26); the old owner's subtree is then removed when it became empty (W#9;
 ;; engine `remove-scope-if-empty!`)
 (a/defn task-set-owner [s :- Nat, t :- TaskRow] TaskRow
-  (TaskRow.mk (:id t) s (:run t) (:result t) (:handles t) (:inputs t)))
+  (TaskRow.mk (:id t) s (:run t) (:result t) (:handles t) (:inputs t) (:local t)))
 (a/theorem task-set-owner-id [s :- Nat, t :- TaskRow] (= (task-id (task-set-owner s t)) (task-id t)) (rfl))
 (a/defn scope-set-parent [p :- Nat, s :- ScopeRow] ScopeRow (ScopeRow.mk (:id s) p (:kind s) (:open s)))
 (a/theorem scope-set-parent-id [p :- Nat, s :- ScopeRow] (= (scope-id (scope-set-parent p s)) (scope-id s)) (rfl))
@@ -2484,7 +2503,7 @@
   (CompRow.mk (:id c) (:owner c) (:inputs c) (:body c) (:run c) (:epoch c) (:done-epoch c)
               (:pending c) (:rank c) (:version c) (:result c) (:idle c) (:validity c) (:basis c)
               (:adopt-basis c) (:adopt-baselines c) 0 (:tomb c)))
-(a/defn task-h0 [t :- TaskRow] TaskRow (TaskRow.mk (:id t) (:owner t) (:run t) (:result t) 0 (:inputs t)))
+(a/defn task-h0 [t :- TaskRow] TaskRow (TaskRow.mk (:id t) (:owner t) (:run t) (:result t) 0 (:inputs t) (:local t)))
 (a/defn source-h0 [s :- SourceRow] SourceRow
   (SourceRow.mk (:id s) (:owner s) (:kind s) (:state s) (:version s) (:open s) 0 (:queue s) (:rtask s) (:next s) (:tail s) (:fail s) (:max s)))
 (a/defn pub-h0 [p :- PubRow] PubRow (PubRow.mk (:id p) (:edge p) (:basis p) 0))
@@ -2848,7 +2867,7 @@
 (a/defn link-idle [w :- World, s :- SourceRow] Bool
   (Bool.and (link-open s) (Bool.and (Nat.beq (:tail s) 0) (Bool.not (realizer-live w s)))))
 (a/defn link-demand-raw [w :- World, l :- Nat] World
-  (source-upd (task-upd (spawn-rows w root-scope-id (List.nil Nat)) (:next-id w) task-h0) l (link-set-rtask (:next-id w))))
+  (source-upd (task-upd (spawn-rows w root-scope-id (List.nil Nat) false) (:next-id w) task-h0) l (link-set-rtask (:next-id w))))
 (a/defn t-link-demand [w :- World, l :- Nat, k :- Nat] Outcome
   (match (source-find w l)
     [none (refuse w)]
@@ -2860,7 +2879,7 @@
   (intro h)
   (simp only [link-demand-raw])
   (exact (inv-source-upd _ l _ (link-set-rtask-id _)
-           (inv-task-upd _ (:next-id w) task-h0 task-h0-id (inv-spawn-rows w root-scope-id (List.nil Nat) h)))))
+           (inv-task-upd _ (:next-id w) task-h0 task-h0-id (inv-spawn-rows w root-scope-id (List.nil Nat) false h)))))
 
 (a/theorem t-link-demand-inv [w :- World, l :- Nat, k :- Nat]
   (=> (= (inv-sample w) true) (= (inv-sample (:world (t-link-demand w l k))) true))
@@ -3205,6 +3224,99 @@
   (case [false] (simp only [t-drain hm refuse]))
   (case [true] (simp [t-drain hm accept] at ha)))
 
+;; ---- Z#77 T28 `[:retire-local]` (internal; the first item of a world derived from one with fork-local runs:
+;; layer 2 applies it at the world's first entry, sys.clj `sys-retire`). Every run of a fork-local task is retired
+;; and nothing runs for it. Per run R (in `local-order`, deepest run scope first, so a subtree is empty when its
+;; run retires): R's activations go with their wait/savepoint members (`cancel-acts`, as T14); R's resources are
+;; deleted without a fire and without an acknowledgement item (`ack-raw`, guarded as T15); R loses its finalizers
+;; and its slice (`run-drop-fins`: no cleanup entry, no cleanup slice). Then an R that is not done completes as by
+;; T12 (`complete-raw`; the second test is always true here, retire-one being applied to such runs only): its task gets err v (v = ::forked with :spindel/fork-local) unless it already has a
+;; result (a cleanup slice parked in a finally keeps it), the creditors are filled with it, T13 retires R (K.run :=
+;; none, the run scope's subtree closed with its owned sources, Z#18, the run row goes, the subtree's scopes go
+;; when empty), then T10. A done R (unwinding, or awaiting T13) is retired by T13 (`retire-full`). The engine's
+;; one commit (all runs silenced, then the tasks finished, then T13 on each) ends in the same world. Refused when
+;; the world has no run of a fork-local task.
+(a/defn run-of-local [w :- World, r :- RunRow] Bool (task-local-id w (:of r)))
+(a/defn run-depth [w :- World, r :- RunRow] Nat (List.length (scope-ancestors w (:scope r))))
+(a/defn ins-by-depth [w :- World, r :- RunRow, xs :- (List RunRow)] (List RunRow)
+  (match xs [nil (List.cons RunRow r (List.nil RunRow))]
+         [(cons h t) (if (Nat.ble (run-depth w h) (run-depth w r)) (List.cons RunRow r xs)
+                         (List.cons RunRow h (ins-by-depth w r t)))]))
+(a/defn sort-depth [w :- World, xs :- (List RunRow)] (List RunRow)
+  (match xs [nil (List.nil RunRow)] [(cons h t) (ins-by-depth w h (sort-depth w t))]))
+(a/defn local-order [w :- World] (List Nat) (tbl-ids run-id (sort-depth w (tbl-filter (run-of-local w) (:runs w)))))
+(a/defn ack-if [rid :- Nat, w :- World, z :- Nat] World
+  (if (tbl-all (no-debtor z) (:edges w)) (ack-raw w z rid) w))
+(a/defn run-drop-fins [r :- RunRow] RunRow
+  (RunRow.mk (:id r) (:of r) (:stamp r) (:epoch r) (:scope r) (:act r) (:mode r) false
+             (:effect-index r) (List.nil Finalizer) (:resources r)))
+(a/theorem run-drop-fins-id [r :- RunRow] (= (run-id (run-drop-fins r)) (run-id r)) (rfl))
+(a/defn retire-pre [w :- World, r :- RunRow] World
+  (run-upd (nat-fold (ack-if (:id r)) (cancel-acts w (:id r)) (:resources r)) (:id r) run-drop-fins))
+;; the result the retired run's task ends with: its own when it has one, else err v (never none)
+(a/defn task-final-res [w :- World, k :- Nat, res :- RunResult] RunResult
+  (match (task-find w k)
+    [none res]
+    [(some t) (if (Nat.beq (:tag (:result t)) res-none) res (:result t))]))
+(a/theorem task-final-res-tag [w :- World, k :- Nat, v :- Nat]
+  (= (Nat.beq (:tag (task-final-res w k (RunResult.mk res-err v))) res-none) false)
+  (cases hf (task-find w k)) (case' [some t]) (case' [none])
+  (simp only [task-final-res hf res-err res-none])
+  (cases ht (Nat.beq (:tag (:result t)) res-none))
+  (simp only [task-final-res hf]) (rw [ht]) (exact ht)
+  (simp only [task-final-res hf]) (rw [ht]))
+(a/defn retire-one [v :- Nat, w :- World, rid :- Nat] World
+  (match (run-find w rid)
+    [none w]
+    [(some r) (match (run-find (retire-pre w r) rid)
+                [none (retire-pre w r)]
+                [(some r1) (if (Bool.and (run-alive r1) (run-of-local (retire-pre w r) r1))
+                               (complete-raw (retire-pre w r) r1 (task-final-res (retire-pre w r) (:of r1) (RunResult.mk res-err v)))
+                               (retire-full (retire-pre w r) rid))])]))
+(a/defn t-retire-local [w :- World, v :- Nat] Outcome
+  (if (tbl-any (run-of-local w) (:runs w))
+      (accept (nat-fold (retire-one v) w (local-order w)))
+      (refuse w)))
+
+(a/theorem inv-ack-if [rid :- Nat, w :- World, z :- Nat]
+  (=> (= (inv-sample w) true) (= (inv-sample (ack-if rid w z)) true))
+  (intro h)
+  (cases hu (tbl-all (no-debtor z) (:edges w)))
+  (case [false] (simp only [ack-if hu]) (exact h))
+  (case [true] (simp only [ack-if hu]) (exact (inv-ack-raw w z rid hu h))))
+(a/theorem inv-retire-pre [w :- World, r :- RunRow]
+  (=> (= (inv-sample w) true) (= (inv-sample (retire-pre w r)) true))
+  (intro h)
+  (simp only [retire-pre])
+  (exact (inv-run-upd _ (:id r) run-drop-fins run-drop-fins-id
+           (nat-fold-inv (ack-if (:id r)) (inv-ack-if (:id r)) (:resources r) _ (inv-cancel-acts w (:id r) h)))))
+(a/theorem inv-retire-one [v :- Nat, w :- World, rid :- Nat]
+  (=> (= (inv-sample w) true) (= (inv-sample (retire-one v w rid)) true))
+  (intro h)
+  (cases hf (run-find w rid))
+  (case [none] (simp only [retire-one hf]) (exact h))
+  (case [some r]
+    (have hp := (inv-retire-pre w r h))
+    (cases hf1 (run-find (retire-pre w r) rid))
+    (case [none] (simp only [retire-one hf hf1]) (exact hp))
+    (case [some r1]
+      (cases ha (Bool.and (run-alive r1) (run-of-local (retire-pre w r) r1)))
+      (case [true] (simp only [retire-one hf hf1 ha]) (exact (inv-complete-raw _ r1 _ hp)))
+      (case [false] (simp only [retire-one hf hf1 ha retire-full]) (exact (inv-run-cascade _ _ hp))))))
+(a/theorem t-retire-local-inv [w :- World, v :- Nat]
+  (=> (= (inv-sample w) true) (= (inv-sample (:world (t-retire-local w v))) true))
+  (intro h)
+  (cases hm (tbl-any (run-of-local w) (:runs w)))
+  (case [false] (simp only [t-retire-local hm refuse]) (exact h))
+  (case [true] (simp only [t-retire-local hm accept])
+    (exact (nat-fold-inv (retire-one v) (inv-retire-one v) (local-order w) w h))))
+(a/theorem t-retire-local-refuse [w :- World, v :- Nat]
+  (=> (= (:accepted (t-retire-local w v)) false) (= (:world (t-retire-local w v)) w))
+  (intro ha)
+  (cases hm (tbl-any (run-of-local w) (:runs w)))
+  (case [false] (simp only [t-retire-local hm refuse]))
+  (case [true] (simp [t-retire-local hm accept] at ha)))
+
 (a/defn raw0 [w :- World, it :- Item] Outcome
   (match it
     [(create-source st kind v fresh) (if (body-shut w st) (refuse w) (c0-gate w (Nat.beq kind sk-stream) (t1-body w st kind v fresh)))]
@@ -3222,8 +3334,8 @@
     [(unpin x) (t20-unpin w x)]
     [(create-comp st c i b) (if (cc-shut w st) (refuse w) (t3-create w st c i b))]
     [(create-comp-top sc c i b) (if (root-shut w) (refuse w) (t3-create-top w sc c i b))]
-    [(spawn st b fresh ins) (if (body-shut w st) (refuse w) (t4-spawn w st b fresh ins))]
-    [(spawn-top sc b fresh ins) (if (root-shut w) (refuse w) (t4-spawn-top w sc b fresh ins))]
+    [(spawn st b fresh ins loc) (if (body-shut w st) (refuse w) (if (spawn-local-bad w st loc) (refuse w) (t4-spawn w st b fresh ins loc)))]
+    [(spawn-top sc b fresh ins loc) (if (root-shut w) (refuse w) (t4-spawn-top w sc b fresh ins loc))]
     [(start c fresh) (t5-start w c fresh)]
     [(await st ds m k fresh mine) (if (await-bad w st ds m) (refuse w) (t6-await w st ds m k fresh mine))]
     [(dispatch-comp c fresh) (t11-dispatch w c fresh)]
@@ -3241,7 +3353,7 @@
     [(release-world) (t-release-world w)]
     [(open-scope st s) (t-open-scope w st s)]
     [(close-scope s) (t-close-scope w s)]
-    [(detach k s) (t-detach w k s)]
+    [(detach k s) (if (detach-local-bad w k s) (refuse w) (t-detach w k s))]
     [(finally-enter st) (t-finally-enter w st)]
     [(finally-exit st) (t-finally-exit w st)]
     [(slice-exit r) (t-slice-exit w r)]
@@ -3254,7 +3366,8 @@
     [(finally-leave st) (t-finally-leave w st)]
     [(own s m) (t-own w s m)]
     [(owned-done s c) (t-owned-done w s c)]
-    [(drain ids) (t-drain w ids)]))
+    [(drain ids) (t-drain w ids)]
+    [(retire-local v) (t-retire-local w v)]))
 
 ;; Z#56 (T21): a released world refuses the HOST's admissions (top-level creations, writes, observe,
 ;; pins, handles, host waits, source operations, cancel, close, detach), except while a run holds the
@@ -3278,8 +3391,8 @@
     [(unpin x) true]
     [(create-comp st c i b) false]
     [(create-comp-top sc c i b) true]
-    [(spawn st b fresh ins) false]
-    [(spawn-top sc b fresh ins) true]
+    [(spawn st b fresh ins loc) false]
+    [(spawn-top sc b fresh ins loc) true]
     [(start c fresh) false]
     [(await st ds m k fresh mine) false]
     [(dispatch-comp c fresh) false]
@@ -3310,7 +3423,8 @@
     [(finally-leave st) false]
     [(own s m) false]
     [(owned-done s c) false]
-    [(drain ids) false]))
+    [(drain ids) false]
+    [(retire-local v) false]))
 (a/defn slice-held [w :- World] Bool (tbl-any run-slice (:runs w)))
 (a/defn host-shut [w :- World, it :- Item] Bool
   (Bool.and (:released w) (Bool.and (host-item it) (Bool.not (slice-held w)))))
@@ -3363,11 +3477,13 @@
   (cases hc (root-shut w))
   (simp only [hc]) (exact (t3-top-inv w _ _ _ _ h))
   (simp only [hc refuse]) (exact h)
-  (rename_i st b fresh ins) (cases hc (body-shut w st))
-  (simp only [hc]) (exact (t4-inv w _ _ _ _ h))
+  (rename_i st b fresh ins loc) (cases hc (body-shut w st))
+  (simp only [hc]) (cases hl (spawn-local-bad w st loc))
+  (simp only [hl]) (exact (t4-inv w _ _ _ _ _ h))
+  (simp only [hl refuse]) (exact h)
   (simp only [hc refuse]) (exact h)
   (cases hc (root-shut w))
-  (simp only [hc]) (exact (t4-top-inv w _ _ _ _ h))
+  (simp only [hc]) (exact (t4-top-inv w _ _ _ _ _ h))
   (simp only [hc refuse]) (exact h)
   (exact (t5-inv w _ _ h))
   (rename_i st ds m k fresh mine) (cases hc (await-bad w st ds m))
@@ -3396,7 +3512,9 @@
   (exact (t-release-world-inv w h))
   (exact (t-open-scope-inv w _ _ h))
   (exact (t-close-scope-inv w _ h))
-  (exact (t-detach-inv w _ _ h))
+  (rename_i k s) (cases hc (detach-local-bad w k s))
+  (simp only [hc]) (exact (t-detach-inv w _ _ h))
+  (simp only [hc refuse]) (exact h)
   (exact (t-finally-enter-inv w _ h))
   (exact (t-finally-exit-inv w _ h))
   (exact (t-slice-exit-inv w _ h))
@@ -3419,7 +3537,8 @@
   (exact (t-finally-leave-inv w _ h))
   (exact (t-own-inv w _ _ h))
   (exact (t-owned-done-inv w _ _ h))
-  (exact (t-drain-inv w _ h)))
+  (exact (t-drain-inv w _ h))
+  (exact (t-retire-local-inv w _ h)))
 
 (a/theorem raw0-refuse [w :- World, it :- Item]
   (=> (= (:accepted (raw0 w it)) false) (= (:world (raw0 w it)) w))
@@ -3458,11 +3577,13 @@
   (cases hc (root-shut w))
   (simp only [hc] at ha) (simp only [hc]) (exact (t3-top-refuse w _ _ _ _ ha))
   (simp only [hc refuse])
-  (rename_i st b fresh ins) (cases hc (body-shut w st))
-  (simp only [hc] at ha) (simp only [hc]) (exact (t4-refuse w _ _ _ _ ha))
+  (rename_i st b fresh ins loc) (cases hc (body-shut w st))
+  (simp only [hc] at ha) (simp only [hc]) (cases hl (spawn-local-bad w st loc))
+  (simp only [hl] at ha) (simp only [hl]) (exact (t4-refuse w _ _ _ _ _ ha))
+  (simp only [hl refuse])
   (simp only [hc refuse])
   (cases hc (root-shut w))
-  (simp only [hc] at ha) (simp only [hc]) (exact (t4-top-refuse w _ _ _ _ ha))
+  (simp only [hc] at ha) (simp only [hc]) (exact (t4-top-refuse w _ _ _ _ _ ha))
   (simp only [hc refuse])
   (exact (t5-refuse w _ _ ha))
   (rename_i st ds m k fresh mine) (cases hc (await-bad w st ds m))
@@ -3491,7 +3612,9 @@
   (exact (t-release-world-refuse w ha))
   (exact (t-open-scope-refuse w _ _ ha))
   (exact (t-close-scope-refuse w _ ha))
-  (exact (t-detach-refuse w _ _ ha))
+  (rename_i k s) (cases hc (detach-local-bad w k s))
+  (simp only [hc] at ha) (simp only [hc]) (exact (t-detach-refuse w _ _ ha))
+  (simp only [hc refuse])
   (exact (t-finally-enter-refuse w _ ha))
   (exact (t-finally-exit-refuse w _ ha))
   (exact (t-slice-exit-refuse w _ ha))
@@ -3514,7 +3637,8 @@
   (exact (t-finally-leave-refuse w _ ha))
   (exact (t-own-refuse w _ _ ha))
   (exact (t-owned-done-refuse w _ _ ha))
-  (exact (t-drain-refuse w _ ha)))
+  (exact (t-drain-refuse w _ ha))
+  (exact (t-retire-local-refuse w _ ha)))
 
 (a/theorem inv-cancel-losers [w0 :- World, w1 :- World]
   (=> (= (inv-sample w1) true) (= (inv-sample (cancel-losers w0 w1)) true))
@@ -3584,8 +3708,8 @@
   (simp only [raw0 cc-shut in-cleanup hrs opt-test t3-create (run-tok-none w _ hg) refuse Bool.or_false Bool.or_true Bool.false_or ite_self])
   (simp [item-token-ok] at hg)
   (cases hrs (root-shut w))
-  (simp only [raw0 body-shut in-cleanup cur-closed hrs opt-test t4-spawn (run-tok-none w _ hg) refuse Bool.or_false Bool.or_true Bool.false_or ite_self])
-  (simp only [raw0 body-shut in-cleanup cur-closed hrs opt-test t4-spawn (run-tok-none w _ hg) refuse Bool.or_false Bool.or_true Bool.false_or ite_self])
+  (simp only [raw0 body-shut in-cleanup cur-closed hrs opt-test spawn-local-bad t4-spawn (run-tok-none w _ hg) refuse Bool.or_false Bool.or_true Bool.false_or Bool.and_false ite_self])
+  (simp only [raw0 body-shut in-cleanup cur-closed hrs opt-test spawn-local-bad t4-spawn (run-tok-none w _ hg) refuse Bool.or_false Bool.or_true Bool.false_or Bool.and_false ite_self])
   (simp [item-token-ok] at hg)
   (simp [item-token-ok] at hg)
   (rename_i st ds m k fresh mine) (cases hc (await-bad w st ds m))

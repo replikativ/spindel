@@ -182,7 +182,8 @@
                           :inputs (mapv #(intern! w %) (f k rw/K-INPUTS))
                           :result (when (f k rw/K-DONE)
                                     [(if (f k rw/K-ERR) :err :ok) (intern! w (f k rw/K-RESULT))])
-                          :handles (f k rw/HANDLES)}))
+                          :handles (f k rw/HANDLES)
+                          :local (boolean (f k rw/K-LOCAL))}))   ; Z#77
      :comps (tbl rw/T-COMP
                  (fn [c] {:owner (owner-id w (f c rw/OWNER)) :inputs (mapv #(intern! w %) (f c rw/C-INPUTS))
                           :body (intern! w (f c rw/C-BODY)) :run (id (f c rw/C-RUN))

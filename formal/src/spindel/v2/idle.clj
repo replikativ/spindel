@@ -725,7 +725,7 @@
                   (~'simp [~'run-down ~'run-alive ~f ~'act-done ~'act-parked ~'act-active]))
                 (a/theorem ~(symbol (str f "-snk")) [~'r :- ~'RunRow] (~'= (~'sn-keep ~f ~'r) true)
                   (~'simp [~'sn-keep ~'sn-one ~'run-alive ~f ~'mode-normal ~'mode-unwinding ~'act-done]))))))
-(defdown run-cancel-row run-complete-row run-fin-pop-end)
+(defdown run-cancel-row run-complete-row run-fin-pop-end run-drop-fins)
 
 (a/theorem run-wake-rk7 [r :- RunRow] (= (rk7 (run-wake r)) (rk7 r))
   (simp only [rk7 run-wake-alive]))
@@ -733,7 +733,8 @@
 ;; the generic source patch: a run / computation edit by a row function of the tables above
 (def ^:private run-fns '{run-cancel-row [run-cancel-row-dwn run-cancel-row-snk]
                          run-complete-row [run-complete-row-dwn run-complete-row-snk]
-                         run-fin-pop-end [run-fin-pop-end-dwn run-fin-pop-end-snk]})
+                         run-fin-pop-end [run-fin-pop-end-dwn run-fin-pop-end-snk]
+                         run-drop-fins [run-drop-fins-dwn run-drop-fins-snk]})
 (def ^:private comp-fns '#{comp-react-row comp-demand-row comp-start-row comp-replace-row comp-consume-adopt
                            comp-rebasis comp-result-row comp-clear-run})
 (defn- fhead [f] (if (seq? f) (first f) f))
@@ -1038,12 +1039,12 @@
   (case [true] (have l := (comp-below w (:next-id w) h hc)) (omega)))
 
 (override! G7 'inv-spawn-rows '[]
-  '(a/theorem g7-spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat)]
-     (=> (= (g7 w) true) (= (g7 (spawn-rows w owner inputs)) true))
+  '(a/theorem g7-spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat), loc :- Bool]
+     (=> (= (g7 w) true) (= (g7 (spawn-rows w owner inputs loc)) true))
      (intro h)
      (simp only [spawn-rows])
-     (have h1 := (g7-task-ins-fresh w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs) (rfl) h))
-     (have a1 (= (awake (:comps (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs)))) (:next-id w)) true))
+     (have h1 := (g7-task-ins-fresh w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc) (rfl) h))
+     (have a1 (= (awake (:comps (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc)))) (:next-id w)) true))
      (exact (awake-fresh w (g7-sample w h)))
      (exact (g7-add-run-scope _ (:next-id w) 0 (task-scope-parent w owner) 0 a1 h1))))
 

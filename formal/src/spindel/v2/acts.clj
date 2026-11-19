@@ -892,6 +892,86 @@
      (simp only [t12-complete ht hn refuse]) (exact h)
      (simp only [t12-complete ht hn accept]) (exact (ga-complete-raw w r _ (ga-free-of-tok w st r h ht) h))))
 
+;; ---- Z#77 T28: the retired run has no activation from `cancel-acts` on (the resource deletions and the
+;; finalizer drop change no activation), so T12's override applies to its completion
+(a/theorem covers-none-any [x :- Nat, as :- (List ActRow)]
+  (=> (= (tbl-all (covers-ids act-id (act-of-run x) (List.nil Nat)) as) true) (= (tbl-any (act-of-run x) as) false))
+  (induction as)
+  (case [nil] (intro h) (simp only [tbl-any]))
+  (case [cons a t ih]
+    (intro h)
+    (simp only [tbl-all covers-ids reach-mem Bool.or_false Bool.and_eq_true] at h)
+    (simp only [tbl-any (bnot-true _ (And.left h)) (ih (And.right h)) Bool.false_or])))
+(a/theorem cancel-acts-none [w :- World, x :- Nat] (= (tbl-any (act-of-run x) (:acts (cancel-acts w x))) false)
+  (apply (covers-none-any x))
+  (simp only [cancel-acts])
+  (exact (fold-covers x (tbl-scan act-id (act-of-run x) (:acts w)) w (scan-covers-ids ActRow act-id (act-of-run x) (:acts w)))))
+(a/theorem acts-ack-if [rid :- Nat, w :- World, z :- Nat] (= (:acts (ack-if rid w z)) (:acts w))
+  (cases hu (tbl-all (no-debtor z) (:edges w)))
+  (case [false] (simp only [ack-if hu]))
+  (case [true] (simp only [ack-if hu ack-raw cleanup-upd run-upd resource-del set-cleanup set-runs set-res])))
+(a/theorem acts-fold-ack [rid :- Nat, zs :- (List Nat)]
+  (forall [w :- World] (= (:acts (nat-fold (ack-if rid) w zs)) (:acts w)))
+  (induction zs)
+  (case [nil] (intro w) (simp only [nat-fold]))
+  (case [cons z t ih] (intro w) (simp only [nat-fold]) (exact (Eq.trans (ih (ack-if rid w z)) (acts-ack-if rid w z)))))
+(a/theorem retire-mid-noact [w :- World, r :- RunRow]
+  (= (tbl-any (act-of-run (:id r)) (:acts (nat-fold (ack-if (:id r)) (cancel-acts w (:id r)) (:resources r)))) false)
+  (rw [(acts-fold-ack (:id r) (:resources r) (cancel-acts w (:id r)))])
+  (exact (cancel-acts-none w (:id r))))
+(a/theorem retire-pre-noact [w :- World, r :- RunRow] (= (tbl-any (act-of-run (:id r)) (:acts (retire-pre w r))) false)
+  (simp only [retire-pre run-upd set-runs]) (exact (retire-mid-noact w r)))
+(a/theorem retire-r1-id [w :- World, r :- RunRow, r1 :- RunRow, rid :- Nat]
+  (=> (= (run-find w rid) (Option.some RunRow r)) (= (run-find (retire-pre w r) rid) (Option.some RunRow r1)) (= (:id r1) (:id r)))
+  (intros h0 h1)
+  (exact (Eq.trans (tbl-find-id RunRow run-id rid r1 (:runs (retire-pre w r)) h1)
+                   (Eq.symm (tbl-find-id RunRow run-id rid r (:runs w) h0)))))
+(a/theorem retire-r1-noact [w :- World, r :- RunRow, r1 :- RunRow, rid :- Nat]
+  (=> (= (run-find w rid) (Option.some RunRow r)) (= (run-find (retire-pre w r) rid) (Option.some RunRow r1))
+      (= (tbl-any (act-of-run (:id r1)) (:acts (retire-pre w r))) false))
+  (intros h0 h1) (rw [(retire-r1-id w r r1 rid h0 h1)]) (exact (retire-pre-noact w r)))
+
+(a/theorem nat-fold-pres2 [P :- (=> World Bool), Q :- (=> World Bool), f :- (=> World Nat World),
+                           hp :- (forall [w :- World, x :- Nat] (=> (= (P w) true) (= (P (f w x)) true))),
+                           hq :- (forall [w :- World, x :- Nat] (=> (= (P w) true) (= (Q w) true) (= (Q (f w x)) true))),
+                           xs :- (List Nat)]
+  (forall [w :- World] (=> (= (P w) true) (= (Q w) true) (= (Q (nat-fold f w xs)) true)))
+  (induction xs)
+  (case [nil] (intros w a b) (simp only [nat-fold]) (exact b))
+  (case [cons x t ih] (intros w a b) (simp only [nat-fold]) (exact (ih (f w x) (hp w x a) (hq w x a b)))))
+(a/theorem pres-and [P1 :- (=> World Bool), P2 :- (=> World Bool), f :- (=> World Nat World),
+                     h1 :- (forall [w :- World, x :- Nat] (=> (= (P1 w) true) (= (P1 (f w x)) true))),
+                     h2 :- (forall [w :- World, x :- Nat] (=> (= (P2 w) true) (= (P2 (f w x)) true)))]
+  (forall [w :- World, x :- Nat] (=> (= (Bool.and (P1 w) (P2 w)) true) (= (Bool.and (P1 (f w x)) (P2 (f w x))) true)))
+  (intros w x h)
+  (simp only [Bool.and_eq_true] at h)
+  (simp only [(h1 w x (And.left h)) (h2 w x (And.right h)) Bool.and_self]))
+(a/theorem retire-r1-mem [w :- World, r :- RunRow, r1 :- RunRow, rid :- Nat]
+  (=> (= (run-find (retire-pre w r) rid) (Option.some RunRow r1)) (List.Mem r1 (:runs (retire-pre w r))))
+  (intro h1) (exact (tbl-find-mem RunRow run-id rid r1 (:runs (retire-pre w r)) h1)))
+
+(override! GA 'inv-retire-pre '[inv-ack-if inv-cancel-acts]
+  '(a/theorem ga-retire-pre [w :- World, r :- RunRow]
+     (=> (= (ga w) true) (= (ga (retire-pre w r)) true))
+     (intro h)
+     (simp only [retire-pre])
+     (exact (ga-run-upd-free _ (:id r) run-drop-fins run-drop-fins-id (retire-mid-noact w r)
+              (nat-fold-ga (ack-if (:id r)) (ga-ack-if (:id r)) (:resources r) _ (ga-cancel-acts w (:id r) h))))))
+(override! GA 'inv-retire-one '[inv-retire-pre inv-complete-raw inv-run-cascade]
+  '(a/theorem ga-retire-one [v :- Nat, w :- World, rid :- Nat]
+     (=> (= (ga w) true) (= (ga (retire-one v w rid)) true))
+     (intro h)
+     (cases hf (run-find w rid))
+     (case [none] (simp only [retire-one hf]) (exact h))
+     (case [some r]
+       (have hp := (ga-retire-pre w r h))
+       (cases hf1 (run-find (retire-pre w r) rid))
+       (case [none] (simp only [retire-one hf hf1]) (exact hp))
+       (case [some r1]
+         (cases ha (Bool.and (run-alive r1) (run-of-local (retire-pre w r) r1)))
+         (case [true] (simp only [retire-one hf hf1 ha]) (exact (ga-complete-raw _ r1 _ (retire-r1-noact w r r1 rid hf hf1) hp)))
+         (case [false] (simp only [retire-one hf hf1 ha retire-full]) (exact (ga-run-cascade _ _ hp)))))))
+
 (a/theorem active-not-good [r :- RunRow] (=> (= (Nat.beq (:act r) act-active) true) (= (good-row r) false))
   (intro h)
   (have e (= (:act r) act-active)) (exact (Nat.eq_of_beq_eq_true h))

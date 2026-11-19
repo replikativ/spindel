@@ -38,7 +38,7 @@
 (deftest pin-a-task
   (let [w0 s/empty-world
         k (:next-id w0)
-        o1 (step w0 (it :spawn-top 2 7 k []))
+        o1 (step w0 (it :spawn-top 2 7 k [] false))
         w1 (:world o1)]
     (is (true? (:accepted o1)))
     (is (some? (row w1 :tasks k)))

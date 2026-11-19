@@ -331,6 +331,16 @@
   (exact (mb-row-mono mux mf mz mg r (run-fin-pop-end r) (rfl) s (fn [hd :- (= (run-done r) true)] hd)
            (mu-f-pop r (run-fin-pop-end r) (rfl) (fn [q :- (= (:slice (run-fin-pop-end r)) true)] (Bool.noConfusion q))) (Nat.le_refl _) h)))
 
+;; Z#77 T28: a retired run loses its finalizers and its slice (weight 0)
+(a/theorem run-drop-fins-mb [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, r :- RunRow]
+  (=> (= (mb-row mux mf mz mg r) true) (= (mb-row mux mf mz mg (run-drop-fins r)) true))
+  (intro h)
+  (have s (forall [hs :- (= (slice-ok r) true)] (= (slice-ok (run-drop-fins r)) true)))
+  (intro hs) (simp only [slice-ok run-drop-fins Bool.not_false Bool.true_or])
+  (have e (= (mu-f (run-drop-fins r)) 0)) (rfl)
+  (have le (<= (mu-f (run-drop-fins r)) (mu-f r))) (rw [e]) (exact (Nat.zero_le _))
+  (exact (mb-row-mono mux mf mz mg r (run-drop-fins r) (rfl) s (fn [hd :- (= (run-done r) true)] hd) le (Nat.le_refl _) h)))
+
 ;; ===========================================================================
 ;; Part C. The bundle under the primitive edits
 ;; ===========================================================================
@@ -536,7 +546,8 @@
            'inv-run-ins-fresh ['(Eq.refl true) 2]}))
 ;; row-function lemmas (and the alias heads the patches emit) take the bundle parameters
 (def ^:private mb-fns '{run-wake run-wake-mb run-complete-row run-complete-row-mb run-cancel-row run-cancel-row-mb
-                        run-unres run-unres-mb run-fin-pop run-fin-pop-mb run-fin-exit run-fin-exit-mb run-fin-pop-end run-fin-pop-end-mb})
+                        run-unres run-unres-mb run-fin-pop run-fin-pop-mb run-fin-exit run-fin-exit-mb run-fin-pop-end run-fin-pop-end-mb
+                        run-drop-fins run-drop-fins-mb})
 (swap! (:renames MB) merge
        '{inv-parts mb-parts inv-run-upd mb-run-upd inv-run-ins-fresh mb-run-ins
          mb-run-upd-m mb-run-upd mb-run-upd-ne-src mb-run-upd-ne}

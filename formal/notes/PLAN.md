@@ -2095,3 +2095,82 @@ Not done in this stage; each needs a proof campaign of its own (estimates below)
   closed scope", oscope's scope ledger), and a pushed region on an unwinding run (I9 unwinding-acts-ok, acts.clj's
   finalizer facts, progress's mu-f measure). Estimate 3-5 days of proofs through the copier bundles (g1, g8, oscope,
   gx/acts, i9, progress).
+
+## Z#77 fork-local tasks (2026-11-18, branch `formal/fork-local`, from engine-v2 2ea4071)
+
+Design `.internal/fork-local-design.md` (signed off 2026-11-18: Q1-Q5 as recommended, retirement at the first gate
+entry, `(fork)` in a fork-local run refused, computations never marked). Engine `feat/v2-fork-local` (869bf29 + fixes).
+
+### Layer 1 (state, step, engine and every bundle)
+- `TaskRow.local` (the mark, fixed at creation). `spawn`/`spawn-top` (items 15/16) gain the `local` option; T4 sets
+  `local := flag ∨ scope-local w owner` (`spawn-loc`; `spawn-rows`/`new-task-row` carry it). `scope-local w s`
+  (engine.clj) is derived as the design says: s or a scope on its parent chain (`scope-ancestors`) is the run scope of
+  a run of a fork-local task. The engine stores the flag (S-LOCAL, fixed at creation); the two agree on reachable
+  worlds while the run exists (after a retirement the derived one turns false, the stored one stays; nothing reads
+  it then). raw0 refuses the option in a computation run (`spawn-local-bad`) and the detach of an unmarked task into
+  a fork-local scope (`detach-local-bad`, Q4).
+- Item 48 `retire-local v` (T28; internal, token true, not a host item, not a seal item), `t-retire-local w v`:
+  refused when the world has no run of a fork-local task; else, per such run in `local-order` (the deepest run scope
+  first, `sort-depth`), `retire-one v`: `retire-pre` (`cancel-acts`; the resources deleted by `ack-raw` under T15's
+  guard `ack-if`; `run-drop-fins`: no finalizer, no slice), then an alive run of a fork-local task completes by T12's
+  `complete-raw` with `task-final-res` (err v, or the task's own result: a cleanup slice parked in a finally keeps
+  it), any other by T13's `retire-full`. v is the opaque ::forked value (the model's item carries it; the engine logs
+  `[:retire-local]` and the oracle reads v off the commit's projection). The engine's one commit (silence every run,
+  finish every task, T13 every run) and the model's run-by-run order end in the same world: a run's waiters among
+  the retired runs are dropped later in both, an `any` loser cancel touches no retired run.
+- Every bundle keeps its invariant through the item, so `inv-step` and `reach-inv` (top.clj) hold unchanged in text.
+  Generic facts (acts.clj): `cancel-acts-none`, `retire-pre-noact`, `retire-r1-noact`, `retire-r1-mem`,
+  `nat-fold-pres2`, `pres-and`; engine.clj `task-final-res-tag`; lit.clj `local-run-nocomp` (a run of a fork-local
+  task is no computation run, so `gd-cce` is false). Overrides of `inv-retire-one` (and of the fold where the bundle
+  needs companions): GA (acts), GL (lit), AHA (p3), G10 (i10), GR0 with ga (i1r), G8 with ga (i8), GD (hm), HMK with
+  gd/g7 (hmk2), H3 with `h3ctx` = ga ∧ gd ∧ g7 ∧ g10 ∧ hmk ∧ ekb (hm17, `h3-retire-one`, `t-retire-local-h3`), GST
+  (lstab); row-function tables gained `run-drop-fins` (idle G7, tomb, ar, p3 esb, progress mb, hm3 h3); inv.clj
+  `sl-`/`s9-t-retire-local` (I10 slice, I9). The other bundles copy `t-retire-local-inv` unchanged.
+
+### Layer 2 (sys.clj, systop.clj)
+- `Cell.rpend` (`has-local` of the copied world: fork, fork effect, instance; the engine's W-RETIRE) and `Cell.rworld`
+  (the world at creation, for LOC3). `sys-retire k v` = `[:retire-local v]` in the cell (`retire-cell`, `cstep`) and
+  rpend cleared (`retire-clears`, `retire-frame`, `retire-is-step`); `sinv-`/`cinv-retire-q`/`qsinv-`/`jinv-retire`.
+- First-entry guard: `rpend = false` is a `SysReach` premise of step, fork, wake, fork effect, publish, resume,
+  activate, abandon, merge and merge-release (both cells), seal, unseal, release-unborn, own, owned-done, drain;
+  drop, idle release, accept, complete, joins, deliveries, withdrawals and ownership moves do not enter a gate. Init
+  cells have rpend false. New constructor `retire`. `sys-reach-inv` covers it.
+- Refusals: `sys-fork-effect-g` (the `(fork)` effect of a run whose task is fork-local: `fe-local`) and
+  `sys-instantiate-g` (a publication whose run is fork-local: `pub-local`) leave the system as it is
+  (`fork-effect-local-refused`, `instantiate-local-refused`); SysReach uses them. `fork-copy`, `instantiate-copy`,
+  `instantiate-indep` keep their exact-copy statements (`instantiate-g-copy` for the guarded one). `consume` is no
+  operation of this model (S8 is not modelled at layer 2); in-place resume (S2) stays allowed (Q5).
+- LOC3 / retire-precedes: `rinv` (rpend ⇒ world = rworld), `rinv-*` for every operation, `sys-reach-rinv`:
+  SysReach ⇒ rinv.
+
+### Oracle
+- `adapt`: a 4-field `[:spawn(-top) ..]` is unmarked (local false appended), the engine's trailing `true` marks a
+  fork-local task; `[:retire-local]` → item 48 with v from the projection (`retire-local-item`). `proj->world` reads a
+  task `:local` (false when absent); `world->edn` emits it (compared once the engine projects it: the diff takes the
+  fields both sides have). The sidecar task observation gains `:local`.
+- Generator `oracle/gen/samples-fork-local.clj`, scenarios 51-60 of the design's table, generated from engine
+  e758834 (one ::forked value per `[:retire-local]` commit; the verify projection carries each task's `:local`, which
+  `o/diff` now compares, as it compares every field both sides project; recorded pre-Z#77 logs have no key and read
+  false). Registered as `fork-local-specs` in oracle_test (`fork-local-samples`, `fork-local-sample-shapes`,
+  `fork-local-closure`): every family replays with no divergence and no re-sync, the sidecars (task `:local` kept
+  after the row goes) match, and each derived world's first item is `[:retire-local]`. 57: the instance of an
+  unmarked publication (its savepoint arm the fork point) retires the local sibling before activation; instantiate of
+  a local run's publication throws with no item, its in-place resume works. 58: `[:detach k s]` of an unmarked task
+  into a local scope is the root's only refusal; a local task detached to root keeps its mark and the fork retires
+  it. 59: the local scope's mailbox is closed in the child and its unmarked taker woken (::closed); its computation
+  stays observed. 60: the host's `cancel-task!` in a never-entered child follows `[:retire-local]` and is refused (the
+  task is done). Generated without the `:bench` alias (its `test` extra path would put this worktree's verify.clj,
+  which projects no `:local`, ahead of the engine's). Checks: oracle-test 35 tests, 833 assertions, 0 failures; the
+  sys/top/hm13/engine/step/rule/retain set 91 tests, 72,401 assertions, 0 failures (`.internal/fork-local-model/`).
+
+### LOC1, LOC2 (spindel.v2.local)
+- `loc1` (`loc1-task`: a task owned by a fork-local scope is fork-local; `loc1-run`: a run of a fork-local task has a
+  fork-local run scope), `loc2` (no fork marker owned by a fork-local scope). Proved: `loc1-runs` (the run half holds
+  in every world). Tripwire `fork-local-closure` (oracle_test): LOC1 and LOC2 on every replayed world of 51-56, and
+  the retirement's post-condition after each child's `[:retire-local]` (no run of a fork-local task, no cleanup
+  entry, every fork-local task done).
+
+### Not done in this step (open; after the ansatz-0d restructure of formal/ into namespaces by topic)
+- LOC1's task half and LOC2 as invariants preserved by the step (in `inv`); `retire-clean` and `retire-quiet` as theorems. Both post-conditions need LOC1
+  (an unmarked task in a fork-local subtree would be cancelled by the cascade with a cleanup entry) and that every
+  resource wait edge belongs to its owner run's activation (so `ack-if`'s guard holds after `cancel-acts`).

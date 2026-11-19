@@ -115,7 +115,8 @@
   ;; model-only (C1 Q6): a tombstone, i.e. demoted without a result or a handle while its run is
   ;; in cleanup (§3.2): non-idle, kept by the cleanup entry; normalization does not demote it again
   (tomb Bool))
-(a/structure TaskRow [] (id Nat) (owner Nat) (run Nat) (result RunResult) (handles Nat) (inputs (List Nat)))
+;; Z#77: `local` = fork-local (created with the option or owned by a fork-local scope; fixed at creation)
+(a/structure TaskRow [] (id Nat) (owner Nat) (run Nat) (result RunResult) (handles Nat) (inputs (List Nat)) (local Bool))
 (a/structure RunRow []
   (id Nat) (of Nat) (stamp Nat) (epoch Nat) (scope Nat) (act Nat) (mode Nat)
   (slice Bool) (effect-index Nat) (finalizers (List Finalizer)) (resources (List Nat)))

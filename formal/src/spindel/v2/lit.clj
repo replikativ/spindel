@@ -631,6 +631,36 @@
   (simp only [ids-ok ids-unique Bool.and_eq_true] at hi)
   (exact (And.left hi)))
 
+(a/theorem tk-not-comp [w :- World, y :- Nat]
+  (=> (= (inv-sample w) true) (= (tbl-has task-id y (:tasks w)) true) (= (tbl-has comp-id y (:comps w)) false))
+  (intros h ha)
+  (cases hc (tbl-has comp-id y (:comps w)))
+  (case [false] (rfl))
+  (case [true]
+    (have u := (ids-unique-of w h))
+    (simp only [all-ids] at u)
+    (have u2 := (nat-nodup-app-right _ _ u))
+    (have hm (= (nat-mem y (tbl-ids comp-id (:comps w))) true)) (rw [nat-mem-ids]) (exact hc)
+    (have hm2 (= (nat-mem y (tbl-ids task-id (:tasks w))) true)) (rw [nat-mem-ids]) (exact ha)
+    (have d := (nodup-app-disj y _ _ u2 hm))
+    (simp only [nat-mem-app Bool.or_eq_false_iff] at d)
+    (have d2 := (And.left d))
+    (rw [hm2] at d2) (cases d2)))
+;; Z#77: a run of a fork-local task is no computation run
+(a/theorem local-run-nocomp [w :- World, r :- RunRow]
+  (=> (= (inv-sample w) true) (= (run-of-local w r) true) (= (comp-find w (:of r)) (Option.none CompRow)))
+  (intros h hl)
+  (cases ht (task-find w (:of r))) (case' [some t]) (case' [none])
+  (simp only [run-of-local task-local-id opt-test ht] at hl) (cases hl)
+  (have hn := (tk-not-comp w (:of r) h (tbl-find-has TaskRow task-id (:of r) t (:tasks w) ht)))
+  (cases hc (comp-find w (:of r))) (case' [some c]) (case' [none])
+  (rfl)
+  (have z := (tbl-find-has CompRow comp-id (:of r) c (:comps w) hc))
+  (rw [hn] at z) (cases z))
+(a/theorem bool-and-left [a :- Bool, b :- Bool] (=> (= (Bool.and a b) true) (= a true))
+  (cases a) (all_goals (simp)))
+(a/theorem bool-and-right [a :- Bool, b :- Bool] (=> (= (Bool.and a b) true) (= b true))
+  (cases a) (all_goals (simp)))
 (a/theorem lit-runs-nodup [w :- World]
   (=> (= (inv-sample w) true) (= (nat-nodup (tbl-ids run-id (:runs w))) true))
   (intro h)
@@ -1533,25 +1563,41 @@
      (simp only [t12-complete ht hn accept])
      (exact (gl-complete-raw w r (RunResult.mk tag v) (And.left (tok-facts w st r ht)) (tag-ok-none tag hg) h))))
 
+(override! GL 'inv-retire-one '[inv-retire-pre inv-complete-raw inv-run-cascade]
+  '(a/theorem gl-retire-one [v :- Nat, w :- World, rid :- Nat]
+     (=> (= (gl w) true) (= (gl (retire-one v w rid)) true))
+     (intro h)
+     (cases hf (run-find w rid))
+     (case [none] (simp only [retire-one hf]) (exact h))
+     (case [some r]
+       (have hp := (gl-retire-pre w r h))
+       (cases hf1 (run-find (retire-pre w r) rid))
+       (case [none] (simp only [retire-one hf hf1]) (exact hp))
+       (case [some r1]
+         (cases ha (Bool.and (run-alive r1) (run-of-local (retire-pre w r) r1)))
+         (case [true] (simp only [retire-one hf hf1 ha])
+           (exact (gl-complete-raw _ r1 _ (retire-r1-mem w r r1 rid hf1) (task-final-res-tag _ _ v) hp)))
+         (case [false] (simp only [retire-one hf hf1 ha retire-full]) (exact (gl-run-cascade _ _ hp)))))))
+
 (patch! GL 'raw0-inv
   (fn [form] (subst-forms #(= % '(t12-inv w _ _ _ h)) (fn [_] '(t12-inv w _ _ _ (refused-tag-ok w st tag hc) h)) form)))
 
 ;; ---- T4/T5/T11: the new run (and T4's task)
 
-(a/theorem gl-spawn-rows-o [w :- World, owner :- Nat, inputs :- (List Nat)]
-  (=> (= (gl w) true) (= (gl (spawn-rows w owner inputs)) true))
+(a/theorem gl-spawn-rows-o [w :- World, owner :- Nat, inputs :- (List Nat), loc :- Bool]
+  (=> (= (gl w) true) (= (gl (spawn-rows w owner inputs loc)) true))
   (intro h)
   (have hs := (gl-sample w h))
   (have lt (< (:next-id w) (+ (:next-id w) 3))) (omega)
-  (have hr (= (gl-rest (spawn-rows w owner inputs)) true))
+  (have hr (= (gl-rest (spawn-rows w owner inputs loc)) true))
   (exact (l10k-ins-task (rkeys (:runs w)) (tkeys (:tasks w)) (:next-id w) (+ (:next-id w) 3) (+ (:next-id w) 1)
            (gl-rest-of w h) lt (tasks-below w hs)))
-  (exact (gl-intro _ (inv-spawn-rows w owner inputs hs) hr)))
+  (exact (gl-intro _ (inv-spawn-rows w owner inputs loc hs) hr)))
 
 (override! GL 'inv-spawn-rows '[]
-  '(a/theorem gl-spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat)]
-     (=> (= (gl w) true) (= (gl (spawn-rows w owner inputs)) true))
-     (intro h) (exact (gl-spawn-rows-o w owner inputs h))))
+  '(a/theorem gl-spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat), loc :- Bool]
+     (=> (= (gl w) true) (= (gl (spawn-rows w owner inputs loc)) true))
+     (intro h) (exact (gl-spawn-rows-o w owner inputs loc h))))
 
 ;; a computation's new run: of = an existing computation (no task id, below the allocator)
 (a/theorem gl-comp-run-o [w :- World, cid :- Nat, ep :- Nat, ei :- Nat, f :- (=> CompRow CompRow),

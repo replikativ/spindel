@@ -554,13 +554,13 @@
 (patch! GCY 'inv-start-raw add-hp)
 (patch! GCY 'inv-new-run-of add-hp)
 (override! GCY 'inv-spawn-rows '[]
-  '(a/theorem gcy-spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat)]
-     (=> (= (gcy w) true) (= (gcy (spawn-rows w owner inputs)) true))
+  '(a/theorem gcy-spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat), loc :- Bool]
+     (=> (= (gcy w) true) (= (gcy (spawn-rows w owner inputs loc)) true))
      (intro h)
      (simp only [spawn-rows])
-     (have h1 (= (gcy (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs)))) true))
-     (exact (gcy-task-ins-fresh w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs) (rfl) h))
-     (exact (gcy-add-run-scope (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs)))
+     (have h1 (= (gcy (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc)))) true))
+     (exact (gcy-task-ins-fresh w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc) (rfl) h))
+     (exact (gcy-add-run-scope (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc)))
               (:next-id w) 0 (task-scope-parent w owner) 0 (cy-tsp-has w owner) h1))))
 ;; open-scope: the new explicit scope's parent is the run's current scope, which exists (open-ok)
 (override! GCY 't-open-scope-inv '[]

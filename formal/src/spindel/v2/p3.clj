@@ -1068,6 +1068,11 @@
   (exact (stored-sub r (run-fin-exit r) (rfl) (rfl) (self-sub (:resources r)) hf y)))
 (a/theorem run-fin-pop-end-sub [r :- RunRow, y :- Nat] (=> (= (reach-mem y (run-stored (run-fin-pop-end r))) true) (= (reach-mem y (run-stored r)) true))
   (exact (stored-sub r (run-fin-pop-end r) (rfl) (rfl) (self-sub (:resources r)) (fins-tail-sub (:finalizers r)) y)))
+(a/theorem run-drop-fins-sub [r :- RunRow, y :- Nat] (=> (= (reach-mem y (run-stored (run-drop-fins r))) true) (= (reach-mem y (run-stored r)) true))
+  (have hf (forall [y2 :- Nat] (=> (= (reach-mem y2 (fin-refs (:finalizers (run-drop-fins r)))) true)
+                                   (= (reach-mem y2 (fin-refs (:finalizers r))) true))))
+  (intros y2 h2) (simp only [run-drop-fins fin-refs reach-mem] at h2) (cases h2)
+  (exact (stored-sub r (run-drop-fins r) (rfl) (rfl) (self-sub (:resources r)) hf y)))
 (a/theorem run-unres-sub [z :- Nat, r :- RunRow, y :- Nat] (=> (= (reach-mem y (run-stored (run-unres z r))) true) (= (reach-mem y (run-stored r)) true))
   (exact (stored-sub r (run-unres z r) (rfl) (rfl) (nat-del-sub z (:resources r)) (self-sub (fin-refs (:finalizers r))) y)))
 (a/theorem run-fin-push-sub [f0 :- Nat, ei :- Nat, r :- RunRow, y :- Nat]
@@ -1081,7 +1086,7 @@
 
 (defn- fhead* [f] (if (seq? f) (first f) f))
 (defn- lemma-app* [f lem] (if (seq? f) (apply list lem (rest f)) lem))
-(def ^:private esb-run-fns '{run-fin-pop run-fin-pop-sub run-fin-exit run-fin-exit-sub run-fin-pop-end run-fin-pop-end-sub run-unres run-unres-sub})
+(def ^:private esb-run-fns '{run-fin-pop run-fin-pop-sub run-fin-exit run-fin-exit-sub run-fin-pop-end run-fin-pop-end-sub run-unres run-unres-sub run-drop-fins run-drop-fins-sub})
 (defn esb-patch [form]
   (->> form
        (subst-forms (fn [y] (and (seq? y) (= 'inv-run-upd (first y)) (contains? esb-run-fns (fhead* (nth y 3 nil)))))
@@ -1108,13 +1113,13 @@
   (simp only [tbl-ins tbl-has Nat.beq_refl]))
 
 (override! ESB 'inv-spawn-rows '[]
-  '(a/theorem esb-spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat)]
-     (=> (= (esb w) true) (= (esb (spawn-rows w owner inputs)) true))
+  '(a/theorem esb-spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat), loc :- Bool]
+     (=> (= (esb w) true) (= (esb (spawn-rows w owner inputs loc)) true))
      (intro h)
      (simp only [spawn-rows])
-     (have h1 := (esb-task-ins-fresh w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs) (rfl) h))
+     (have h1 := (esb-task-ins-fresh w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc) (rfl) h))
      (have s1 := (esb-sample _ h1))
-     (have o1 := (task-ref-ok _ (:next-id w) s1 (has-ins-head TaskRow task-id (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs) (:tasks w))))
+     (have o1 := (task-ref-ok _ (:next-id w) s1 (has-ins-head TaskRow task-id (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc) (:tasks w))))
      (have p0 := (tsp-ok w owner (esb-sample w h)))
      (have p1 (= (ref-ok-k (:edges w) (+ (:next-id w) 1) (task-scope-parent w owner)) true)) (exact (ref-ok-up _ _ _ _ (Nat.le_succ _) p0))
      (exact (esb-add-run-scope _ (:next-id w) 0 (task-scope-parent w owner) 0 o1 p1 h1))))
@@ -1742,6 +1747,24 @@
      (have h0 := (aha-run-upd-free w (:id r) run-complete-row run-complete-row-id hn h))
      (simp only [complete-raw])
      (exact (aha-fin-if-final _ (:of r) (aha-run-cascade _ _ (aha-retire-after _ (:id r) (aha-complete-body _ r res h0)))))))
+
+(override! AHA 'inv-retire-one '[inv-retire-pre inv-complete-raw inv-run-cascade]
+  '(a/theorem aha-retire-one [v :- Nat, w :- World, rid :- Nat]
+     (=> (= (aha w) true) (= (aha (retire-one v w rid)) true))
+     (intro h)
+     (cases hf (run-find w rid))
+     (case [none] (simp only [retire-one hf]) (exact h))
+     (case [some r]
+       (have hp := (aha-retire-pre w r h))
+       (cases hf1 (run-find (retire-pre w r) rid))
+       (case [none] (simp only [retire-one hf hf1]) (exact hp))
+       (case [some r1]
+         (have hm1 := (retire-r1-mem w r r1 rid hf1))
+         (have hn1 := (retire-r1-noact w r r1 rid hf hf1))
+         (have ht1 := (task-final-res-tag (retire-pre w r) (:of r1) v))
+         (cases ha (Bool.and (run-alive r1) (run-of-local (retire-pre w r) r1)))
+         (case [true] (simp only [retire-one hf hf1 ha]) (exact (aha-complete-raw _ r1 _ hn1 hp)))
+         (case [false] (simp only [retire-one hf hf1 ha retire-full]) (exact (aha-run-cascade _ _ hp)))))))
 
 (override! AHA 't12-inv '[inv-complete-raw]
   '(a/theorem t12-aha [w :- World, st :- Nat, tag :- Nat, v :- Nat]

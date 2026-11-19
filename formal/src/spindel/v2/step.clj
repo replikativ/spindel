@@ -34,11 +34,13 @@
                                                             must then be next-id); inputs = a
                                                             list of interned Nats
     14  create-comp-top scope c inputs body    T3 top level same
-    15  spawn st body fresh inputs             T4 in a run  task, run, run scope; nothing when fresh
+    15  spawn st body fresh inputs local       T4 in a run  task, run, run scope; nothing when fresh
                                                             names a task of the computation's
                                                             basis/adoption basis (re-spawn, §5.2;
                                                             inputs must equal the task's)
-    16  spawn-top scope body fresh inputs      T4 top level task, run, run scope
+    16  spawn-top scope body fresh inputs local T4 top level task, run, run scope (Z#77: `local` is the
+                                                            fork-local option; the task is fork-local
+                                                            when it is set or its owner scope is)
     17  start c fresh                          T5           run, run scope
     18  await st ds mode k fresh mine          T6           activation (always, Z#28), then the
                                                             reactivation edges of valid idle
@@ -98,6 +100,11 @@
     47  drain ids                              C1c stage B: `[:normalize]`, the inherited markers
                                                             ids (W-NORMALIZE) go, then Z#18 at their
                                                             owners -
+    48  retire-local v                         Z#77 T28: `[:retire-local]`, the first item of a
+                                                            world derived from one with fork-local
+                                                            runs: every run of a fork-local task is
+                                                            retired, nothing runs; a task without a
+                                                            result gets err v (v = ::forked) -
   A stream is created by T1 (`create-source(-top)` with kind `sk-stream`, spindel.v2.engine), which
   also allocates its first tail link (id = the stream's + 1).
   Indices 0-24 are unchanged; later items get the next indices.
@@ -212,8 +219,8 @@
   (unpin [x Nat])                                                  ; T20
   (create-comp [st Nat] [c Nat] [inputs (List Nat)] [body Nat])    ; T3 inside a run
   (create-comp-top [scope Nat] [c Nat] [inputs (List Nat)] [body Nat]) ; T3 at top level
-  (spawn [st Nat] [body Nat] [fresh Nat] [inputs (List Nat)])      ; T4 inside a run (§5.2 re-spawn)
-  (spawn-top [scope Nat] [body Nat] [fresh Nat] [inputs (List Nat)]) ; T4 at top level
+  (spawn [st Nat] [body Nat] [fresh Nat] [inputs (List Nat)] [local Bool])      ; T4 inside a run (§5.2 re-spawn; Z#77 local)
+  (spawn-top [scope Nat] [body Nat] [fresh Nat] [inputs (List Nat)] [local Bool]) ; T4 at top level
   (start [c Nat] [fresh Nat])                                      ; T5
   (await [st Nat] [ds (List Nat)] [mode Nat] [k Nat] [fresh Nat] [mine (List Nat)]) ; T6
   (dispatch-comp [c Nat] [fresh Nat])                              ; T11
@@ -244,7 +251,8 @@
   (finally-leave [st Nat])                                         ; C1 a finally clause ends (B8)
   (own [s Nat] [m Nat])                                            ; C1c B: the owned-fork count ([:fork r c])
   (owned-done [s Nat] [c Nat])                                     ; C1c B: [:owned-done s c]
-  (drain [ids (List Nat)]))                                        ; C1c B: [:normalize] (W-NORMALIZE)
+  (drain [ids (List Nat)])                                         ; C1c B: [:normalize] (W-NORMALIZE)
+  (retire-local [v Nat]))                                          ; Z#77 T28: [:retire-local] (internal)
 
 ;; ---- validity tokens (§2, V#5): one check per token kind
 
@@ -328,7 +336,7 @@
   (SourceRow.mk (:id s) (:owner s) (:kind s) (:state s) (:version s) (:open s) (- (:handles s) 1) (:queue s)
                 (:rtask s) (:next s) (:tail s) (:fail s) (:max s)))
 (a/defn task-dec-handles [t :- TaskRow] TaskRow
-  (TaskRow.mk (:id t) (:owner t) (:run t) (:result t) (- (:handles t) 1) (:inputs t)))
+  (TaskRow.mk (:id t) (:owner t) (:run t) (:result t) (- (:handles t) 1) (:inputs t) (:local t)))
 (a/defn pub-dec-handles [p :- PubRow] PubRow
   (PubRow.mk (:id p) (:edge p) (:basis p) (- (:handles p) 1)))
 (a/defn scope-close [s :- ScopeRow] ScopeRow (ScopeRow.mk (:id s) (:parent s) (:kind s) false))
@@ -1361,8 +1369,8 @@
     [(unpin x) (t20-unpin w x)]
     [(create-comp st c i b) (refuse w)]
     [(create-comp-top sc c i b) (refuse w)]
-    [(spawn st b fresh ins) (refuse w)]
-    [(spawn-top sc b fresh ins) (refuse w)]
+    [(spawn st b fresh ins loc) (refuse w)]
+    [(spawn-top sc b fresh ins loc) (refuse w)]
     [(start c fresh) (refuse w)]
     [(await st ds m k fresh mine) (refuse w)]
     [(dispatch-comp c fresh) (refuse w)]
@@ -1393,7 +1401,8 @@
     [(finally-leave st) (refuse w)]
     [(own s m) (refuse w)]
     [(owned-done s c) (refuse w)]
-    [(drain ids) (refuse w)]))
+    [(drain ids) (refuse w)]
+    [(retire-local v) (refuse w)]))
 
 ;; the item's validity token (§2), true for host operations that carry none
 (a/defn item-token-ok [w :- World, it :- Item] Bool
@@ -1413,8 +1422,8 @@
     [(unpin x) true]
     [(create-comp st c i b) (run-tok-ok w st)]
     [(create-comp-top sc c i b) true]
-    [(spawn st b fresh ins) (run-tok-ok w st)]
-    [(spawn-top sc b fresh ins) true]
+    [(spawn st b fresh ins loc) (run-tok-ok w st)]
+    [(spawn-top sc b fresh ins loc) true]
     [(start c fresh) true]
     [(await st ds m k fresh mine) (run-tok-ok w st)]
     [(dispatch-comp c fresh) true]
@@ -1445,7 +1454,8 @@
     [(finally-leave st) (run-tok-ok w st)]
     [(own s m) true]
     [(owned-done s c) true]
-    [(drain ids) true]))
+    [(drain ids) true]
+    [(retire-local v) true]))
 
 (a/theorem dispatch-inv [w :- World, it :- Item]
   (=> (= (inv-sample w) true) (= (inv-sample (:world (dispatch w it))) true))
