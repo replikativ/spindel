@@ -25,6 +25,7 @@
   Part D: fires (invalidate, resume, fill-slot; exemption monotone and the undo of a free member-id exemption).
   Part F: h-mem2 and L5 from the bundle."
   (:require [ansatz.core :as a]
+            [spindel.v2.pres.exempt :as exempt]
             [clojure.string :as str]
             [clojure.walk :as walk]
             [spindel.v2.state :refer :all]
@@ -1632,6 +1633,10 @@
   (intros hn h) (have hs := (h3-sample xm w h))
   (exact (h3-intro xm _ (inv-run-del w x hs) (h3r-run-del xm w x hn (h3-db-of w hs) (h3-rest-of xm w h)))))
 
+;; h3's exempt form (spindel.v2.pres.exempt; recorded, no aliases yet); the `h3-undo-*` lemmas remove
+;; an exemption once its fact holds
+(exempt/defexempt 'h3
+  :form "h3 xm w" :ids "computation, debtor and member ids (ids are global and unique)" :commit "h3 [] (p3m)")
 (def H3 (mk-bundle 'h3 '[xm :- (List Nat)] "hm3-" {}))
 ;; renamed to full-bundle forms with extra premises (their callers are overrides) or to a missing name
 ;; (a primitive the bundle does not keep in general: every caller is an override)
@@ -1641,9 +1646,7 @@
        'inv-act-ins-fresh 'h3-act-ins-NONE 'inv-filter-world 'h3-filter-world-NONE
        'inv-comp-upd 'h3-comp-upd-NONE 'inv-run-upd 'h3-run-upd-NONE 'inv-task-upd 'h3-task-upd-NONE
        'inv-act-upd 'h3-act-upd-NONE 'inv-edge-upd 'h3-edge-upd-NONE)
-(doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-set-pins
-            inv-resource-del inv-scope-del inv-cleanup-ins inv-set-released inv-set-pending-act inv-fork-del]]
-  (prim! H3 o nil))
+(defpart H3 :reads '[acts comps edges next-id runs tasks])
 (prim! H3 'inv-bump '(h3r-bump xm w (h3-db-of w (h3-sample xm w h0)) R))
 (prim! H3 'inv-source-ins-fresh '(h3r-bump xm (source-ins w r) (h3-db-of w (h3-sample xm w h1)) R))
 (prim! H3 'inv-fork-ins-fresh '(h3r-bump xm (fork-ins w r) (h3-db-of w (h3-sample xm w h1)) R))

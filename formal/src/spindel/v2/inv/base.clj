@@ -151,11 +151,7 @@
 
 (def MDB (mk-bundle 'mdb [] "mdb-" {}))
 (swap! (:renames MDB) assoc 'inv-parts 'mdb-parts)
-(doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del
-            inv-set-pins inv-resource-del inv-scope-del inv-cleanup-ins inv-act-upd inv-task-upd inv-run-upd inv-run-del
-            inv-comp-upd inv-comp-del-unref inv-comp-ins-fresh inv-run-ins-fresh
-            inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-act-ins-fresh inv-task-ins-fresh inv-bump inv-fork-del]]
-  (prim! MDB o nil))
+(defpart MDB :reads '[edges])
 (prim! MDB 'inv-edge-upd '(ep-edge-upd marked-dep w x f (md-pres f hk hm) R))
 (prim! MDB 'inv-remove-edge '(ep-remove-edge marked-dep w x R))
 (prim! MDB 'unmark-edge-inv-sample '(ep-unmark-edge marked-dep md-unmark w x R))
@@ -919,9 +915,7 @@
            {'inv-run-upd ['(fn [r :- RunRow] (Eq.refl (run-stored r))) 4]
             'inv-scope-upd ['(fn [s :- ScopeRow] (Eq.refl (:parent s))) 4]}))
 (swap! (:renames ESB) assoc 'inv-parts 'esb-parts 'inv-run-upd 'esb-run-upd 'inv-scope-upd 'esb-scope-upd)
-(doseq [o '[inv-pub-upd inv-source-upd inv-resource-upd inv-set-pins inv-resource-del inv-act-upd inv-task-upd
-            inv-comp-upd inv-comp-del-unref]]
-  (prim! ESB o nil))
+(defpart ESB :reads '[cleanup edges forks next-id runs scopes])
 (prim! ESB 'inv-bump '(esb-rest-mw w (bump w) (esub-refl (:next-id w) (:edges w)) (Nat.le_succ _) (rfl) (rfl) (rfl) (rfl) R))
 (prim! ESB 'inv-source-ins-fresh '(esb-rest-mw w (bump (source-ins w r)) (esub-refl (:next-id w) (:edges w)) (Nat.le_succ _) (rfl) (rfl) (rfl) (rfl) R))
 (prim! ESB 'inv-resource-ins-fresh '(esb-rest-mw w (bump (resource-ins w r)) (esub-refl (:next-id w) (:edges w)) (Nat.le_succ _) (rfl) (rfl) (rfl) (rfl) R))
@@ -1648,15 +1642,8 @@
             'inv-act-upd ['(fn [c :- ActRow] (Eq.refl (:run c))) 4]}))
 (swap! (:renames AHA) assoc 'inv-parts 'aha-parts 'inv-run-upd 'aha-run-upd 'inv-act-upd 'aha-act-upd
        'inv-run-ins-fresh 'aha-run-ins-fresh)
-(doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del
-            inv-set-pins inv-resource-del inv-scope-del inv-cleanup-ins inv-task-upd inv-comp-upd
-            inv-comp-del-unref inv-comp-ins-fresh inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh
-            inv-scope-ins-fresh inv-task-ins-fresh inv-bump inv-edge-upd inv-drop-cred inv-drop-edges insert-edge-fresh-inv-sample inv-fork-del]]
-  (prim! AHA o nil))
+(defpart AHA :reads '[acts runs])
 (prim! AHA 'inv-drop-act '(aha-rest-drop-act w a R))
-(prim! AHA 'inv-remove-edge '(Eq.trans (aha-rest-same w (remove-edge w x) (runs-remove-edge w x) (acts-remove-edge w x)) R))
-(prim! AHA 'mark-edge-inv-sample '(Eq.trans (aha-rest-same w (mark-edge w x) (runs-mark-edge w x) (acts-mark-edge w x)) R))
-(prim! AHA 'unmark-edge-inv-sample '(Eq.trans (aha-rest-same w (unmark-edge w x) (runs-unmark-edge w x) (acts-unmark-edge w x)) R))
 
 (a/theorem park-alive [r :- RunRow] (= (run-alive (run-park-row r)) true) (simp [run-alive run-park-row act-parked act-done]))
 (a/theorem tick-park-alive [r :- RunRow] (= (run-alive (run-tick-park r)) true) (simp [run-alive run-tick-park act-parked act-done]))
@@ -2783,10 +2770,7 @@
 (swap! (:renames SVB) assoc 'inv-parts 'svb-parts 'inv-comp-upd 'svb-comp-upd 'inv-source-upd 'svb-source-upd
        'inv-edge-upd 'svb-edge-upd 'insert-edge-fresh-inv-sample 'svb-insert-edge-fresh 'inv-comp-ins-fresh 'svb-comp-ins
        'inv-source-ins-fresh 'svb-source-ins 'inv-comp-del-unref 'svb-comp-del 'inv-filter-world 'svb-filter-world)
-(doseq [o '[inv-scope-upd inv-pub-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-cleanup-ins inv-set-pins
-            inv-resource-del inv-scope-del inv-act-upd inv-task-upd inv-run-upd inv-run-del inv-act-ins-fresh inv-task-ins-fresh
-            inv-scope-ins-fresh inv-resource-ins-fresh inv-run-ins-fresh inv-bump inv-fork-del inv-fork-ins-fresh]]
-  (prim! SVB o nil))
+(defpart SVB :reads '[comps edges sources])
 (prim! SVB 'inv-remove-edge '(svb-rest-remove-edge w x R))
 (prim! SVB 'mark-edge-inv-sample '(svb-rest-mark-edge w x R))
 (prim! SVB 'unmark-edge-inv-sample '(svb-rest-unmark-edge w x R))

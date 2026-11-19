@@ -30,6 +30,7 @@
   step-lit-i10-current; p3c = p3b && g10r with step-p3c, p3c-empty and step-lit-i10-current-total
   (no honest hypothesis)."
   (:require [ansatz.core :as a]
+            [spindel.v2.pres.exempt :as exempt]
             [clojure.string :as str]
             [spindel.v2.state :refer :all]
             [spindel.v2.edits :refer :all]
@@ -818,6 +819,11 @@
 ;; Part B. The bundle copy
 ;; ===========================================================================
 
+;; g10's exempt form (spindel.v2.pres.exempt; recorded, no aliases yet)
+(exempt/defexempt 'g10
+  :form "g10 gxz gkz w"
+  :ids "gxz computation ids (demoted later in the same normalization round: E2 waived); gkz run ids (being retired: E1, E2, rof waived)"
+  :commit "g10 [] [] = g10r (p3c)")
 (def G10 (mk-bundle 'g10 '[gxz :- (List Nat), gkz :- (List Nat)] "g10-"
            {'inv-run-upd ['(fn [r :- RunRow] (Eq.refl (rk10 r))) 4]
             'inv-comp-upd ['(fn [c :- CompRow] (Eq.refl (ck10 c))) 5]
@@ -828,9 +834,7 @@
        'up-react* 'g10-up-react 'up-inc-epoch* 'g10-up-inc-epoch 'up-replace* 'g10-up-replace 'up-demand* 'g10-up-demand
        'run-up* 'g10-run-upd-up 'run-same* 'g10-run-upd 'task-same* 'g10-task-upd 'task-clr* 'g10-task-clear)
 
-(doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del
-            inv-set-pins inv-resource-del inv-scope-del inv-cleanup-ins inv-act-upd inv-edge-upd inv-fork-del]]
-  (prim! G10 o nil))
+(defpart G10 :reads '[comps next-id runs tasks])
 (doseq [o '[inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-act-ins-fresh]]
   (prim! G10 o (list 'g10-rest-bump 'gxz 'gkz (list (symbol (str/replace (subs (name o) 4) "-fresh" "")) 'w 'r)
                      (list 'Eq.trans '(rfl) 'R))))

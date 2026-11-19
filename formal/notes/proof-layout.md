@@ -708,6 +708,69 @@ structural benefit: no generated theorems, no text rewriting, and about 250 fewe
 
 ---
 
+## 5a. Stage 1: what landed, and what it showed
+
+**What landed.** Three pieces, all front ends that emit the copier calls of before:
+
+- `spindel.v2.pres.frames`: one footprint lemma per primitive edit, `writes-<edit>` (the edited world
+  is the input world with only the written fields replaced; 39 lemmas, `rfl` except the `match`-defined
+  edge edits and the checked insert, which go by cases), and `defview`, which states a part's view as
+  `<rest>-frame-<field>` for every field the part does not read (`rfl`). `frame-term` composes the two
+  into the proof of a frame cell.
+- `defpart` in `inv.copier`: a part declares `:reads` and the cells that need an argument; every other
+  primitive's cell is generated (`prim!` with the generated frame proof). Converted: `gl`, `g1`, `g8`
+  (with the fixed comment block of section 4.4: the part, view, exempt form, cells, deferred within a
+  step, companions) and 24 more parts whose cells were a plain list of `nil` frames (`g9`, `g7`, `mdb`,
+  `esb`, `aha`, `svb`, `gy`, `g10`, `gw`, `g5`, `gso`, `gd`, `vq`, `hmk`, `ar`, `ekb`, `h3`, `gcy`,
+  `mb`, `gos`, `gc`, `gk`, `grel`, `gst`).
+- `spindel.v2.pres.exempt`: `defexempt` records a part's exempt form (the ids it holds, its empty
+  instance at commit) and aliases the lemmas that open and close deferred violations under uniform
+  names `<part>-exempt-<role>[-<site>]`. With aliases: `gl`, `g8`, `grx`; recorded without aliases:
+  `g5`, `g10`, `hmk`, `h3` (their lemmas do not fall into break/repair one to one; see below).
+
+**Frames, measured.** The views were measured in the kernel, not read off the source (risk R6): for
+each of the 51 bundles' rest predicates and each of the 15 World fields, `rest (set-f w v) = rest w` was
+tried by `rfl`; a field where it fails is read. Against those views:
+
+- every one of the 876 `nil` cells left in the source at that point is a table-level frame, except
+  Rule R's filter for `grel`, which became one too once the filter got its footprint (it does not write
+  `cleanup`, `pins`, `pending-act`, `released`, `next-id`). The static estimate of 42 "overlapping but a
+  frame" cells (E3) was an artifact of over-approximated reads; at table level there are none.
+- 53 cells were proved by hand although they are table-level frames: the edge edits `mark-edge`,
+  `unmark-edge`, `remove-edge` in 16 parts and `insert-edge-checked` in two. They are frames in
+  substance; `rfl` does not see it only because the edits are defined by `match` / `if`, which the
+  footprint lemmas handle once.
+- After the conversion the source has 424 `nil` cells instead of 969 (545 fewer, all in the converted
+  parts) and 25 hand-written edge-frame lemmas instead of 61; the 36 that went are restated, with
+  their names and statements, by `frame-theorem!` from the view. `override!` (337) and `patch!` (94)
+  are untouched: stage 1 does not change what the composites do.
+- Eager generation can add a cell the copy never uses: one here, `g1-run-ins-fresh` (`g1` has no run
+  insert in its closure). For the 24 parts not converted, mostly helper bundles with small closures, it
+  would add up to 10 unused cells each (`gr0`, `nz`), which is why they keep their lists.
+
+**Exemption forms, checked (R8, and a correction to option D).** Of the bundle parameters, two kinds
+must be told apart:
+
+- *Exemption sets*, weaker as they grow and empty at commit: `g8 x8s` (run ids), `glx k` (one task
+  id, a predicate beside the bundle), `grx xr` (run ids), `g5 xd` (debtor ids), `g10 gxz gkz`
+  (computation ids, run ids), `hmk hxm` (debtor ids), `h3 xm` (computation, debtor and member ids).
+- *Focus parameters*, stronger as they grow, which carry a fact about given ids through one composite:
+  `gnf nids` (no marker in nids), `mdk mkm` (marked edges on these debtors are dep edges), `gy y`
+  (computation y is no tombstone; `inv` uses `gy 0`), `ch cx`, `ka`, `na`, and the other helper bundles.
+  Section 3 (D) listed `gnf` and `mdk` among the exemption forms; they are not.
+
+No exemption opened in a raw transition is left for Rule R, as option D assumed. The reason is
+structural: a copied lemma keeps the bundle parameters fixed from its input world to its output world,
+so `raw-<part>` and each Rule R round lemma start and end at the same exemption set (the empty one in
+`inv`); a deferred violation cannot outlive the composite that opened it. Inside, the sets change only
+in overrides (the breaks and repairs) and loop invariants (`g8-cascade`'s ghost).
+`g5` and `h3` do not have one break and one repair lemma per site: `g5` discharges a whole finality
+site through an escape predicate (`jw`, `jw-fire-edge`, `jw-fin-fold`), `h3` removes exemptions with
+`h3-undo-*` lemmas; their uniform names wait for stage 3, where these become composite-level fields.
+
+**Regression.** See the stage-1 PR: statement fingerprints of every theorem before and after, theorem
+counts, load time, the full test suite.
+
 ## 6. Key pieces to read: the whole proof in 14 stops, in reading order (current names)
 
 1. `inv`, `inv-step`, `Reach1`, `reach-inv` (`top.clj`): the headline and its four-line induction.

@@ -26,6 +26,7 @@
     p3h = p3g && gr0     step-p3h, p3h-empty
     step-lit-i1-total    p3h w -> inv-i1 (world-step w it)     (literal I1, every clause)"
   (:require [ansatz.core :as a]
+            [spindel.v2.pres.exempt :as exempt]
             [clojure.walk]
             [spindel.v2.state :refer :all]
             [spindel.v2.edits :refer :all]
@@ -702,6 +703,13 @@
   (simp only [r3-ok reach-mem h3 Bool.or_eq_true])
   (exact h1)
   (exact (grx-intro _ _ (inv-run-upd w x f hid (grx-sample xr w h)) (grk-mk _ _ b1 b2 b3))))
+
+;; ---- grx's exempt form, uniform names (spindel.v2.pres.exempt): R3 waived for the runs in xr
+(exempt/defexempt 'grx
+  :form "grx xr w" :ids "run ids: a run made done before its cleanup entry is set" :commit "grx [] = gr0 (p3h)"
+  :break '{run-done grx-run-upd-x}             ; a run made done joins the exemptions
+  :repair '{cleanup-set grx-cleanup-set})      ; its cleanup entry is set: it leaves them
+
 (a/theorem rkr0-cancel [r :- RunRow] (= (rkr0 (run-cancel-row r)) (rkr0 r)) (rfl))
 (a/theorem rkr0-complete [r :- RunRow] (= (rkr0 (run-complete-row r)) (rkr0 r)) (rfl))
 

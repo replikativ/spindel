@@ -566,9 +566,7 @@
 
 (def GD (mk-bundle 'gd [] "gd-" {'inv-comp-ins-fresh ['(Eq.refl true) 2]}))
 (swap! (:renames GD) assoc 'inv-parts 'gd-parts 'inv-comp-ins-fresh 'gd-comp-ins)
-(doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-set-pins
-            inv-resource-del inv-scope-del inv-cleanup-ins inv-act-upd inv-task-upd inv-edge-upd inv-fork-del]]
-  (prim! GD o nil))
+(defpart GD :reads '[comps next-id runs])
 (doseq [[o t] '[[inv-source-ins-fresh source-ins] [inv-fork-ins-fresh fork-ins] [inv-resource-ins-fresh resource-ins] [inv-scope-ins-fresh scope-ins]
                 [inv-act-ins-fresh act-ins] [inv-task-ins-fresh task-ins]]]
   (prim! GD o (list 'gd-rest-grow 'w (list 'bump (list t 'w 'r)) '(rfl) '(rfl) '(Nat.le_succ (:next-id w)) 'R)))

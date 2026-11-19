@@ -20,6 +20,7 @@
     step-lit-i1-owners-total   p3g w -> i1-own (world-step w it)
   I1's resource owners and run entities/scopes: spindel.v2.inv.i1-runs (p3h)."
   (:require [ansatz.core :as a]
+            [spindel.v2.pres.frames :as frames]
             [spindel.v2.state :refer :all]
             [spindel.v2.edits :refer :all]
             [spindel.v2.reach :refer :all]
@@ -829,25 +830,10 @@
   (intro h) (simp only [gso-rest Bool.and_eq_true] at h)
   (simp only [gso-rest run-del set-runs (And.left h) (all-sub-del RunRow rscope-nz run-id x (:runs w) (And.right h)) Bool.and_self]))
 (prim! GSO 'inv-run-del '(gso-rest-run-del w x R))
-(a/theorem gso-rest-mark-edge [w :- World, x :- Nat] (= (gso-rest (mark-edge w x)) (gso-rest w))
-  (cases hf (edge-find w x))
-  (case [none] (simp only [mark-edge hf]))
-  (case [some e] (cases hm (:marked e)) (all_goals (simp only [mark-edge hf hm]))))
-(a/theorem gso-rest-unmark-edge [w :- World, x :- Nat] (= (gso-rest (unmark-edge w x)) (gso-rest w))
-  (cases hf (edge-find w x))
-  (case [none] (simp only [unmark-edge hf]))
-  (case [some e] (cases hm (:marked e)) (all_goals (simp only [unmark-edge hf hm]))))
-(a/theorem gso-rest-remove-edge [w :- World, x :- Nat] (= (gso-rest (remove-edge w x)) (gso-rest w))
-  (cases hf (edge-find w x))
-  (case [none] (simp only [remove-edge hf]))
-  (case [some e] (cases hm (:marked e)) (all_goals (simp only [remove-edge hf hm]))))
-(prim! GSO 'mark-edge-inv-sample '(Eq.trans (gso-rest-mark-edge w x) R))
-(prim! GSO 'unmark-edge-inv-sample '(Eq.trans (gso-rest-unmark-edge w x) R))
-(prim! GSO 'inv-remove-edge '(Eq.trans (gso-rest-remove-edge w x) R))
-(doseq [o '[inv-scope-upd inv-pub-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-cleanup-ins inv-set-pins
-            inv-resource-del inv-scope-del inv-act-upd inv-task-upd inv-comp-upd inv-bump inv-edge-upd inv-drop-cred inv-drop-act inv-drop-edges inv-comp-del-unref
-            inv-act-ins-fresh inv-task-ins-fresh inv-comp-ins-fresh inv-scope-ins-fresh inv-resource-ins-fresh insert-edge-fresh-inv-sample inv-fork-del inv-fork-ins-fresh]]
-  (prim! GSO o nil))
+(defpart GSO :reads '[runs sources])
+(frames/frame-theorem! 'gso-rest-mark-edge 'gso-rest 'mark-edge-inv-sample)
+(frames/frame-theorem! 'gso-rest-unmark-edge 'gso-rest 'unmark-edge-inv-sample)
+(frames/frame-theorem! 'gso-rest-remove-edge 'gso-rest 'inv-remove-edge)
 
 (a/theorem src0-consume [s :- SourceRow] (=> (= (src0-ok s) true) (= (src0-ok (source-consume s)) true))
   (intro h) (cases ha (src-available s)) (simp only [source-consume ha]) (exact h)

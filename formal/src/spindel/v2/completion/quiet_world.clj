@@ -23,6 +23,7 @@
 
   The copy machinery is spindel.v2.inv.copier's (`mk-bundle`, `prim!`, `lcopy!`)."
   (:require [ansatz.core :as a]
+            [spindel.v2.pres.frames :as frames]
             [clojure.string :as str]
             [spindel.v2.state :refer :all]
             [spindel.v2.edits :refer :all]
@@ -133,31 +134,15 @@
   (intros h hs)
   (exact (gc-intro _ (inv-filter-world v (keep-fn v) (gc-sample v h) hs) (gc-rest-filter-keep v (gc-rest-of v h)))))
 
-(a/theorem gc-rest-mark-edge [w :- World, x :- Nat] (= (gc-rest (mark-edge w x)) (gc-rest w))
-  (cases hf (edge-find w x))
-  (case [none] (simp only [mark-edge hf]))
-  (case [some e] (cases hm (:marked e)) (all_goals (simp only [mark-edge hf hm]))))
-(a/theorem gc-rest-unmark-edge [w :- World, x :- Nat] (= (gc-rest (unmark-edge w x)) (gc-rest w))
-  (cases hf (edge-find w x))
-  (case [none] (simp only [unmark-edge hf]))
-  (case [some e] (cases hm (:marked e)) (all_goals (simp only [unmark-edge hf hm]))))
-(a/theorem gc-rest-remove-edge [w :- World, x :- Nat] (= (gc-rest (remove-edge w x)) (gc-rest w))
-  (cases hf (edge-find w x))
-  (case [none] (simp only [remove-edge hf]))
-  (case [some e] (cases hm (:marked e)) (all_goals (simp only [remove-edge hf hm]))))
 
 ;; ---- the GC copy
 (def GC (mk-bundle 'gc [] "gc-" {'inv-cleanup-upd ['(fn [c :- CleanupRow] (Eq.refl (:run c))) 3]}))
 (swap! (:renames GC) assoc 'inv-parts 'gc-parts)
 
-(doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-set-pins inv-resource-del inv-scope-del
-            inv-act-upd inv-edge-upd inv-drop-cred inv-drop-edges inv-comp-del-unref inv-comp-upd inv-drop-act inv-task-upd
-            inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-comp-ins-fresh inv-act-ins-fresh
-            inv-task-ins-fresh inv-bump insert-edge-fresh-inv-sample inv-set-pending-act inv-set-released inv-fork-del]]
-  (prim! GC o nil))
-(prim! GC 'mark-edge-inv-sample '(Eq.trans (gc-rest-mark-edge w x) R))
-(prim! GC 'unmark-edge-inv-sample '(Eq.trans (gc-rest-unmark-edge w x) R))
-(prim! GC 'inv-remove-edge '(Eq.trans (gc-rest-remove-edge w x) R))
+(defpart GC :reads '[cleanup runs])
+(frames/frame-theorem! 'gc-rest-mark-edge 'gc-rest 'mark-edge-inv-sample)
+(frames/frame-theorem! 'gc-rest-unmark-edge 'gc-rest 'unmark-edge-inv-sample)
+(frames/frame-theorem! 'gc-rest-remove-edge 'gc-rest 'inv-remove-edge)
 (prim! GC 'inv-run-upd '(gc-rest-run-upd w x f hf R))
 (prim! GC 'inv-run-ins-fresh '(gc-rest-run-ins w r R))
 (prim! GC 'inv-cleanup-del '(gc-rest-cleanup-del w x R))

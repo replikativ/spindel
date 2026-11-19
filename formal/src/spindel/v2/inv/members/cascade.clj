@@ -93,11 +93,7 @@
                                     'inv-insert-edge-checked ['(Eq.refl true) 2]}))
 (swap! (:renames EKB) assoc 'inv-parts 'ekb-parts 'insert-edge-fresh-inv-sample 'ekb-insert-edge-fresh
        'inv-insert-edge-checked 'ekb-insert-edge-checked)
-(doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del
-            inv-set-pins inv-resource-del inv-scope-del inv-cleanup-ins inv-act-upd inv-task-upd inv-run-upd inv-run-del
-            inv-comp-upd inv-comp-del-unref inv-comp-ins-fresh inv-run-ins-fresh
-            inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-act-ins-fresh inv-task-ins-fresh inv-bump inv-fork-del]]
-  (prim! EKB o nil))
+(defpart EKB :reads '[edges])
 (prim! EKB 'inv-edge-upd '(ep-edge-upd ekb-one w x f (ekb-pres f hk hc) R))
 (prim! EKB 'inv-remove-edge '(ep-remove-edge ekb-one w x R))
 (prim! EKB 'unmark-edge-inv-sample '(ep-unmark-edge ekb-one ekb-unmark w x R))

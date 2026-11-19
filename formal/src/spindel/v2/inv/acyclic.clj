@@ -22,6 +22,7 @@
   Theorems: step-gcy (Rule R's honest hypothesis), step-acyc / acyc-empty (from p3b, no hypothesis),
   step-acyclic, step-acyclic-reach."
   (:require [ansatz.core :as a]
+            [spindel.v2.pres.frames :as frames]
             [clojure.string :as str]
             [spindel.v2.state :refer :all]
             [spindel.v2.edits :refer :all]
@@ -522,25 +523,10 @@
 (def GCY (mk-bundle 'gcy [] "gcy-" {'inv-scope-upd ['(fn [s :- ScopeRow] (Eq.refl (:parent s))) 4]}))
 (swap! (:renames GCY) assoc 'inv-parts 'gcy-parts 'inv-scope-upd 'gcy-scope-upd 'inv-scope-ins-fresh 'gcy-scope-ins-fresh
        'inv-add-run-scope 'gcy-add-run-scope)
-(doseq [o '[inv-run-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-task-upd inv-comp-upd
-            inv-set-pins inv-resource-del inv-cleanup-ins inv-act-upd inv-edge-upd inv-drop-cred inv-drop-edges inv-drop-act
-            inv-comp-del-unref inv-run-del inv-fork-del]]
-  (prim! GCY o nil))
-(a/theorem gcy-rest-mark-edge [w :- World, x :- Nat] (= (gcy-rest (mark-edge w x)) (gcy-rest w))
-  (cases hf (edge-find w x))
-  (case [none] (simp only [mark-edge hf]))
-  (case [some e] (cases hm (:marked e)) (all_goals (simp only [mark-edge hf hm]))))
-(a/theorem gcy-rest-unmark-edge [w :- World, x :- Nat] (= (gcy-rest (unmark-edge w x)) (gcy-rest w))
-  (cases hf (edge-find w x))
-  (case [none] (simp only [unmark-edge hf]))
-  (case [some e] (cases hm (:marked e)) (all_goals (simp only [unmark-edge hf hm]))))
-(a/theorem gcy-rest-remove-edge [w :- World, x :- Nat] (= (gcy-rest (remove-edge w x)) (gcy-rest w))
-  (cases hf (edge-find w x))
-  (case [none] (simp only [remove-edge hf]))
-  (case [some e] (cases hm (:marked e)) (all_goals (simp only [remove-edge hf hm]))))
-(prim! GCY 'mark-edge-inv-sample '(Eq.trans (gcy-rest-mark-edge w x) R))
-(prim! GCY 'unmark-edge-inv-sample '(Eq.trans (gcy-rest-unmark-edge w x) R))
-(prim! GCY 'inv-remove-edge '(Eq.trans (gcy-rest-remove-edge w x) R))
+(defpart GCY :reads '[next-id scopes])
+(frames/frame-theorem! 'gcy-rest-mark-edge 'gcy-rest 'mark-edge-inv-sample)
+(frames/frame-theorem! 'gcy-rest-unmark-edge 'gcy-rest 'unmark-edge-inv-sample)
+(frames/frame-theorem! 'gcy-rest-remove-edge 'gcy-rest 'inv-remove-edge)
 (doseq [o '[inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-act-ins-fresh inv-comp-ins-fresh inv-task-ins-fresh]]
   (prim! GCY o (list 'gcy-rest-bump (list (symbol (str/replace (subs (name o) 4) "-fresh" "")) 'w 'r) (list 'Eq.trans '(rfl) 'R))))
 (prim! GCY 'inv-bump '(gcy-rest-bump w R))

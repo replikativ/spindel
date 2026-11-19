@@ -31,6 +31,7 @@
     p3f = p3e && g5 []           step-p3f, p3f-empty
     step-lit-i5-dep-final-total  p3f w -> lit-i5-dep-final (world-step w it)   (literal I5, dep-final)"
   (:require [ansatz.core :as a]
+            [spindel.v2.pres.exempt :as exempt]
             [spindel.v2.state :refer :all]
             [spindel.v2.edits :refer :all]
             [spindel.v2.reach :refer :all]
@@ -419,6 +420,10 @@
   (exact (tbl-all-keep EdgeRow K edge-id _ _ (fn [q :- EdgeRow, h1 :- (= (dfk xd (fin-st (:sources w) (:tasks w)) q) true), h2 :- (= (K (edge-id q)) true)] h1) (:edges w) rr))
   (exact (g5-intro xd _ (inv-filter-world w K (g5-sample xd w h) hf) (g5r-gen xd w (filter-world K w) e r2))))
 
+;; g5's exempt form (spindel.v2.pres.exempt; recorded, no aliases yet): finality sites discharge in
+;; the same commit through the escape predicate `jw` (see the namespace docstring)
+(exempt/defexempt 'g5
+  :form "g5 xd w" :ids "debtor ids: an armed dep edge on a final debtor in xd is allowed" :commit "g5 [] (p3f)")
 (def G5 (mk-bundle 'g5 '[x5d :- (List Nat)] "g5-"
           {'inv-edge-upd ['(fn [e :- EdgeRow] (Eq.refl (ek5 e))) 8]
            'inv-source-upd ['(fn [s :- SourceRow] (Eq.refl (sfin s))) 4]
@@ -433,10 +438,7 @@
        'inv-task-upd 'g5-task-upd 'inv-source-ins-fresh 'g5-source-ins 'inv-task-ins-fresh 'g5-task-ins
        'insert-edge-fresh-inv-sample 'g5-insert-edge-fresh 'inv-insert-edge-checked 'g5-insert-edge-checked
        'inv-filter-world 'g5-filter-world 'inv-edge-set-phase 'g5-edge-set-phase)
-(doseq [o '[inv-scope-upd inv-pub-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-cleanup-ins inv-set-pins
-            inv-resource-del inv-scope-del inv-act-upd inv-run-upd inv-run-del inv-act-ins-fresh inv-scope-ins-fresh
-            inv-resource-ins-fresh inv-run-ins-fresh inv-bump inv-comp-upd inv-comp-ins-fresh inv-comp-del-unref inv-fork-del inv-fork-ins-fresh]]
-  (prim! G5 o nil))
+(defpart G5 :reads '[edges sources tasks])
 (prim! G5 'inv-remove-edge '(g5r-remove-edge x5d w x R))
 (prim! G5 'mark-edge-inv-sample '(g5r-mark-edge x5d w x R))
 (prim! G5 'unmark-edge-inv-sample '(g5r-unmark-edge x5d w x R))

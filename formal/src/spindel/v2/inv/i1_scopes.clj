@@ -32,7 +32,8 @@
             [spindel.v2.inv.idle :refer :all]
             [spindel.v2.inv.base :refer :all]
             [spindel.v2.inv.i10 :refer :all]
-            [spindel.v2.inv.i11 :refer :all]))
+            [spindel.v2.inv.i11 :refer :all]
+            [spindel.v2.pres.frames :as frames]))
 
 ;; ===========================================================================
 ;; Part A. The retained rows are closed upward
@@ -460,29 +461,32 @@
 ;; Part E. The copy
 ;; ===========================================================================
 
+;; ---------------------------------------------------------------------------
+;; The part g1: I1, scope parents (spec §6 I1; formal/notes/proof-layout.md)
+;;
+;; 1. In words: every scope's parent is 0 (a root) or an existing scope (`lit-i1-scope`).
+;; 2. View: scopes (`g1-rest-frame-<field>` for every other field, from `defpart`).
+;; 3. Exempt form: none (g1 is never broken inside a step).
+;; 4. Cells, the edits that write the view: a scope update that keeps the parent and kind
+;;    (`g1-scope-upd`, key `skw`, `rfl` at every call site); a new scope whose parent exists
+;;    (`g1-scope-ins-fresh`; the premise is the guard `open-ok` at T16's open, `task-scope-parent` at a
+;;    run's scope); closing a subtree that is removed whole (`g1-remove-if-empty`); re-parenting to
+;;    an open scope (`g1-set-parent`, T-detach). Every other primitive is a frame.
+;; 5. Deferred within a step: none. The overrides (`inv-spawn-rows`, `t-open-scope-inv`,
+;;    `t-detach-inv`) and patches (`inv-start-raw`, `inv-new-run-of`) pass the parent's existence
+;;    from the guard on the path to the new scope.
+;; 6. Companions: none (`step-g1`).
+
 (def G1 (mk-bundle 'g1 [] "g1-" {'inv-scope-upd ['(fn [s :- ScopeRow] (Eq.refl (skw s))) 4]}))
-(swap! (:renames G1) assoc 'inv-parts 'g1-parts 'inv-scope-upd 'g1-scope-upd 'inv-scope-ins-fresh 'g1-scope-ins-fresh
-       'inv-remove-if-empty 'g1-remove-if-empty 'inv-add-run-scope 'g1-add-run-scope)
-(doseq [o '[inv-run-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-task-upd inv-comp-upd
-            inv-set-pins inv-resource-del inv-cleanup-ins inv-act-upd inv-edge-upd inv-drop-cred inv-drop-edges inv-drop-act
-            inv-comp-del-unref inv-run-del inv-bump inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-act-ins-fresh inv-comp-ins-fresh
-            inv-task-ins-fresh insert-edge-fresh-inv-sample inv-fork-del]]
-  (prim! G1 o nil))
-(a/theorem g1-rest-mark-edge [w :- World, x :- Nat] (= (g1-rest (mark-edge w x)) (g1-rest w))
-  (cases hf (edge-find w x))
-  (case [none] (simp only [mark-edge hf]))
-  (case [some e] (cases hm (:marked e)) (all_goals (simp only [mark-edge hf hm]))))
-(a/theorem g1-rest-unmark-edge [w :- World, x :- Nat] (= (g1-rest (unmark-edge w x)) (g1-rest w))
-  (cases hf (edge-find w x))
-  (case [none] (simp only [unmark-edge hf]))
-  (case [some e] (cases hm (:marked e)) (all_goals (simp only [unmark-edge hf hm]))))
-(a/theorem g1-rest-remove-edge [w :- World, x :- Nat] (= (g1-rest (remove-edge w x)) (g1-rest w))
-  (cases hf (edge-find w x))
-  (case [none] (simp only [remove-edge hf]))
-  (case [some e] (cases hm (:marked e)) (all_goals (simp only [remove-edge hf hm]))))
-(prim! G1 'mark-edge-inv-sample '(Eq.trans (g1-rest-mark-edge w x) R))
-(prim! G1 'unmark-edge-inv-sample '(Eq.trans (g1-rest-unmark-edge w x) R))
-(prim! G1 'inv-remove-edge '(Eq.trans (g1-rest-remove-edge w x) R))
+(swap! (:renames G1) assoc 'inv-parts 'g1-parts 'inv-remove-if-empty 'g1-remove-if-empty 'inv-add-run-scope 'g1-add-run-scope)
+(defpart G1
+  :reads '[scopes]
+  :cells '{inv-scope-upd g1-scope-upd                 ; keeps the parent and the kind
+           inv-scope-ins-fresh g1-scope-ins-fresh})   ; the new scope's parent exists
+;; the per-edit frame lemmas of the edge edits, now from the view
+(frames/frame-theorem! 'g1-rest-mark-edge 'g1-rest 'mark-edge-inv-sample)
+(frames/frame-theorem! 'g1-rest-unmark-edge 'g1-rest 'unmark-edge-inv-sample)
+(frames/frame-theorem! 'g1-rest-remove-edge 'g1-rest 'inv-remove-edge)
 
 ;; callers of add-run-scope: a computation run scope has parent 0 (Z#26), a task run scope its owner
 ;; scope when that exists (task-scope-parent)

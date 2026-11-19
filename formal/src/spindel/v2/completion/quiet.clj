@@ -16,6 +16,7 @@
 
   The copy machinery is spindel.v2.inv.copier's (`mk-bundle`, `prim!`, `lcopy!`)."
   (:require [ansatz.core :as a]
+            [spindel.v2.pres.frames :as frames]
             [clojure.string :as str]
             [spindel.v2.state :refer :all]
             [spindel.v2.edits :refer :all]
@@ -49,18 +50,6 @@
       (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
   (intro h) (exact (inv-parts w (grel-sample rb w h))))
 
-(a/theorem grel-rest-mark-edge [rb :- Bool, w :- World, x :- Nat] (= (grel-rest rb (mark-edge w x)) (grel-rest rb w))
-  (cases hf (edge-find w x))
-  (case [none] (simp only [mark-edge hf]))
-  (case [some e] (cases hm (:marked e)) (all_goals (simp only [mark-edge hf hm]))))
-(a/theorem grel-rest-unmark-edge [rb :- Bool, w :- World, x :- Nat] (= (grel-rest rb (unmark-edge w x)) (grel-rest rb w))
-  (cases hf (edge-find w x))
-  (case [none] (simp only [unmark-edge hf]))
-  (case [some e] (cases hm (:marked e)) (all_goals (simp only [unmark-edge hf hm]))))
-(a/theorem grel-rest-remove-edge [rb :- Bool, w :- World, x :- Nat] (= (grel-rest rb (remove-edge w x)) (grel-rest rb w))
-  (cases hf (edge-find w x))
-  (case [none] (simp only [remove-edge hf]))
-  (case [some e] (cases hm (:marked e)) (all_goals (simp only [remove-edge hf hm]))))
 (a/theorem grel-rest-set-released [rb :- Bool, w :- World]
   (= (grel-rest rb (set-released w true)) true)
   (simp only [grel-rest set-released Bool.or_true]))
@@ -68,15 +57,10 @@
 (def GR (mk-bundle 'grel '[rb :- Bool] "grel-" {}))
 (swap! (:renames GR) assoc 'inv-parts 'grel-parts)
 
-(doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-set-pins
-            inv-resource-del inv-scope-del inv-cleanup-ins inv-act-upd inv-edge-upd inv-drop-cred inv-drop-edges
-            inv-comp-del-unref inv-comp-upd inv-drop-act inv-task-upd inv-run-upd inv-run-ins-fresh inv-run-del
-            inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-comp-ins-fresh inv-act-ins-fresh
-            inv-task-ins-fresh inv-bump insert-edge-fresh-inv-sample inv-filter-world inv-set-pending-act inv-fork-del]]
-  (prim! GR o nil))
-(prim! GR 'mark-edge-inv-sample '(Eq.trans (grel-rest-mark-edge rb w x) R))
-(prim! GR 'unmark-edge-inv-sample '(Eq.trans (grel-rest-unmark-edge rb w x) R))
-(prim! GR 'inv-remove-edge '(Eq.trans (grel-rest-remove-edge rb w x) R))
+(defpart GR :reads '[released])
+(frames/frame-theorem! 'grel-rest-mark-edge 'grel-rest 'mark-edge-inv-sample)
+(frames/frame-theorem! 'grel-rest-unmark-edge 'grel-rest 'unmark-edge-inv-sample)
+(frames/frame-theorem! 'grel-rest-remove-edge 'grel-rest 'inv-remove-edge)
 (override! GR 'inv-revoke-roots '[]
   '(a/theorem grel-revoke-roots [rb :- Bool, w :- World]
      (=> (= (grel rb w) true) (= (grel rb (revoke-roots w)) true))
@@ -507,10 +491,7 @@
 (swap! (:renames GK) assoc 'inv-parts 'gk-parts
        'insert-edge-fresh-inv-sample 'gk-insert-edge-fresh 'inv-insert-edge-checked 'gk-insert-edge-checked)
 
-(doseq [o '[inv-scope-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-resource-del inv-scope-del
-            inv-cleanup-ins inv-act-upd inv-run-upd inv-run-ins-fresh inv-run-del inv-resource-ins-fresh inv-scope-ins-fresh
-            inv-act-ins-fresh inv-bump inv-fork-del inv-fork-ins-fresh]]
-  (prim! GK o nil))
+(defpart GK :reads '[comps edges pending-act pins pubs released sources tasks])
 (prim! GK 'inv-edge-upd '(gk-rest-edge-upd w x f hk hc R))
 (prim! GK 'mark-edge-inv-sample '(gk-rest-mark-edge w x R))
 (prim! GK 'unmark-edge-inv-sample '(gk-rest-unmark-edge w x R))

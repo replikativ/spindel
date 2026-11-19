@@ -130,12 +130,30 @@ re-checking the base proof once per bundle (`spindel.v2.inv.copier`):
   overridden to pass it.
 - `patch!` rewrites the text of a base proof before it is copied, for the same purpose.
 
-So the four reasons appear as: frames are the `nil` cells (969 of the 1,357 cells); local obligations
-are the other cells and some overrides; deferred violations are overrides that use an exempt form;
+So the four reasons appear as: frames are the `nil` cells (969 of the 1,357 cells), and since the
+declarations below mostly generated cells (`frame!`); local obligations are the other cells and some
+overrides; deferred violations are overrides that use an exempt form;
 companions are bundle premises passed down by patches and overrides. About 10,000 of the 16,119
 theorems in the environment are copies. `notes/proof-layout.md` gives the counts and the target layout,
 in which a part declares what it reads (frames follow), its exempt form, and only the cells and
 composites that matter to it.
+
+**Declarations (stage 1 of that plan).** Most parts of the chain are now declared through a front end
+that emits the same copier calls:
+
+- `spindel.v2.pres.frames` states what every primitive edit writes (`writes-<edit>`: the edited world is
+  the input world with only those fields replaced) and, through `defview`, what a part reads
+  (`<rest>-frame-<field>`: replacing a field outside the view leaves the part unchanged, by `rfl`).
+- `defpart` (`inv.copier`) declares a part's view and the cells that need an argument; every other
+  primitive's cell is generated from the two lemmas above (`frame!`). So a part's declaration lists only
+  the edits that write what it reads, e.g. `(defpart G1 :reads '[scopes] :cells {...})`.
+- `spindel.v2.pres.exempt` records each exemption form (`defexempt`): its exempt ids and its empty
+  instance at commit, with uniform aliases `<part>-exempt-<role>` (`break`, `repair`, `mono`, `loop`,
+  `exit`, `transport`) for the lemmas that open and close deferred violations.
+
+`gl` (`inv.copier`), `g1` (`inv.i1-scopes`) and `g8` (`inv.i8`) carry a fixed comment block before their
+declaration: the part in words, its view, its exempt form, its cells, where it is deferred within a
+step, and its companions.
 
 ### Reading list: the whole proof in 14 stops
 
@@ -185,6 +203,7 @@ a `-` is `_` in the file name). Kernel names are global: a theorem is `step-p3m`
 | Layer 2 | `layer2.sys`, `layer2.skip`, `layer2.top` | cells, publications and their operations; an id taken by a sibling world (`bump`); `sysinv`, `SysReach`, `sys-reach-inv` |
 | Physical | `layer2.mvcc` | the MVCC row representation (tokens, versions, copy maps), `mv-refinement` |
 | Utilities | `util` | function update at a Nat key (`fupd`) |
+| Proof layout | `pres.frames`, `pres.exempt` | footprints of the primitive edits and views of the parts (frames); the exemption forms and their uniform names |
 | Oracle (tests) | `test/spindel/v2/oracle.clj`, `oracle_test.clj`, `oracle/` | replays commit logs recorded from the engine through the model, compares every committed state |
 
 `inv.*`, in load order (each requires the ones before it that it uses):
@@ -192,7 +211,7 @@ a `-` is `_` in the file name). Kernel names are global: a theorem is `step-p3m`
 | Namespace | Contents |
 |-----------|----------|
 | `inv.acts` | `ga`: activations (each run's only one, its run parked); the first copier (`copy!`) |
-| `inv.copier` | the bundle copier used from here on (`mk-bundle`, `prim!`, `lcopy!`, `override!`, `patch!`, `inst`); bundles `gl` (I10 task part) and `g9` (I9 resources); P3's core `filter-safe-of-refs` |
+| `inv.copier` | the bundle copier used from here on (`mk-bundle`, `prim!`, `lcopy!`, `override!`, `patch!`, `inst`) and its declaration front end (`defpart`, `frame!`); bundles `gl` (I10 task part) and `g9` (I9 resources); P3's core `filter-safe-of-refs` |
 | `inv.rank`, `inv.rank-step` | I12: the raise loop establishes `ranks-ok`; `inv-rank` through every step (P5) |
 | `inv.idle` | I7: bundle `g7` (idle shape, no dep edge on an idle creditor) |
 | `inv.tomb` | C1 Q6: tombstones are dormant (`gy`) |

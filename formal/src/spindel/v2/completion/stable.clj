@@ -26,6 +26,7 @@
   A task row collected while its run scope is still present reads not held, so its completion is then
   just \"no scope row k + 2\" (the second clause), as in the engine (K-SROW still present)."
   (:require [ansatz.core :as a]
+            [spindel.v2.pres.frames :as frames]
             [clojure.string :as str]
             [spindel.v2.state :refer :all]
             [spindel.v2.edits :refer :all]
@@ -230,18 +231,6 @@
   (intro q) (simp only [scope-has filter-world tbl-has-keep]) (simp only [scope-has] at q) (simp only [q Bool.and_false]))
 
 ;; ---- edge marks (match on the edge row): frames
-(a/theorem gst-rest-mark-edge [tk9 :- Nat, sc9 :- Nat, w :- World, x :- Nat] (= (gst-rest tk9 sc9 (mark-edge w x)) (gst-rest tk9 sc9 w))
-  (cases hf (edge-find w x))
-  (case [none] (simp only [mark-edge hf]))
-  (case [some e] (cases hm (:marked e)) (all_goals (simp only [mark-edge hf hm]))))
-(a/theorem gst-rest-unmark-edge [tk9 :- Nat, sc9 :- Nat, w :- World, x :- Nat] (= (gst-rest tk9 sc9 (unmark-edge w x)) (gst-rest tk9 sc9 w))
-  (cases hf (edge-find w x))
-  (case [none] (simp only [unmark-edge hf]))
-  (case [some e] (cases hm (:marked e)) (all_goals (simp only [unmark-edge hf hm]))))
-(a/theorem gst-rest-remove-edge [tk9 :- Nat, sc9 :- Nat, w :- World, x :- Nat] (= (gst-rest tk9 sc9 (remove-edge w x)) (gst-rest tk9 sc9 w))
-  (cases hf (edge-find w x))
-  (case [none] (simp only [remove-edge hf]))
-  (case [some e] (cases hm (:marked e)) (all_goals (simp only [remove-edge hf hm]))))
 
 ;; ===========================================================================
 ;; Part B. The copy
@@ -252,13 +241,10 @@
 (swap! (:renames GST) assoc 'inv-parts 'gst-parts 'inv-task-upd 'gst-task-upd
        'inv-task-upd-tcr 'gst-task-tcr 'inv-task-upd-tcl 'gst-task-tcl)
 
-(doseq [o '[inv-run-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-comp-upd
-            inv-set-pins inv-resource-del inv-cleanup-ins inv-act-upd inv-edge-upd inv-drop-cred inv-drop-edges inv-drop-act
-            inv-comp-del-unref inv-run-del inv-fork-del]]
-  (prim! GST o nil))
-(prim! GST 'mark-edge-inv-sample '(Eq.trans (gst-rest-mark-edge tk9 sc9 w x) R))
-(prim! GST 'unmark-edge-inv-sample '(Eq.trans (gst-rest-unmark-edge tk9 sc9 w x) R))
-(prim! GST 'inv-remove-edge '(Eq.trans (gst-rest-remove-edge tk9 sc9 w x) R))
+(defpart GST :reads '[next-id scopes tasks])
+(frames/frame-theorem! 'gst-rest-mark-edge 'gst-rest 'mark-edge-inv-sample)
+(frames/frame-theorem! 'gst-rest-unmark-edge 'gst-rest 'unmark-edge-inv-sample)
+(frames/frame-theorem! 'gst-rest-remove-edge 'gst-rest 'inv-remove-edge)
 (doseq [o '[inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-act-ins-fresh inv-comp-ins-fresh inv-run-ins-fresh]]
   (prim! GST o (list 'gst-rest-bump 'tk9 'sc9 (list (symbol (str/replace (subs (name o) 4) "-fresh" "")) 'w 'r) (list 'Eq.trans '(rfl) 'R))))
 (prim! GST 'inv-task-ins-fresh '(gst-rest-task-ins tk9 sc9 w r h0 R))

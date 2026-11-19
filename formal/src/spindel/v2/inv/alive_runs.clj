@@ -351,10 +351,7 @@
                                  'inv-comp-upd ['(fn [c :- CompRow] (Eq.refl (ark c))) 5]}))
 (swap! (:renames AR) assoc 'inv-parts 'ar-parts 'inv-run-upd 'ar-run-upd-a 'inv-comp-upd 'ar-comp-upd
        'inv-comp-ins-fresh 'ar-comp-ins-fresh 'inv-run-ins-fresh 'ar-run-ins-NONE)
-(doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-set-pins
-            inv-resource-del inv-scope-del inv-cleanup-ins inv-act-upd inv-task-upd inv-edge-upd inv-set-released
-            inv-set-pending-act inv-fork-del]]
-  (prim! AR o nil))
+(defpart AR :reads '[comps next-id runs])
 (doseq [[o t] '[[inv-source-ins-fresh source-ins] [inv-fork-ins-fresh fork-ins] [inv-resource-ins-fresh resource-ins] [inv-scope-ins-fresh scope-ins]
                 [inv-act-ins-fresh act-ins] [inv-task-ins-fresh task-ins]]]
   (prim! AR o (list 'arr-grow 'w (list 'bump (list t 'w 'r)) '(rfl) '(rfl) '(Nat.le_succ (:next-id w)) 'R)))
