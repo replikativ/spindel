@@ -182,21 +182,31 @@
                        (newThread [_ r] (doto (Thread. ^Runnable r "spindel-v2-timer") (.setDaemon true)))))
               (.setRemoveOnCancelPolicy true)))))
 
+#?(:clj (deftype Timer [^java.util.concurrent.atomic.AtomicBoolean claimed fut]))
+
 (defn schedule!
-  "Runs `f` after `ms`; returns a token for `unschedule!`."
+  "Runs `f` after `ms`; returns a token for `unschedule!`. JVM: the callback
+   and `unschedule!` race for one claim, so exactly one of them wins."
   [ms f]
-  #?(:clj (.schedule ^java.util.concurrent.ScheduledExecutorService @timer-exec
-                     ^Runnable f (long ms) java.util.concurrent.TimeUnit/MILLISECONDS)
+  #?(:clj (let [claimed (java.util.concurrent.atomic.AtomicBoolean. false)
+                run (fn [] (when (.compareAndSet claimed false true) (f)))]
+            (Timer. claimed (.schedule ^java.util.concurrent.ScheduledExecutorService @timer-exec
+                                       ^Runnable run (long ms) java.util.concurrent.TimeUnit/MILLISECONDS)))
      :cljs (js/setTimeout f ms)))
 
 (defn unschedule!
-  "True when the timer will not fire."
+  "True when the timer will not fire: `f` has not started and never will.
+   JVM: `Future.cancel` also answers true while the callback is running (the
+   future is not done yet), so the answer is the claim, not the cancel."
   [t]
-  #?(:clj (.cancel ^java.util.concurrent.Future t false)
+  #?(:clj (let [^Timer t t]
+            (when (.compareAndSet ^java.util.concurrent.atomic.AtomicBoolean (.-claimed t) false true)
+              (.cancel ^java.util.concurrent.Future (.-fut t) false)
+              true))
      :cljs (do (js/clearTimeout t) true)))
 
 (defn timer? [t]
-  #?(:clj (instance? java.util.concurrent.Future t) :cljs (number? t)))
+  #?(:clj (instance? Timer t) :cljs (number? t)))
 
 ;; ---------------------------------------------------------------------------
 ;; Offload control (JVM threads; JS runs the function as a macrotask)
