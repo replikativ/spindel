@@ -1,6 +1,6 @@
 (ns spindel.v2.hm6
   "h-mem2 through `world-step` (P11, second half), continued from spindel.v2.hm5, kernel-checked (Init only).
-  IN PROGRESS (notes/PLAN.md, branch hm6). Part A: the edge-kind bundle `ekb` (every edge is a wait or dep edge,
+  Part A: the edge-kind bundle `ekb` (every edge is a wait or dep edge,
   or an observe edge of the host: no savepoint edge exists in layer 1) through the step. Part B: freeness
   monotonicity (`h3-fm`: activations only shrink, run keys kept, currency only lost). Part C: the cascade."
   (:require [ansatz.core :as a]

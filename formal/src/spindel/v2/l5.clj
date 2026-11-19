@@ -7,15 +7,16 @@
            `l5-step-p3c` state L5 on p3c worlds with h-mark and h-mem as the remaining hypotheses.
     h-mem  is not a step invariant (a task member's run may be running); `h-mem2` (the task's
            run is alive) is, on every tripwire, and gives h-mem at a quiescent point
-           (`h-mem-of2`). `l5-safety-inv`: L5 from p3c, h-mark and h-mem2, the two state facts
-           still to prove through the step (both hold after every step of the random drivers).
+           (`h-mem-of2`). `l5-safety-inv`: L5 from p3c, h-mark and h-mem2. Both are proved
+           through the step since: h-mark in spindel.v2.hmk2 (`step-h-mark-total`), h-mem2 in
+           spindel.v2.hm18 (`step-h-mem2-total`); `l5-safety-total` (hm18) has no hypothesis.
   Part B: I5's dep-final clause with the unfilled-member exemption (`i5-dep-final-mem`, tripwire); since
   Z#53/Z#54 the literal clause holds as well (inv_test `literal-i5-member-final-resolved`), proved
   through the step in spindel.v2.i5 (`step-lit-i5-dep-final-total`). h-mark was false in the model
   before Z#59 (a group await's fired sibling survived T11 and re-marked its creditor on a later
   write); Z#59 (marking only from armed fires, T11's cut by creation order) resolved it (l5_test
-  `h-mark-fired-sibling-resolved`, oracle sample 13). h-mark and h-mem2 are tripwires (random drivers,
-  samples 7-13); their proofs through the step are open (notes/PLAN.md, branch z59).
+  `h-mark-fired-sibling-resolved`, oracle sample 13). h-mark and h-mem2 also run as tripwires (random
+  drivers, samples 7-13); both are proved through the step (spindel.v2.hmk2, spindel.v2.hm18).
   Part C: the settle worklist empties within its fuel (`settle-done-ok`, the former honest flag;
   needed for h-mark at T12): potential |queue| + #marked edges, every pop unmarks all marked
   out-edges of the settled computation (`sd-fold`), the settle edits mark no edge and keep ids,
@@ -75,7 +76,7 @@
   (exact (all-of-mem CompRow _ (:comps w) (fn [c :- CompRow, mc :- (List.Mem c (:comps w))] (l5-cur-ok w c h mc)))))
 
 ;; L5 (safety half) on every world the step reaches from p3c: h-cur is discharged, h-mark and
-;; h-mem remain hypotheses (tripwire-checked; see notes/PLAN.md, branch l5, for their proof plan)
+;; h-mem remain hypotheses (tripwire-checked; see notes/history/PLAN.md, branch l5, for their proof plan)
 (a/theorem l5-safety-p3c [w :- World, c0 :- Nat, c :- CompRow]
   (=> (= (p3c w) true) (= (quiescent w) true) (= (h-mark w) true) (= (h-mem w) true)
       (= (comp-find w c0) (Option.some CompRow c)) (= (comp-waiting c) true)

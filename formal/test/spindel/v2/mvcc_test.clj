@@ -3,7 +3,7 @@
   family state the engine's operations reach reads, in every active world, exactly the value-copy
   tables; the barrier, pruning, token ends and the row monitor protocol are what makes it so.
 
-  The compiled model is also run on the family-log sample shapes agreed in PLAN.md (a fork while
+  The compiled model is also run on the family-log sample shapes agreed in notes/history/PLAN.md (a fork while
   work is in flight, a nested fork whose intermediate world finished, savepoint instances after the
   owner wrote, a finished fork's token ending) with the refinement checked after every step and
   after pruning every row, and on two mutants each check must reject."

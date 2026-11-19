@@ -3,7 +3,7 @@
   exempts the member id while its edge goes, the fill takes it out of its only obliged holder, then the
   exemption is undone), the host-edge removals (T8 unobserve, T22 unawait), invalidate-dependents, and the
   bundle copies of T2, T9, T18 and the fire folds (wake-closed, settle-host, fast-fill, deliver-fire). The
-  step theorem for h3 is still open (notes/PLAN.md, branch hm4); the tripwire is hm3_test."
+  step theorem for h3 is still open (notes/history/PLAN.md, branch hm4); the tripwire is hm3_test."
   (:require [clojure.test :refer [deftest is]]
             [ansatz.core :as a]
             [spindel.v2.hm4]))

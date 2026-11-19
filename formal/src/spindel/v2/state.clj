@@ -2,7 +2,7 @@
   "Engine v2 layer-1 state (spec §2) as kernel-checked ansatz structures, plus generic
   table operations.
 
-  Encodings (see notes/PLAN.md for the global conventions):
+  Encodings (see notes/history/PLAN.md for the global conventions):
   - Every row id comes from ONE allocator (`World.next-id`, starts at 1); 0 = none. Row-id
     references (`parent`, `owner`, `run`, `pending-act`, ...) use 0 = none, never `Option`.
   - Optional non-id Nats use 0 = none as well: `done-epoch` (epochs start at 1, so a set

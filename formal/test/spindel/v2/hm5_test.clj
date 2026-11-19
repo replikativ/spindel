@@ -1,5 +1,5 @@
 (ns spindel.v2.hm5-test
-  "Loading spindel.v2.hm5 kernel-checks the next h-mem2 overrides of the h3 copier (notes/PLAN.md, branch hm5):
+  "Loading spindel.v2.hm5 kernel-checks the next h-mem2 overrides of the h3 copier (notes/history/PLAN.md, branch hm5):
   T7 track (the removed site edge is held by no obliged activation: AR + ga), take and T17 arm (a new activation
   whose member is exempt until its wait edge exists), T14's cancel-acts, T10 finalize and its callers (with hmk),
   T13's run-pointer clears. The step theorem for h3 is still open; the tripwire is hm3_test."

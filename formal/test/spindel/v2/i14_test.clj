@@ -46,7 +46,7 @@
       (every? visit (keys g)))))
 
 ;; P10 (reduced by `cur-open-of-rso` to `rso`): an alive normal task run's run scope is open, and the
-;; structural facts the remaining proof plan uses (notes/PLAN.md, branch i14): (c) a task run's scope has
+;; structural facts the remaining proof plan uses (notes/history/PLAN.md, branch i14): (c) a task run's scope has
 ;; the task's owner as parent or a parent that is no scope, (d) distinct runs have distinct scopes, (e) run
 ;; scopes have kind run, (si) a closed run scope of an alive task run has a closed parent scope
 (defn p10-facts [w]

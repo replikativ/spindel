@@ -9,8 +9,10 @@
   `SysReach` and `sys-reach-inv` are in spindel.v2.systop.
 
   The marker of a fork (spec §8.1: `{child, owner}` in the parent, retained by its owner scope) is
-  the child cell's `parent` and `owner` fields here: a marker retains nothing in the parent, so
-  keeping it outside the parent's tables changes no layer-1 retention.
+  the child cell's `parent` and `owner` fields here. A counted (owned) fork also has a layer-1 fork
+  marker row in the parent's world (`World.forks`, C1c stage B, spindel.v2.owned); in the parent's
+  retention a marker keeps itself and its owner scope (spindel.v2.retain `fork-keep`); see the C1c
+  stage B paragraph below.
 
   A savepoint is a resource of kind `rk-savepoint` (= offload; S1 publish = T17 arm; S2 resume = T18 fire +
   T15 acknowledge; S7 abandon = T14 cancel of its run), so layer 1 needs no new transition. A
@@ -1075,7 +1077,7 @@
 ;; C1 completion soundness (W1): a live complete cell is ready (released and: unborn, or no run left
 ;; and every accepted child complete or collected), through every system operation. The layer-1
 ;; part a step needs is `wq`: a step keeps a released world released and a quiet world quiet
-;; (`HQ`, the premise named in notes/PLAN.md C1).
+;; (`HQ`, the premise named in notes/history/PLAN.md C1).
 
 (a/defn wq [w :- World, w2 :- World] Prop
   (And (=> (= (:released w) true) (= (:released w2) true))
@@ -1230,7 +1232,7 @@
 ;; ---- cinv through the operations that need no layer-1 fact (fork, fork effect and instance take an id no
 ;; cell has accepted). The step, wake, resume, merge, publish and abandon are the `-q` theorems below, under
 ;; qsinv/qpinv: their earlier forms under the premise HQ ("a p3l step keeps a quiet world quiet") were vacuous,
-;; HQ being false (notes/PLAN.md, C1 quiet half), and are deleted.
+;; HQ being false (notes/history/PLAN.md, C1 quiet half), and are deleted.
 (a/theorem cinv-drop [cells :- (=> Nat Cell), k :- Nat]
   (=> (cinv cells) (cinv (sys-drop cells k)))
   (intro hc)

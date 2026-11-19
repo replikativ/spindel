@@ -2218,7 +2218,7 @@
 
 ;; ===========================================================================
 ;; Part H. The copy: every transition of raw0 except T2 (write) and T12 (complete), whose
-;; overrides are open (notes/PLAN.md, branch hm); T3 and T11 take gd and g7 / gd
+;; overrides are in spindel.v2.hmk2; T3 and T11 take gd and g7 / gd
 ;; ===========================================================================
 
 (doseq [r '[t1-full-inv t1-top-inv t7-inv t8-full-inv t8-unobserve-inv t9-inv t15-full-inv t17-inv t18-inv t19-inv

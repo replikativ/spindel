@@ -1,5 +1,5 @@
 (ns spindel.v2.qworld
-  "C1 completion stability, layer 1, the quiet half (notes/PLAN.md C1, `hq`): a quiet world (released,
+  "C1 completion stability, layer 1, the quiet half (notes/history/PLAN.md C1, `hq`): a quiet world (released,
   no run) holds only scopes, and every item is refused there, so a quiet world stays quiet.
 
     gc w        inv-sample w and every cleanup entry's run is a run row (`gc-rest`): the cleanup entry

@@ -1,6 +1,6 @@
 (ns spindel.v2.hm5
-  "h-mem2 through `world-step` (P11, second half), continued from spindel.v2.hm4, kernel-checked (Init only).
-  IN PROGRESS (notes/PLAN.md, branch hm5): the remaining overrides of the h3 copier."
+  "h-mem2 through `world-step` (P11, second half), continued from spindel.v2.hm4, kernel-checked (Init only):
+  further overrides of the h3 copier (T7 track, new activations, take / T17 arm, the first cascade pieces)."
   (:require [ansatz.core :as a]
             [clojure.string :as str]
             [clojure.walk :as walk]

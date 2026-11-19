@@ -2,7 +2,7 @@
   "Retention (spec v1.5.1 §3): roots, retention edges, `live`, storage, the cleanup table's
   rows, §3.4 admissions and the Rule R filter (§3.3 step 3), kernel-checked (Init only).
 
-  A node is a global row id (notes/PLAN.md). `retain-succ w x` collects the §3.2
+  A node is a global row id (notes/history/PLAN.md). `retain-succ w x` collects the §3.2
   successors contributed by EVERY row whose id is x, in every table (with unique ids that
   is the dispatch on the one table holding x; without them nothing breaks). Each table's
   part is `tbl-gather (id-is <p>-id x) <p>-contrib rows`.
@@ -86,8 +86,8 @@
   successors (live, so kept); the three guards that read another row (task-running reads
   K.run's row, sp-edge-of reads the creditor activation, comp-run-ok reads C.run's row) are
   true only when that row's id is itself a successor, and a filtered-out row makes the guard
-  false in both worlds (guard-keep). `converged w'` is a hypothesis because fuel sufficiency
-  is not proved; reach-run-frame shows the worklist runs identically at equal fuel."
+  false in both worlds (guard-keep). `converged w'` is a premise here; fuel sufficiency (P1) is
+  `live-converged-all` below; reach-run-frame shows the worklist runs identically at equal fuel."
   (:require [ansatz.core :as a]
             [spindel.v2.reach :refer :all]
             [spindel.v2.state :refer :all]))

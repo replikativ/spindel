@@ -5,7 +5,7 @@
   Part A: one executable Bool predicate per invariant (the tripwire the random drivers and the
   oracle run after every commit; names `inv-iN-*`). The predicates are the ones that HOLD on the
   model; the spec's literal readings that the model falsifies are kept as `lit-*` predicates
-  and their counterexamples are tests (test/spindel/v2/inv_test.clj, notes/PLAN.md findings).
+  and their counterexamples are tests (test/spindel/v2/inv_test.clj, notes/history/PLAN.md findings).
   Part B: I13 as transition guards (A#5) and L1 as the corollary of I3 (A#3).
   Part C: I10's D0 half (`inv-i10-slice`) preserved by every step.
   Part D: I9 (an unwinding run has no activation) preserved by every step.
@@ -49,7 +49,8 @@
     I7   an idle computation: no run, no adoption basis/baselines, no dep edge as creditor,
          pending 0. Literal `lit-i7-basis` (empty basis): T1 is refused in a cleanup slice (Z#40).
     I8   only the literal forms (`lit-i8-runs`: detach re-parents the run scope, Z#41;
-         `lit-i8-sources`: no T1 in a cleanup slice, Z#40); tripwire only.
+         `lit-i8-sources`: no T1 in a cleanup slice, Z#40); proved through the step in
+         spindel.v2.i8 (`step-lit-i8-total`, under the model-only guard `cur-closed`: P10).
     I9   an unwinding run has no activation (hence no savepoint edge: their creditor is an
          activation). Literal `lit-i9-res` (its resources cancelling or fired): no arm in a
          cleanup slice (Z#40).
@@ -61,7 +62,8 @@
     I11a every id is the root scope or the world record, in storage, or reachable through §3.2
          from the obligations (open explicit scopes, non-done runs, outstanding resources,
          observe edges and host waits, pins, rows with handles > 0, pending-activation), the
-         cleanup rows or §3.4 admissions (`inv-i11a`, tripwire only)."
+         cleanup rows or §3.4 admissions (`inv-i11a`; proved through the step in spindel.v2.i11,
+         `step-i11a-total`)."
   (:require [ansatz.core :as a]
             [spindel.v2.state :refer :all]
             [spindel.v2.edits :refer :all]

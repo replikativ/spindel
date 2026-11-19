@@ -1,7 +1,7 @@
 (ns spindel.v2.hm6-base
-  "Reachable-state premises for the next P11 proof stage. This conjunction
-   attaches the already proved AR and edge-kind invariants to p3l; it does
-   not assert arbitrary-step h3 preservation or extend the layer-1 model."
+  "The chain link p3la = p3l && ar && ekb: the AR (spindel.v2.ar) and edge-kind (spindel.v2.hm6)
+   invariants attached to p3l, with `step-p3la`. It is the premise world of the h3 (h-mem2) stages
+   spindel.v2.hm7 .. spindel.v2.hm18, where p3m = p3la && h3 [] and `step-p3m` close P11."
   (:require [ansatz.core :as a]
             [spindel.v2.state :refer :all]
             [spindel.v2.engine :refer :all]

@@ -1,6 +1,6 @@
 (ns spindel.v2.hm
   "L5's state facts through `world-step` (P11), kernel-checked (Init only). Part A-C: the auxiliary
-  bundle `gd` (notes/PLAN.md, branch z59 (0)), the per-computation facts an h-mark proof needs:
+  bundle `gd` (notes/history/PLAN.md, branch z59 (0)), the per-computation facts an h-mark proof needs:
     dle   done-epoch <= epoch, and 0 < epoch
     hrb   C.run is below the allocator (a fresh run is no computation's current run)
     rof   C.run names a run of C (or no run)
@@ -19,7 +19,7 @@
   p3j = p3i && gd with step-p3j / p3j-empty (no honest hypothesis), step-gd-facts-total.
   Part F (toward h-mark, PLAN z59 (1)): `reach-closure-inv`/`reach-run-inv` (a visited node is a
   root or a successor of a visited node; no convergence), `hm-dirty-back`, `hm-cone-back`.
-  h-mark and h-mem2 themselves are not proved here (notes/PLAN.md, branch l5b)."
+  h-mark and h-mem2 themselves are proved in spindel.v2.hmk2 and spindel.v2.hm18."
   (:require [ansatz.core :as a]
             [clojure.string :as str]
             [clojure.walk :as walk]

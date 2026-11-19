@@ -16,8 +16,9 @@
     svb   I5's observe part: an observe edge's seen is at most its debtor's version (versions only
           grow, an observed debtor is kept); companion kx y d (edge id y keeps debtor d) for the
           rearms of T9/T11/T7; `step-i5-total`. The spec's third I5 clause (no armed dep edge on a
-          final debtor) was false (reactivation re-armed onto a debtor that became final); Z#51
-          consumes such an edge (inv_test literal-i5-reactivation-resolved); its proof is open"
+          final debtor) was false before Z#51 (reactivation re-armed onto a debtor that became
+          final); Z#51 consumes such an edge (inv_test literal-i5-reactivation-resolved), and the
+          clause is proved in spindel.v2.i5 (`step-lit-i5-dep-final-total`, bundle g5, p3f)"
   (:require [ansatz.core :as a]
             [clojure.string :as str]
             [spindel.v2.state :refer :all]
@@ -3079,7 +3080,8 @@
 ;; Theorem: I5 as the model states it (inv-i5: a wait edge's creditor is the host or an existing
 ;; activation; an observe edge's seen never exceeds its debtor's version) through every step,
 ;; with no honest hypothesis. The third clause of the spec's I5 (no armed dep edge on a final
-;; debtor, `lit-i5-dep-final`) is false: inv_test literal-i5-reactivation-counterexample.
+;; debtor, `lit-i5-dep-final`) is proved separately (spindel.v2.i5 `step-lit-i5-dep-final-total`);
+;; before Z#51 it was false (inv_test literal-i5-reactivation-resolved).
 (a/theorem step-svb-total [w :- World, it :- Item]
   (=> (= (p3b w) true) (= (svb w) true) (= (svb (:world (world-step w it))) true))
   (intros h hv) (exact (step-svb w it hv (step-rule-r-safe w it h))))

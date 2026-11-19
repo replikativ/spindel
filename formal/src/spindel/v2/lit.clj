@@ -26,8 +26,8 @@
                        non-idle creditors, activations' runs exist, marked edges are dep edges, no
                        edge id is a cleanup row or storage ref) and `refs-untomb` (C1 Q6: no dep
                        edge's creditor is a tombstone) -> filter-safe. Their preservation
-                       through the step is open (notes/ansatz-fixes.md P3); `p3-refs` runs as a
-                       tripwire in lit-test.
+                       through the step is proved in spindel.v2.p3 (bundle `ri`, `step-p3b`,
+                       `step-rule-r-safe`); `p3-refs` also runs as a tripwire in lit-test.
   Model changes made for these proofs (spec-faithful, no reachable behaviour changes): `complete`
   with a result tag other than ok/err is refused (`complete-refused`; it let a task end with
   result none: inv_test complete-tag-none-refused), and cancel(R, replace) skips the debtor side
@@ -2705,8 +2705,8 @@
 
 ;; ===========================================================================
 ;; Part E. P3, the core: the Rule R filter is edge-safe in a normalized world with the
-;; reference invariants below (no transition reasoning; their preservation is open, see
-;; notes/ansatz-fixes.md P3)
+;; reference invariants below (no transition reasoning here; their preservation through the step
+;; is spindel.v2.p3's `ri` bundle, `step-rule-r-safe`)
 ;;
 ;;   dep-active   the creditor of a dep edge is a computation that is not idle (I7's edge part)
 ;;   acts-run     every activation's run row exists (with acts-alive: it is not done)

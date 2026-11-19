@@ -13,10 +13,10 @@
     cleanup-closed       the same for all cleanup rows
     filter-lit-i1-scope  inv-sample w, lit-i1-scope w -> lit-i1-scope (rule-r-filter w)
 
-  Not yet proved: lit-i1-scope of the normalized world (the transition and normalization keep
-  every scope's parent: new scopes get an existing parent, remove-if-empty removes whole subtrees,
-  detach re-parents to an open scope), and the other I1 clauses (owners, runs' entities); see
-  notes/PLAN.md, branch z52."
+  Through the step: bundle g1 (p3e = p3d && g1), `step-lit-i1-scope-total` below (the transition
+  and normalization keep every scope's parent: new scopes get an existing parent, remove-if-empty
+  removes whole subtrees, detach re-parents to an open scope). The other I1 clauses are proved in
+  spindel.v2.i1o (owners) and spindel.v2.i1r (resource owners, run entities and scopes; `inv-i1`)."
   (:require [ansatz.core :as a]
             [spindel.v2.state :refer :all]
             [spindel.v2.edits :refer :all]

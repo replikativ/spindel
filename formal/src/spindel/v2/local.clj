@@ -8,7 +8,7 @@
   Theorem: `loc1-runs`, the run half of LOC1 holds in every world (a run of a fork-local task makes its own run scope
   fork-local, `scope-local` reading the scope itself first). The task half and LOC2 are invariants of the step (T4's
   inheritance, the detach guard, the refused `(fork)` effect), not proved here: their preservation through every
-  item is the open part of the Z#77 model stage (notes/PLAN.md); the oracle evaluates both on every replayed world of
+  item is the open part of the Z#77 model stage (notes/history/PLAN.md); the oracle evaluates both on every replayed world of
   the fork-local samples (oracle_test `fork-local-closure`)."
   (:require [ansatz.core :as a]
             [spindel.v2.state :refer :all]

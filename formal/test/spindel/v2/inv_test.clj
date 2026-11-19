@@ -5,7 +5,7 @@
   the spec's literal readings (`lit-*`) as a second tripwire since the alignment pass
   (Z#38-Z#42), and replay the former counterexamples to the literal readings: each D0 trace
   now ends with the literal reading true, or its offending item is refused (Z#40). See the
-  findings in notes/PLAN.md."
+  findings in notes/history/PLAN.md."
   (:require [clojure.test :refer [deftest is testing]]
             [ansatz.core :as a]
             [spindel.v2.state :as s]

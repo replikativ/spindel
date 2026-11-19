@@ -57,11 +57,14 @@
   in p3b) over the waiting computations of the cone; a minimal one is eligible if it needs a run
   (its dirty dep debtors have smaller ranks), has no marked in-edge if done-epoch = epoch, and
   otherwise its current run is parked and every member is a leaf, a parked task or a smaller
-  waiting computation, so it is Blocked unless a task is not. Three state facts are hypotheses,
-  checked as tripwires at every quiescent point of the random drivers (progress_test), not yet
-  proved through the step: `h-cur` (a done current run has set done-epoch), `h-mark` (a marked
-  edge is a dep edge on a waiting computation), `h-mem` (an unfilled member of a parked computation
-  run is a leaf, a task with a parked current run, or a waiting computation it has a dep edge on).
+  waiting computation, so it is Blocked unless a task is not. Three state facts are hypotheses
+  here (also checked as tripwires at every quiescent point of the random drivers, progress_test):
+  `h-cur` (a done current run has set done-epoch), `h-mark` (a marked edge is a dep edge on a
+  waiting computation), `h-mem` (an unfilled member of a parked computation run is a leaf, a task
+  with a parked current run, or a waiting computation it has a dep edge on). They are discharged
+  on every p3m world: h-cur from g10r (spindel.v2.l5 `l5-h-cur`), h-mark (spindel.v2.hmk2), and
+  h-mem at a quiescent point from the step invariant h-mem2 (spindel.v2.hm18); the result is
+  `l5-safety-total` (spindel.v2.hm18).
   Paper argument for the third disjunct: a parked, non-Blocked task has a member that is neither a
   leaf nor Blocked; in a quiescent world that member is a parked task or a waiting computation, and
   following such members never ends in a source or resource; the cone is finite, so the walk
@@ -1274,7 +1277,9 @@
 ;; the cone: debtors through dep edges and through the unfilled members of the current run
 (a/defn csucc [w :- World, x :- Nat] (List Nat) (List.append Nat (dep-debtors (:edges w) x) (blk-deps w x)))
 
-;; Three state facts the proof uses, run as tripwires (progress_test): not proved through the step.
+;; Three state facts the proof uses, also run as tripwires (progress_test). h-cur and h-mark are proved
+;; through the step (spindel.v2.l5, spindel.v2.hmk2); h-mem is not a step invariant, its replacement
+;; h-mem2 is (spindel.v2.hm18) and gives h-mem at a quiescent point (`h-mem-of2`).
 ;; h-cur: a computation's current run that is done has set its result (done-epoch = epoch);
 ;; h-mark: a marked edge is a dep edge whose debtor is a waiting computation (marks come from a
 ;;   computation being marked, settle unmarks);
@@ -1531,7 +1536,7 @@
 ;; computation (T11 can run it), or a task whose current run is parked and that is not Blocked (a
 ;; wait that no source, resource or runnable computation can end: a user deadlock, see the ns
 ;; docstring). Stated contrapositively: the three negations are absurd. Given the state facts
-;; h-cur, h-mark, h-mem (tripwire-checked, not proved through the step).
+;; h-cur, h-mark, h-mem as premises; `l5-safety-total` (spindel.v2.hm18) discharges them on p3m worlds.
 (a/theorem l5-safety [w :- World, c0 :- Nat, c :- CompRow]
   (=> (= (p3b w) true) (= (quiescent w) true) (= (h-cur w) true) (= (h-mark w) true) (= (h-mem w) true)
       (= (comp-find w c0) (Option.some CompRow c)) (= (comp-waiting c) true)

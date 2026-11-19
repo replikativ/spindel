@@ -4,7 +4,7 @@
   (EDN space, id-keyed, only fields the model holds) and the model's honest flags and invariant
   tripwire.
 
-  Log format (oracle contract, notes/PLAN.md): a vector of
+  Log format (oracle contract, notes/history/PLAN.md): a vector of
   `{:item [:tag ...] :accepted bool :proj {table {id row-map}}}`; nil = none (model 0), enums as
   keywords, values/continuations opaque Nats (interned by the engine's verify ns).
 

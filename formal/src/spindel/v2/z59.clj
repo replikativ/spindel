@@ -11,8 +11,9 @@
         leftover fired edge.
     (a) a write marks only from the computations whose dep edge on the written source fires, i.e.
         was armed (`armed-creditors`): a fired edge starts no marking (`z59-fired-starts-none`).
-  The full step invariants h-mark / h-mem2 (and so L5 without hypotheses) are open: see
-  notes/PLAN.md, branch z59, for the plan and the auxiliary facts it needs (tripwired in l5_test)."
+  The full step invariants h-mark / h-mem2 built on these facts are proved in spindel.v2.hmk2
+  (`step-h-mark-total`) and spindel.v2.hm18 (`step-h-mem2-total`, `l5-safety-total`: L5 safety with
+  no hypothesis)."
   (:require [ansatz.core :as a]
             [spindel.v2.state :refer :all]
             [spindel.v2.edits :refer :all]

@@ -5,7 +5,7 @@
   of engine-test and every commit of the oracle samples 7-13:
     - after every accepted T11 dispatch (item 19) through `world-step`, the computation has no fired
       dep edge (the theorem, through the predecessor's cancel and Rule R);
-    - the auxiliary facts an h-mark proof needs (notes/PLAN.md, branch z59): `dle` (done-epoch <=
+    - the auxiliary facts an h-mark proof needs (notes/history/PLAN.md, branch z59): `dle` (done-epoch <=
       epoch) and `cde` (a computation whose current run is alive has done-epoch /= epoch);
     - branch l5b: `dna` (no dep edge has an idle computation as its debtor) and `nms` (no unfilled
       activation member is an ARMED dep edge on a signal or cell (a stale run's member is fired): T6's fast path fills those at once, so a

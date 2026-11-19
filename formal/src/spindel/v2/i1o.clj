@@ -18,7 +18,7 @@
     step-gso                   gso w, rule-r-safe raw -> gso (world-step w it)
     p3g = p3f && gso && i1-own  step-p3g, p3g-empty
     step-lit-i1-owners-total   p3g w -> i1-own (world-step w it)
-  Open (notes/PLAN.md, branch rest): I1's resource owners and run entities/scopes."
+  I1's resource owners and run entities/scopes: spindel.v2.i1r (p3h)."
   (:require [ansatz.core :as a]
             [spindel.v2.state :refer :all]
             [spindel.v2.edits :refer :all]

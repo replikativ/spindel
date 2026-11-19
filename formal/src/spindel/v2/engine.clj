@@ -63,9 +63,13 @@
     step-i3      accepted, live converged before/after the last round's filter -> I3
     step-normalized, step-i4   ... and normalized (normalize (rule-r-pre raw-world)) -> the
                  step's world is normalized and every non-done run is in its live set (I4)
-  Honest hypotheses, checked by the tests after every step: the flags of rule.clj, plus
-  `settle-done`/`fin-done` for the worklists (settle-done is proved, spindel.v2.l5
-  `settle-done-ok`; fin-done holds trivially: comp-final is false, so the worklist is [d]).
+  Premises of these per-step theorems: the flags of rule.clj, plus `settle-done`/`fin-done` for the
+  worklists. All are discharged for every step: live-converged (P1, spindel.v2.retain
+  `live-converged-all`), normalized (P2, spindel.v2.casc `rule-r-normalized-ok`), rule-r-safe /
+  filter-safe (P3, spindel.v2.p3 `step-rule-r-safe`), casc-done (P4, spindel.v2.casc
+  `casc-done-ok`), settle-done (spindel.v2.l5 `settle-done-ok`); fin-done holds trivially (comp-final
+  is false, so the worklist is [d]). The forms without premises are the bundle theorems
+  (`step-inv-total`, spindel.v2.p3; `inv-step`, spindel.v2.top). The tests still check the flags.
 
   Readings (numbered; the rule.clj list continues to apply):
     B1. Demand (T6, T8, T22): only the reactive revalidation of a valid idle computation
@@ -91,7 +95,8 @@
         reactivation add a dep edge between computations; T6 refuses a cycle (a computation
         awaiting itself or one that reaches it through dep edges, which on a ranks-ok world is
         exactly \"the propagation reaches the debtor\"). A reactivation edge whose raise fails
-        (a cycle through validity, not expected) is still added; `ranks-ok` is the tripwire.
+        (a cycle through validity, not expected) is dropped together with its raise (`react-add`);
+        `ranks-ok` is preserved by every step (spindel.v2.rank-step `step-ranks`).
     B8. T6 debtors: in a computation run a dep edge for computation, task and source
         debtors, a wait edge for a resource (Z#6); in a task run wait edges. Fast-ready: a
         live (or valid idle) computation, a completed task, a closed source, a delivered

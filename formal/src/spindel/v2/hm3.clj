@@ -1,7 +1,8 @@
 (ns spindel.v2.hm3
-  "h-mem2 through `world-step` (P11, second half), kernel-checked (Init only). IN PROGRESS: the bundle, its
-  transfer and primitive lemmas, the copier setup, the first fire overrides and the derivation of h-mem2 are
-  proved; the step theorem is not (notes/PLAN.md, branch hm3, lists the remaining overrides).
+  "h-mem2 through `world-step` (P11, second half), kernel-checked (Init only), first stage: the bundle, its
+  transfer and primitive lemmas, the copier setup, the first fire overrides and the derivation of h-mem2. The
+  later stages are spindel.v2.hm4 .. spindel.v2.hm17; the step theorem `step-h3` and the chain link p3m are in
+  spindel.v2.hm18 (`step-p3m`, `step-h-mem2-total`).
 
   Bundle `h3 xm` = inv-sample && for every activation A and every run row R with id A.run (key rk3 = id/of/epoch):
     ab    A.run < next-id;

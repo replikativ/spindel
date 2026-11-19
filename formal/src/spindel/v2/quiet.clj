@@ -1,5 +1,5 @@
 (ns spindel.v2.quiet
-  "C1 completion stability, layer 1 (notes/PLAN.md C1, `hq`): a step keeps a released world released
+  "C1 completion stability, layer 1 (notes/history/PLAN.md C1, `hq`): a step keeps a released world released
   (`step-released`) and a quiet world (released, no run) quiet.
 
     grel rb w   inv-sample w and (b -> released w): the bundle copy of every inv-sample lemma of the step

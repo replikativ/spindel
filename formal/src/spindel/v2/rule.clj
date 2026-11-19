@@ -19,7 +19,8 @@
   (`casc-fuel`: initial jobs x (1 + #runs) + #runs x (2 + 2 #runs) + 1; acting jobs are guarded:
   a cancel acts on a non-done run, a retire on a retirable one). A cancel queues the cancels of
   the work owned by R.scope's subtree and then T13 on R; T13 and T16 queue the cancels of the
-  subtree's remaining work. `casc-done` says the worklist emptied (not proved; tests check it).
+  subtree's remaining work. `casc-done` says the worklist emptied: proved for every world with
+  acts-alive (P4, spindel.v2.casc `casc-done-ok`); the tests also check it.
 
   Transitions (Part F): `t14-cancel w r rep`, `t16-close-scope w s`, `retire-full w r` (T13),
   `t15-full w z` (T15 with the Z#6 token `ack-tok-ok`: resource row and no edge with debtor z).
@@ -61,12 +62,13 @@
     raw-inv, raw-refuse, raw-l4  the raw part (raw-l4: invalid token -> not accepted, Z#10)
     step-refuse, step-l4, step-accepted
                                  refusal -> (refuse w); invalid token -> (refuse w) (L4)
-  Honest hypotheses (Bool flags the tests check after every step): `live-converged` before and
-  after the filter (fuel sufficiency of live is not proved), `normalized` of the normalized
-  world (the loop's flag: its termination measure is not proved; tests check that every round
-  strictly decreases `norm-measure`), and `filter-safe` (a kept edge keeps its endpoints, a
-  marked edge with a kept creditor is kept: it follows from I7 and the §3.2 edges in the worlds
-  the transitions build, but inv-sample does not carry I7).
+  Premises here (Bool flags, also checked by the tests after every step), each discharged later:
+  `live-converged` before and after the filter (P1: fuel sufficiency of live, spindel.v2.retain
+  `live-converged-all`), `normalized` of the normalized world (P2: the loop terminates within its
+  fuel, spindel.v2.casc `normalized-ok` / `rule-r-normalized-ok`), and `filter-safe` (a kept edge
+  keeps its endpoints, a marked edge with a kept creditor is kept: P3, from I7 and the §3.2 edges,
+  which inv-sample does not carry; spindel.v2.lit `filter-safe-of-refs`, spindel.v2.p3
+  `step-rule-r-safe`).
 
   Readings (spec ambiguities, see the report):
     1. Work owned by S: the non-done runs of the tasks owned by a scope of S's subtree
@@ -767,7 +769,8 @@
                   [(cons j t) (cascade f (job-apply w j) (List.append Job t (job-next w j)))])]))
 
 ;; fuel: a cancel or retire acts once per run (the guards); each acting job queues at most
-;; #runs + 1 jobs, and each initial job at most #runs. Not proved: `casc-done` is the flag.
+;; #runs + 1 jobs, and each initial job at most #runs. `casc-done` is the flag; that it holds is
+;; P4 (spindel.v2.casc `casc-done-ok`).
 (a/defn rep-list [xs :- (List Nat), unit :- (List Nat)] (List Nat)
   (match xs [nil (List.nil Nat)] [(cons h t) (List.append Nat unit (rep-list t unit))]))
 (a/defn job-zeros [js :- (List Job)] (List Nat)
