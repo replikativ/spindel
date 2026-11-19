@@ -771,6 +771,99 @@ site through an escape predicate (`jw`, `jw-fire-edge`, `jw-fin-fold`), `h3` rem
 **Regression.** See the stage-1 PR: statement fingerprints of every theorem before and after, theorem
 counts, load time, the full test suite.
 
+## 5b. Stage 2: the generic tree, and the rule for stage 3
+
+**What landed** (`spindel.v2.pres.tree`). The composite lemmas the converted parts need are checked once,
+over an abstract rest part `Q`:
+
+- `Leaf Q`: one field per primitive edit the tree reaches, in the bare shape (Base and `Q` of the input
+  world give `Q` of the edited world), chunked into structures of at most 20 fields (R1, below).
+- `Over Q P`: one field per composite of the tree that some bundle overrides (R3; `over-targets`,
+  checked against the copier's `override!` calls by `pres/tree_test.clj`). `over-default` fills every
+  field with the generic proof (the `gqd-` copy), proved once from the leaves.
+- `gq` (parameters `Q`, `P : Leaf Q`, `O : Over Q P`): the tree, copied once; its leaves call `Leaf`, its
+  override points call `Over`.
+- `restate!`: a part builds its `Leaf` instance from its primitive cells and restates every lemma the
+  copier used to generate for it, under the old name and statement, as an application of the `gq-`
+  lemma with `over-default`.
+
+Converted: `edb`, `gnf`, `kc`, `kx`, `mdk`, `neb`. Not converted, and why:
+
+- `vr`, `na`, `gox`: their primitive cells take a bundle-specific side condition at the call site (the
+  copier's extra args: a key-preserving row function for `comp-upd`, `act-upd`, `run-upd`), so a bare
+  leaf `forall f, ...` cannot be instantiated from their cells. This is obstacle 1 of
+  `generic-preservation.md`: such leaves are per call site (primitive applied to the row function used
+  there). It is the same kind of extension as the call-site context below.
+- `ch`: it lives in `inv.copier`, which the tree namespace loads after; moving it is a separate change.
+- `gx`: not override-free; it shares four overrides with `ga` (`inv-fill-slot`, `inv-fire-dep`,
+  `inv-fire-wait-act`, `inv-resume`).
+
+**R1, measured** (synthetic leaves of the full A+ shape: membership, an alive row, a guard, Base, `C`,
+`Q`; one JVM at 1 GB):
+
+| fields | Type structure: create / instance / 200 projections | Prop conjunction: def / instance / 200 projections |
+|---|---|---|
+| 25 | 0.59 / 0.20 / 1.6 s | 0.11 / 0.16 / 4.4 s |
+| 50 | 1.9 / 0.41 / 1.2 s | 0.31 / 0.58 / 11.1 s |
+| 100 | 8.9 / 1.5 / 1.3 s | 1.0 / 2.2 / 35.9 s |
+| 150 | out of heap after 51 s | 5.3 / 10.7 / 146 s |
+| 150 as 6 structures of 25 + an outer one | 5.5 / 5.8 / 1.6 s | |
+
+A flat structure grows roughly quadratically; a projection out of a nested conjunction costs in
+proportion to its depth. Hence Type-valued structures in chunks.
+
+**The stage-3 extension rule.** Leaves are written in the bare shape now. Call-site context is added
+without changing a signature: a contextual leaf is a *new* field whose default is derived from the bare
+one (`fun ctx => bare-field`, ignoring the context), and the tree calls the contextual field at the sites
+that have the context. Existing instances keep working unchanged; a part that needs the context
+overrides the default. The same rule adds the companion context `C` (stage 4) and per-call-site leaves
+for bundle-specific side conditions (`vr`, `na`, `gox` above).
+
+**R2 moves to stage 3**: how the context of a call site is obtained (hand-written generic composites, or
+an ansatz hook that reports the local context at a term position). Its input: of the 46 primitive call
+sites in the composites of the 11 candidate parts, 24 have path facts in scope (a hypothesis introduced
+by `cases`, `case` or `have` above the call; counted from the source text):
+
+| composite | primitive | facts in scope |
+|---|---|---|
+| `inv-await-step` | `inv-insert-edge-checked` | `hd`, `[false` |
+| `inv-await-step` | `inv-comp-upd` | `hd`, `[true` |
+| `inv-await-step` | `inv-insert-edge-checked` | `hd`, `[true` |
+| `inv-await-step` | `inv-comp-upd` | `hd`, `[true` |
+| `inv-await-step` | `inv-edge-upd` | `hd`, `[true` |
+| `inv-clear-comp-run` | `inv-comp-upd` | `hc`, `hr` |
+| `inv-clear-task-run` | `inv-task-upd` | `hc`, `hr` |
+| `inv-consume-entry` | `inv-edge-upd` | `hf`, `hr` |
+| `inv-consume-entry` | `inv-remove-edge` | `hf`, `hr` |
+| `inv-debtor-side` | `inv-task-upd` | `hc` |
+| `inv-demand-reactive` | `inv-comp-upd` | `hc`, `hi`, `hv` |
+| `inv-demote` | `inv-drop-edges` | `hf`, `hi` |
+| `inv-demote-epoch` | `inv-comp-upd` | `b` |
+| `inv-demote-finish` | `inv-comp-del-unref` | `hf`, `hk` |
+| `inv-demote-finish` | `inv-drop-edges` | `hf`, `hk` |
+| `inv-demote-finish` | `inv-comp-upd` | `hf`, `hk` |
+| `inv-dep-consumed` | `inv-edge-upd` | `hf` |
+| `inv-dep-consumed` | `inv-remove-edge` | `hf` |
+| `inv-fill-slot` | `inv-act-upd` | `hm` |
+| `inv-fire-observe` | `inv-edge-upd` | `hs` |
+| `inv-fire-wait` | `inv-remove-edge` | `hc` |
+| `inv-insert-edge-checked` | `insert-edge-fresh-inv-sample` | `hk` |
+| `inv-raise-loop` | `inv-comp-upd` | `[cons`, `u`, `f`, `ih` |
+| `inv-react-add` | `inv-insert-edge-checked` | `hk` |
+
+**Measurements.** The tree has 16 leaves (in 1 chunk), 39 `Over` fields (2 chunks) and 59 composite lemmas
+(`gqd-` defaults and `gq-`), elaborated once in 2.6 s. The six parts' 228 generated copies (`edb` 22,
+`gnf` 58, `kc` 47, `kx` 47, `mdk` 11, `neb` 43) are now restatements, proved by applying the generic
+lemmas; three cells were added where a part's copy never needed them (`edb-close-scope-id`,
+`edb-comp-del-unref`, `mdk-close-scope-id`). Load time, measured back to back: the namespaces this stage
+touches (the tree, `inv.idle`, `inv.base`, `inv.i1-runs`, `inv.members.dispatch`,
+`completion.drained`) took 57.9 s before and 59.9 s after, tree included; the whole model went from 441 s
+to 549 s, but the unchanged namespaces account for 106 s of that (host load). For these helper parts the
+tree does not pay yet: their copies were small, and the one-time cost of the tree is about what they
+saved. The gain the note estimates comes with the chain parts, whose copies are large (stage 3).
+Statements: all 16,496 theorems of stage 1 have identical fingerprints; 172 are new (the tree, the six
+`Leaf` instances, the three cells).
+
 ## 6. Key pieces to read: the whole proof in 14 stops, in reading order (current names)
 
 1. `inv`, `inv-step`, `Reach1`, `reach-inv` (`top.clj`): the headline and its four-line induction.

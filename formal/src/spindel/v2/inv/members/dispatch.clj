@@ -2,6 +2,7 @@
   "T11 dispatch keeps the h-mem2 bundle `h3` (P11): through cancel-pred, the cut, the consumed entry edge,
   the new run and post; before finish/Rule R. Contracts: notes/hm14-contracts.edn."
   (:require [ansatz.core :as a]
+            [spindel.v2.pres.tree :as tree]
             [spindel.v2.state :refer :all]
             [spindel.v2.edits :refer :all]
             [spindel.v2.reach :refer :all]
@@ -298,8 +299,7 @@
   (simp only [kc-rest insert-edge-fresh bump insert-edge edge-ins set-next-id set-edges tbl-ins tbl-all n1 (And.right h) l Bool.and_self]))
 (prim! KC 'insert-edge-fresh-inv-sample '(kc-rest-ins kxy kck kcc w e R))
 
-(lcopy! KC 'inv-cancel-pred)
-(lcopy! KC 'inv-cut-suffix)
+(tree/restate! KC 'p-kc '[inv-cancel-pred inv-cut-suffix])   ; the generic tree (spindel.v2.pres.tree) instead of a copy
 
 (a/theorem kc-rest-from [kxy :- Nat, kck :- Nat, kcc :- Nat, w :- World]
   (=> (= (Nat.blt kxy (:next-id w)) true)
