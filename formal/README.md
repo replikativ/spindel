@@ -151,6 +151,11 @@ that emits the same copier calls:
   instance at commit, with uniform aliases `<part>-exempt-<role>` (`break`, `repair`, `mono`, `loop`,
   `exit`, `transport`) for the lemmas that open and close deferred violations.
 
+- `spindel.v2.pres.tree` checks the composite lemmas once over an abstract part (`Leaf Q`: the
+  primitive obligations; `Over Q P`: the composites some bundle overrides, defaulting to the generic
+  proof). `restate!` gives a part its generated lemmas as applications of the generic ones: so far
+  `edb`, `gnf`, `kc`, `kx`, `mdk`, `neb` (notes/proof-layout.md section 5b).
+
 `gl` (`inv.copier`), `g1` (`inv.i1-scopes`) and `g8` (`inv.i8`) carry a fixed comment block before their
 declaration: the part in words, its view, its exempt form, its cells, where it is deferred within a
 step, and its companions.
@@ -203,7 +208,7 @@ a `-` is `_` in the file name). Kernel names are global: a theorem is `step-p3m`
 | Layer 2 | `layer2.sys`, `layer2.skip`, `layer2.top` | cells, publications and their operations; an id taken by a sibling world (`bump`); `sysinv`, `SysReach`, `sys-reach-inv` |
 | Physical | `layer2.mvcc` | the MVCC row representation (tokens, versions, copy maps), `mv-refinement` |
 | Utilities | `util` | function update at a Nat key (`fupd`) |
-| Proof layout | `pres.frames`, `pres.exempt` | footprints of the primitive edits and views of the parts (frames); the exemption forms and their uniform names |
+| Proof layout | `pres.frames`, `pres.exempt`, `pres.tree` | footprints of the primitive edits and views of the parts (frames); the exemption forms and their uniform names; the generic step tree (`Leaf`, `Over`, `gq`) that six helper parts use instead of a copy (`restate!`) |
 | Oracle (tests) | `test/spindel/v2/oracle.clj`, `oracle_test.clj`, `oracle/` | replays commit logs recorded from the engine through the model, compares every committed state |
 
 `inv.*`, in load order (each requires the ones before it that it uses):

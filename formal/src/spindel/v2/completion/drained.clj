@@ -4,6 +4,7 @@
   (`fold-del-out`); Z#18's removal (`remove-empty-at`), the any-loser cancel and Rule R add no marker (the bundle
   `gnf ids`: no marker with an id in ids, copied over them with spindel.v2.inv.copier's copier)."
   (:require [ansatz.core :as a]
+            [spindel.v2.pres.tree :as tree]
             [clojure.string :as str]
             [spindel.v2.state :refer :all]
             [spindel.v2.edits :refer :all]
@@ -70,10 +71,7 @@
 (prim! GNF 'inv-fork-del '(gnf-rest-fork-del nids w x R))
 (prim! GNF 'inv-filter-world '(gnf-rest-filter nids w K R))
 
-(lcopy! GNF 'inv-remove-empty-at)
-(lcopy! GNF 'nat-fold-inv)
-(lcopy! GNF 'inv-cancel-losers)
-(lcopy! GNF 'inv-normalize)
+(tree/restate! GNF 'p-gnf '[inv-remove-empty-at nat-fold-inv inv-cancel-losers inv-normalize])   ; the generic tree (spindel.v2.pres.tree) instead of a copy
 
 (a/theorem gnf-rule-r-round [nids :- (List Nat), w :- World]
   (=> (= (gnf nids w) true) (= (filter-safe (normalize w)) true) (= (gnf nids (rule-r-round w)) true))

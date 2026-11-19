@@ -20,6 +20,7 @@
           final); Z#51 consumes such an edge (inv_test literal-i5-reactivation-resolved), and the
           clause is proved in spindel.v2.inv.i5 (`step-lit-i5-dep-final-total`, bundle g5, p3f)"
   (:require [ansatz.core :as a]
+            [spindel.v2.pres.tree :as tree]
             [clojure.string :as str]
             [spindel.v2.state :refer :all]
             [spindel.v2.edits :refer :all]
@@ -175,8 +176,7 @@
 (prim! MDK 'inv-drop-act '(ep-filter (both marked-dep (dep-in mkm)) (cred-ne a) (:edges w) R))
 (prim! MDK 'inv-drop-edges '(ep-filter (both marked-dep (dep-in mkm)) p (:edges w) R))
 
-(lcopy! MDK 'inv-fire-edge)
-(lcopy! MDK 'nat-fold-inv)
+(tree/restate! MDK 'p-mdk '[inv-fire-edge nat-fold-inv])   ; the generic tree (spindel.v2.pres.tree) instead of a copy
 
 ;; ---- the mark targets are dep edges (unique edge ids)
 
@@ -2694,8 +2694,7 @@
   (simp only [kx-rest insert-edge-fresh bump insert-edge edge-ins set-next-id set-edges tbl-ins tbl-all n1 (And.right h) l Bool.and_self]))
 (prim! KX 'insert-edge-fresh-inv-sample '(kx-rest-ins kxy kxd w e R))
 
-(lcopy! KX 'inv-cancel-pred)
-(lcopy! KX 'inv-cut-suffix)
+(tree/restate! KX 'p-kx '[inv-cancel-pred inv-cut-suffix])   ; the generic tree (spindel.v2.pres.tree) instead of a copy
 
 (a/theorem run-ref-ok-edge [w :- World, e :- EdgeRow]
   (=> (= (inv-sample w) true) (List.Mem e (:edges w)) (= (Nat.blt (:id e) (:next-id w)) true))

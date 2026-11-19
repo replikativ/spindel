@@ -13,6 +13,7 @@
   alive, slice and mode) and the edge keys (kind, creditor, marked) is a frame; overrides where
   a computation wakes or sleeps, a run is created or parked, a dep edge is inserted."
   (:require [ansatz.core :as a]
+            [spindel.v2.pres.tree :as tree]
             [clojure.string :as str]
             [spindel.v2.state :refer :all]
             [spindel.v2.edits :refer :all]
@@ -2068,7 +2069,7 @@
 (prim! EDB 'inv-drop-cred '(edb-rest-filter kc0 (drop-cred-edges w a) w (cred-ne a) (rfl) R))
 (prim! EDB 'inv-drop-act '(edb-rest-filter kc0 (drop-act w a) w (cred-ne a) (rfl) R))
 (prim! EDB 'inv-drop-edges '(edb-rest-filter kc0 (drop-edges w p) w p (rfl) R))
-(lcopy! EDB 'inv-end-basis)
+(tree/restate! EDB 'p-edb '[inv-end-basis])   ; the generic tree (spindel.v2.pres.tree) instead of a copy
 
 (a/theorem end-basis-no-dep [w :- World, c :- Nat, cid :- Nat]
   (=> (= (inv-sample w) true) (= (tbl-all (not-dep-of c) (:edges w)) true)
