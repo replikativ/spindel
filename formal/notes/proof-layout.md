@@ -1769,7 +1769,19 @@ computation (`Eq.refl true`), where four `casc-patch` patches were.
 
 ### Gate (group 4)
 
-GATE-G4
+- **Statements** (name-independent fingerprints, against group 3): 17,539 identical; none missing;
+  91 changed, all part lemmas of the three parameterised parts already on the tree, which now take
+  the part's parameters after Q (`pres-x@g8` 62, `pres-x@hmk` 24, `pres-x@gy` 5; nothing outside
+  the tree names a part lemma); 58 new: 49 `raw0-<item>-g10r`, 8 part lemmas (`pres-x@g10` 7,
+  `pres-t5@g10r`) and the unfolding equation of `g10r-rest`. Every `g10`, `nq` and `g10r` name
+  keeps its statement. `inv-step`, `reach-inv`, `inv-empty`, `sys-reach-inv`, `l5-safety-total`,
+  `step-p3m`, `mv-refinement` unchanged.
+- **Load**, one JVM at a time, against group 3's measure: `inv.i10` 20.7 → 12.8 s, `pres.tree`
+  10.7 → 10.2 s; untouched 412 → 381 s, whole model 461 → 423 s (the host's load moves the
+  untouched figure by more than the change does).
+- **Suite**: `clojure -M:test`, 301 tests, 208,484 assertions, 0 failures, 0 errors (oracle samples
+  1–62; the tree test also checks that
+  `g10`, `nq` and `g10r` have no overrides or patches and that `g10`'s part lemmas take its lists).
 
 ## 6. Key pieces to read: the whole proof in 14 stops, in reading order (current names)
 
