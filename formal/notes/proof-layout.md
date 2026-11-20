@@ -1718,7 +1718,18 @@ base proof leaves to unification (`react-add`, `take-park`) were already `tree/s
 
 ### Gate (group 3)
 
-GATE-G3
+- **Statements** (name-independent fingerprints, against group 2): 17,510 identical; 6 changed, all
+  shared generic lemmas of the tree (`pres-await-step`, `pres-consume-entry`, `pres-dep-consumed`,
+  `pres-edge-set-phase`, `pres-fire-observe`, `pres-track-raw`: an edge edit is now a site); none
+  missing; 114 new: 98 `raw0-<item>-<part>` (`aha`, `svb`) and 16 part lemmas (`pres-x@aha` 12,
+  `pres-x@svb` 4). Every `aha` and `svb` name keeps its statement, the 9 former plumbing overrides
+  among them. `inv-step`, `reach-inv`, `inv-empty`, `sys-reach-inv`, `l5-safety-total`,
+  `step-p3m`, `mv-refinement` unchanged.
+- **Load**, one JVM at a time, against group 2's measure: `inv.base` 21.5 → 15.2 s (27.0 s before
+  stage 4), `pres.tree` 11.9 → 10.7 s; untouched 411 → 435 s, whole model 444 → 461 s.
+- **Suite**: `clojure -M:test`, 300 tests, 208,468 assertions, 0 failures, 0 errors (oracle samples
+  1–62; the tree test also checks that `aha`
+  and `svb` have no overrides or patches, where they take their facts, and the five edge sites).
 
 ## 6. Key pieces to read: the whole proof in 14 stops, in reading order (current names)
 
