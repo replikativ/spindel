@@ -105,6 +105,8 @@
 (defn- force-all [x]
   (loop [x x] (if (pr/thunk? x) (recur (pr/force-thunk x)) x)))
 
+(def ^:private recorded-callstacks (delay @(requiring-resolve 'sci.impl.utils/recorded-callstacks)))
+
 (defn- unwrap
   "The exception SCI code threw. On the thread that created the context,
    outside an SCI `try`, SCI wraps an exception leaving interpreted code with
@@ -112,9 +114,13 @@
    engine routes the throw to the suspension's handler), so the wrapper
    would reach the body's `catch` on that thread only."
   [t]
-  (let [d (ex-data t)]
-    (if (and (:sci.impl/callstack d) (isa? (:type d) :sci/error) (ex-cause t))
-      (ex-cause t)
+  ;; SCI records the callstack of the exception it wraps (`sci.impl.utils/
+  ;; recorded-callstacks`, by identity); its wrapper carries that same
+  ;; callstack. An exception user code throws is never replaced.
+  (let [cause (ex-cause t)
+        st (:sci.impl/callstack (ex-data t))]
+    (if (and cause st (identical? st (.get ^java.util.Map @recorded-callstacks cause)))
+      cause
       t)))
 
 (defn- refuse!

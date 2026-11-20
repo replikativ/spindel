@@ -139,3 +139,26 @@
        (is (= 42 (ev w (s/interpreter {} {:old-names :spin}) src)) "spin as computation")
        (is (= :invalid (try (s/interpreter {} {:old-names :yes}) (catch Exception _ :invalid))))
        (v2/release-world! w)))))
+
+(deftest an-exception-shaped-like-scis-wrapper-is-not-replaced
+  ;; only SCI's own location wrapper is unwrapped; a user exception with the
+  ;; same keys reaches the handler and the task's caller as thrown
+  (checked
+   (let [w (s/vworld) ctx (s/interpreter)
+         src "(ex-info \"mine\" {:type :sci/error :sci.impl/callstack (volatile! nil)} (ex-info \"cause\" {}))"]
+     (is (= "mine" (v (ev w ctx (str "(task (try (sleep 1) (throw " src ") (catch Exception e (ex-message e))))")))))
+     (is (= "mine" (try (v (ev w ctx (str "(task (sleep 1) (throw " src "))")))
+                        (catch Exception e (ex-message e)))))
+     (v2/release-world! w))))
+
+(deftest scis-location-wrapper-never-reaches-the-handler
+  ;; resumed inline on the thread that created the context, outside an SCI
+  ;; try, SCI wraps a throw with its location; the handler gets the throw
+  (checked
+   (let [w (s/vworld)
+         d (binding [v2/*world* w] (v2/deferred))
+         ctx (s/interpreter {:bindings {'d d}})
+         t (ev w ctx "(task (try (await d) (throw (ex-info \"x\" {:tag :x})) (catch Exception e (:tag (ex-data e)))))")]
+     (v2/deliver! d 1)
+     (is (= :x (v t)))
+     (v2/release-world! w))))
