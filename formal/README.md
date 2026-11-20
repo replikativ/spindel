@@ -160,8 +160,9 @@ that emits the same copier calls:
   companion) with the terms that pass them; the nodes on those paths get the part's own generic lemma
   (`pres-<x>@<part>`). On the tree so far: `gl` (`inv.i10-task`), `g9` (`inv.i9-res`), `g8` (`inv.i8`),
   `g7` (`inv.idle`), `gd` (`inv.comp-facts`), `hmk` (`inv.marks`), `gy` (`inv.tomb`), `gcy`
-  (`inv.acyclic`), `g1` (`inv.i1-scopes`), `gw` (`inv.i11`), `mdb`, `esb`, `aha` and `svb` (`inv.base`) and the companions `awo`, `edb`, `gnf`,
-  `hkw`, `hsw`, `kc`, `kdb`, `kx`, `mdk`, `na`, `neb` (notes/proof-layout.md sections 5b–5n).
+  (`inv.acyclic`), `g1` (`inv.i1-scopes`), `gw` (`inv.i11`), `mdb`, `esb`, `aha` and `svb` (`inv.base`), `g10` and `g10r` (`inv.i10`) and the
+  companions `awo`, `edb`, `gnf`, `hkw`, `hsw`, `kc`, `kdb`, `kx`, `mdk`, `na`, `neb`, `nq`
+  (notes/proof-layout.md sections 5b–5o).
 
 `gl` (`inv.i10-task`), `g9` (`inv.i9-res`), `g1` (`inv.i1-scopes`) and `g8` (`inv.i8`) carry a fixed comment block before
 their declaration: the part in words, its view, its exempt form, its cells, where it is deferred within

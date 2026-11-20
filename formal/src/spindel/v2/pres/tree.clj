@@ -27,7 +27,9 @@
 
   A part may be parameterised (g8's x8s, g7's companions awo awc awr and kdb kc0 kl0 kd0): its
   predicate is Q := (B p) for the fixed parameters p, which every restated lemma takes first, as the
-  copier's lemmas did; the generic lemmas do not see them.
+  copier's lemmas did. The shared generic lemmas do not see them; the part's own (pres-x@<part>)
+  take them after Q, so that the part's facts may mention them (g10's job condition names its
+  exempt lists).
 
   raw0, the item dispatcher, is cut by item: the tree derives `raw0-<item>-inv` from raw0-inv's base
   proof (one branch each) and proves raw0-inv by dispatching to them, so a part that passes into one
@@ -156,8 +158,8 @@
     (reset! derived (into {} (for [b bs] [(raw0-branch-name (first b)) (raw0-branch-form b)])))
     {:branches bs :dispatch (raw0-dispatch bs)}))
 
-;; Sources: nodes whose generic proof is not their base proof: a row function the base proof leaves
-;; to unification is named. One that mentions a local of the proof is generalized (`site-gen`: the
+;; Sources: nodes whose generic proof is not their base proof: a row function (or a cascade's job
+;; list) the base proof leaves to unification is named. One that mentions a local of the proof is generalized (`site-gen`: the
 ;; site is stated for every value of the parameter: T-open-scope's parent, T-finally-enter's
 ;; finalizer).
 (defn- name-row-fn [x p F]
@@ -165,8 +167,19 @@
     (walk/prewalk (fn [y] (if (and (seq? y) (= p (first y)) (= '_ (nth y i nil))) (apply list (assoc (vec y) i F)) y))
                   (theorem-source x))))
 
+;; a cascade of one retire or close job: the base proof leaves the job list (and sometimes the world) to
+;; unification; named, so that a part's job condition can be passed by computation (g10's `job-ok`)
+(defn- name-cascade [x w js]
+  (walk/prewalk (fn [y] (if (and (seq? y) (= 'inv-run-cascade (first y))) (let [[hd _ _ h] y] (list hd w js h)) y))
+                (theorem-source x)))
+
 (def sources
   {'raw0-inv (:dispatch raw0-split)
+   't16-inv (name-cascade 't16-inv 'w '(List.cons Job (Job.jclose s) (List.nil Job)))
+   't15-full-inv (name-cascade 't15-full-inv '(ack-raw w z (:owner zr)) '(List.cons Job (Job.jretire (:owner zr)) (List.nil Job)))
+   't-slice-exit-inv (name-cascade 't-slice-exit-inv '(run-upd w rid run-fin-pop-end) '(List.cons Job (Job.jretire rid) (List.nil Job)))
+   't-release-world-inv (name-cascade 't-release-world-inv '(zero-handles (revoke-roots w)) '(List.cons Job (Job.jclose root-scope-id) (List.nil Job)))
+   'inv-retire-one (name-cascade 'inv-retire-one '(retire-pre w r) '(List.cons Job (Job.jretire rid) (List.nil Job)))
    'inv-link-demand-raw (name-row-fn 'inv-link-demand-raw 'inv-source-upd '(link-set-rtask (:next-id w)))
    'inv-take-park (name-row-fn 'inv-take-park 'inv-insert-edge-checked '(take-edge r (:next-id w) x))
    'inv-react-add (name-row-fn 'inv-react-add 'inv-insert-edge-checked '(valid-edge w c v))
@@ -443,7 +456,7 @@
                     (vector? y) (mapv sub y)
                     (and (symbol? y) (@S y) (not= y 'inv-parts) (not= y x)) (hyp-name y)
                     :else y))]
-    (apply list 'a/theorem (pres-name B x) (vec (concat '[Q :- (=> World Bool)] (gpify 'Q binders) hyps))
+    (apply list 'a/theorem (pres-name B x) (vec (concat '[Q :- (=> World Bool)] (when B (:params B)) (gpify 'Q binders) hyps))
            (gpify 'Q stmt) (map (comp #(gpify 'Q %) sub) proof))))
 
 ;; {:nodes [the lemmas with a generic lemma, in load order] :prims #{base lemmas of the primitive edits}}
@@ -543,7 +556,8 @@
         [_ _ binders stmt] (copy-form B (list hd x binders stmt) nm {})]
     (ev (list 'a/theorem nm binders stmt
               (list 'exact (apply list (pres-name (when v? B) x) (qterm B)
-                                  (concat (drop (count (bnames (:params B))) (bnames binders))
+                                  (concat (when v? (bnames (:params B)))
+                                          (drop (count (bnames (:params B))) (bnames binders))
                                           (map #(child-term B %) (callees (when v? B) x)))))))
     (swap! (:renames B) assoc x nm)
     (swap! (:copied B) conj nm)

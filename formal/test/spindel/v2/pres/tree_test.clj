@@ -18,6 +18,7 @@
             [spindel.v2.inv.i1-scopes :as i1s]
             [spindel.v2.inv.i11 :as i11]
             [spindel.v2.inv.base :as base]
+            [spindel.v2.inv.i10 :as i10]
             [spindel.v2.pres.tree :as tree]))
 
 (defn- declared? [s] (some? (.lookup ^ansatz.kernel.Env @a/ansatz-env (ansatz.kernel.Name/fromString (str s)))))
@@ -143,3 +144,16 @@
     (is (tree/variant? base/AHA x) (str x)))
   (doseq [x '[inv-fire-edge inv-fire-dep inv-settle-edge t8-full-inv]] (is (tree/variant? base/SVB x) (str x)))
   (is (= 5 (count (tree/site-keys 'inv-edge-upd)))))
+
+(deftest g10-is-not-copied
+  (doseq [B [i10/G10 i10/NQ i10/G10R]]
+    (is (empty? @(:overrides B)) (str (:pred B)))
+    (is (empty? @(:patches B)) (str (:pred B))))
+  ;; g10's job condition names its exempt lists: the part lemmas of a parameterised part take the
+  ;; part's parameters after Q
+  (doseq [x '[t16-inv t15-full-inv t-slice-exit-inv t-release-world-inv inv-retire-one t12-inv t11-inv]]
+    (is (tree/variant? i10/G10 x) (str x)))
+  (is (= '[Q :- (=> World Bool) gxz :- (List Nat) gkz :- (List Nat)] (vec (take 9 (nth (tree/pres-form i10/G10 't16-inv) 2)))))
+  ;; g10r is g10 at empty exempt lists; only T5's start is its own
+  (is (tree/variant? i10/G10R 't5-inv))
+  (is (declared? 't-cancel-g10-r)))
