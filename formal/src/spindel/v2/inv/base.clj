@@ -1,7 +1,7 @@
 (ns spindel.v2.inv.base
   "P3 complete: the reference invariants of `filter-safe-of-refs` (spindel.v2.inv.copier) through the step,
   and with them the step theorems with no honest hypothesis. Bundles (inv-sample plus a rest
-  part, re-checked over every composite inv-sample lemma by spindel.v2.inv.copier's `lcopy!`):
+  part; each goes through the generic step tree, spindel.v2.pres.tree, by its table `tree/part!`):
     mdb   a marked edge is a dep edge (P3's `marked-dep`); companion mdk M: the edges with an id in
           M are dep edges (the mark targets, computed before the fires of a write)
     esb   edge-sep: every reference (cleanup entries' run and rows, a run's stored refs, a scope's
@@ -1649,36 +1649,36 @@
 (a/theorem park-alive [r :- RunRow] (= (run-alive (run-park-row r)) true) (simp [run-alive run-park-row act-parked act-done]))
 (a/theorem tick-park-alive [r :- RunRow] (= (run-alive (run-tick-park r)) true) (simp [run-alive run-tick-park act-parked act-done]))
 
-(defn aha-patch [form]
-  (->> (#'spindel.v2.inv.idle/fix-f form)
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-run-upd (first y)) (= 'run-wake (nth y 3 nil))))
-                    (fn [[_ w x f hid & more]] (apply list 'aha-run-upd w x f hid 'run-wake-alive more)))
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-run-upd (first y)) (#{'run-park-row 'run-tick-park} (nth y 3 nil))))
-                    (fn [[_ w x f hid & more]] (apply list 'aha-run-upd-up w x f hid ({'run-park-row 'park-alive 'run-tick-park 'tick-park-alive} f) more)))))
-(doseq [[n _] @@#'spindel.v2.inv.copier/source-theorems] (patch! AHA n aha-patch))
-(patch! AHA 'inv-job-apply
-  (fn [form] (aha-patch (subst-forms #(= % '(inv-retire-local w r h))
-                                     (fn [_] '(inv-retire-local w r (tbl-find-mem RunRow run-id rid r (:runs w) hf) ha h)) form))))
-(patch! AHA 'raw0-inv
-  (fn [form]
-    (let [[hd nm binders stmt & proof] (aha-patch form)
-          [imp prem concl] stmt]
-      (apply list hd nm binders (list imp '(= (ga w) true) prem concl)
-             (map (fn [t] (cond (= t '(intro h)) '(intros hga h)
-                                :else (subst-forms #(= % '(t12-inv w _ _ _ h)) (fn [_] '(t12-inv w _ _ _ hga h)) t)))
-                  proof)))))
-(def aha-raw-patch
-  (fn [form]
-    (let [[hd nm binders stmt & proof] (aha-patch form)
-          [imp prem concl] stmt]
-      (apply list hd nm binders (list imp '(= (ga w) true) prem concl)
-             (map (fn [t] (cond (= t '(intro h)) '(intros hga h)
-                                :else (->> t
-                                           (subst-forms #(= % '(raw0-inv w it h)) (fn [_] '(raw0-inv w it hga h)))
-                                           (subst-forms #(= % '(raw0g-inv w it h)) (fn [_] '(raw0g-inv w it hga h))))))
-                  proof)))))
-(patch! AHA 'raw-inv aha-raw-patch)
-(patch! AHA 'raw0g-inv aha-raw-patch)
+;; aha on the generic tree (spindel.v2.pres.tree): its table; its own proofs follow
+(tree/part! AHA
+  ;; ---- the part's own proofs (content: a run's activations go with it; a new activation names an
+  ;; alive run)
+  :over '{inv-cancel-run-local aha-cancel-run-local   ; T14: the cancelled run's activations go with it
+          inv-retire-local     aha-retire-local       ; T13: a done run has no activation (na carries it)
+          inv-complete-raw     aha-complete-raw       ; T12: the completed run has no activation
+          inv-await-pre        aha-await-pre          ; T6: the new activation's run is the awaiting run
+          inv-take-park        aha-take-park}         ; take: same
+  ;; ---- sites: resume keeps the run alive (by lemma); a park makes it alive
+  :sites '{[inv-run-upd run-wake]      (aha-run-upd w x run-wake hf run-wake-alive h0)
+           [inv-run-upd run-park-row]  (aha-run-upd-up w x run-park-row hf park-alive h0)
+           [inv-run-upd run-tick-park] (aha-run-upd-up w x run-tick-park hf tick-park-alive h0)}
+  ;; ---- facts from the path
+  :ctx '{inv-complete-raw [(= (tbl-any (act-of-run (:id r)) (:acts w)) false)]   ; no activation names the run
+         inv-retire-local [(List.Mem r (:runs w)) (= (retirable r) true)]        ; the retired run is a done row
+         inv-await-pre    [(List.Mem r (:runs w)) (= (run-alive r) true)]        ; the awaiting run is an alive row
+         inv-take-park    [(List.Mem r (:runs w)) (= (run-alive r) true)]}       ; the parking run, same
+  :own '{raw-inv      [hga (= (ga w) true)]                                      ; the companion ga, from the step's input,
+         raw0g-inv    [hga (= (ga w) true)]                                      ;   down to T12
+         raw0-inv     [hga (= (ga w) true)]
+         t12-inv      [hga (= (ga w) true)]
+         inv-arm-park [hm (List.Mem r (:runs w)) hal (= (run-alive r) true)]}    ; Z#55: arm, then park the armed row
+  :pass '{inv-job-apply  {inv-retire-local [(tbl-find-mem RunRow run-id rid r (:runs w) hf) ha]}   ; run-find found it; retirable
+          t12-inv        {inv-complete-raw [(ga-free-of-tok w st r hga ht)]}                         ; ga: the token's run is free
+          inv-retire-one {inv-complete-raw [(retire-r1-noact w r r1 rid hf hf1)]}                    ; retire-pre dropped them
+          t6-inv         {inv-await-raw [(And.left (tok-facts w st r ht)) (normal-alive r (await-ok-normal w r ds mode fresh _ hg))]}
+          t-take-inv     {inv-take-park [(And.left (tok-facts w st r ht)) (normal-alive r (bool-and-left _ _ (bool-and-right _ _ hg)))]}
+          t17-inv        {inv-arm-park [(And.left (tok-facts w st r ht)) (normal-alive r (bool-and-left _ _ (bool-and-right _ _ hg)))]}
+          inv-arm-park   {inv-take-park [(arm-raw-mem w r kind hm) hal]}})
 
 ;; T14's local part: the cancelled run's activations go with it
 (a/theorem ok-act-of [rs :- (List RunRow), a :- ActRow] (=> (= (act-run-ok rs a) true) (= (act-run-has rs a) true) (= (ok-act rs a) true))
@@ -1722,48 +1722,12 @@
            (:acts (cancel-acts (run-upd w x run-cancel-row) x)) al hh2))
   (exact (aha-intro _ (bc-sample _ _ b) rr)))
 
-(override! AHA 'inv-cancel-run-local '[inv-cancel-debtor inv-cleanup-set inv-cancel-res]
-  '(a/theorem aha-cancel-run-local [w :- World, r :- RunRow, rep :- Bool]
-     (=> (= (aha w) true) (= (aha (cancel-run-local w r rep)) true))
-     (intro h)
-     (simp only [cancel-run-local])
-     (exact (aha-cancel-debtor rep _ r (aha-cleanup-set _ (:id r) _ (aha-cancel-res _ r (aha-cancel-mid w (:id r) h)))))))
-
-(override! AHA 'inv-complete-raw '[inv-fin-if-final inv-run-cascade inv-retire-after inv-complete-body]
-  '(a/theorem aha-complete-raw [w :- World, r :- RunRow, res :- RunResult]
-     (=> (= (tbl-any (act-of-run (:id r)) (:acts w)) false) (= (aha w) true) (= (aha (complete-raw w r res)) true))
-     (intros hn h)
-     (have h0 := (aha-run-upd-free w (:id r) run-complete-row run-complete-row-id hn h))
-     (simp only [complete-raw])
-     (exact (aha-fin-if-final _ (:of r) (aha-run-cascade _ _ (aha-retire-after _ (:id r) (aha-complete-body _ r res h0)))))))
-
-(override! AHA 'inv-retire-one '[inv-retire-pre inv-complete-raw inv-run-cascade]
-  '(a/theorem aha-retire-one [v :- Nat, w :- World, rid :- Nat]
-     (=> (= (aha w) true) (= (aha (retire-one v w rid)) true))
-     (intro h)
-     (cases hf (run-find w rid))
-     (case [none] (simp only [retire-one hf]) (exact h))
-     (case [some r]
-       (have hp := (aha-retire-pre w r h))
-       (cases hf1 (run-find (retire-pre w r) rid))
-       (case [none] (simp only [retire-one hf hf1]) (exact hp))
-       (case [some r1]
-         (have hm1 := (retire-r1-mem w r r1 rid hf1))
-         (have hn1 := (retire-r1-noact w r r1 rid hf hf1))
-         (have ht1 := (task-final-res-tag (retire-pre w r) (:of r1) v))
-         (cases ha (Bool.and (run-alive r1) (run-of-local (retire-pre w r) r1)))
-         (case [true] (simp only [retire-one hf hf1 ha]) (exact (aha-complete-raw _ r1 _ hn1 hp)))
-         (case [false] (simp only [retire-one hf hf1 ha retire-full]) (exact (aha-run-cascade _ _ hp)))))))
-
-(override! AHA 't12-inv '[inv-complete-raw]
-  '(a/theorem t12-aha [w :- World, st :- Nat, tag :- Nat, v :- Nat]
-     (=> (= (ga w) true) (= (aha w) true) (= (aha (:world (t12-complete w st tag v))) true))
-     (intros hga h)
-     (cases ht (tok-run w st)) (case' [some r]) (case' [none])
-     (simp only [t12-complete ht refuse]) (exact h)
-     (cases hn (run-normal r))
-     (simp only [t12-complete ht hn refuse]) (exact h)
-     (simp only [t12-complete ht hn accept]) (exact (aha-complete-raw w r _ (ga-free-of-tok w st r hga ht) h))))
+(tree/restate! AHA '[inv-cancel-debtor inv-cleanup-set inv-cancel-res])
+(a/theorem aha-cancel-run-local [w :- World, r :- RunRow, rep :- Bool]
+  (=> (= (aha w) true) (= (aha (cancel-run-local w r rep)) true))
+  (intro h)
+  (simp only [cancel-run-local])
+  (exact (aha-cancel-debtor rep _ r (aha-cleanup-set _ (:id r) _ (aha-cancel-res _ r (aha-cancel-mid w (:id r) h))))))
 
 ;; T13: a retirable run is done, so no activation names it (acts-alive)
 (a/theorem done-no-act-one [rs :- (List RunRow), r :- RunRow, a :- ActRow]
@@ -1787,16 +1751,24 @@
   (have e (= (:act r) act-done)) (exact (Nat.eq_of_beq_eq_true (And.left h)))
   (simp [run-alive e]))
 
-(override! AHA 'inv-retire-local '[inv-cleanup-del inv-remove-if-empty inv-clear-comp-run inv-close-local]
-  '(a/theorem aha-retire-local [w :- World, r :- RunRow]
-     (=> (List.Mem r (:runs w)) (= (retirable r) true) (= (aha w) true) (= (aha (retire-local w r)) true))
-     (intros hm hr h)
-     (simp only [retire-local retire-with])
-     (have n0 := (na-intro (:id r) w (aha-sample w h) (bnot-of-false _ (done-no-act w r h hm (retirable-dead2 r hr)))))
-     (have n1 := (na-close-local (:id r) _ (scope-subtree w (:scope r)) (na-clear-comp-run (:id r) w r n0)))
-     (have a1 := (aha-close-local _ (scope-subtree w (:scope r)) (aha-clear-comp-run w r h)))
-     (have a2 := (aha-run-del _ (:id r) (na-none (:id r) _ n1) a1))
-     (exact (aha-remove-if-empty _ (scope-subtree w (:scope r)) (aha-cleanup-del _ (:id r) a2)))))
+(tree/restate! AHA '[inv-cleanup-del inv-remove-if-empty inv-clear-comp-run inv-close-local])
+(a/theorem aha-retire-local [w :- World, r :- RunRow]
+  (=> (List.Mem r (:runs w)) (= (retirable r) true) (= (aha w) true) (= (aha (retire-local w r)) true))
+  (intros hm hr h)
+  (simp only [retire-local retire-with])
+  (have n0 := (na-intro (:id r) w (aha-sample w h) (bnot-of-false _ (done-no-act w r h hm (retirable-dead2 r hr)))))
+  (have n1 := (na-close-local (:id r) _ (scope-subtree w (:scope r)) (na-clear-comp-run (:id r) w r n0)))
+  (have a1 := (aha-close-local _ (scope-subtree w (:scope r)) (aha-clear-comp-run w r h)))
+  (have a2 := (aha-run-del _ (:id r) (na-none (:id r) _ n1) a1))
+  (exact (aha-remove-if-empty _ (scope-subtree w (:scope r)) (aha-cleanup-del _ (:id r) a2))))
+
+(tree/restate! AHA '[inv-fin-if-final inv-run-cascade inv-retire-after inv-complete-body])
+(a/theorem aha-complete-raw [w :- World, r :- RunRow, res :- RunResult]
+  (=> (= (tbl-any (act-of-run (:id r)) (:acts w)) false) (= (aha w) true) (= (aha (complete-raw w r res)) true))
+  (intros hn h)
+  (have h0 := (aha-run-upd-free w (:id r) run-complete-row run-complete-row-id hn h))
+  (simp only [complete-raw])
+  (exact (aha-fin-if-final _ (:of r) (aha-run-cascade _ _ (aha-retire-after _ (:id r) (aha-complete-body _ r res h0))))))
 
 ;; ---- T6 and take: the new activation's run exists and is alive (the awaiting run)
 
@@ -1805,97 +1777,40 @@
   (intros h hm ha)
   (exact (uniq-all RunRow run-id run-alive r (:runs w) (lit-runs-nodup w h) hm ha)))
 
-(override! AHA 'inv-await-pre '[inv-demand-reactive nat-fold-inv]
-  '(a/theorem aha-await-pre [w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
-     (=> (List.Mem r (:runs w)) (= (run-alive r) true) (= (aha w) true) (= (aha (await-pre w r ds mode k mine)) true))
-     (intros hm hal h)
-     (have h1 := (aha-run-upd w (:id r) run-tick run-tick-run-id (fn [q :- RunRow] (Eq.refl (run-alive q))) h))
-     (have he (= (act-id (ActRow.mk (:next-id w) (:id r) mode (List.nil Member) (none-slots ds) (nat-len ds) k mine))
-                 (:next-id (run-upd w (:id r) run-tick))))
-     (rfl)
-     (have o0 := (run-ok-of-mem w r (aha-sample w h) hm hal))
-     (have o1 (= (tbl-all (run-ok-for (:id r)) (:runs (run-upd w (:id r) run-tick))) true))
-     (simp only [run-upd set-runs])
-     (exact (tbl-all-upd RunRow run-id (:id r) run-tick (run-ok-for (:id r)) (run-ok-for (:id r))
-              (fn [q :- RunRow, hq :- (= (run-ok-for (:id r) q) true), hx :- (= (Nat.beq (run-id q) (:id r)) true)] hq)
-              (fn [q :- RunRow, hq :- (= (run-ok-for (:id r) q) true), hx :- (= (Nat.beq (run-id q) (:id r)) false)] hq)
-              (:runs w) o0))
-     (have hh (= (tbl-has run-id (:id r) (:runs (run-upd w (:id r) run-tick))) true))
-     (simp only [run-upd set-runs (tbl-has-upd RunRow run-id (:id r) (:id r) run-tick run-tick-run-id (:runs w))])
-     (exact (tbl-find-has-mem w r hm))
-     (simp only [await-pre])
-     (exact (nat-fold-aha demand-reactive aha-demand-reactive _ _
-              (aha-act-ins-fresh _ (ActRow.mk (:next-id w) (:id r) mode (List.nil Member) (none-slots ds) (nat-len ds) k mine) he o1 hh h1)))))
+(tree/restate! AHA '[inv-demand-reactive nat-fold-inv])
+(a/theorem aha-await-pre [w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
+  (=> (List.Mem r (:runs w)) (= (run-alive r) true) (= (aha w) true) (= (aha (await-pre w r ds mode k mine)) true))
+  (intros hm hal h)
+  (have h1 := (aha-run-upd w (:id r) run-tick run-tick-run-id (fn [q :- RunRow] (Eq.refl (run-alive q))) h))
+  (have he (= (act-id (ActRow.mk (:next-id w) (:id r) mode (List.nil Member) (none-slots ds) (nat-len ds) k mine))
+              (:next-id (run-upd w (:id r) run-tick))))
+  (rfl)
+  (have o0 := (run-ok-of-mem w r (aha-sample w h) hm hal))
+  (have o1 (= (tbl-all (run-ok-for (:id r)) (:runs (run-upd w (:id r) run-tick))) true))
+  (simp only [run-upd set-runs])
+  (exact (tbl-all-upd RunRow run-id (:id r) run-tick (run-ok-for (:id r)) (run-ok-for (:id r))
+           (fn [q :- RunRow, hq :- (= (run-ok-for (:id r) q) true), hx :- (= (Nat.beq (run-id q) (:id r)) true)] hq)
+           (fn [q :- RunRow, hq :- (= (run-ok-for (:id r) q) true), hx :- (= (Nat.beq (run-id q) (:id r)) false)] hq)
+           (:runs w) o0))
+  (have hh (= (tbl-has run-id (:id r) (:runs (run-upd w (:id r) run-tick))) true))
+  (simp only [run-upd set-runs (tbl-has-upd RunRow run-id (:id r) (:id r) run-tick run-tick-run-id (:runs w))])
+  (exact (tbl-find-has-mem w r hm))
+  (simp only [await-pre])
+  (exact (nat-fold-aha demand-reactive aha-demand-reactive _ _
+           (aha-act-ins-fresh _ (ActRow.mk (:next-id w) (:id r) mode (List.nil Member) (none-slots ds) (nat-len ds) k mine) he o1 hh h1))))
 
-(override! AHA 'inv-await-raw '[inv-await-wire inv-await-pre inv-await-post]
-  '(a/theorem aha-await-raw [w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
-     (=> (List.Mem r (:runs w)) (= (run-alive r) true) (= (aha w) true) (= (aha (await-raw w r ds mode k mine)) true))
-     (intros hm hal h)
-     (have h1 (= (aha (:world (await-acc w r ds mode k mine))) true))
-     (exact (aha-await-wire r (:next-id w) mode k (nat-distinct ds)
-              (AwAcc.mk (await-pre w r ds mode k mine) (List.nil DE) true) (aha-await-pre w r ds mode k mine hm hal h)))
-     (exact (aha-await-post (:next-id w) (:id r) ds (await-acc w r ds mode k mine) h1))))
+(tree/restate! AHA '[inv-insert-edge-checked])
+(a/theorem aha-take-park [w :- World, r :- RunRow, x :- Nat, k :- Nat]
+  (=> (List.Mem r (:runs w)) (= (run-alive r) true) (= (aha w) true) (= (aha (take-park w r x k)) true))
+  (intros hm hal h)
+  (have o0 := (run-ok-of-mem w r (aha-sample w h) hm hal))
+  (have h1 := (aha-act-ins-fresh w (take-act w r k) (rfl) o0 (tbl-find-has-mem w r hm) h))
+  (have h2 := (aha-insert-edge-checked _ (take-edge r (:next-id w) x) h1))
+  (simp only [take-park])
+  (exact (aha-run-upd-up _ (:id r) run-tick-park run-tick-park-id tick-park-alive h2)))
 
-(override! AHA 't6-inv '[inv-await-raw]
-  '(a/theorem t6-aha [w :- World, st :- Nat, ds :- (List Nat), mode :- Nat, k :- Nat, fresh :- Nat, mine :- (List Nat)]
-     (=> (= (aha w) true) (= (aha (:world (t6-await w st ds mode k fresh mine))) true))
-     (intro h)
-     (cases ht (tok-run w st)) (case' [some r]) (case' [none])
-     (simp only [t6-await ht refuse]) (exact h)
-     (have p := (tok-facts w st r ht))
-     (cases hg (Bool.and (await-ok w r ds mode fresh) (:ok (await-acc w r ds mode k mine))))
-     (simp only [t6-await ht hg refuse]) (exact h)
-     (have hn (= (run-normal r) true)) (simp only [await-ok Bool.and_eq_true] at hg) (exact (And.left (And.right (And.left hg))))
-     (simp only [t6-await ht hg accept]) (exact (aha-await-raw w r ds mode k mine (And.left p) (normal-alive r hn) h))))
-
-(override! AHA 'inv-take-park '[inv-insert-edge-checked]
-  '(a/theorem aha-take-park [w :- World, r :- RunRow, x :- Nat, k :- Nat]
-     (=> (List.Mem r (:runs w)) (= (run-alive r) true) (= (aha w) true) (= (aha (take-park w r x k)) true))
-     (intros hm hal h)
-     (have o0 := (run-ok-of-mem w r (aha-sample w h) hm hal))
-     (have h1 := (aha-act-ins-fresh w (take-act w r k) (rfl) o0 (tbl-find-has-mem w r hm) h))
-     (have h2 := (aha-insert-edge-checked _ (take-edge r (:next-id w) x) h1))
-     (simp only [take-park])
-     (exact (aha-run-upd-up _ (:id r) run-tick-park run-tick-park-id tick-park-alive h2))))
-
-(override! AHA 't-take-inv '[inv-take-park inv-take-now]
-  '(a/theorem t-take-aha [w :- World, st :- Nat, x :- Nat, k :- Nat, fresh :- Nat]
-     (=> (= (aha w) true) (= (aha (:world (t-take w st x k fresh))) true))
-     (intro h)
-     (cases ht (tok-run w st)) (case' [some r]) (case' [none])
-     (simp only [t-take ht refuse]) (exact h)
-     (have p := (tok-facts w st r ht))
-     (cases hs (source-find w x)) (case' [some s]) (case' [none])
-     (simp only [t-take ht hs refuse]) (exact h)
-     (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (Bool.and (run-normal r) (takeable s))))
-     (simp only [t-take ht hs hg refuse]) (exact h)
-     (have hn (= (run-normal r) true)) (simp only [Bool.and_eq_true] at hg) (exact (And.left (And.right hg)))
-     (cases hv (take-ready s))
-     (simp only [t-take ht hs hg hv accept]) (exact (aha-take-park w r x k (And.left p) (normal-alive r hn) h))
-     (simp only [t-take ht hs hg hv accept]) (exact (aha-take-now w r x h))))
-
-;; Z#55: arm = arm-raw (the resource), then take-park on the armed row
-(override! AHA 'inv-arm-park '[inv-take-park inv-arm-raw]
-  '(a/theorem aha-arm-park [w :- World, r :- RunRow, kind :- Nat, k :- Nat]
-     (=> (List.Mem r (:runs w)) (= (run-alive r) true) (= (aha w) true) (= (aha (arm-park w r kind k)) true))
-     (intros hm ha h)
-     (simp only [arm-park])
-     (exact (aha-take-park _ (run-arm (:next-id w) r) (:next-id w) k (arm-raw-mem w r kind hm) ha (aha-arm-raw w r kind h)))))
-
-(override! AHA 't17-inv '[inv-arm-park]
-  '(a/theorem t17-aha [w :- World, st :- Nat, kind :- Nat, k :- Nat, fresh :- Nat]
-     (=> (= (aha w) true) (= (aha (:world (t17-arm w st kind k fresh))) true))
-     (intro h)
-     (cases ht (tok-run w st)) (case' [some r]) (case' [none])
-     (simp only [t17-arm ht refuse]) (exact h)
-     (have p := (tok-facts w st r ht))
-     (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (Bool.and (run-normal r) (arm-kind-ok kind))))
-     (simp only [t17-arm ht hg refuse]) (exact h)
-     (have hn (= (run-normal r) true)) (simp only [Bool.and_eq_true] at hg) (exact (And.left (And.right hg)))
-     (simp only [t17-arm ht hg accept]) (exact (aha-arm-park w r kind k (And.left p) (normal-alive r hn) h))))
-
-(lcopy! AHA 'raw-inv)
-(lcopy! AHA 'inv-normalize)
+(tree/restate! AHA '[raw-inv])
+(tree/restate! AHA '[inv-normalize])
 
 (a/theorem aha-rule-r-filter [w :- World]
   (=> (= (normalized w) true) (= (aha w) true) (= (filter-safe w) true) (= (aha (rule-r-filter w)) true))
@@ -2778,99 +2693,86 @@
 (prim! SVB 'inv-drop-act '(svb-rest-drop-act w a R))
 (prim! SVB 'inv-drop-edges '(svb-rest-drop-edges w p R))
 
-(defn- fhead* [f] (if (seq? f) (first f) f))
-(defn- lemma-app* [f lem] (if (seq? f) (apply list lem (rest f)) lem))
-(def ^:private svb-fns '{comp-result-row [svb-comp-upd comp-result-row-hv] source-write [svb-source-upd source-write-hv]
-                         source-bump [svb-source-upd source-bump-hv] stream-set-tail [svb-source-upd stream-set-tail-hv] source-consume [svb-source-upd source-consume-hv]})
-(defn svb-patch [form]
-  (->> (#'spindel.v2.inv.idle/fix-f form)
-       (subst-forms (fn [y] (and (seq? y) (#{'inv-comp-upd 'inv-source-upd} (first y)) (contains? svb-fns (fhead* (nth y 3 nil)))))
-                    (fn [y] (let [v (vec y) f (nth v 3) [nm lem] (svb-fns (fhead* f))
-                                  pre (if (= 'inv-comp-upd (first y)) (subvec v 1 6) (subvec v 1 5))
-                                  more (if (= 'inv-comp-upd (first y)) (subvec v 6) (subvec v 5))]
-                              (apply list nm (concat pre [(lemma-app* f lem)] more)))))
-       (subst-forms #(= % '(insert-edge-fresh-inv-sample w (observe-edge w d cb) he h))
-                    (fn [_] '(svb-insert-edge-fresh w (observe-edge w d cb) (obs-sok w d cb (:next-id w)) he h)))))
-(doseq [[n _] @@#'spindel.v2.inv.copier/source-theorems] (patch! SVB n svb-patch))
+;; svb on the generic tree (spindel.v2.pres.tree): its table; its own proofs follow
+(def ^:private svb-fns   ; row functions that only raise the version, with the lemma
+  '{comp-result-row comp-result-row-hv source-write source-write-hv source-bump source-bump-hv
+    stream-set-tail stream-set-tail-hv source-consume source-consume-hv})
+(defn- hv-lemma [F] (let [l (svb-fns (if (seq? F) (first F) F))] (if (seq? F) (apply list l (repeat (count (rest F)) '_)) l)))
+(tree/part! SVB
+  ;; ---- the part's own proofs (content: a new or rewritten edge has seen its debtor's version)
+  :over '{inv-insert-edge-checked svb-insert-edge-checked   ; a new edge's seen is current (rfl at each site but the await's)
+          inv-fire-observe        svb-fire-observe          ; seen := the debtor's version
+          inv-dep-consumed        svb-dep-consumed          ; rearm: same
+          inv-serve-or            svb-serve-or              ; the kept source row only raises its version
+          inv-append-raw          svb-append-raw            ; the new tail link
+          inv-consume-entry       svb-consume-entry         ; T11's entry edge: rearm
+          inv-dispatch-raw        svb-dispatch-raw          ; T11: the entry edge is the world's (kx through the cut)
+          inv-track-raw           svb-track-raw             ; T7: the site edge is the world's, reread at the source's version
+          inv-await-step          svb-await-step}           ; T6: a new dep or wait edge, or a re-awaited one
+  ;; ---- sites: a source or computation row that only raises its version, by the row function's
+  ;; lemma; T8's observe edge has seen the debtor's version (obs-sok)
+  :sites (merge (tree/row-sites 'inv-comp-upd svb-fns (fn [F] (list 'svb-comp-upd 'w 'x F 'hid 'hp (hv-lemma F) 'h0)))
+                (tree/row-sites 'inv-source-upd svb-fns (fn [F] (list 'svb-source-upd 'w 'x F 'hf (hv-lemma F) 'h0)))
+                '{[insert-edge-fresh-inv-sample (observe-edge w d cb)] (svb-insert-edge-fresh w (observe-edge w d cb) h1 h0 h2)})
+  ;; ---- facts from the path: the fired or consumed edge is the world's (its id's rows have its
+  ;; debtor: the companion kx)
+  :ctx '{inv-fire-observe  [(= (kx (:id e) (:debtor e) w) true)]
+         inv-dep-consumed  [(= (kx (:id e) (:debtor e) w) true)]
+         inv-consume-entry [(= (kx (:id e) (:debtor e) w) true)]
+         [insert-edge-fresh-inv-sample (observe-edge w d cb)]
+         [(= (seen-ok w (edge-set-marked false (edge-set-id (:next-id w) e))) true)]}
+  :pass '{inv-fire-edge   {inv-fire-observe [(kx-of-mem w e (base-of w h) (tbl-find-mem EdgeRow edge-id x e (:edges w) hf))]   ; edge-find found it
+                           inv-fire-dep     [(kx-of-mem w e (base-of w h) (tbl-find-mem EdgeRow edge-id x e (:edges w) hf))]}
+          inv-settle-edge {inv-fire-dep     [(kx-of-mem w e (base-of w h) (tbl-find-mem EdgeRow edge-id x e (:edges w) hf))]}
+          t8-full-inv     {[insert-edge-fresh-inv-sample (observe-edge w d cb)] [(obs-sok w d cb (:next-id w))]}})   ; T8's new edge
 
-(override! SVB 'inv-append-raw '[inv-realize-link inv-source-upd inv-source-ins-fresh]
-  '(a/theorem svb-append-raw [w :- World, x :- Nat, v :- Nat, old :- Nat]
-     (=> (= (svb w) true) (= (svb (append-raw w x v old)) true))
-     (intro h)
-     (simp only [append-raw])
-     (exact (svb-realize-link _ old v false _
-              (svb-source-ins (source-upd w x (stream-set-tail (:next-id w))) (new-link (:next-id w) root-scope-id x) (rfl)
-                (svb-source-upd w x (stream-set-tail (:next-id w)) (stream-set-tail-id _) (stream-set-tail-hv (:next-id w)) h))))))
-
-(override! SVB 'inv-insert-edge-checked '[]
-  '(a/theorem svb-insert-edge-checked [w :- World, e :- EdgeRow, hs :- (= (seen-ok w (edge-set-marked false (edge-set-id (:next-id w) e))) true)]
-     (=> (= (svb w) true) (= (svb (insert-edge-checked w e)) true))
-     (intro h)
-     (cases hk (edge-ok-in w e))
-     (simp only [insert-edge-checked hk]) (exact h)
-     (simp only [insert-edge-checked hk]) (exact (svb-insert-edge-fresh w e hs hk h))))
-
-(override! SVB 'inv-serve-or '[inv-fire-edge]
-  '(a/theorem svb-serve-or [w :- World, x :- Nat, res :- RunResult, keep :- (=> SourceRow SourceRow),
-                            hk :- (forall [s :- SourceRow] (= (source-id (keep s)) (source-id s))),
-                            hv :- (forall [s :- SourceRow] (<= (sver s) (sver (keep s))))]
-     (=> (= (svb w) true) (= (svb (serve-or w x res keep)) true))
-     (intro h)
-     (cases hz (Nat.beq (oldest-waiter w x) 0))
-     (simp only [serve-or hz]) (exact (svb-fire-edge res w _ h))
-     (simp only [serve-or hz]) (exact (svb-source-upd w x keep hk hv h))))
+(a/theorem svb-insert-edge-checked [w :- World, e :- EdgeRow, hs :- (= (seen-ok w (edge-set-marked false (edge-set-id (:next-id w) e))) true)]
+  (=> (= (svb w) true) (= (svb (insert-edge-checked w e)) true))
+  (intro h)
+  (cases hk (edge-ok-in w e))
+  (simp only [insert-edge-checked hk]) (exact h)
+  (simp only [insert-edge-checked hk]) (exact (svb-insert-edge-fresh w e hs hk h)))
 
 ;; ---- fires: the edge is the world's (its id's rows have its debtor)
 
-(override! SVB 'inv-fire-observe '[]
-  '(a/theorem svb-fire-observe [w :- World, e :- EdgeRow]
-     (=> (= (kx (:id e) (:debtor e) w) true) (= (svb w) true) (= (svb (fire-observe w e)) true))
-     (intros hx h)
-     (cases hs (observe-new e (deb-version w (:debtor e))))
-     (simp only [fire-observe hs]) (exact h)
-     (simp only [fire-observe hs])
-     (exact (svb-edge-upd-q w (:id e) (edge-set-seen (deb-version w (:debtor e))) (edge-set-seen-edge-id _) (edge-set-seen-kind _)
-              (edge-set-seen-creditor _) (edge-set-seen-debtor _) (edge-set-seen-marked _)
-              (kx-q (:id e) (:debtor e) w (edge-set-seen (deb-version w (:debtor e))) (seen-set-cur w (:debtor e)) (kx-rest-of _ _ w hx)) h))))
+(a/theorem svb-fire-observe [w :- World, e :- EdgeRow]
+  (=> (= (kx (:id e) (:debtor e) w) true) (= (svb w) true) (= (svb (fire-observe w e)) true))
+  (intros hx h)
+  (cases hs (observe-new e (deb-version w (:debtor e))))
+  (simp only [fire-observe hs]) (exact h)
+  (simp only [fire-observe hs])
+  (exact (svb-edge-upd-q w (:id e) (edge-set-seen (deb-version w (:debtor e))) (edge-set-seen-edge-id _) (edge-set-seen-kind _)
+           (edge-set-seen-creditor _) (edge-set-seen-debtor _) (edge-set-seen-marked _)
+           (kx-q (:id e) (:debtor e) w (edge-set-seen (deb-version w (:debtor e))) (seen-set-cur w (:debtor e)) (kx-rest-of _ _ w hx)) h)))
 
-(override! SVB 'inv-dep-consumed '[inv-remove-edge]
-  '(a/theorem svb-dep-consumed [w :- World, e :- EdgeRow]
-     (=> (= (kx (:id e) (:debtor e) w) true) (= (svb w) true) (= (svb (dep-consumed w e)) true))
-     (intros hx h)
-     (cases hf (deb-final w (:debtor e)))
-     (simp only [dep-consumed hf])
-     (exact (svb-edge-upd-q w (:id e) (edge-rearm (deb-value w (:debtor e)) (deb-version w (:debtor e)))
-              (edge-rearm-edge-id _ _) (edge-rearm-kind _ _) (edge-rearm-creditor _ _) (edge-rearm-debtor _ _) (edge-rearm-marked _ _)
-              (kx-q (:id e) (:debtor e) w _ (seen-rearm-cur w (deb-value w (:debtor e)) (:debtor e)) (kx-rest-of _ _ w hx)) h))
-     (simp only [dep-consumed hf]) (exact (svb-remove-edge w (:id e) h))))
+(a/theorem svb-dep-consumed [w :- World, e :- EdgeRow]
+  (=> (= (kx (:id e) (:debtor e) w) true) (= (svb w) true) (= (svb (dep-consumed w e)) true))
+  (intros hx h)
+  (cases hf (deb-final w (:debtor e)))
+  (simp only [dep-consumed hf])
+  (exact (svb-edge-upd-q w (:id e) (edge-rearm (deb-value w (:debtor e)) (deb-version w (:debtor e)))
+           (edge-rearm-edge-id _ _) (edge-rearm-kind _ _) (edge-rearm-creditor _ _) (edge-rearm-debtor _ _) (edge-rearm-marked _ _)
+           (kx-q (:id e) (:debtor e) w _ (seen-rearm-cur w (deb-value w (:debtor e)) (:debtor e)) (kx-rest-of _ _ w hx)) h))
+  (simp only [dep-consumed hf]) (exact (svb-remove-edge w (:id e) h)))
 
-(override! SVB 'inv-fire-dep '[inv-invalidate inv-fill-slot inv-dep-consumed]
-  '(a/theorem svb-fire-dep [w :- World, e :- EdgeRow]
-     (=> (= (kx (:id e) (:debtor e) w) true) (= (svb w) true) (= (svb (fire-dep w e)) true))
-     (intros hx h)
-     (cases ha (act-with-member (:id e) (:acts w))) (case' [some a]) (case' [none])
-     (simp only [fire-dep ha]) (exact (svb-invalidate w e h))
-     (cases hc (Bool.and (run-current-of w (:run a) (:creditor e)) (deb-avail w (:debtor e))))
-     (simp only [fire-dep ha hc]) (exact (svb-invalidate w e h))
-     (simp only [fire-dep ha hc deliver-dep])
-     (exact (svb-fill-slot _ a _ _ (svb-dep-consumed w e hx h)))))
+(tree/restate! SVB '[inv-fire-edge])
+(a/theorem svb-serve-or [w :- World, x :- Nat, res :- RunResult, keep :- (=> SourceRow SourceRow),
+                         hk :- (forall [s :- SourceRow] (= (source-id (keep s)) (source-id s))),
+                         hv :- (forall [s :- SourceRow] (<= (sver s) (sver (keep s))))]
+  (=> (= (svb w) true) (= (svb (serve-or w x res keep)) true))
+  (intro h)
+  (cases hz (Nat.beq (oldest-waiter w x) 0))
+  (simp only [serve-or hz]) (exact (svb-fire-edge res w _ h))
+  (simp only [serve-or hz]) (exact (svb-source-upd w x keep hk hv h)))
 
-(override! SVB 'inv-fire-edge '[inv-fire-observe inv-fire-wait inv-fire-dep]
-  '(a/theorem svb-fire-edge [res :- RunResult, w :- World, x :- Nat]
-     (=> (= (svb w) true) (= (svb (fire-edge res w x)) true))
-     (intro h)
-     (cases hf (edge-find w x)) (case' [some e]) (case' [none])
-     (simp only [fire-edge hf]) (exact h)
-     (have hx := (kx-of-mem w e (svb-sample w h) (tbl-find-mem EdgeRow edge-id x e (:edges w) hf)))
-     (cases hp (Nat.beq (:phase e) ph-armed))
-     (simp only [fire-edge hf hp]) (exact h)
-     (cases hk1 (Nat.beq (:kind e) ek-dep))
-     (cases hk2 (Nat.beq (:kind e) ek-wait))
-     (cases hk3 (Nat.beq (:kind e) ek-observe))
-     (simp only [fire-edge hf hp hk1 hk2 hk3 fire-savepoint-todo]) (exact h)
-     (simp only [fire-edge hf hp hk1 hk2 hk3]) (exact (svb-fire-observe w e hx h))
-     (simp only [fire-edge hf hp hk1 hk2]) (exact (svb-fire-wait res w e h))
-     (simp only [fire-edge hf hp hk1]) (exact (svb-fire-dep w e hx h))))
+(tree/restate! SVB '[inv-realize-link])
+(a/theorem svb-append-raw [w :- World, x :- Nat, v :- Nat, old :- Nat]
+  (=> (= (svb w) true) (= (svb (append-raw w x v old)) true))
+  (intro h)
+  (simp only [append-raw])
+  (exact (svb-realize-link _ old v false _
+           (svb-source-ins (source-upd w x (stream-set-tail (:next-id w))) (new-link (:next-id w) root-scope-id x) (rfl)
+             (svb-source-upd w x (stream-set-tail (:next-id w)) (stream-set-tail-id _) (stream-set-tail-hv (:next-id w)) h)))))
 
 ;; ---- T11's entry edge and T7's site edge are the world's
 
@@ -2914,31 +2816,31 @@
   (case [inl h1] (cases h1))
   (case [inr h2] (exact (filter-mem EdgeRow (fired-dep-of c) e (:edges w) h2))))
 
-(override! SVB 'inv-consume-entry '[inv-edge-set-phase inv-remove-edge]
-  '(a/theorem svb-consume-entry [w :- World, e :- EdgeRow]
-     (=> (= (kx (:id e) (:debtor e) w) true) (= (svb w) true) (= (svb (consume-entry w e)) true))
-     (intros hx h)
-     (cases hf (deb-final w (:debtor e)))
-     (cases hr (Nat.beq (:cont e) cont-restart))
-     (simp only [consume-entry hr hf])
-     (exact (svb-edge-upd-q w (:id e) (edge-rearm (deb-value w (:debtor e)) (deb-version w (:debtor e)))
-              (edge-rearm-edge-id _ _) (edge-rearm-kind _ _) (edge-rearm-creditor _ _) (edge-rearm-debtor _ _) (edge-rearm-marked _ _)
-              (kx-q (:id e) (:debtor e) w _ (seen-rearm-cur w (deb-value w (:debtor e)) (:debtor e)) (kx-rest-of _ _ w hx)) h))
-     (simp only [consume-entry hr hf]) (exact (svb-edge-set-phase w (:id e) ph-armed h))
-     (simp only [consume-entry hf]) (exact (svb-remove-edge w (:id e) h))))
+(tree/restate! SVB '[inv-edge-set-phase])
+(a/theorem svb-consume-entry [w :- World, e :- EdgeRow]
+  (=> (= (kx (:id e) (:debtor e) w) true) (= (svb w) true) (= (svb (consume-entry w e)) true))
+  (intros hx h)
+  (cases hf (deb-final w (:debtor e)))
+  (cases hr (Nat.beq (:cont e) cont-restart))
+  (simp only [consume-entry hr hf])
+  (exact (svb-edge-upd-q w (:id e) (edge-rearm (deb-value w (:debtor e)) (deb-version w (:debtor e)))
+           (edge-rearm-edge-id _ _) (edge-rearm-kind _ _) (edge-rearm-creditor _ _) (edge-rearm-debtor _ _) (edge-rearm-marked _ _)
+           (kx-q (:id e) (:debtor e) w _ (seen-rearm-cur w (deb-value w (:debtor e)) (:debtor e)) (kx-rest-of _ _ w hx)) h))
+  (simp only [consume-entry hr hf]) (exact (svb-edge-set-phase w (:id e) ph-armed h))
+  (simp only [consume-entry hf]) (exact (svb-remove-edge w (:id e) h)))
 
-(override! SVB 'inv-dispatch-raw '[inv-cancel-pred inv-cut-suffix inv-consume-entry inv-new-run-of]
-  '(a/theorem svb-dispatch-raw [w :- World, c :- CompRow]
-     (=> (= (svb w) true) (= (svb (dispatch-raw w c)) true))
-     (intro h)
-     (have h1 := (svb-cancel-pred w c h))
-     (cases he (entry-edge w (:id c))) (case' [some e]) (case' [none])
-     (simp only [dispatch-raw he])
-     (exact (svb-new-run-of _ c 0 (svb-cut-suffix _ (:id c) false 0 0 h1)))
-     (simp only [dispatch-raw he])
-     (have k0 := (kx-of-mem w e (svb-sample w h) (entry-mem w (:id c) e he)))
-     (have k1 := (kx-cut-suffix (:id e) (:debtor e) _ (:id c) true (:at e) (:id e) (kx-cancel-pred (:id e) (:debtor e) w c k0)))
-     (exact (svb-new-run-of _ c _ (svb-consume-entry _ e k1 (svb-cut-suffix _ (:id c) true (:at e) (:id e) h1))))))
+(tree/restate! SVB '[inv-cancel-pred inv-cut-suffix inv-new-run-of])
+(a/theorem svb-dispatch-raw [w :- World, c :- CompRow]
+  (=> (= (svb w) true) (= (svb (dispatch-raw w c)) true))
+  (intro h)
+  (have h1 := (svb-cancel-pred w c h))
+  (cases he (entry-edge w (:id c))) (case' [some e]) (case' [none])
+  (simp only [dispatch-raw he])
+  (exact (svb-new-run-of _ c 0 (svb-cut-suffix _ (:id c) false 0 0 h1)))
+  (simp only [dispatch-raw he])
+  (have k0 := (kx-of-mem w e (svb-sample w h) (entry-mem w (:id c) e he)))
+  (have k1 := (kx-cut-suffix (:id e) (:debtor e) _ (:id c) true (:at e) (:id e) (kx-cancel-pred (:id e) (:debtor e) w c k0)))
+  (exact (svb-new-run-of _ c _ (svb-consume-entry _ e k1 (svb-cut-suffix _ (:id c) true (:at e) (:id e) h1)))))
 
 (a/theorem site-edge-mem [es :- (List EdgeRow), c :- Nat, at :- Nat, d :- Nat, e :- EdgeRow]
   (=> (= (site-edge es c at d) (Option.some EdgeRow e)) (And (List.Mem e es) (= (Nat.beq (:debtor e) d) true)))
@@ -2964,72 +2866,63 @@
   (have dv (= (deb-version w x) (:version s))) (simp only [deb-version hs])
   (simp only [seen-ok edge-reread e1 dv Nat.ble_eq Nat.le_refl]) (simp))
 
-(override! SVB 'inv-track-raw '[inv-track-fin]
-  '(a/theorem svb-track-raw [w :- World, r :- RunRow, x :- Nat, s :- SourceRow, k :- Nat]
-     (=> (= (comp-has w (:of r)) true) (= (source-find w x) (Option.some SourceRow s))
-         (= (svb w) true) (= (svb (track-raw w r x s k)) true))
-     (intros hc hs h)
-     (have h2 (= (svb (match (site-edge (:edges w) (:of r) (:effect-index r) x)
-                         [none (track-new w r x s k)]
-                         [(some e) (comp-upd (track-fin s (:id e) (edge-upd w (:id e) (edge-reread (track-cont r k) s)))
-                                             (:of r) (comp-consume-adopt (:effect-index r) x))])) true))
-     (cases he (site-edge (:edges w) (:of r) (:effect-index r) x)) (case' [some e]) (case' [none])
-     (simp only [track-new])
-     (exact (svb-comp-upd _ (:of r) (comp-consume-adopt (:effect-index r) x)
-              (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _) (fn [c :- CompRow] (Nat.le_refl (:version c)))
-              (svb-track-fin s (:next-id w) _ (svb-insert-edge-fresh w (track-edge r x s k) (Eq.refl true) (track-edge-ok w r x s k hc hs) h))))
-     (have sm := (site-edge-mem (:edges w) (:of r) (:effect-index r) x e he))
-     (have kx0 := (kx-of-mem w e (svb-sample w h) (And.left sm)))
-     (have q := (kx-q (:id e) (:debtor e) w (edge-reread (track-cont r k) s)
-                  (fn [q2 :- EdgeRow, hq :- (= (Nat.beq (:debtor q2) (:debtor e)) true)] (reread-ok w x s (track-cont r k) e q2 hs (And.right sm) hq))
-                  (kx-rest-of _ _ w kx0)))
-     (exact (svb-comp-upd _ (:of r) (comp-consume-adopt (:effect-index r) x)
-              (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _) (fn [c :- CompRow] (Nat.le_refl (:version c)))
-              (svb-track-fin s (:id e) _
-                (svb-edge-upd-q w (:id e) (edge-reread (track-cont r k) s) (edge-reread-edge-id _ _) (edge-reread-kind _ _)
-                  (edge-reread-creditor _ _) (edge-reread-debtor _ _) (edge-reread-marked _ _) q h))))
-     (simp only [track-raw])
-     (exact (svb-run-upd _ (:id r) run-tick run-tick-run-id h2))))
+(tree/restate! SVB '[inv-track-fin])
+(a/theorem svb-track-raw [w :- World, r :- RunRow, x :- Nat, s :- SourceRow, k :- Nat]
+  (=> (= (comp-has w (:of r)) true) (= (source-find w x) (Option.some SourceRow s))
+      (= (svb w) true) (= (svb (track-raw w r x s k)) true))
+  (intros hc hs h)
+  (have h2 (= (svb (match (site-edge (:edges w) (:of r) (:effect-index r) x)
+                      [none (track-new w r x s k)]
+                      [(some e) (comp-upd (track-fin s (:id e) (edge-upd w (:id e) (edge-reread (track-cont r k) s)))
+                                          (:of r) (comp-consume-adopt (:effect-index r) x))])) true))
+  (cases he (site-edge (:edges w) (:of r) (:effect-index r) x)) (case' [some e]) (case' [none])
+  (simp only [track-new])
+  (exact (svb-comp-upd _ (:of r) (comp-consume-adopt (:effect-index r) x)
+           (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _) (fn [c :- CompRow] (Nat.le_refl (:version c)))
+           (svb-track-fin s (:next-id w) _ (svb-insert-edge-fresh w (track-edge r x s k) (Eq.refl true) (track-edge-ok w r x s k hc hs) h))))
+  (have sm := (site-edge-mem (:edges w) (:of r) (:effect-index r) x e he))
+  (have kx0 := (kx-of-mem w e (svb-sample w h) (And.left sm)))
+  (have q := (kx-q (:id e) (:debtor e) w (edge-reread (track-cont r k) s)
+               (fn [q2 :- EdgeRow, hq :- (= (Nat.beq (:debtor q2) (:debtor e)) true)] (reread-ok w x s (track-cont r k) e q2 hs (And.right sm) hq))
+               (kx-rest-of _ _ w kx0)))
+  (exact (svb-comp-upd _ (:of r) (comp-consume-adopt (:effect-index r) x)
+           (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _) (fn [c :- CompRow] (Nat.le_refl (:version c)))
+           (svb-track-fin s (:id e) _
+             (svb-edge-upd-q w (:id e) (edge-reread (track-cont r k) s) (edge-reread-edge-id _ _) (edge-reread-kind _ _)
+               (edge-reread-creditor _ _) (edge-reread-debtor _ _) (edge-reread-marked _ _) q h))))
+  (simp only [track-raw])
+  (exact (svb-run-upd _ (:id r) run-tick run-tick-run-id h2)))
 
-(override! SVB 'inv-await-step '[inv-insert-edge-checked inv-raise-for inv-edge-upd]
-  '(a/theorem svb-await-step [r :- RunRow, a :- Nat, mode :- Nat, k :- Nat, acc :- AwAcc, d :- Nat]
-     (=> (= (svb (:world acc)) true) (= (svb (:world (await-step r a mode k acc d))) true))
-     (intro h)
-     (cases hd (as-dep (:world acc) r d))
-     (case [false]
-       (simp only [await-step hd])
-       (have hn (= (seen-ok (:world acc) (edge-set-marked false (edge-set-id (:next-id (:world acc)) (await-edge (:world acc) r a mode k d)))) true))
-       (simp [seen-ok edge-set-marked edge-set-id await-edge hd ek-wait ek-observe])
-       (exact (svb-insert-edge-checked _ _ hn h)))
-     (case [true]
-       (have hn (= (seen-ok (:world acc) (edge-set-marked false (edge-set-id (:next-id (:world acc)) (await-edge (:world acc) r a mode k d)))) true))
-       (simp [seen-ok edge-set-marked edge-set-id await-edge hd ek-dep ek-observe])
-       (cases hs (site-edge (:edges (:world acc)) (:of r) (:effect-index r) d))
-       (case [none]
-         (simp only [await-step hd hs])
-         (simp only [await-new-dep])
-         (exact (svb-comp-upd _ (:of r) (comp-consume-adopt (:effect-index r) d)
-                  (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _) (fn [c :- CompRow] (Nat.le_refl (:version c)))
-                  (svb-raise-for _ (:of r) d (svb-insert-edge-checked _ _ hn h)))))
-       (case [some e]
-         (simp only [await-step hd hs])
-         (exact (svb-comp-upd _ (:of r) (comp-consume-adopt (:effect-index r) d)
-                  (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _) (fn [c :- CompRow] (Nat.le_refl (:version c)))
-                  (svb-edge-upd _ (:id e) (edge-reawait (await-cont r mode k)) (edge-reawait-edge-id _)
-                    (edge-reawait-kind _) (edge-reawait-creditor _) (edge-reawait-debtor _) (edge-reawait-marked _)
-                    (fn [q :- EdgeRow] (Eq.refl (esk7 q))) h)))))))
+(tree/restate! SVB '[inv-raise-for])
+(a/theorem svb-await-step [r :- RunRow, a :- Nat, mode :- Nat, k :- Nat, acc :- AwAcc, d :- Nat]
+  (=> (= (svb (:world acc)) true) (= (svb (:world (await-step r a mode k acc d))) true))
+  (intro h)
+  (cases hd (as-dep (:world acc) r d))
+  (case [false]
+    (simp only [await-step hd])
+    (have hn (= (seen-ok (:world acc) (edge-set-marked false (edge-set-id (:next-id (:world acc)) (await-edge (:world acc) r a mode k d)))) true))
+    (simp [seen-ok edge-set-marked edge-set-id await-edge hd ek-wait ek-observe])
+    (exact (svb-insert-edge-checked _ _ hn h)))
+  (case [true]
+    (have hn (= (seen-ok (:world acc) (edge-set-marked false (edge-set-id (:next-id (:world acc)) (await-edge (:world acc) r a mode k d)))) true))
+    (simp [seen-ok edge-set-marked edge-set-id await-edge hd ek-dep ek-observe])
+    (cases hs (site-edge (:edges (:world acc)) (:of r) (:effect-index r) d))
+    (case [none]
+      (simp only [await-step hd hs])
+      (simp only [await-new-dep])
+      (exact (svb-comp-upd _ (:of r) (comp-consume-adopt (:effect-index r) d)
+               (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _) (fn [c :- CompRow] (Nat.le_refl (:version c)))
+               (svb-raise-for _ (:of r) d (svb-insert-edge-checked _ _ hn h)))))
+    (case [some e]
+      (simp only [await-step hd hs])
+      (exact (svb-comp-upd _ (:of r) (comp-consume-adopt (:effect-index r) d)
+               (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _) (fn [c :- CompRow] (Nat.le_refl (:version c)))
+               (svb-edge-upd _ (:id e) (edge-reawait (await-cont r mode k)) (edge-reawait-edge-id _)
+                 (edge-reawait-kind _) (edge-reawait-creditor _) (edge-reawait-debtor _) (edge-reawait-marked _)
+                 (fn [q :- EdgeRow] (Eq.refl (esk7 q))) h))))))
 
-(patch! SVB 'inv-react-add
-  (fn [form] (svb-patch (subst-forms #(= % '(inv-insert-edge-checked w _ h)) (fn [_] '(inv-insert-edge-checked w (valid-edge w c v) h)) form))))
-(patch! SVB 'inv-take-park
-  (fn [form] (svb-patch (subst-forms (fn [y] (and (seq? y) (= 'inv-insert-edge-checked (first y)) (= '_ (second y))))
-                                     (fn [[hd _ _ h]] (list hd '(bump (act-ins w (take-act w r k))) '(take-edge r (:next-id w) x) h)) form))))
-(patch! SVB 'inv-settle-edge
-  (fn [form] (svb-patch (subst-forms #(= % '(inv-fire-dep w e h))
-                                     (fn [_] '(inv-fire-dep w e (kx-of-mem w e (svb-sample w h) (tbl-find-mem EdgeRow edge-id x e (:edges w) hf)) h)) form))))
-
-(lcopy! SVB 'raw-inv)
-(lcopy! SVB 'inv-normalize)
+(tree/restate! SVB '[raw-inv])
+(tree/restate! SVB '[inv-normalize])
 
 (a/theorem svb-rule-r-round [w :- World]
   (=> (= (svb w) true) (= (filter-safe (normalize w)) true) (= (svb (rule-r-round w)) true))

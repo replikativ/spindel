@@ -75,7 +75,7 @@
 ;; bundle's `edge-new-ok` is rfl at a concrete edge (g7).
 (def dispatched '{inv-run-upd 2 inv-task-upd 2 inv-resource-upd 2 inv-source-upd 2 inv-scope-upd 2 inv-serve-or 3
                   inv-scope-ins-fresh 1 inv-comp-upd 2 inv-comp-ins-fresh 1 insert-edge-fresh-inv-sample 1
-                  inv-insert-edge-checked 1 inv-cleanup-upd 2 inv-act-upd 2})
+                  inv-insert-edge-checked 1 inv-cleanup-upd 2 inv-act-upd 2 inv-edge-upd 2})
 
 ;; A computation edit is one site per row function: its arguments are the site's parameters
 ;; (`site-gen`, named as the binders of the function's id lemma `<f>-comp-id` / `<f>-id`), so a part
@@ -315,7 +315,13 @@
   B's facts at [p F]): [binders stmt index-of-the-row-function]."
   [B p F]
   (let [[binders stmt] (node-stmt nil p)
-        ns (bnames binders) m (zipmap ns (map #(symbol (str % "_")) ns))
+        ns (bnames binders)
+        ;; a variable bound inside p's binder types (forall [e :- EdgeRow] ...) that F mentions is renamed
+        ;; apart too, or it would capture F's (inv-edge-upd at a row function of the edge e)
+        fsyms (set (filter symbol? (flatten (list (site-key F)))))
+        inner (filter fsyms (mapcat (fn [y] (when (and (seq? y) (= 'forall (first y)) (vector? (second y))) (bnames (second y))))
+                                    (tree-seq coll? seq binders)))
+        m (zipmap (concat ns inner) (map #(symbol (str % "_")) (concat ns inner)))
         i (dispatched p)
         sub (fn [x] (walk/postwalk-replace {(m (nth ns i)) (site-key F)} (walk/postwalk-replace m x)))
         bs (sub (vec (concat (subvec binders 0 (* 3 i)) (subvec binders (* 3 (inc i))))))
