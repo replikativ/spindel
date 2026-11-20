@@ -756,3 +756,32 @@
     (is (not-any? #(en/run-of-local w %) (:runs w)) (str n ": no run of a fork-local task after [:retire-local]"))
     (is (empty? (:cleanup w)) (str n ": no cleanup entry after [:retire-local]"))
     (is (every? #(not= s/res-none (:tag (:result %))) (filter :local (:tasks w))) (str n ": every fork-local task is done"))))
+
+;; ---------------------------------------------------------------------------
+;; Z#78 host throws, samples 61-62 (engine-v2 a1e7b88, generator oracle/gen/samples-host-throws.clj). The model has
+;; no host exceptions; these pin that the items after a throwing queued item (61) or a throwing host callback (62)
+;; still commit, and replay with no divergence.
+(def ^:private host-throw-specs
+  {"61" {:w {:log (log "61-w") :kind :root}}
+   "62" {:w {:log (log "62-w") :kind :root}}})
+
+(deftest host-throw-samples
+  (doseq [[n spec] host-throw-specs]
+    (let [fam (o/replay-family spec)]
+      (doseq [[k {:keys [res]}] fam]
+        (is (= [(count (:log (spec k))) 0 0] ((juxt :checked :n-divergences :resyncs) res)) (str "sample " n " " k))))))
+
+(deftest host-throw-sample-shapes
+  (let [items (fn [n] (mapv :item (log n)))
+        kinds (fn [n] (mapv first (items n)))]
+    (is (every? :accepted (log "61-w")) "61: nothing refused")
+    (is (= [:write :write :spawn-top]
+           (filterv #{:write :spawn-top} (drop-while #(not= :write %) (kinds "61-w"))))
+        "61: after the throwing item, both writes and the task start commit in queue order")
+    (is (= 3 (count (filter #{:write} (kinds "62-w")))) "62: every write commits despite the throwing observer")
+    (is (every? :accepted (log "62-w")) "62: nothing refused")))
+
+(deftest projection-roundtrip-host-throws
+  (doseq [n ["61-w" "62-w"]]
+    (is (= [] (o/roundtrip (log n))) (str "sample " n))))
+
