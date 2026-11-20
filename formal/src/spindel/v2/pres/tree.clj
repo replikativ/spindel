@@ -30,7 +30,8 @@
   predicate is Q := (B p) for the fixed parameters p, which every restated lemma takes first, as the
   copier's lemmas did. The shared generic lemmas do not see them; the part's own (pres-x@<part>)
   take them after Q, so that the part's facts may mention them (g10's job condition names its
-  exempt lists).
+  exempt lists). A part that is another part at fixed parameters (gr0 = grx []) uses that part's
+  lemmas as its cells: the bundle's extra argument in first position (`(grx-x (List.nil Nat))`).
 
   raw0, the item dispatcher, is cut by item: the tree derives `raw0-<item>-inv` from raw0-inv's base
   proof (one branch each) and proves raw0-inv by dispatching to them, so a part that passes into one
@@ -551,9 +552,12 @@
     :site (site-term B a b)
     :node (let [l (or (get @(:renames B) a) (throw (ex-info (str (:pred B) ": no lemma for " a) {})))]
             (when-not (declared? l) (throw (ex-info (str (:pred B) ": " l " (its proof of " a ") is not defined yet") {})))
-            (when ((:extra-args B) a)
-              (throw (ex-info (str (:pred B) ": its cell for " a " takes an extra argument: dispatch " a " per row (`dispatched`)") {})))
-            (papp B l))))
+            (let [[e k] ((:extra-args B) a) h (papp B l)]
+              (cond (nil? e) h
+                    ;; an extra argument in first position instantiates a parameter of the cell: a part
+                    ;; that is another part at fixed parameters uses that part's lemmas (gr0 = grx [])
+                    (= k 0) (if (seq? h) (apply list (first h) e (rest h)) (list h e))
+                    :else (throw (ex-info (str (:pred B) ": its cell for " a " takes an extra argument: dispatch " a " per row (`dispatched`)") {})))))))
 
 (defn- check-passes!
   "Every callee of x that takes B's facts gets them: x passes them, or B has a source for x."

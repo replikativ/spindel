@@ -420,13 +420,6 @@
   (=> (= (grx xr w) true) (= (grx xr (run-upd w x run-wake)) true))
   (intro h) (exact (grx-run-upd xr w x run-wake run-wake-run-id rkr-wake h)))
 
-(defn gr-patch [form]
-  (->> form
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-run-upd (first y)) (#{'run-park-row 'run-tick-park 'run-wake} (nth y 3 nil))))
-                    (fn [[_ w x f _ h]] (list ({'run-park-row 'rpark* 'run-tick-park 'rtpark* 'run-wake 'rwake*} f) w x h)))
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-resource-upd (first y)) (= 'res-cancel-row (nth y 3 nil))))
-                    (fn [[_ w x _ _ h]] (list 'rcancel* w x h)))))
-
 (def GRX (mk-bundle 'grx '[x1r :- (List Nat)] "grx-"
            {'inv-run-upd ['(fn [r :- RunRow] (Eq.refl (rkr r))) 4]
             'inv-resource-upd ['(fn [z :- ResRow] (Eq.refl (rzk z))) 4]
@@ -435,8 +428,21 @@
        'inv-cleanup-upd 'grx-cleanup-upd 'inv-cleanup-ins 'grx-cleanup-ins 'inv-cleanup-set 'grx-cleanup-set0
        'inv-comp-upd 'grx-comp-upd 'inv-task-upd 'grx-task-upd 'inv-scope-upd 'grx-scope-upd
        'inv-comp-ins-fresh 'grx-comp-ins 'inv-task-ins-fresh 'grx-task-ins 'inv-scope-ins-fresh 'grx-scope-ins
-       'rpark* 'grx-run-park 'rtpark* 'grx-run-tick-park 'rwake* 'grx-run-wake 'rcancel* 'grx-res-cancel-row)
-(doseq [[n _] @@#'spindel.v2.inv.copier/source-theorems] (patch! GRX n gr-patch))
+       'inv-remove-if-empty 'grx-remove-if-empty)
+;; grx on the generic tree (spindel.v2.pres.tree): its table. Its own proofs are below (T14 and T13).
+(tree/part! GRX
+  :over '{inv-cancel-run-local grx-cancel-run-local   ; T14: the cancelled run is exempt while its rows go
+          inv-retire-with      grx-retire-with        ; T13: a retired run owns no resource (retire-owner-ne)
+          inv-retire-local     grx-retire-local}
+  ;; ---- sites: a park, resume or resource cancel keeps the row's key, by the row lemma
+  :sites '{[inv-run-upd run-park-row]         (grx-run-park x1r w x h0)
+           [inv-run-upd run-tick-park]        (grx-run-tick-park x1r w x h0)
+           [inv-run-upd run-wake]             (grx-run-wake x1r w x h0)
+           [inv-resource-upd res-cancel-row]  (grx-res-cancel-row x1r w x h0)}
+  ;; ---- facts from the path: the retired run is a done row of the world
+  :ctx '{inv-retire-with  [(List.Mem r (:runs w)) (= (retirable r) true)]
+         inv-retire-local [(List.Mem r (:runs w)) (= (retirable r) true)]}
+  :pass '{inv-job-apply {inv-retire-local [(tbl-find-mem RunRow run-id rid r (:runs w) hf) ha]}})   ; run-find found it; retirable
 (doseq [o '[inv-pub-upd inv-source-upd inv-set-pins inv-act-upd inv-edge-upd inv-bump inv-source-ins-fresh inv-fork-ins-fresh inv-act-ins-fresh insert-edge-fresh-inv-sample inv-fork-del]]
   (prim! GRX o nil))
 (prim! GRX 'inv-remove-edge '(grk-remove-edge x1r w x R))
@@ -714,42 +720,33 @@
 (a/theorem rkr0-cancel [r :- RunRow] (= (rkr0 (run-cancel-row r)) (rkr0 r)) (rfl))
 (a/theorem rkr0-complete [r :- RunRow] (= (rkr0 (run-complete-row r)) (rkr0 r)) (rfl))
 
-(override! GRX 'inv-cancel-run-local '[inv-cancel-debtor inv-cancel-res inv-cancel-acts]
-  '(a/theorem grx-cancel-run-local [x1r :- (List Nat), w :- World, r :- RunRow, rep :- Bool]
-     (=> (= (grx x1r w) true) (= (grx x1r (cancel-run-local w r rep)) true))
-     (intro h)
-     (have h1 := (grx-run-upd-x x1r w (:id r) run-cancel-row run-cancel-row-id rkr0-cancel h))
-     (simp only [cancel-run-local])
-     (exact (grx-cancel-debtor x1r rep _ r
-              (grx-cleanup-set x1r _ (:id r) (cleanup-rows-of w r)
-                (grx-cancel-res (List.cons Nat (:id r) x1r) _ r (grx-cancel-acts (List.cons Nat (:id r) x1r) _ (:id r) h1)))))))
-(override! GRX 'inv-retire-with '[inv-close-local inv-clear-comp-run inv-remove-if-empty]
-  '(a/theorem grx-retire-with [x1r :- (List Nat), w :- World, r :- RunRow, sub :- (List Nat)]
-     (=> (List.Mem r (:runs w)) (= (retirable r) true) (= (grx x1r w) true) (= (grx x1r (retire-with w r sub)) true))
-     (intros hm hr h)
-     (have h1 := (grx-close-local x1r _ sub (grx-clear-comp-run x1r w r h)))
-     (have ne := (retire-owner-ne x1r w r hm hr (grx-rest-of x1r w h)))
-     (have er (= (:res (close-local (clear-comp-run w r) sub)) (:res w))) (exact (Eq.trans (res-close-local _ sub) (res-clear-comp-run w r)))
-     (have ne2 (forall [z :- ResRow] (=> (List.Mem z (:res (close-local (clear-comp-run w r) sub))) (= (Nat.beq (:owner z) (:id r)) false))))
-     (intros z mz) (rw [er] at mz) (exact (ne z mz))
-     (have h2 := (grx-intro x1r _ (inv-cleanup-del _ (:id r) (inv-run-del _ (:id r) (grx-sample x1r _ h1)))
-                   (grk-run-del-cl x1r _ (:id r) ne2 (grx-rest-of x1r _ h1))))
-     (simp only [retire-with])
-     (exact (grx-remove-if-empty x1r _ sub h2))))
-(override! GRX 'inv-retire-local '[inv-retire-with]
-  '(a/theorem grx-retire-local [x1r :- (List Nat), w :- World, r :- RunRow]
-     (=> (List.Mem r (:runs w)) (= (retirable r) true) (= (grx x1r w) true) (= (grx x1r (retire-local w r)) true))
-     (intros hm hr h) (exact (grx-retire-with x1r w r (scope-subtree w (:scope r)) hm hr h))))
-(swap! (:renames GRX) assoc 'inv-remove-if-empty 'grx-remove-if-empty)
-(defn gr-patch2 [form]
-  (->> (gr-patch form)
-       (subst-forms #(= % '(inv-retire-local w r h)) (fn [_] '(inv-retire-local w r (tbl-find-mem RunRow run-id rid r (:runs w) hf) ha h)))))
-(doseq [[n _] @@#'spindel.v2.inv.copier/source-theorems] (patch! GRX n gr-patch2))
+(tree/restate! GRX '[inv-cancel-debtor inv-cancel-res inv-cancel-acts])
+(a/theorem grx-cancel-run-local [x1r :- (List Nat), w :- World, r :- RunRow, rep :- Bool]
+  (=> (= (grx x1r w) true) (= (grx x1r (cancel-run-local w r rep)) true))
+  (intro h)
+  (have h1 := (grx-run-upd-x x1r w (:id r) run-cancel-row run-cancel-row-id rkr0-cancel h))
+  (simp only [cancel-run-local])
+  (exact (grx-cancel-debtor x1r rep _ r
+           (grx-cleanup-set x1r _ (:id r) (cleanup-rows-of w r)
+             (grx-cancel-res (List.cons Nat (:id r) x1r) _ r (grx-cancel-acts (List.cons Nat (:id r) x1r) _ (:id r) h1))))))
+(tree/restate! GRX '[inv-close-local inv-clear-comp-run])
+(a/theorem grx-retire-with [x1r :- (List Nat), w :- World, r :- RunRow, sub :- (List Nat)]
+  (=> (List.Mem r (:runs w)) (= (retirable r) true) (= (grx x1r w) true) (= (grx x1r (retire-with w r sub)) true))
+  (intros hm hr h)
+  (have h1 := (grx-close-local x1r _ sub (grx-clear-comp-run x1r w r h)))
+  (have ne := (retire-owner-ne x1r w r hm hr (grx-rest-of x1r w h)))
+  (have er (= (:res (close-local (clear-comp-run w r) sub)) (:res w))) (exact (Eq.trans (res-close-local _ sub) (res-clear-comp-run w r)))
+  (have ne2 (forall [z :- ResRow] (=> (List.Mem z (:res (close-local (clear-comp-run w r) sub))) (= (Nat.beq (:owner z) (:id r)) false))))
+  (intros z mz) (rw [er] at mz) (exact (ne z mz))
+  (have h2 := (grx-intro x1r _ (inv-cleanup-del _ (:id r) (inv-run-del _ (:id r) (grx-sample x1r _ h1)))
+                (grk-run-del-cl x1r _ (:id r) ne2 (grx-rest-of x1r _ h1))))
+  (simp only [retire-with])
+  (exact (grx-remove-if-empty x1r _ sub h2)))
+(a/theorem grx-retire-local [x1r :- (List Nat), w :- World, r :- RunRow]
+  (=> (List.Mem r (:runs w)) (= (retirable r) true) (= (grx x1r w) true) (= (grx x1r (retire-local w r)) true))
+  (intros hm hr h) (exact (grx-retire-with x1r w r (scope-subtree w (:scope r)) hm hr h)))
 
-(lcopy! GRX 'inv-complete-body)
-(lcopy! GRX 'inv-retire-after)
-(lcopy! GRX 'inv-fin-if-final)
-(lcopy! GRX 'inv-run-cascade)
+(tree/restate! GRX '[inv-complete-body inv-retire-after inv-fin-if-final inv-run-cascade])
 
 ;; ===========================================================================
 ;; GR0 = grx [] (no exemption): the step and normalization; every GRX lemma is reused at []
@@ -779,7 +776,6 @@
               'inv-cleanup-upd ['(fn [c :- CleanupRow] (Eq.refl (cleanup-id c))) 3]}))))
 (swap! (:renames GR0) merge (dissoc @(:renames GRX) 'inv-run-upd 'inv-resource-upd 'inv-cleanup-upd 'inv-parts))
 (swap! (:renames GR0) assoc 'inv-parts 'gr0-parts 'inv-run-upd 'gr0-run-upd 'inv-resource-upd 'gr0-resource-upd 'inv-cleanup-upd 'gr0-cleanup-upd)
-(doseq [[n _] @@#'spindel.v2.inv.copier/source-theorems] (patch! GR0 n gr-patch2))
 
 ;; GR0 wrappers for GRX lemmas used as values (a bare function argument cannot take the [] parameter)
 (defn- gr0-wrap-form [n]
@@ -797,6 +793,42 @@
     (binding [*ns* (the-ns 'spindel.v2.inv.copier)] (eval form))
     (swap! (:renames GR0) assoc n (second form))))
 (def GR0 (assoc GR0 :extra-args (apply dissoc (:extra-args GR0) gr0-wrapped)))
+
+;; the local retire's lemma is a cell under its own name (the copier's name for it is not used)
+(swap! (:renames GR0) assoc 't-retire-local-inv 'gr0-t-retire-local)
+;; gr0 on the generic tree: its table. Its cells are grx's lemmas at the empty list (the bundle's
+;; first-position argument) wherever grx has one; its own proofs are below.
+(tree/part! GR0
+  :over '{inv-spawn-rows     gr0-spawn-rows       ; T4: a task's run, in a new scope
+          inv-start-raw      gr0-start-raw        ; T5: the started computation's first run
+          inv-new-run-of     gr0-new-run-of       ; a new run of an existing computation
+          inv-dispatch-raw   gr0-dispatch-raw     ; T11
+          inv-arm-raw        gr0-arm-raw          ; T17: the armed resource is held by its run
+          inv-arm-park       gr0-arm-park         ; Z#55: arm, then park
+          inv-ack-raw        gr0-ack-raw          ; T15: the acknowledged resource leaves its run
+          inv-complete-raw   gr0-complete-raw     ; T12 with ga: the completed run has no activation
+          inv-retire-one     gr0-retire-one}      ; Z#77 T28: each retired run completes or retires
+  :sites '{[inv-run-upd run-park-row]         (grx-run-park (List.nil Nat) w x h0)
+           [inv-run-upd run-tick-park]        (grx-run-tick-park (List.nil Nat) w x h0)
+           [inv-run-upd run-wake]             (grx-run-wake (List.nil Nat) w x h0)
+           [inv-resource-upd res-cancel-row]  (grx-res-cancel-row (List.nil Nat) w x h0)}
+  ;; ---- facts from the path
+  :ctx '{inv-start-raw      [(= (comp-has w (:id c)) true)]      ; the run's entity exists
+         inv-new-run-of     [(= (comp-has w (:id c)) true)]
+         inv-dispatch-raw   [(= (comp-has w (:id c)) true)]
+         inv-arm-raw        [(List.Mem r (:runs w))]              ; the arming run is the world's
+         inv-arm-park       [(List.Mem r (:runs w))]
+         inv-complete-raw   [(= (tbl-any (act-of-run (:id r)) (:acts w)) false) (= (ga w) true)]
+         inv-retire-one     [(= (ga w) true)]
+         t-retire-local-inv [(= (ga w) true)]}
+  :own '{raw-inv   [hga (= (ga w) true)]                          ; the companion ga, from the step's input,
+         raw0g-inv [hga (= (ga w) true)]                          ;   down to T12 and the local retire
+         raw0-inv  [hga (= (ga w) true)]
+         t12-inv   [hga (= (ga w) true)]}
+  :pass '{t5-inv  {inv-start-raw    [(comp-find-has2 w cid c hc)]}                  ; comp-find found it
+          t11-inv {inv-dispatch-raw [(comp-find-has2 w cid c hc)]}
+          t17-inv {inv-arm-park     [(tok-run-mem w st r ht)]}                      ; the token's run
+          t12-inv {inv-complete-raw [(ga-free-of-tok w st r hga ht) hga]}})         ; ga: the token's run is free
 
 ;; ---- a new run (with its run scope): its entity exists (the caller's fact), its scope is new
 (a/theorem any-elim [A :- Type, p :- (=> A Bool), P :- Prop, xs :- (List A)]
@@ -877,48 +909,40 @@
   (simp only [comp-has i2]) (exact hh))
 (a/theorem or-comp [w :- World, x :- Nat] (=> (= (comp-has w x) true) (= (Bool.or (comp-has w x) (task-has w x)) true))
   (intro h) (simp only [h Bool.true_or]))
-(override! GR0 'inv-spawn-rows '[]
-  '(a/theorem gr0-spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat), loc :- Bool]
-     (=> (= (gr0 w) true) (= (gr0 (spawn-rows w owner inputs loc)) true))
-     (intro h)
-     (simp only [spawn-rows])
-     (have h1 := (grx-task-ins (List.nil Nat) w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc) (rfl) h))
-     (have th (= (Bool.or (comp-has (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc))) (:next-id w))
-                          (task-has (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc))) (:next-id w))) true))
-     (simp only [task-has bump task-ins set-next-id set-tasks tbl-ins tbl-has-ins new-task-row task-id Nat.beq_refl Bool.true_or Bool.or_true])
-     (exact (gr0-add-run-scope _ (:next-id w) 0 (task-scope-parent w owner) 0 th h1))))
-(override! GR0 'inv-start-raw '[]
-  '(a/theorem gr0-start-raw [w :- World, c :- CompRow]
-     (=> (= (comp-has w (:id c)) true) (= (gr0 w) true) (= (gr0 (start-raw w c)) true))
-     (intros hc h)
-     (simp only [start-raw])
-     (exact (grx-comp-upd (List.nil Nat) _ (:id c) (comp-start-row (:next-id w)) (comp-start-row-id (:next-id w)) (comp-start-row-pending (:next-id w))
-              (gr0-add-run-scope w (:id c) (start-epoch c) 0 0 (or-comp w (:id c) hc) h)))))
-(override! GR0 'inv-new-run-of '[]
-  '(a/theorem gr0-new-run-of [w :- World, c :- CompRow, ei :- Nat]
-     (=> (= (comp-has w (:id c)) true) (= (gr0 w) true) (= (gr0 (new-run-of w c ei)) true))
-     (intros hc h)
-     (simp only [new-run-of])
-     (exact (grx-comp-upd (List.nil Nat) _ (:id c) (comp-set-run (:next-id w)) (comp-set-run-id (:next-id w)) (comp-set-run-pending (:next-id w))
-              (gr0-add-run-scope w (:id c) (:epoch c) 0 ei (or-comp w (:id c) hc) h)))))
-(override! GR0 'inv-dispatch-raw '[inv-cancel-pred inv-cut-suffix inv-consume-entry inv-new-run-of]
-  '(a/theorem gr0-dispatch-raw [w :- World, c :- CompRow]
-     (=> (= (comp-has w (:id c)) true) (= (gr0 w) true) (= (gr0 (dispatch-raw w c)) true))
-     (intros hc h)
-     (have h1 := (gr0-cancel-pred w c h))
-     (have c1 := (ch-cancel-pred (:id c) w c (ch-intro (:id c) w (gr0-sample w h) hc)))
-     (cases he (entry-edge w (:id c))) (case' [some e]) (case' [none])
-     (simp only [dispatch-raw he])
-     (exact (gr0-new-run-of _ c 0 (ch-rest-of _ _ (ch-cut-suffix (:id c) _ (:id c) false 0 0 c1)) (gr0-cut-suffix _ (:id c) false 0 0 h1)))
-     (simp only [dispatch-raw he])
-     (have c2 := (ch-consume-entry (:id c) _ e (ch-cut-suffix (:id c) _ (:id c) true (:at e) (:id e) c1)))
-     (have h2 := (gr0-consume-entry _ e (gr0-cut-suffix _ (:id c) true (:at e) (:id e) h1)))
-     (exact (gr0-new-run-of _ c _ (ch-rest-of _ _ c2) h2))))
-(defn gr-patch3 [form]
-  (->> (gr-patch2 form)
-       (subst-forms #(= % '(inv-start-raw w c h)) (fn [_] '(inv-start-raw w c (comp-find-has2 w cid c hc) h)))
-       (subst-forms #(= % '(inv-dispatch-raw w c h)) (fn [_] '(inv-dispatch-raw w c (comp-find-has2 w cid c hc) h)))))
-(doseq [[n _] @@#'spindel.v2.inv.copier/source-theorems] (patch! GR0 n gr-patch3))
+(a/theorem gr0-spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat), loc :- Bool]
+  (=> (= (gr0 w) true) (= (gr0 (spawn-rows w owner inputs loc)) true))
+  (intro h)
+  (simp only [spawn-rows])
+  (have h1 := (grx-task-ins (List.nil Nat) w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc) (rfl) h))
+  (have th (= (Bool.or (comp-has (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc))) (:next-id w))
+                       (task-has (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc))) (:next-id w))) true))
+  (simp only [task-has bump task-ins set-next-id set-tasks tbl-ins tbl-has-ins new-task-row task-id Nat.beq_refl Bool.true_or Bool.or_true])
+  (exact (gr0-add-run-scope _ (:next-id w) 0 (task-scope-parent w owner) 0 th h1)))
+(a/theorem gr0-start-raw [w :- World, c :- CompRow]
+  (=> (= (comp-has w (:id c)) true) (= (gr0 w) true) (= (gr0 (start-raw w c)) true))
+  (intros hc h)
+  (simp only [start-raw])
+  (exact (grx-comp-upd (List.nil Nat) _ (:id c) (comp-start-row (:next-id w)) (comp-start-row-id (:next-id w)) (comp-start-row-pending (:next-id w))
+           (gr0-add-run-scope w (:id c) (start-epoch c) 0 0 (or-comp w (:id c) hc) h))))
+(a/theorem gr0-new-run-of [w :- World, c :- CompRow, ei :- Nat]
+  (=> (= (comp-has w (:id c)) true) (= (gr0 w) true) (= (gr0 (new-run-of w c ei)) true))
+  (intros hc h)
+  (simp only [new-run-of])
+  (exact (grx-comp-upd (List.nil Nat) _ (:id c) (comp-set-run (:next-id w)) (comp-set-run-id (:next-id w)) (comp-set-run-pending (:next-id w))
+           (gr0-add-run-scope w (:id c) (:epoch c) 0 ei (or-comp w (:id c) hc) h))))
+(tree/restate! GR0 '[inv-cancel-pred inv-cut-suffix inv-consume-entry])
+(a/theorem gr0-dispatch-raw [w :- World, c :- CompRow]
+  (=> (= (comp-has w (:id c)) true) (= (gr0 w) true) (= (gr0 (dispatch-raw w c)) true))
+  (intros hc h)
+  (have h1 := (gr0-cancel-pred w c h))
+  (have c1 := (ch-cancel-pred (:id c) w c (ch-intro (:id c) w (gr0-sample w h) hc)))
+  (cases he (entry-edge w (:id c))) (case' [some e]) (case' [none])
+  (simp only [dispatch-raw he])
+  (exact (gr0-new-run-of _ c 0 (ch-rest-of _ _ (ch-cut-suffix (:id c) _ (:id c) false 0 0 c1)) (gr0-cut-suffix _ (:id c) false 0 0 h1)))
+  (simp only [dispatch-raw he])
+  (have c2 := (ch-consume-entry (:id c) _ e (ch-cut-suffix (:id c) _ (:id c) true (:at e) (:id e) c1)))
+  (have h2 := (gr0-consume-entry _ e (gr0-cut-suffix _ (:id c) true (:at e) (:id e) h1)))
+  (exact (gr0-new-run-of _ c _ (ch-rest-of _ _ c2) h2)))
 
 ;; ---- T17 arm: the new resource is held by its run; T15 ack: the resource and its listing go
 (a/theorem any-elim-of [A :- Type, p :- (=> A Bool), q :- A, xs :- (List A)] (=> (List.Mem q xs) (= (p q) true) (= (tbl-any p xs) true))
@@ -974,11 +998,11 @@
   (exact (grk-3 _ w rr))
   (exact (gr0-intro _ (inv-arm-raw w r kind hs) (grk-mk _ _ b1 b2 b3))))
 
-(override! GR0 'inv-arm-park '[inv-take-park]
-  '(a/theorem gr0-arm-park [w :- World, r :- RunRow, kind :- Nat, k :- Nat]
-     (=> (List.Mem r (:runs w)) (= (gr0 w) true) (= (gr0 (arm-park w r kind k)) true))
-     (intros hm h) (simp only [arm-park])
-     (exact (gr0-take-park _ (run-arm (:next-id w) r) (:next-id w) k (gr0-arm-raw w r kind hm h)))))
+(tree/restate! GR0 '[inv-take-park])
+(a/theorem gr0-arm-park [w :- World, r :- RunRow, kind :- Nat, k :- Nat]
+  (=> (List.Mem r (:runs w)) (= (gr0 w) true) (= (gr0 (arm-park w r kind k)) true))
+  (intros hm h) (simp only [arm-park])
+  (exact (gr0-take-park _ (run-arm (:next-id w) r) (:next-id w) k (gr0-arm-raw w r kind hm h))))
 
 (a/theorem held-unres5 [z :- ResRow, x :- Nat, q :- RunRow] (=> (= (Nat.beq (:id z) x) false) (= (res-held z (run-unres x q)) (res-held z q)))
   (intro h) (simp only [res-held run-unres (nat-mem-del (:id z) x (:resources q) h)]))
@@ -1020,11 +1044,6 @@
   (simp only [r3-ok (tbl-has-upd CleanupRow cleanup-id owner (:id q) (cleanup-drop z) (fn [c :- CleanupRow] (Eq.refl (cleanup-id c))) (:cleanup w))])
   (exact hq)
   (exact (gr0-intro _ (inv-ack-raw w z owner hu hs) (grk-mk _ _ b1 b2 b3))))
-(swap! (:renames GR0) assoc 'inv-ack-raw 'gr0-ack-raw 'inv-arm-raw 'gr0-arm-raw)
-(defn gr-patch4 [form]
-  (->> (gr-patch3 form)
-       (subst-forms #(= % '(inv-arm-park w r kind k h)) (fn [_] '(inv-arm-park w r kind k (tok-run-mem w st r ht) h)))))
-(doseq [[n _] @@#'spindel.v2.inv.copier/source-theorems] (patch! GR0 n gr-patch4))
 
 ;; ===========================================================================
 ;; T12's retirable run: the cascade's last job retires it (bundles krb, neb over the cascade's jobs)
@@ -1097,12 +1116,11 @@
 (a/theorem krb-wake [k :- Nat, w :- World, x :- Nat] (=> (= (krb k w) true) (= (krb k (run-upd w x run-wake)) true))
   (intro h) (exact (krb-run-upd k w x run-wake run-wake-run-id ret-wake h)))
 
-(defn kr-patch [form]
-  (subst-forms (fn [y] (and (seq? y) (= 'inv-run-upd (first y)) (#{'run-cancel-row 'run-wake} (nth y 3 nil))))
-               (fn [[_ w x f _ h]] (list ({'run-cancel-row 'krcancel* 'run-wake 'krwake*} f) w x h)) form))
 (def KRB (mk-bundle 'krb '[k2r :- Nat] "krb-" {'inv-run-upd ['(fn [q :- RunRow, h :- (= (retirable q) true)] h) 4]}))
-(swap! (:renames KRB) assoc 'inv-parts 'krb-parts 'inv-run-upd 'krb-run-upd 'krcancel* 'krb-cancel-row 'krwake* 'krb-wake)
-(doseq [[n _] @@#'spindel.v2.inv.copier/source-theorems] (patch! KRB n kr-patch))
+(swap! (:renames KRB) assoc 'inv-parts 'krb-parts 'inv-run-upd 'krb-run-upd)
+;; krb on the generic tree: a cancelled or resumed run stays retirable-or-not as it was (the two row lemmas)
+(tree/part! KRB :sites '{[inv-run-upd run-cancel-row] (krb-cancel-row k2r w x h0)
+                         [inv-run-upd run-wake]       (krb-wake k2r w x h0)})
 (def NEB (mk-bundle 'neb '[k3r :- Nat] "neb-" {}))
 (swap! (:renames NEB) assoc 'inv-parts 'neb-parts 'inv-run-upd 'neb-run-upd)
 (doseq [B [KRB NEB]]
@@ -1120,8 +1138,8 @@
 (prim! NEB 'unmark-edge-inv-sample '(neb-runs-eq k3r w (unmark-edge w x) (runs-unmark-edge w x) R))
 (prim! NEB 'inv-run-del '(all-sub-del RunRow (ne-ok k3r) run-id x (:runs w) R))
 
-(lcopy! KRB 'inv-job-apply)
-(tree/restate! NEB '[inv-job-apply])   ; the generic tree (spindel.v2.pres.tree) instead of a copy
+(tree/restate! KRB '[inv-job-apply])
+(tree/restate! NEB '[inv-job-apply])
 
 (a/defn is-jr [k :- Nat, j :- Job] Bool (match j [(jcancel a b) false] [(jretire x) (Nat.beq x k)] [(jclose s) false]))
 (a/defn jr-in [k :- Nat, ks :- (List Job)] Bool (tbl-any (is-jr k) ks))
@@ -1250,9 +1268,8 @@
       (have ne := (track-cascade (:id r) _ _ _ (krb-of-find _ (:id r) r1 hs1 hf hr) (Or.inr (jr-last (:id r) _)) hd))
       (exact (grx-disch (:id r) (List.nil Nat) _ (grx-run-cascade (List.cons Nat (:id r) (List.nil Nat)) _ _ h1) ne)))))
 
-(swap! (:renames GR0) assoc 'inv-complete-raw 'gr0-complete-raw)
 ;; Z#77 T28 (retire-local) with ga: each retired run completes (T12, no activation) or retires (T13)
-(lcopy! GR0 'inv-retire-pre)
+(tree/restate! GR0 '[inv-retire-pre])
 (a/theorem gr0-retire-one [v :- Nat, w :- World, rid :- Nat]
   (=> (= (ga w) true) (= (gr0 w) true) (= (gr0 (retire-one v w rid)) true))
   (intros hga h)
@@ -1274,21 +1291,9 @@
   (case [false] (simp only [t-retire-local hm refuse]) (exact h))
   (case [true] (simp only [t-retire-local hm accept])
     (exact (nat-fold-pres2 ga gr0 (retire-one v) (ga-retire-one v) (gr0-retire-one v) (local-order w) w hga h))))
-(swap! (:renames GR0) assoc 'inv-retire-one 'gr0-retire-one 't-retire-local-inv 'gr0-t-retire-local)
-(defn- add-ga-premise [form call-from call-to]
-  (let [[hd nm binders stmt & proof] form
-        stmt2 (apply list '=> '(= (ga w) true) (rest stmt))
-        proof2 (map (fn [t] (if (= t '(intro h)) '(intros hga h) t)) proof)]
-    (subst-forms #(= % call-from) (fn [_] call-to) (apply list hd nm binders stmt2 proof2))))
-(patch! GR0 't12-inv (fn [form] (gr-patch4 (add-ga-premise form '(inv-complete-raw w r _ h) '(inv-complete-raw w r _ (ga-free-of-tok w st r hga ht) hga h)))))
-(patch! GR0 'raw0-inv (fn [form] (gr-patch4 (subst-forms #(= % '(t-retire-local-inv w _ h)) (fn [_] '(t-retire-local-inv w _ hga h))
-                                                (add-ga-premise form '(t12-inv w _ _ _ h) '(t12-inv w _ _ _ hga h))))))
-(patch! GR0 'raw0g-inv (fn [form] (gr-patch4 (add-ga-premise form '(raw0-inv w it h) '(raw0-inv w it hga h)))))
-(patch! GR0 'raw-inv (fn [form] (gr-patch4 (add-ga-premise form '(raw0g-inv w it h) '(raw0g-inv w it hga h)))))
-
-(lcopy! GR0 'raw-inv)
-(lcopy! GR0 'inv-detach)
-(lcopy! GR0 'inv-demote-epoch)
+(tree/restate! GR0 '[raw-inv])
+(tree/restate! GR0 '[inv-detach])
+(tree/restate! GR0 '[inv-demote-epoch])
 
 ;; ---- a run with a cleanup entry: its stored rows (scope, entity, ...) are cleanup rows
 (a/theorem find-self [A :- Type, idf :- (=> A Nat), q :- A, xs :- (List A)]
@@ -1402,7 +1407,7 @@
       (have h2 := (grx-drop-edges (List.nil Nat) w (edge-avoids cid) h))
       (exact (gr0-comp-del-free (drop-edges w (edge-avoids cid)) cid nr (drop-edges-avoids w cid) h2)))))
 
-(lcopy! GR0 'inv-end-basis)
+(tree/restate! GR0 '[inv-end-basis])
 
 (a/theorem gr0-demote-aa [w :- World, cid :- Nat]
   (=> (= (acts-alive w) true) (= (gr0 w) true) (= (gr0 (demote w cid)) true))

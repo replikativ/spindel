@@ -21,6 +21,7 @@
             [spindel.v2.inv.i10 :as i10]
             [spindel.v2.inv.i5 :as i5]
             [spindel.v2.inv.i1-owners :as i1o]
+            [spindel.v2.inv.i1-runs :as i1r]
             [spindel.v2.pres.tree :as tree]))
 
 (defn- declared? [s] (some? (.lookup ^ansatz.kernel.Env @a/ansatz-env (ansatz.kernel.Name/fromString (str s)))))
@@ -172,3 +173,14 @@
   (doseq [x '[inv-fire-edge inv-settle-edge inv-fire-dep t7-inv]] (is (tree/variant? i5/G5 x) (str x)))
   (doseq [x '[t1-full-inv t1-stream-inv]] (is (tree/variant? i1o/GSO x) (str x)))
   (is (not-any? #(tree/variant? i1o/NZ %) '[inv-normalize inv-norm-round inv-detach])))
+
+(deftest the-run-parts-are-not-copied
+  (doseq [B [i1r/GRX i1r/GR0 i1r/KRB i1r/NEB]]
+    (is (empty? @(:overrides B)) (str (:pred B)))
+    (is (empty? @(:patches B)) (str (:pred B))))
+  ;; gr0 is grx at the empty list: its cell for a lemma grx has is grx's, at that argument
+  (is (= 'grx-cancel-run-local (get @(:renames i1r/GR0) 'inv-cancel-run-local)))
+  (is (= '[(List.nil Nat) 0] (get (:extra-args i1r/GR0) 'inv-cancel-run-local)))
+  ;; the companion ga goes from the step's input down to T12
+  (doseq [x '[raw-inv raw0g-inv t12-inv t5-inv t11-inv t17-inv]] (is (tree/variant? i1r/GR0 x) (str x)))
+  (is (tree/variant? i1r/GRX 'inv-job-apply)))
