@@ -1645,7 +1645,6 @@
          t1-top-full-inv      [hc0 (= (root-ok-if (Nat.beq kind sk-stream) w) true)]          ; C0's gate (raw0)
          t-create-link-inv    [hc0 (= (root-ok-if true w) true)]
          link-realize-raw-inv [hc0 (= (root-ok-if (Nat.beq tag res-ok) w) true)]
-         t-link-realize-inv   [hc0 (= (root-ok-if (Nat.beq tag res-ok) w) true)]
          t-append-inv         [hc0 (= (root-ok-if true w) true)]
          inv-create-source-cur [hc (= (run-cur-closed w r) false)]
          inv-create-stream-cur [hc (= (run-cur-closed w r) false) ho (= (scope-open-at w root-scope-id) true)]
@@ -1657,15 +1656,7 @@
          inv-arm-park         [hm (List.Mem r (:runs w)) hal (= (run-alive r) true)]
          inv-await-raw        [hm (List.Mem r (:runs w)) hal (= (run-alive r) true)]
          inv-await-post       [hk (= (ka rid (:world acc)) true)]                           ;   carried by ka
-         inv-park-if          [hk (= (tbl-all (run-ok-for rid) (:runs w)) true)]
-         raw-inv              [hga (= (ga w) true)]                                         ; the companion ga, raw to the cascades
-         raw0g-inv            [hga (= (ga w) true)]
-         raw0-inv             [hga (= (ga w) true)]
-         inv-cancel-losers    [hga (= (ga w1) true)]
-         t14-inv              [hga (= (ga w) true)]
-         t-cancel-inv         [hga (= (ga w) true)]
-         t16-inv              [hga (= (ga w) true)]
-         t-close-scope-inv    [hga (= (ga w) true)]
+         raw-inv              [hga (= (ga w) true)]   ; the companion ga, from raw to the cascades (raw0g, raw0, T14, T16, ... forward it: inferred)
          t15-full-inv         [hga (= (ga w) true)]
          t-slice-exit-inv     [hga (= (ga w) true)]
          t-release-world-inv  [hga (= (ga w) true)]
@@ -1673,16 +1664,12 @@
          inv-complete-raw     [hn (= (tbl-any (act-of-run (:id r)) (:acts w)) false) hga (= (ga w) true)]
          inv-retire-one       [hga (= (ga w) true)]
          t11-inv              [hga (= (ga w) true)]
-         inv-dispatch-raw     [hga (= (ga w) true) hc (= (comp-has w (:id c)) true)]
-         inv-cancel-pred      [hga (= (ga w) true)]}
+         inv-dispatch-raw     [hga (= (ga w) true) hc (= (comp-has w (:id c)) true)]}
   :gates '{c0-gate-inv hc0}                                                                 ; C0: the root scope is open
   :pass '{raw0-inv             {t4-inv [(bshut-cur w st hc)] t1-body-inv [(bshut-cur w st hc) hc0]
                                 t1-top-full-inv [hc0] t-create-link-inv [hc0] t-append-inv [hc0]
-                                t-link-realize-inv [(root-ok-any (Nat.beq tag res-ok) w hc0)]
-                                t-cancel-inv [hga] t-close-scope-inv [hga] t15-full-inv [hga] t-slice-exit-inv [hga]
-                                t-release-world-inv [hga] t11-inv [hga] t12-inv [hga] t-retire-local-inv [hga]}
-          raw0g-inv            {raw0-inv [hga]}
-          raw-inv              {raw0g-inv [hga] inv-cancel-losers [(raw0g-ga w it hga)]}
+                                t-link-realize-inv [(root-ok-any (Nat.beq tag res-ok) w hc0)]}
+          raw-inv              {inv-cancel-losers [(raw0g-ga w it hga)]}
           ;; owners of new tasks and sources
           t4-inv               {inv-spawn-rows [(owner-ok8 w r (base-of w h) (cur-of-tok w st r hcc ht))]}
           t4-top-inv           {inv-spawn-rows [(open-not-closed w scope (base-of w h) (bool-and-right _ _ hg))]}
@@ -1690,7 +1677,7 @@
           t-link-demand-inv    {inv-link-demand-raw [(bool-and-right _ _ (bool-and-right _ _ hg))]}
           t1-full-inv          {inv-create-source-cur [(cur-of-tok w st r hcc ht)]}
           t1-stream-inv        {inv-create-stream-cur [(cur-of-tok w st r hcc ht) hro]}
-          t1-body-inv          {t1-full-inv [hcc] t1-stream-inv [hcc (root-ok-of-true _ w hk hc0)]}
+          t1-body-inv          {t1-stream-inv [hcc (root-ok-of-true _ w hk hc0)]}
           t1-top-full-inv      {inv-stream-rows [(open-not-closed w scope (base-of w h) (bool-and-right _ _ hg)) (root-ok-of-true _ w hk hc0)]}
           inv-create-source-cur {inv-source-ins-fresh [(x8-new-source w _ _ kind v (src-owner-ok8 w r (base-of w h) hc))]}
           inv-create-stream-cur {inv-stream-rows [(src-owner-ok8 w r (base-of w h) hc) ho]}
@@ -1700,7 +1687,6 @@
           t-create-link-top-inv {inv-source-ins-fresh [(x8-link-open w _ scope _ (base-of w h) (bool-and-right _ _ hg))]}
           inv-link-next-raw    {inv-source-ins-fresh [(x8-root-link w _ _ (base-of w h) ho)]}
           link-realize-raw-inv {inv-link-next-raw [(root-ok-of-true _ w h1 hc0)]}
-          t-link-realize-inv   {link-realize-raw-inv [hc0]}
           inv-append-raw       {inv-source-ins-fresh [(x8-root-link w _ _ (base-of w h) ho)]}
           t-append-inv         {inv-append-raw [(root-ok-true w hc0)]}
           t5-inv               {inv-start-raw [(find-comp-has w cid c hc)]}
@@ -1718,17 +1704,10 @@
           inv-await-post       {inv-park-if [(ka-rest-of rid _ (nat-fold-ka rid (fast-fill (:pairs acc)) (ka-fast-fill rid (:pairs acc)) (nat-distinct ds) _
                                                 (ka-act-upd rid (:world acc) a (act-set-members (mk-members (:pairs acc) 0 ds))
                                                   (act-set-members-id (mk-members (:pairs acc) 0 ds)) hk)))]}
-          inv-park-if          {[inv-run-upd run-park-row] [hk]}
           ;; ga to the cascades, carried by ga's own lemmas
-          t14-inv              {inv-run-cascade [hga]}
-          t-cancel-inv         {inv-run-cascade [hga] t14-inv [hga]}
-          t16-inv              {inv-run-cascade [hga]}
-          t-close-scope-inv    {t16-inv [hga]}
           t15-full-inv         {inv-run-cascade [(ga-ack-raw w z (:owner zr) hu hga)]}
           t-slice-exit-inv     {inv-run-cascade [(ga-run-upd-free w rid run-fin-pop-end run-fin-pop-end-id (slice-exit-free w rid r hf hg hga) hga)]}
           t-release-world-inv  {inv-run-cascade [(ga-zero-handles _ (ga-revoke-roots w hga))]}
-          inv-cancel-losers    {inv-run-cascade [hga]}
-          inv-cancel-pred      {inv-run-cascade [hga]}
           t12-inv              {inv-complete-raw [(ga-free-of-tok w st r hga ht) hga]}
           inv-complete-raw     {inv-run-cascade [(ga-retire-after _ (:id r) (ga-complete-body _ r res (ga-run-upd-free w (:id r) run-complete-row run-complete-row-id hn hga)))]}
           inv-retire-one       {inv-complete-raw [(retire-r1-noact w r r1 rid hf hf1) (ga-retire-pre w r hga)]

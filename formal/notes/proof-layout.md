@@ -1,6 +1,6 @@
 # Readable preservation proofs for the v2 model: options and the target layout
 
-Status: agreed design, 2026-11-19; stage 3 under way (§5c: `gl`; §5d: `g9`; §5e: contexts declared per part; §5f: `g8`). It is the plan for making the layer-1 preservation proofs (`inv-step`)
+Status: agreed design, 2026-11-19; stage 3 under way (§5c: `gl`; §5d: `g9`; §5e: contexts declared per part; §5f: `g8`; §5g: forwarding inferred). It is the plan for making the layer-1 preservation proofs (`inv-step`)
 readable; the staging is in section 5. Stage 0 is this note and the README section "How the step proof
 works". The numbers describe the model as of the restructure (PR #304, e04b1a9) and were measured
 without changing it: a static read of the sources with a small s-expression reader (the appendix says what
@@ -1386,6 +1386,42 @@ the base proof in `engine.clj`, not done here.
 - **Found by the gate**: `gd` and `ar` (copier bundles) built six of their overrides by renaming `g8`'s
   (`gd-from-g8`, `ar-from-g8`). Those six forms are kept, unchanged, as `park-overrides` at the end of
   `inv.i8`, and both read them from there.
+
+## 5g. Stage 3: forwarding is inferred
+
+**Result.** The rule proposed in §5f is in the tree (`tree/infer`): when node x calls c, c takes fact P in
+the part, x has no :pass for c, and every argument of the call that P mentions is a binder of x, then x
+takes P (with the call's arguments) under a fresh name, or reuses its own fact with that statement, and
+passes it; x's callers repeat, to a fixpoint. An explicit :pass stops it, and so does a call whose
+arguments are not x's binders (an intermediate world): there the part writes the term.
+
+| `g8`'s table | before | after |
+|---|---|---|
+| own rows | 37 | 27 (10 inferred: `raw0`, `raw0g`, `t14`, `t-cancel`, `t16`, `t-close-scope`, `cancel-pred`, `cancel-losers`, `park-if`, `t-link-realize`) |
+| pass entries / terms | 62 / 74 | 42 / 54 |
+| code lines of `part!` | 142 | 121 (14 comment lines, 27 inline reasons, unchanged) |
+
+`gl` and `g9` lose no rows: their passes are real terms, and `g9`'s `raw0 -> t17 [hc]` forwards raw0's
+local guard (a `cases` hypothesis), not a declared fact, which the rule does not see. The 10 forwards
+left in `g8`'s table are the gated `hc0` (the gate's flag is left to unification by raw0's call), `hal`
+at `arm-park` (a definitional step), and terms in entries that also carry a real term (a pass entry is
+written whole).
+
+The `ga` chain now reads as the facts that matter: the cascade takes `ga` (:ctx), `raw` takes it, and
+T15, T-slice-exit, T-release-world, T12, complete-raw, retire-one and T11's dispatch say how it is
+carried; the 10 nodes between are inferred.
+
+### Gate (forwarding)
+
+- **Statements** (name-independent fingerprints, against `g8` on the tree, §5f): 16,745 identical, none
+  changed, missing or new. The inferred own facts and passes are the declared ones they replace, so
+  every part lemma keeps its statement. `inv-step`, `reach-inv`, `inv-empty`, `sys-reach-inv`,
+  `l5-safety-total`, `step-p3m`, `mv-refinement` unchanged.
+- **Load**, back to back: touched namespaces 41.6 → 42.5 s (`pres.tree` 11.3 → 10.4 s, `inv.i8` 17.4 →
+  19.6 s, `inv.i10-task` 6.8 → 6.4 s, `inv.i9-res` 6.1 s); the inference runs once per part. Untouched
+  472 → 528 s (host load: another gate ran alongside the second measure); whole model 513 → 570 s.
+- **Suite**: `clojure -M:test`, 291 tests, 208,319 assertions, 0 failures, 0 errors (the tree test also
+  checks that `raw0` forwards `ga` by inference, not by a declared row).
 
 ## 6. Key pieces to read: the whole proof in 14 stops, in reading order (current names)
 

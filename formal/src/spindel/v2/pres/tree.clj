@@ -15,6 +15,8 @@
     :ctx    x or [p F] -> the facts from the path the part's own proof (or site entry) takes there.
     :own    x -> facts a node takes from above it and passes on, named: [h fact ...].
     :pass   caller -> callee or [p F] -> the terms the caller passes for those facts, over its locals.
+            Forwarding is inferred (`infer`): a caller with no :pass for such a callee, whose call
+            arguments the facts mention are its own binders, takes the facts itself and passes them.
     :gates  a gate node (`gates`) whose continuation takes the gate's fact, named.
     :src    x -> the part's proof of x where passes are not enough (base vocabulary).
 
@@ -121,12 +123,82 @@
 (defn- hyp-name [c] (symbol (str "pc-" (name c))))
 (defn- site-name [p F] (symbol (str "pc-" (name p) "@" (sanitize (site-key F)))))
 
-(defn- own-names [B x] (vec (take-nth 2 (get (pt B :own) x))))
+(defn- gated? [B x] (contains? (pt B :gates) x))
+
+;; ---- forwarding, inferred: a node that calls a callee taking B's fact P, with no :pass for it,
+;; and whose call's arguments that P mentions are its own binders, takes P itself (a fresh name)
+;; and passes it on; its callers repeat. An explicit :pass stops it. (proof-layout.md §5g)
+
+(declare tree)
+(defn- base-form [x] (or (get sources x) (theorem-source x)))
+(defn- binder-names-of [c] (bnames (nth (theorem-source c) 2)))
+
+(defn- calls-in
+  "The calls in x's base proof: [key args], key a callee or [p F] for a site."
+  [x]
+  (let [out (atom [])]
+    (walk/prewalk (fn [y]
+                    (when (and (seq? y) (symbol? (first y)))
+                      (let [h (first y)]
+                        (cond (dispatched h) (swap! out conj [[h (site-key (nth (rest y) (dispatched h) nil))] (vec (rest y))])
+                              (and (@S h) (not= h x) (not= h 'inv-parts)) (swap! out conj [h (vec (rest y))]))))
+                    y)
+                  (drop 4 (base-form x)))
+    @out))
+
+(defn- instantiate
+  "Fact P of callee key, at a call with args, in x's binders; nil when P mentions an argument that
+  is not a binder of x."
+  [x key args P]
+  (let [c (if (vector? key) (first key) key)
+        bs (binder-names-of c)
+        xs (set (binder-names-of x))
+        m (zipmap bs args)
+        used (filter #(contains? m %) (distinct (filter symbol? (flatten (list P)))))]
+    (when (every? #(and (symbol? (m %)) (xs (m %))) used)
+      (walk/postwalk-replace (select-keys m used) P))))
+
+(defn- infer
+  "B's own facts and passes, the declared ones with the inferred forwarding: {:own {x [h P ..]} :pass {x {key [h ..]}}}."
+  [B]
+  (let [own (atom (into {} (for [[x v] (pt B :own)] [x (vec v)])))
+        pass (atom (into {} (pt B :pass)))
+        facts-of (fn [k] (or (get (pt B :ctx) k) (when-let [o (get @own k)] (vec (take-nth 2 (rest o))))))
+        skip? (fn [x] (or (contains? (pt B :over) x) (contains? (pt B :src) x) (gated? B x)))
+        changed (atom true)]
+    (while @changed
+      (reset! changed false)
+      (doseq [x (:nodes @tree) :when (not (skip? x))
+              [key calls] (group-by first (calls-in x))
+              :let [ps (facts-of key)]
+              :when (and (seq ps) (not (contains? (get @pass x) key)))
+              :let [all (distinct (map (fn [[_ args]] (mapv #(instantiate x key args %) ps)) calls))
+                    insts (first all)]
+              :when (and (= 1 (count all)) (every? some? insts))]   ; every call: the same facts, in x's binders
+        (let [o (get @own x [])
+              have (zipmap (take-nth 2 (rest o)) (take-nth 2 o))
+              used (set (concat (filter symbol? (flatten (base-form x))) (take-nth 2 o)))
+              fresh (fn [o] (first (remove (set (concat used (take-nth 2 o))) (map #(symbol (str "hi" %)) (range)))))
+              [o names] (reduce (fn [[o ns] P] (if-let [h (have P)] [o (conj ns h)]
+                                                  (let [h (fresh o)] [(conj o h P) (conj ns h)])))
+                                [o []] insts)]
+          (swap! own assoc x o)
+          (swap! pass assoc-in [x key] names)
+          (reset! changed true))))
+    {:own @own :pass @pass}))
+
+(defonce ^:private effective (atom {}))
+(defn- eff [B k]
+  (when B
+    (get (or (get @effective (:pred B)) (get (swap! effective assoc (:pred B) (infer B)) (:pred B))) k)))
+(defn table-own "B's own facts, inferred ones included." [B] (eff B :own))
+(defn table-pass "B's passes, inferred ones included." [B] (eff B :pass))
+
+(defn- own-names [B x] (vec (take-nth 2 (get (eff B :own) x))))
 (defn- facts
   "The facts B's lemma for x (a node, or [p F] for a site) takes: its :ctx or :own premises."
   [B x]
-  (or (get (pt B :ctx) x) (when-let [o (get (pt B :own) x)] (vec (take-nth 2 (rest o))))))
-(defn- gated? [B x] (contains? (pt B :gates) x))
+  (or (get (pt B :ctx) x) (when-let [o (get (eff B :own) x)] (vec (take-nth 2 (rest o))))))
 
 (defn- node-stmt
   "x's binders and statement for part B (nil: the shared, bare statement)."
@@ -197,9 +269,9 @@
   "x's proof in the tree for part B (nil: the shared proof), in base vocabulary."
   [B x]
   (let [f (or (get (pt B :src) x) (when (gated? B x) (:src (get gates x))) (get sources x) (theorem-source x))
-        f (if (and (get (pt B :own) x) (not (get (pt B :src) x))) (with-own B x f) f)   ; a :src states its own facts
+        f (if (and (get (eff B :own) x) (not (get (pt B :src) x))) (with-own B x f) f)   ; a :src states its own facts
         [hd nm binders stmt & proof] f]
-    (apply list hd nm binders stmt (map #(with-gates B (with-passes (get (pt B :pass) x) %)) proof))))
+    (apply list hd nm binders stmt (map #(with-gates B (with-passes (get (eff B :pass) x) %)) proof))))
 
 (defn- proof-callees [x proof]
   (let [out (atom [])]
@@ -221,7 +293,7 @@
   has a source for it, x is a gate B takes, or x calls one."
   [B x]
   (boolean (and B (not (contains? (pt B :over) x))
-                (or (contains? (pt B :own) x) (contains? (pt B :pass) x) (contains? (pt B :src) x) (gated? B x)
+                (or (contains? (eff B :own) x) (contains? (eff B :pass) x) (contains? (pt B :src) x) (gated? B x)
                     (some (fn [[k c]] (and (= k :node) (gated? B c))) (callees nil x))))))
 
 (defn pres-name
@@ -283,6 +355,7 @@
   overridden node becomes an alias of B's lemma (`restate!`)."
   [B & {:as table}]
   (swap! parts assoc (:pred B) table)
+  (swap! effective dissoc (:pred B))
   (doseq [[x l] (:over table)] (swap! (:renames B) assoc x l))
   B)
 
@@ -334,7 +407,7 @@
           :let [key (if (= k :site) [a (site-key b)] a)]
           :when (facts B key)
           :when (not (contains? (pt B :src) x))
-          :when (not (contains? (get (pt B :pass) x) key))]
+          :when (not (contains? (get (eff B :pass) x) key))]
     (throw (ex-info (str (:pred B) ": " x " calls " key ", which takes facts in this part: give "
                          x " a :pass for it (or :over " x ")") {}))))
 
