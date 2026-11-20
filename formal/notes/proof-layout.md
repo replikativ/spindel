@@ -1835,6 +1835,47 @@ after the cascade's lemmas.
   1–62; the tree test also checks that `g5`,
   `nzb` and `gso` have no overrides or patches and where `g5` and `gso` pass their facts).
 
+## 5q. Stage 4, group 5b: the run parts `grx`, `gr0`, `krb` on the tree
+
+**Result.** I1's run parts (`inv.i1-runs`) go through the tree: `grx x1r` (resource owners and run
+entities, with exempt runs), `gr0` (`grx` at the empty list, the step's part) and the cascade
+companion `krb` (`neb` was on the tree already). The namespace has no copier override, patch or
+`lcopy!` left.
+
+| | before (copier): overrides / patches / `lcopy!` | after (tree) |
+|---|---|---|
+| `grx` | 3 / 2 (over every source) / 4 | 3 own proofs, 4 sites, `:ctx` 2, `:pass` 1 caller; 1 part lemma |
+| `gr0` | 5 / 7 (3 over every source; T12, `raw0`, `raw0g`, `raw` for ga) / 5 | 9 own proofs, 4 sites, `:ctx` 7, `:own` 4, `:pass` 4 callers; 9 part lemmas |
+| `krb` | 0 / 1 (over every source) / 1 | 2 sites |
+
+`gr0`'s 9 own proofs are its 5 overrides and 4 hand lemmas the copier took as cells (`arm-raw`,
+`ack-raw`, `complete-raw`, `retire-one`). The four patches that added the companion ga as a
+premise from `raw` down to T12 are four `:own` rows, as for `aha` (§5n).
+
+**Tree change: a part at fixed parameters.** `gr0` is `grx []` and uses `grx`'s lemmas: the copier
+gave every cell `gr0` took from `grx` the extra argument `(List.nil Nat)` in first position. The
+tree refused an extra argument on a callee it does not dispatch. It now reads one in first
+position as a parameter instantiation and passes the cell applied to it
+(`(grx-close-local (List.nil Nat))`). No wrapper theorems are needed.
+
+**Follow-up, not done here.** `g10r` is `g10 [] []` and has a wrapper theorem per transition
+(`wrap-g10r!`, names `<x>-g10-r`, §5o). The same mechanism could replace those wrappers with
+`g10`'s lemmas at the two empty lists. That removes names other namespaces use, so it belongs to
+the naming pass.
+
+### Gate (group 5b)
+
+- **Statements** (name-independent fingerprints, against group 5a): all 17,792 identical; none
+  changed, none missing; 59 new: 49 `raw0-<item>-gr0` and 10 part lemmas (`pres-x@gr0` 9,
+  `pres-job-apply@grx`). `inv-step`, `reach-inv`, `inv-empty`, `sys-reach-inv`, `l5-safety-total`,
+  `step-p3m`, `mv-refinement` unchanged.
+- **Load**, one JVM at a time, against group 5a's measure: `inv.i1-runs` 11.2 → 6.7 s, `pres.tree`
+  11.2 → 8.6 s. The whole model read 476 → 340 s: group 5a's measure was taken under host load, so
+  the untouched figure (454 → 324 s) is the host's, not the change's.
+- **Suite**: `clojure -M:test`, 303 tests, 208,517 assertions, 0 failures, 0 errors (oracle samples
+  1–62; the tree test also checks that the
+  four run parts have no overrides or patches and that `gr0`'s cells are `grx`'s at the empty list).
+
 ## 6. Key pieces to read: the whole proof in 14 stops, in reading order (current names)
 
 1. `inv`, `inv-step`, `Reach1`, `reach-inv` (`top.clj`): the headline and its four-line induction.
