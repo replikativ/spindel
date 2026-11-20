@@ -213,7 +213,9 @@
               ([site ins body opts] (v2/spawn! site (inputs ins) (body* (capture home true) body) opts)))
      :new-aseq (fn [site ins step init]
                  (let [cap (capture home true)]
-                   (v2/new-aseq-at site (inputs ins) (fn [s] (body* cap (step s))) init)))
+                   ;; `step` binds the state (destructuring, `:or` defaults): SCI
+                   ;; code, so it runs inside the adapter with the element's body
+                   (v2/new-aseq-at site (inputs ins) (fn [s] (body* cap (fn [ok err] ((step s) ok err)))) init)))
      :track (fx (fn [x k ek] (v2/track-effect! (v2/row-of x) k ek)))
      :await (fx (fn [x k ek] (v2/await-effect! (v2/row-of x) k ek)))
      :await-all (fx v2/await-all-effect!)

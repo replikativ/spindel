@@ -194,3 +194,29 @@
          (is (= 1 (v t)))
          (v2/release-world! w)
          (is (not= ::timeout (v2/await-complete w 2000 ::timeout))))))))
+
+(deftest an-aseqs-state-binding-runs-in-the-adapter
+  ;; the state destructuring (with `:or` defaults) is SCI code: it runs
+  ;; against the selected heap, and not at all when the resolver refuses
+  (checked
+   (let [w (s/vworld)
+         p (s/interpreter)
+         registry (atom {w p})
+         _ (v2sci/set-resolver! p (registry-resolver registry nil))
+         xs (ev w p "(def factor 1)
+                     (def ran (atom 0))
+                     (aseq [{:keys [n f] :or {f (do (swap! ran inc) factor)}} {:n 0}]
+                       (when (< n 2) [[f factor] {:n (inc n)}]))")
+         child (v2/fork! w)
+         c (sci/fork p)
+         refused (v2/fork! w)]
+     (sci/eval-string* c "(def factor 100)")
+     (swap! registry assoc child c)
+     (is (= [100 100] (first (v (v2/in-world child xs)))) "the fork's heap, in the binding too")
+     (is (= [:failed ::v2sci/no-interpreter]
+            (let [o (outcome (v2/in-world refused xs))] [(first o) (:type (second o))])))
+     (is (= 0 (sci/eval-string* p "@ran")) "no SCI code ran for the refused world or the fork")
+     (is (= [1 1] (first (v xs))))
+     (v2/release-world! refused)
+     (v2/release-world! child)
+     (v2/release-world! w))))
