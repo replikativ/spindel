@@ -1934,7 +1934,17 @@ Nine of the ten overrides are content. The tenth, `gc`'s `gc-cleanup-set-x`, was
 
 ### Gate (group 7a)
 
-GATE-G7A
+- **Statements** (name-independent fingerprints, against group 6): all 18,003 identical; none
+  changed, none missing; 148 new: 147 `raw0-<item>-<part>` (`grel`, `gc`, `gst`) and
+  `pres-raw0-complete@gst`. `gc-cleanup-set-x` is not among the 18,003: the copier never evaluated
+  it. `inv-step`, `reach-inv`, `inv-empty`, `sys-reach-inv`, `l5-safety-total`, `step-p3m`,
+  `mv-refinement` unchanged.
+- **Load**, one JVM at a time, against group 6's measure: `completion.quiet` 15.7 → 7.3 s (`gk` is
+  still copied there), `completion.quiet-world` 10.0 → 3.6 s, `completion.stable` 8.4 → 1.7 s;
+  untouched 345 → 359 s, whole model 380 → 372 s.
+- **Suite**: `clojure -M:test`, 305 tests, 208,541 assertions, 0 failures, 0 errors (oracle samples
+  1–62; the tree test also checks that
+  `grel`, `gc` and `gst` have no overrides or patches).
 
 ## 6. Key pieces to read: the whole proof in 14 stops, in reading order (current names)
 
