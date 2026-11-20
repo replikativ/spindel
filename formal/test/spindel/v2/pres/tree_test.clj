@@ -11,6 +11,8 @@
             [spindel.v2.inv.i8 :as i8]
             [spindel.v2.inv.idle :as idle]
             [spindel.v2.inv.comp-facts :as cf]
+            [spindel.v2.inv.marks :as mk]
+            [spindel.v2.inv.marks-step]
             [spindel.v2.pres.tree :as tree]))
 
 (defn- declared? [s] (some? (.lookup ^ansatz.kernel.Env @a/ansatz-env (ansatz.kernel.Name/fromString (str s)))))
@@ -99,4 +101,13 @@
   (is (= '[(= (g7 w) true) (= (g10r w) true)] (vec (take-nth 2 (rest (get (tree/table-own cf/GD) 'raw0-inv))))))
   (doseq [x '[raw0-await-inv raw0-host-await-inv raw0-complete-inv raw0-observe-inv t6-inv t22-inv]]
     (is (tree/variant? cf/GD x) (str x))))
+
+(deftest hmk-is-not-copied
+  (doseq [B [mk/HMK mk/HSW]]
+    (is (empty? @(:overrides B)) (str (:pred B)))
+    (is (empty? @(:patches B)) (str (:pred B))))
+  ;; "not a computation id": the source and link chain takes it as a fact, from the transitions
+  (doseq [x '[t-close-inv inv-close-raw inv-close-source inv-close-source0 t-append-inv inv-append-raw
+              t-link-realize-inv link-realize-raw-inv inv-realize-link inv-deliver-res inv-resume inv-fill-slot]]
+    (is (tree/variant? mk/HMK x) (str x))))
 

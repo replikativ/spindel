@@ -19,6 +19,7 @@
   `step-hmk`, `p3l` = p3k && hmk [] with `step-p3l`, `p3l-empty`, and `step-h-mark-total` (h-mark after
   every step from a p3l world, no honest hypothesis)."
   (:require [ansatz.core :as a]
+            [spindel.v2.pres.tree :as tree]
             [clojure.string :as str]
             [clojure.walk :as walk]
             [spindel.v2.state :refer :all]
@@ -812,17 +813,15 @@
   (apply (hmk-discharge hxm (dirty-set w x) (write-raw w x v) h2b))
   (intros d hd hh)
   (exact (hk-write-wif w x v s d hf hg h7 hga hd)))
-(swap! (:renames HMK) assoc 'inv-write-raw 'hmk-write-raw-x)
-(override! HMK 't2-inv '[]
-  '(a/theorem t2-hmk [hxm :- (List Nat), w :- World, x :- Nat, v :- Nat]
-     (=> (= (gd w) true) (= (g7 w) true) (= (ga w) true) (= (hmk hxm w) true) (= (hmk hxm (:world (t2-write w x v))) true))
-     (intros hg h7 hga h)
-     (cases hs (source-find w x)) (case' [some s]) (case' [none])
-     (simp only [t2-write hs refuse]) (exact h)
-     (cases hw (writable s))
-     (simp only [t2-write hs hw refuse]) (exact h)
-     (simp only [t2-write hs hw accept]) (exact (hmk-write-raw-x hxm w x v s hs hg h7 hga h))))
-(lcopy! HMK 't2-inv)
+(a/theorem t2-hmk [hxm :- (List Nat), w :- World, x :- Nat, v :- Nat]
+  (=> (= (gd w) true) (= (g7 w) true) (= (ga w) true) (= (hmk hxm w) true) (= (hmk hxm (:world (t2-write w x v))) true))
+  (intros hg h7 hga h)
+  (cases hs (source-find w x)) (case' [some s]) (case' [none])
+  (simp only [t2-write hs refuse]) (exact h)
+  (cases hw (writable s))
+  (simp only [t2-write hs hw refuse]) (exact h)
+  (simp only [t2-write hs hw accept]) (exact (hmk-write-raw-x hxm w x v s hs hg h7 hga h)))
+
 
 ;; ===========================================================================
 ;; Part E. T12 complete + settle
@@ -1325,7 +1324,7 @@
       (exact (hk-cs-upd (not-idle-if-id (:of r)) (comp-result-row res (:epoch r)) (hk-aw-result (:of r) res (:epoch r)) (:of r) (:comps w) ha))
       (simp only [complete-body hc he complete-comp])
       (exact (hmk-settle-x hxm _ (:id c) _ g1 s1 a1 h1)))))
-(lcopy! HMK 'inv-retire-after)
+(tree/restate! HMK '[inv-retire-after])
 (a/theorem hmk-complete-raw-x [hxm :- (List Nat), w :- World, r :- RunRow, res :- RunResult]
   (=> (= (Bool.or (Bool.not (gd-cce w r)) (tbl-all (gd-u1 r) (:runs w))) true) (= (gd w) true) (= (g7 w) true)
       (List.Mem r (:runs w)) (= (run-alive r) true) (= (hmk hxm w) true) (= (hmk hxm (complete-raw w r res)) true))
@@ -1348,23 +1347,21 @@
   (have h1 := (hmk-run-upd hxm w (:id r) run-complete-row run-complete-row-id h))
   (simp only [complete-raw])
   (exact (hmk-fin-if-final hxm _ (:of r) (hmk-run-cascade hxm _ _ (hmk-retire-after hxm _ (:id r) (hmk-complete-body-x hxm _ r res p2 h0 s0 a0 h1))))))
-(swap! (:renames HMK) assoc 'inv-complete-raw 'hmk-complete-raw-x 'inv-complete-body 'hmk-complete-body-x)
-(override! HMK 't12-inv '[]
-  '(a/theorem t12-hmk [hxm :- (List Nat), w :- World, st :- Nat, tag :- Nat, v :- Nat]
-     (=> (= (g10r w) true) (= (gd w) true) (= (g7 w) true) (= (hmk hxm w) true) (= (hmk hxm (:world (t12-complete w st tag v))) true))
-     (intros hg10 hg h7 h)
-     (cases ht (tok-run w st)) (case' [some r]) (case' [none])
-     (simp only [t12-complete ht refuse]) (exact h)
-     (cases hn (run-normal r))
-     (simp only [t12-complete ht hn refuse]) (exact h)
-     (have mr := (And.left (tok-facts w st r ht)))
-     (simp only [t12-complete ht hn accept])
-     (exact (hmk-complete-raw-x hxm w r _ (gd-u1-of-g10r w r hg10 mr) hg h7 mr (normal-alive r hn) h))))
-(lcopy! HMK 't12-inv)
+(a/theorem t12-hmk [hxm :- (List Nat), w :- World, st :- Nat, tag :- Nat, v :- Nat]
+  (=> (= (g10r w) true) (= (gd w) true) (= (g7 w) true) (= (hmk hxm w) true) (= (hmk hxm (:world (t12-complete w st tag v))) true))
+  (intros hg10 hg h7 h)
+  (cases ht (tok-run w st)) (case' [some r]) (case' [none])
+  (simp only [t12-complete ht refuse]) (exact h)
+  (cases hn (run-normal r))
+  (simp only [t12-complete ht hn refuse]) (exact h)
+  (have mr := (And.left (tok-facts w st r ht)))
+  (simp only [t12-complete ht hn accept])
+  (exact (hmk-complete-raw-x hxm w r _ (gd-u1-of-g10r w r hg10 mr) hg h7 mr (normal-alive r hn) h)))
+
 
 ;; ---- Z#77 T28: a retired run that is not done completes (T12); its entity is a task (gd-cce is false)
-(lcopy! HMK 'inv-retire-pre)
-(lcopy! HMK 'inv-run-cascade)
+(tree/restate! HMK '[inv-retire-pre])
+(tree/restate! HMK '[inv-run-cascade])
 (a/theorem hmk-retire-one [hxm :- (List Nat), v :- Nat, w :- World, rid :- Nat]
   (=> (= (gd w) true) (= (g7 w) true) (= (hmk hxm w) true) (= (hmk hxm (retire-one v w rid)) true))
   (intros hg h7 h)
@@ -1395,7 +1392,6 @@
     (have h0 (= (Bool.and (gd w) (g7 w)) true)) (simp only [hg h7 Bool.and_self])
     (exact (nat-fold-pres2 (fn [u :- World] (Bool.and (gd u) (g7 u))) (hmk hxm) (retire-one v)
              (pres-and gd g7 (retire-one v) (gd-retire-one v) (g7-retire-one v)) hq (local-order w) w h0 h))))
-(swap! (:renames HMK) assoc 'inv-retire-one 'hmk-retire-one 't-retire-local-inv 'hmk-t-retire-local)
 
 ;; ===========================================================================
 ;; Part F. Rule R: demote (the round's strays are exempt; i14's vr gives their creditors)
@@ -1459,7 +1455,7 @@
       (have cS := (all-reach-mem (rm-in S) (:creditor e) R hR db))
       (simp only [rm-in] at cS)
       (simp only [hk-dok hk-safe ha hm (rm-app-l (:creditor e) S hxm cS) Bool.true_or Bool.or_true Bool.false_or Bool.not_true]))))
-(lcopy! HMK 'inv-demote-epoch)
+(tree/restate! HMK '[inv-demote-epoch])
 ;; C0: demote closes C's basis streams (end-basis); each is a source, not a computation
 (a/theorem src-kind-has [w :- World, k :- Nat, y :- Nat] (=> (= (src-kind-at w k y) true) (= (tbl-has source-id y (:sources w)) true))
   (intro h)
@@ -1610,23 +1606,7 @@
 ;; Part G. The step
 ;; ===========================================================================
 
-;; ---- raw0 / raw0g / raw: gd, g7, ga, g10r threaded from the step's input (T2, T3, T11, T12)
-(def ^:private hmk-calls
-  '{(t2-inv w _ _ h) (t2-inv w _ _ hg hg7 hga h)
-    (t3-inv w _ _ _ _ h) (t3-inv w _ _ _ _ hg hg7 h)
-    (t3-top-inv w _ _ _ _ h) (t3-top-inv w _ _ _ _ hg hg7 h)
-    (t11-inv w _ _ h) (t11-inv w _ _ hg h)
-    (t12-inv w _ _ _ h) (t12-inv w _ _ _ hg10 hg hg7 h)
-    (t-retire-local-inv w _ h) (t-retire-local-inv w _ hg hg7 h)})
-(defn- hmk-add-hyps [form calls]
-  (let [[hd nm binders stmt & proof] form
-        stmt2 (apply list '=> '(= (gd w) true) '(= (g7 w) true) '(= (ga w) true) '(= (g10r w) true) (rest stmt))
-        proof2 (map (fn [t] (if (= t '(intro h)) '(intros hg hg7 hga hg10 h) t)) proof)]
-    (subst-forms #(contains? calls %) calls (apply list hd nm binders stmt2 proof2))))
-(patch! HMK 'raw0-inv (fn [form] (hmk-add-hyps (hmk-patch form) hmk-calls)))
-(patch! HMK 'raw0g-inv (fn [form] (hmk-add-hyps (hmk-patch form) '{(raw0-inv w it h) (raw0-inv w it hg hg7 hga hg10 h)})))
-(patch! HMK 'raw-inv (fn [form] (hmk-add-hyps (hmk-patch form) '{(raw0g-inv w it h) (raw0g-inv w it hg hg7 hga hg10 h)})))
-(lcopy! HMK 'raw-inv)
+(tree/restate! HMK '[raw-inv])
 
 ;; Theorem (h-mark bundle through the step)
 (a/theorem step-hmk [w :- World, it :- Item]

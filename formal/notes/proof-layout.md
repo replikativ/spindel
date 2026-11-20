@@ -1552,6 +1552,47 @@ the wiring); `ar` still reads the template.
   1–62; the tree test also checks that `gd` and `hkw` have no overrides or patches and that `g7` and
   `g10r` reach `raw0`'s branches).
 
+## 5k. Stage 3: `hmk` and `hsw` on the tree
+
+**Result.** `hmk hxm` (h-mark: a marked edge's debtor is strongly waiting, or exempt) and its
+companion `hsw hsc` go through the tree; `inv.marks` Part C is `hmk`'s table, `inv.marks-step`
+keeps T2's and T12's own proofs. The `hmk-add-hyps` patches of `raw0`, `raw0g` and `raw` are own
+facts (`gd`, `g7`, `ga`, `g10r` from the step's input, inferred at `raw0`'s branches). The five
+names `inv.marks-step` redirected by hand (`hmk-write-raw-x`, `hmk-complete-raw-x`,
+`hmk-complete-body-x`, `hmk-retire-one`, `hmk-t-retire-local`) are `:over` entries; the copier's
+names of four of them are now aliases.
+
+"Not a computation id" (§5b) is a fact in the table, not 15 overrides: the source and link chain
+(close, append, link-realize; close-raw, close-source(0), detach-source, realize-link,
+link-next-raw, append-raw, deliver-res, fire-task-cancelled), resume and fill-slot take it as an
+own fact, the transitions pass it from their source row (`hk-src-not-comp`), and each edit passes
+it to the next through the edits that keep the computation rows (`hk-has-*`, or rfl at the edited
+world). `finalize-debtor` (its fuel loop is an induction) and `drop-act` take it as a context.
+
+| | before (copier) | after (tree) |
+|---|---|---|
+| `hmk`: overrides / hand renames / patches / `lcopy!` | 45 / 5 / 4 / 8 call sites (45 roots) | 0 / 0 / 0 / 0 |
+| `hsw`: patches / `lcopy!` | 1 / 1 | 0 / 0 |
+| `hmk`'s own proofs (`:over`) | (overrides) | 35: the fire chain, finalization's loop, T7's track, revoke-roots, reactivation, detach, T11's strong computation, T3's creation, T2, T12, the retire fold |
+| `hmk`'s sites | `hmk-patch` | every computation site, one rule (a waiting row stays waiting; by lemma where the row function changes the keys) |
+| `:ctx` / `:own` / `:pass` | (overrides) | 8 / 14 / 13 callers |
+| part lemmas `pres-x@hmk` | | 24 |
+
+### Gate (`hmk`)
+
+- **Statements** (name-independent fingerprints, against #322): 17,133 identical, none changed or
+  missing; 77 new: 49 `raw0-<item>-hmk`, 24 `pres-x@hmk`, and 4 aliases (`hmk-write-raw`,
+  `hmk-complete-raw`, `hmk-complete-body`, `t-retire-local-hmk`: the copier's names of the hand
+  lemmas `inv.marks-step` redirected to). Every `hmk` and `hsw` name keeps its statement, the 15
+  former overrides among them. `inv-step`, `reach-inv`, `inv-empty`, `sys-reach-inv`,
+  `l5-safety-total`, `step-p3m`, `mv-refinement` unchanged.
+- **Load**, back to back, one JVM at a time: touched namespaces 19.6 → 18.3 s (`inv.marks` 9.5 →
+  6.2 s, `inv.marks-step` 10.1 → 12.1 s: it now restates what the copier generated lazily); untouched
+  359 → 450 s (host load: other sessions' JVMs); whole model 379 → 468 s.
+- **Suite**: `clojure -M:test`, 298 tests, 208,426 assertions, 0 failures, 0 errors (oracle samples
+  1–62; the tree test also checks that `hmk` and `hsw` have no overrides or patches and that the
+  "not a computation id" chain is generated).
+
 ## 6. Key pieces to read: the whole proof in 14 stops, in reading order (current names)
 
 1. `inv`, `inv-step`, `Reach1`, `reach-inv` (`top.clj`): the headline and its four-line induction.

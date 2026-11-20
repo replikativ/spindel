@@ -3,8 +3,10 @@
   edge is a dep edge whose debtor is a computation row that is waiting in the strong form `hk-wt`
   (not idle, and done-epoch < epoch or pending /= 0), or is in the exemption list hxm. The strict
   `<` makes every epoch step a frame (no dle needed); with gd's dle it is the same as waiting.
-  Marked edges' debtors are waiting (h-mark) when hxm = [] (`hk-h-mark`)."
+  Marked edges' debtors are waiting (h-mark) when hxm = [] (`hk-h-mark`). Every inv-sample lemma is
+  restated for hmk by the generic tree (Part C's table); hmk's own proofs are the table's :over."
   (:require [ansatz.core :as a]
+            [spindel.v2.pres.tree :as tree]
             [spindel.v2.pres.exempt :as exempt]
             [clojure.string :as str]
             [clojure.walk :as walk]
@@ -600,23 +602,106 @@
 (prim! HMK 'insert-edge-fresh-inv-sample '(hkr-insert-edge-fresh hxm w e R))
 (prim! HMK 'inv-insert-edge-checked '(hkr-insert-edge-checked hxm w e R))
 
-;; the source patch: every computation edit goes through hmk-comp-upd-m (a row function that keeps
-;; a waiting row waiting; the ones that do not are overrides)
+;; the row functions that change a computation's keys (hmk's sites, by lemma)
 (def ^:private hk-cm '#{comp-inc-epoch comp-demand-row comp-replace-row comp-start-row comp-make-idle comp-result-row comp-react-row})
 (defn- hk-fhead [f] (if (seq? f) (first f) f))
 (defn- hk-lapp [f lem] (if (seq? f) (apply list lem (rest f)) lem))
-(defn hmk-patch [form]
-  (->> (@#'spindel.v2.inv.idle/fix-f form)
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-comp-upd (first y)) (>= (count y) 6)))
-                    (fn [[_ w x f hid hp & more]]
-                      (let [h (hk-fhead f)]
-                        (apply list 'hmk-comp-upd-m 'hxm w x f hid hp
-                               (if (contains? hk-cm h) (hk-lapp f (symbol (str h "-hkm"))) '(fn [c :- CompRow, hc :- (= (hk-wt c) true)] hc))
-                               more))))))
-(doseq [[n _] @@#'spindel.v2.inv.copier/source-theorems] (patch! HMK n hmk-patch))
+
+;; hmk on the generic tree (spindel.v2.pres.tree): its table; its own proofs follow (Parts D, E, G and
+;; inv.marks-step)
+(tree/part! HMK
+  ;; ---- the part's own proofs (content: activations are no computations, removed edges are
+  ;; unmarked, T2's dirty set, T11's strong computation, T12's completion)
+  :over '{inv-dep-consumed        hmk-dep-consumed
+          inv-fire-dep            hmk-fire-dep
+          inv-fire-wait-act       hmk-fire-wait-act
+          inv-fire-wait           hmk-fire-wait
+          inv-fire-edge           hmk-fire-edge
+          inv-cancel-acts         hmk-cancel-acts
+          t8-unobserve-inv        t8-unobserve-hmk
+          t22-un-inv              t22-un-hmk
+          inv-fin-loop            hmk-fin-loop
+          inv-finalize-debtor     hmk-finalize-debtor
+          inv-end-link            hmk-end-link
+          inv-close-local         hmk-close-local
+          inv-debtor-side         hmk-debtor-side
+          inv-fin-if-final        hmk-fin-if-final
+          t-deliver-inv           t-deliver-hmk
+          inv-track-fin           hmk-track-fin
+          inv-track-raw           hmk-track-raw
+          inv-revoke-roots        hmk-revoke-roots
+          inv-react-one           hmk-react-one
+          inv-react-loop          hmk-react-loop
+          inv-detach              hmk-detach
+          inv-cut-suffix          hmk-cut-suffix
+          inv-consume-entry       hmk-consume-entry
+          inv-dispatch-raw        hmk-dispatch-raw
+          t11-inv                 t11-hmk
+          inv-create-comp-raw     hmk-create-comp-raw
+          t3-inv                  t3-hmk
+          t3-top-inv              t3-top-hmk
+          t2-inv                  t2-hmk
+          t12-inv                 t12-hmk
+          inv-write-raw           hmk-write-raw-x
+          inv-complete-raw        hmk-complete-raw-x
+          inv-complete-body       hmk-complete-body-x
+          inv-retire-one          hmk-retire-one
+          t-retire-local-inv      hmk-t-retire-local}
+  ;; ---- sites: a computation edit keeps a waiting row waiting (by lemma where the row function
+  ;; changes the computation's keys)
+  :sites (tree/row-sites 'inv-comp-upd (constantly true)
+                         (fn [F] (list 'hmk-comp-upd-m 'hxm 'w 'x F 'hid 'hp
+                                       (if (contains? hk-cm (hk-fhead F)) (hk-lapp F (symbol (str (hk-fhead F) "-hkm")))
+                                           '(fn [c :- CompRow, hc :- (= (hk-wt c) true)] hc))
+                                       'h0)))
+  ;; ---- facts from the path: what hmk's own proofs take ...
+  :ctx '{inv-drop-act       [(= (tbl-has comp-id a (:comps w)) false)]   ; activations are no computations
+         inv-finalize-debtor [(= (tbl-has comp-id d (:comps w)) false)]  ; a source or task debtor: no computation
+         t2-inv             [(= (gd w) true) (= (g7 w) true) (= (ga w) true)]
+         t3-inv             [(= (gd w) true) (= (g7 w) true)]
+         t3-top-inv         [(= (gd w) true) (= (g7 w) true)]
+         t11-inv            [(= (gd w) true)]
+         t12-inv            [(= (g10r w) true) (= (gd w) true) (= (g7 w) true)]
+         t-retire-local-inv [(= (gd w) true) (= (g7 w) true)]}
+  ;; ---- ... and the facts nodes take from above them and pass on: gd, g7, ga, g10r from the step's
+  ;; input (T2, T3, T11, T12, T13); raw0's branches forward them (inferred)
+  :own '{;; "not a computation id": the source, link or activation an edit finalizes or resumes
+         inv-resume              [ha (= (tbl-has comp-id (:id a) (:comps w)) false)]
+         inv-close-raw           [hx (= (tbl-has comp-id x (:comps w)) false)]
+         inv-close-source        [hx (= (tbl-has comp-id x (:comps w)) false)]
+         inv-close-source0       [hx (= (tbl-has comp-id x (:comps w)) false)]
+         inv-detach-source       [hx (= (tbl-has comp-id x (:comps w)) false)]
+         inv-deliver-res         [hx (= (tbl-has comp-id x (:comps w)) false)]
+         inv-realize-link        [hx (= (tbl-has comp-id x (:comps w)) false)]
+         inv-link-next-raw       [hx (= (tbl-has comp-id l (:comps w)) false)]
+         link-realize-raw-inv    [hx (= (tbl-has comp-id l (:comps w)) false)]
+         inv-append-raw          [hx (= (tbl-has comp-id old (:comps w)) false)]
+         inv-fire-task-cancelled [hd (= (tbl-has comp-id d (:comps w)) false)]
+         raw-inv   [hg (= (gd w) true) hg7 (= (g7 w) true) hga (= (ga w) true) hg10 (= (g10r w) true)]
+         raw0g-inv [hg (= (gd w) true) hg7 (= (g7 w) true) hga (= (ga w) true) hg10 (= (g10r w) true)]
+         raw0-inv  [hg (= (gd w) true) hg7 (= (g7 w) true) hga (= (ga w) true) hg10 (= (g10r w) true)]}
+  ;; the fact through the edits before the callee (they keep the computation rows)
+  :pass '{inv-resume              {inv-drop-act [ha]}
+          inv-close-raw           {inv-close-source [(Eq.trans (hk-has-end-link w t _ v x) hx)]}
+          inv-close-source        {inv-close-source0 [(Eq.trans (hk-has-end-stream w x x) hx)]}
+          inv-close-source0       {inv-finalize-debtor [(Eq.trans (hk-has-wake-closed (source-upd w x source-close-row) x x) hx)]}
+          inv-detach-source       {inv-finalize-debtor [(Eq.trans (hk-has-wake-closed (source-upd w x source-detach-row) x x) hx)]}
+          inv-fire-task-cancelled {inv-finalize-debtor [(Eq.trans (hk-fold-fire-has res-cancelled (tbl-scan edge-id (on-task d) (:edges w)) w d) hd)]}
+          inv-deliver-res         {inv-finalize-debtor [(Eq.trans (hk-fold-fire-has res (waits-on x (:edges w)) _ x)
+                                                         (Eq.trans (hk-fold-fire-has res (edges-onto x (:edges w)) (source-upd w x (source-write v)) x) hx))]}
+          ;; (the edit before the callee keeps the computation rows: hx at the edited world, by rfl)
+          inv-realize-link        {inv-deliver-res [(Eq.trans (Eq.refl (tbl-has comp-id x (:comps (source-upd w x (link-done-row fl n))))) hx)]}
+          inv-link-next-raw       {inv-realize-link [(Eq.trans (Eq.refl (tbl-has comp-id l (:comps (bump (source-ins w (new-link (:next-id w) root-scope-id 0)))))) hx)]}
+          inv-append-raw          {inv-realize-link [(Eq.trans (Eq.refl (tbl-has comp-id old (:comps (bump (source-ins (source-upd w x (stream-set-tail (:next-id w)))
+                                                                                                                       (new-link (:next-id w) root-scope-id x)))))) hx)]}
+          ;; ... and from the transitions: the source (or the stream's tail link) is a source row
+          t-close-inv             {inv-close-raw [(hk-src-not-comp w x (base-of w h) (tbl-find-has SourceRow source-id x s (:sources w) hf))]}
+          t-link-realize-inv      {link-realize-raw-inv [(hk-src-not-comp w l (base-of w h) (tbl-find-has SourceRow source-id l s (:sources w) hf))]}
+          t-append-inv            {inv-append-raw [(hk-src-not-comp w (:tail s) (base-of w h)
+                                                    (link-pending-has w (:tail s) (bool-and-right _ _ (bool-and-right _ _ hg))))]}})
 
 ;; ===========================================================================
-;; Part D. Overrides: activations are no computations, removed edges are unmarked
+;; Part D. hmk's own proofs: activations are no computations, removed edges are unmarked
 ;; ===========================================================================
 
 ;; ---- ids: a row of another table is no computation
@@ -738,86 +823,73 @@
   (intros r m)
   (simp only [hk-noc (act-not-comp w (act-id r) h (has-of-mem ActRow act-id r (:acts w) m)) Bool.not_false]))
 
-(override! HMK 'inv-resume '[]
-  '(a/theorem hmk-resume [hxm :- (List Nat), w :- World, a :- ActRow]
-     (=> (= (tbl-has comp-id (:id a) (:comps w)) false) (= (hmk hxm w) true) (= (hmk hxm (resume w a)) true))
-     (intros ha h)
-     (simp only [resume])
-     (exact (hmk-run-upd hxm (drop-act w (:id a)) (:run a) run-wake run-wake-run-id (hmk-drop-act hxm w (:id a) ha h)))))
-(override! HMK 'inv-fill-slot '[inv-resume inv-act-upd]
-  '(a/theorem hmk-fill-slot [hxm :- (List Nat), w :- World, a :- ActRow, x :- Nat, v :- RunResult]
-     (=> (= (tbl-has comp-id (:id a) (:comps w)) false) (= (hmk hxm w) true) (= (hmk hxm (fill-slot w a x v)) true))
-     (intros ha h)
-     (cases hm (act-ready (act-fill x v a)))
-     (simp only [fill-slot hm]) (exact (hmk-act-upd hxm w (:id a) (act-fill x v) (act-fill-act-id x v) h))
-     (simp only [fill-slot hm]) (exact (hmk-resume hxm w a ha h))))
-(override! HMK 'inv-dep-consumed '[inv-edge-upd]
-  '(a/theorem hmk-dep-consumed [hxm :- (List Nat), w :- World, e :- EdgeRow]
-     (=> (= (edge-find w (:id e)) (Option.some EdgeRow e)) (= (hmk hxm w) true) (= (hmk hxm (dep-consumed w e)) true))
-     (intros hf h)
-     (cases hd (deb-final w (:debtor e)))
-     (simp only [dep-consumed hd])
-     (exact (hmk-edge-upd hxm w (:id e) (edge-rearm (deb-value w (:debtor e)) (deb-version w (:debtor e)))
-              (edge-rearm-edge-id _ _) (edge-rearm-kind _ _) (edge-rearm-creditor _ _) (edge-rearm-debtor _ _) (edge-rearm-marked _ _) h))
-     (simp only [dep-consumed hd])
-     (exact (hmk-remove-edge hxm w (:id e)
-              (hk-u-self-noncomp hxm w e (hmk-rest-of hxm w h) hf (hk-final-not-comp w (:debtor e) (hmk-sample hxm w h) hd)) h))))
-(override! HMK 'inv-fire-dep '[inv-invalidate inv-dep-consumed inv-fill-slot]
-  '(a/theorem hmk-fire-dep [hxm :- (List Nat), w :- World, e :- EdgeRow]
-     (=> (= (edge-find w (:id e)) (Option.some EdgeRow e)) (= (hmk hxm w) true) (= (hmk hxm (fire-dep w e)) true))
-     (intros hf h)
-     (cases ha (act-with-member (:id e) (:acts w)))
-     (simp only [fire-dep ha]) (exact (hmk-invalidate hxm w e h))
-     (rename_i a)
-     (cases hc (Bool.and (run-current-of w (:run a) (:creditor e)) (deb-avail w (:debtor e))))
-     (simp only [fire-dep ha hc]) (exact (hmk-invalidate hxm w e h))
-     (simp only [fire-dep ha hc deliver-dep])
-     (have na := (act-not-comp w (:id a) (hmk-sample hxm w h) (has-of-mem ActRow act-id a (:acts w) (act-with-member-mem (:id e) (:acts w) a ha))))
-     (have na2 (= (tbl-has comp-id (:id a) (:comps (dep-consumed w e))) false)) (rw [hk-has-dep-consumed]) (exact na)
-     (exact (hmk-fill-slot hxm (dep-consumed w e) a (:id e) (deb-result w (:debtor e)) na2 (hmk-dep-consumed hxm w e hf h)))))
-(override! HMK 'inv-fire-wait-act '[inv-edge-set-phase inv-fill-slot]
-  '(a/theorem hmk-fire-wait-act [hxm :- (List Nat), res :- RunResult, w :- World, e :- EdgeRow]
-     (=> (= (hmk hxm w) true) (= (hmk hxm (fire-wait-act res w e)) true))
-     (intro h)
-     (cases ha (act-find w (:creditor e)))
-     (simp only [fire-wait-act ha]) (exact (hmk-edge-set-phase hxm w (:id e) ph-fired h))
-     (rename_i a)
-     (have na := (act-not-comp w (:id a) (hmk-sample hxm w h)
-                   (has-of-mem ActRow act-id a (:acts w) (tbl-find-mem ActRow act-id (:creditor e) a (:acts w) ha))))
-     (cases hc (run-current w (:run a)))
-     (simp only [fire-wait-act ha hc]) (exact (hmk-edge-set-phase hxm w (:id e) ph-fired h))
-     (have na2 (= (tbl-has comp-id (:id a) (:comps (edge-upd w (:id e) (edge-set-phase ph-fired)))) false)) (exact na)
-     (simp only [fire-wait-act ha hc])
-     (exact (hmk-fill-slot hxm (edge-upd w (:id e) (edge-set-phase ph-fired)) a (:id e) res na2 (hmk-edge-set-phase hxm w (:id e) ph-fired h)))))
-(override! HMK 'inv-fire-wait '[inv-fire-wait-act]
-  '(a/theorem hmk-fire-wait [hxm :- (List Nat), res :- RunResult, w :- World, e :- EdgeRow]
-     (=> (= (edge-find w (:id e)) (Option.some EdgeRow e)) (= (Nat.beq (:kind e) ek-wait) true)
-         (= (hmk hxm w) true) (= (hmk hxm (fire-wait res w e)) true))
-     (intros hf hk0 h)
-     (have k1 := (Nat.eq_of_beq_eq_true hk0))
-     (have nd (= (Nat.beq (:kind e) ek-dep) false)) (rw [k1])
-     (cases hc (Nat.beq (:creditor e) 0))
-     (simp only [fire-wait hc]) (exact (hmk-fire-wait-act hxm res w e h))
-     (simp only [fire-wait hc])
-     (exact (hmk-remove-edge hxm w (:id e) (hk-u-self-nondep hxm w e (hmk-rest-of hxm w h) hf nd) h))))
-(override! HMK 'inv-fire-edge '[inv-fire-observe inv-fire-wait inv-fire-dep]
-  '(a/theorem hmk-fire-edge [hxm :- (List Nat), res :- RunResult, w :- World, x :- Nat]
-     (=> (= (hmk hxm w) true) (= (hmk hxm (fire-edge res w x)) true))
-     (intro h)
-     (cases hf (edge-find w x))
-     (simp only [fire-edge hf]) (exact h)
-     (rename_i e)
-     (have hi (= (:id e) x)) (exact (tbl-find-id EdgeRow edge-id x e (:edges w) hf))
-     (have hf2 (= (edge-find w (:id e)) (Option.some EdgeRow e))) (rw [hi]) (exact hf)
-     (cases hp (Nat.beq (:phase e) ph-armed))
-     (simp only [fire-edge hf hp]) (exact h)
-     (cases hk1 (Nat.beq (:kind e) ek-dep))
-     (cases hk2 (Nat.beq (:kind e) ek-wait))
-     (cases hk3 (Nat.beq (:kind e) ek-observe))
-     (simp only [fire-edge hf hp hk1 hk2 hk3 fire-savepoint-todo]) (exact h)
-     (simp only [fire-edge hf hp hk1 hk2 hk3]) (exact (hmk-fire-observe hxm w e h))
-     (simp only [fire-edge hf hp hk1 hk2]) (exact (hmk-fire-wait hxm res w e hf2 hk2 h))
-     (simp only [fire-edge hf hp hk1]) (exact (hmk-fire-dep hxm w e hf2 h))))
+(tree/restate! HMK '[inv-act-upd])
+(tree/restate! HMK '[inv-edge-upd])
+(a/theorem hmk-dep-consumed [hxm :- (List Nat), w :- World, e :- EdgeRow]
+  (=> (= (edge-find w (:id e)) (Option.some EdgeRow e)) (= (hmk hxm w) true) (= (hmk hxm (dep-consumed w e)) true))
+  (intros hf h)
+  (cases hd (deb-final w (:debtor e)))
+  (simp only [dep-consumed hd])
+  (exact (hmk-edge-upd hxm w (:id e) (edge-rearm (deb-value w (:debtor e)) (deb-version w (:debtor e)))
+           (edge-rearm-edge-id _ _) (edge-rearm-kind _ _) (edge-rearm-creditor _ _) (edge-rearm-debtor _ _) (edge-rearm-marked _ _) h))
+  (simp only [dep-consumed hd])
+  (exact (hmk-remove-edge hxm w (:id e)
+           (hk-u-self-noncomp hxm w e (hmk-rest-of hxm w h) hf (hk-final-not-comp w (:debtor e) (hmk-sample hxm w h) hd)) h)))
+(tree/restate! HMK '[inv-invalidate inv-fill-slot])
+(a/theorem hmk-fire-dep [hxm :- (List Nat), w :- World, e :- EdgeRow]
+  (=> (= (edge-find w (:id e)) (Option.some EdgeRow e)) (= (hmk hxm w) true) (= (hmk hxm (fire-dep w e)) true))
+  (intros hf h)
+  (cases ha (act-with-member (:id e) (:acts w)))
+  (simp only [fire-dep ha]) (exact (hmk-invalidate hxm w e h))
+  (rename_i a)
+  (cases hc (Bool.and (run-current-of w (:run a) (:creditor e)) (deb-avail w (:debtor e))))
+  (simp only [fire-dep ha hc]) (exact (hmk-invalidate hxm w e h))
+  (simp only [fire-dep ha hc deliver-dep])
+  (have na := (act-not-comp w (:id a) (hmk-sample hxm w h) (has-of-mem ActRow act-id a (:acts w) (act-with-member-mem (:id e) (:acts w) a ha))))
+  (have na2 (= (tbl-has comp-id (:id a) (:comps (dep-consumed w e))) false)) (rw [hk-has-dep-consumed]) (exact na)
+  (exact (hmk-fill-slot hxm (dep-consumed w e) a (:id e) (deb-result w (:debtor e)) na2 (hmk-dep-consumed hxm w e hf h))))
+(tree/restate! HMK '[inv-edge-set-phase inv-fill-slot])
+(a/theorem hmk-fire-wait-act [hxm :- (List Nat), res :- RunResult, w :- World, e :- EdgeRow]
+  (=> (= (hmk hxm w) true) (= (hmk hxm (fire-wait-act res w e)) true))
+  (intro h)
+  (cases ha (act-find w (:creditor e)))
+  (simp only [fire-wait-act ha]) (exact (hmk-edge-set-phase hxm w (:id e) ph-fired h))
+  (rename_i a)
+  (have na := (act-not-comp w (:id a) (hmk-sample hxm w h)
+                (has-of-mem ActRow act-id a (:acts w) (tbl-find-mem ActRow act-id (:creditor e) a (:acts w) ha))))
+  (cases hc (run-current w (:run a)))
+  (simp only [fire-wait-act ha hc]) (exact (hmk-edge-set-phase hxm w (:id e) ph-fired h))
+  (have na2 (= (tbl-has comp-id (:id a) (:comps (edge-upd w (:id e) (edge-set-phase ph-fired)))) false)) (exact na)
+  (simp only [fire-wait-act ha hc])
+  (exact (hmk-fill-slot hxm (edge-upd w (:id e) (edge-set-phase ph-fired)) a (:id e) res na2 (hmk-edge-set-phase hxm w (:id e) ph-fired h))))
+(a/theorem hmk-fire-wait [hxm :- (List Nat), res :- RunResult, w :- World, e :- EdgeRow]
+  (=> (= (edge-find w (:id e)) (Option.some EdgeRow e)) (= (Nat.beq (:kind e) ek-wait) true)
+      (= (hmk hxm w) true) (= (hmk hxm (fire-wait res w e)) true))
+  (intros hf hk0 h)
+  (have k1 := (Nat.eq_of_beq_eq_true hk0))
+  (have nd (= (Nat.beq (:kind e) ek-dep) false)) (rw [k1])
+  (cases hc (Nat.beq (:creditor e) 0))
+  (simp only [fire-wait hc]) (exact (hmk-fire-wait-act hxm res w e h))
+  (simp only [fire-wait hc])
+  (exact (hmk-remove-edge hxm w (:id e) (hk-u-self-nondep hxm w e (hmk-rest-of hxm w h) hf nd) h)))
+(tree/restate! HMK '[inv-fire-observe])
+(a/theorem hmk-fire-edge [hxm :- (List Nat), res :- RunResult, w :- World, x :- Nat]
+  (=> (= (hmk hxm w) true) (= (hmk hxm (fire-edge res w x)) true))
+  (intro h)
+  (cases hf (edge-find w x))
+  (simp only [fire-edge hf]) (exact h)
+  (rename_i e)
+  (have hi (= (:id e) x)) (exact (tbl-find-id EdgeRow edge-id x e (:edges w) hf))
+  (have hf2 (= (edge-find w (:id e)) (Option.some EdgeRow e))) (rw [hi]) (exact hf)
+  (cases hp (Nat.beq (:phase e) ph-armed))
+  (simp only [fire-edge hf hp]) (exact h)
+  (cases hk1 (Nat.beq (:kind e) ek-dep))
+  (cases hk2 (Nat.beq (:kind e) ek-wait))
+  (cases hk3 (Nat.beq (:kind e) ek-observe))
+  (simp only [fire-edge hf hp hk1 hk2 hk3 fire-savepoint-todo]) (exact h)
+  (simp only [fire-edge hf hp hk1 hk2 hk3]) (exact (hmk-fire-observe hxm w e h))
+  (simp only [fire-edge hf hp hk1 hk2]) (exact (hmk-fire-wait hxm res w e hf2 hk2 h))
+  (simp only [fire-edge hf hp hk1]) (exact (hmk-fire-dep hxm w e hf2 h)))
 
 (a/theorem hmk-fold-drop-act [hxm :- (List Nat), xs :- (List Nat)]
   (forall [w :- World] (=> (= (tbl-all (hk-noc (:comps w)) xs) true) (= (hmk hxm w) true) (= (hmk hxm (nat-fold drop-act w xs)) true)))
@@ -834,45 +906,42 @@
   (apply (tbl-all-mono Nat (hk-noc (:comps w)) (hk-noc (:comps (drop-act w a))) _ t (And.right hn)))
   (intros y hy) (simp only [hk-noc hk-has-drop-act]) (simp only [hk-noc] at hy) (exact hy)
   (simp only [nat-fold]) (exact (ih (drop-act w a) hn2 h1)))
-(override! HMK 'inv-cancel-acts '[]
-  '(a/theorem hmk-cancel-acts [hxm :- (List Nat), w :- World, rid :- Nat]
-     (=> (= (hmk hxm w) true) (= (hmk hxm (cancel-acts w rid)) true))
-     (intro h)
-     (simp only [cancel-acts])
-     (exact (hmk-fold-drop-act hxm (tbl-scan act-id (act-of-run rid) (:acts w)) w
-              (hk-acts-noc w (act-of-run rid) (hmk-sample hxm w h)) h))))
-(override! HMK 't8-unobserve-inv '[]
-  '(a/theorem t8-unobserve-hmk [hxm :- (List Nat), w :- World, x :- Nat]
-     (=> (= (hmk hxm w) true) (= (hmk hxm (:world (t8-unobserve w x))) true))
-     (intro h)
-     (cases hf (edge-find w x))
-     (simp only [t8-unobserve hf refuse]) (exact h)
-     (rename_i e)
-     (cases hk0 (Nat.beq (:kind e) ek-observe))
-     (simp only [t8-unobserve hf hk0 refuse]) (exact h)
-     (have k1 := (Nat.eq_of_beq_eq_true hk0))
-     (have nd (= (Nat.beq (:kind e) ek-dep) false)) (rw [k1])
-     (have hu := (hk-u-of-unm hxm w x (fn [e2 :- EdgeRow, hf2 :- (= (edge-find w x) (Option.some EdgeRow e2))]
-                                         (hk-found-nondep hxm w x e2 (hmk-rest-of hxm w h) hf2
-                                           (Eq.trans (congrArg (fn [q :- EdgeRow] (Nat.beq (:kind q) ek-dep)) (Eq.symm (Option.some.inj (Eq.trans (Eq.symm hf) hf2)))) nd)))))
-     (simp only [t8-unobserve hf hk0 accept]) (exact (hmk-remove-edge hxm w x hu h))))
-(override! HMK 't22-un-inv '[]
-  '(a/theorem t22-un-hmk [hxm :- (List Nat), w :- World, x :- Nat]
-     (=> (= (hmk hxm w) true) (= (hmk hxm (:world (t22-host-unawait w x))) true))
-     (intro h)
-     (cases hf (edge-find w x))
-     (simp only [t22-host-unawait hf refuse]) (exact h)
-     (rename_i e)
-     (cases hk0 (Bool.and (Nat.beq (:kind e) ek-wait) (Nat.beq (:creditor e) 0)))
-     (simp only [t22-host-unawait hf hk0 refuse]) (exact h)
-     (simp only [Bool.and_eq_true] at hk0)
-     (have k1 := (Nat.eq_of_beq_eq_true (And.left hk0)))
-     (have nd (= (Nat.beq (:kind e) ek-dep) false)) (rw [k1])
-     (have hu := (hk-u-of-unm hxm w x (fn [e2 :- EdgeRow, hf2 :- (= (edge-find w x) (Option.some EdgeRow e2))]
-                                         (hk-found-nondep hxm w x e2 (hmk-rest-of hxm w h) hf2
-                                           (Eq.trans (congrArg (fn [q :- EdgeRow] (Nat.beq (:kind q) ek-dep)) (Eq.symm (Option.some.inj (Eq.trans (Eq.symm hf) hf2)))) nd)))))
-     (have hk2 (= (Bool.and (Nat.beq (:kind e) ek-wait) (Nat.beq (:creditor e) 0)) true)) (simp only [hk0 Bool.and_self])
-     (simp only [t22-host-unawait hf hk2 accept]) (exact (hmk-remove-edge hxm w x hu h))))
+(a/theorem hmk-cancel-acts [hxm :- (List Nat), w :- World, rid :- Nat]
+  (=> (= (hmk hxm w) true) (= (hmk hxm (cancel-acts w rid)) true))
+  (intro h)
+  (simp only [cancel-acts])
+  (exact (hmk-fold-drop-act hxm (tbl-scan act-id (act-of-run rid) (:acts w)) w
+           (hk-acts-noc w (act-of-run rid) (hmk-sample hxm w h)) h)))
+(a/theorem t8-unobserve-hmk [hxm :- (List Nat), w :- World, x :- Nat]
+  (=> (= (hmk hxm w) true) (= (hmk hxm (:world (t8-unobserve w x))) true))
+  (intro h)
+  (cases hf (edge-find w x))
+  (simp only [t8-unobserve hf refuse]) (exact h)
+  (rename_i e)
+  (cases hk0 (Nat.beq (:kind e) ek-observe))
+  (simp only [t8-unobserve hf hk0 refuse]) (exact h)
+  (have k1 := (Nat.eq_of_beq_eq_true hk0))
+  (have nd (= (Nat.beq (:kind e) ek-dep) false)) (rw [k1])
+  (have hu := (hk-u-of-unm hxm w x (fn [e2 :- EdgeRow, hf2 :- (= (edge-find w x) (Option.some EdgeRow e2))]
+                                      (hk-found-nondep hxm w x e2 (hmk-rest-of hxm w h) hf2
+                                        (Eq.trans (congrArg (fn [q :- EdgeRow] (Nat.beq (:kind q) ek-dep)) (Eq.symm (Option.some.inj (Eq.trans (Eq.symm hf) hf2)))) nd)))))
+  (simp only [t8-unobserve hf hk0 accept]) (exact (hmk-remove-edge hxm w x hu h)))
+(a/theorem t22-un-hmk [hxm :- (List Nat), w :- World, x :- Nat]
+  (=> (= (hmk hxm w) true) (= (hmk hxm (:world (t22-host-unawait w x))) true))
+  (intro h)
+  (cases hf (edge-find w x))
+  (simp only [t22-host-unawait hf refuse]) (exact h)
+  (rename_i e)
+  (cases hk0 (Bool.and (Nat.beq (:kind e) ek-wait) (Nat.beq (:creditor e) 0)))
+  (simp only [t22-host-unawait hf hk0 refuse]) (exact h)
+  (simp only [Bool.and_eq_true] at hk0)
+  (have k1 := (Nat.eq_of_beq_eq_true (And.left hk0)))
+  (have nd (= (Nat.beq (:kind e) ek-dep) false)) (rw [k1])
+  (have hu := (hk-u-of-unm hxm w x (fn [e2 :- EdgeRow, hf2 :- (= (edge-find w x) (Option.some EdgeRow e2))]
+                                      (hk-found-nondep hxm w x e2 (hmk-rest-of hxm w h) hf2
+                                        (Eq.trans (congrArg (fn [q :- EdgeRow] (Nat.beq (:kind q) ek-dep)) (Eq.symm (Option.some.inj (Eq.trans (Eq.symm hf) hf2)))) nd)))))
+  (have hk2 (= (Bool.and (Nat.beq (:kind e) ek-wait) (Nat.beq (:creditor e) 0)) true)) (simp only [hk0 Bool.and_self])
+  (simp only [t22-host-unawait hf hk2 accept]) (exact (hmk-remove-edge hxm w x hu h)))
 
 ;; ---- computation ids through the fires (no fire inserts or deletes a computation)
 (a/theorem hk-has-fill-slot [w :- World, a :- ActRow, x :- Nat, v :- RunResult, y :- Nat]
@@ -979,33 +1048,31 @@
   (simp only [hk-dok hk0 Bool.true_or]))
 (a/theorem hk-append-nil [xs :- (List Nat)] (= (List.append Nat xs (List.nil Nat)) xs)
   (induction xs) (case [nil] (rfl)) (case [cons h t ih] (simp only [List.append ih])))
-(override! HMK 'inv-fin-loop '[]
-  '(a/theorem hmk-fin-loop [hxm :- (List Nat), fuel :- (List Nat)]
-     (forall [w :- World, ds :- (List Nat)]
-       (=> (= (tbl-all (hk-noc (:comps w)) ds) true) (= (hmk hxm w) true) (= (hmk hxm (:world (fin-loop fuel w ds))) true)))
-     (induction fuel)
-     (case' [cons h f ih])
-     (case' [nil])
-     (intros w ds hn hw) (simp only [fin-loop]) (exact hw)
-     (intros w ds hn hw)
-     (cases ds)
-     (simp only [fin-loop]) (exact hw)
-     (rename_i d t)
-     (simp only [tbl-all Bool.and_eq_true] at hn)
-     (have na := (And.left hn)) (simp only [hk-noc] at na)
-     (have na2 := (bnot-true _ na))
-     (have hn2 := (hk-noc-all (:comps w) (:comps (finalize-one w d)) t (fn [y :- Nat] (hk-has-finalize-one w d y)) (And.right hn)))
-     (have hn3 (= (tbl-all (hk-noc (:comps (finalize-one w d)))
-                    (List.append Nat t (tbl-filter (final-comp-id (finalize-one w d)) (tbl-scan edge-cred (fin-drop (:acts w) d) (:edges w))))) true))
-     (rw [filter-final-nil]) (rw [hk-append-nil]) (exact hn2)
-     (simp only [fin-loop])
-     (exact (ih _ _ hn3 (hmk-finalize-one hxm w d na2 hw)))))
-(override! HMK 'inv-finalize-debtor '[inv-fin-loop]
-  '(a/theorem hmk-finalize-debtor [hxm :- (List Nat), w :- World, d :- Nat]
-     (=> (= (tbl-has comp-id d (:comps w)) false) (= (hmk hxm w) true) (= (hmk hxm (finalize-debtor w d)) true))
-     (intros hd h)
-     (have hn (= (tbl-all (hk-noc (:comps w)) (List.cons Nat d (List.nil Nat))) true)) (simp only [tbl-all hk-noc hd Bool.not_false Bool.and_self])
-     (exact (hmk-fin-loop hxm (fin-fuel w) w _ hn h))))
+(a/theorem hmk-fin-loop [hxm :- (List Nat), fuel :- (List Nat)]
+  (forall [w :- World, ds :- (List Nat)]
+    (=> (= (tbl-all (hk-noc (:comps w)) ds) true) (= (hmk hxm w) true) (= (hmk hxm (:world (fin-loop fuel w ds))) true)))
+  (induction fuel)
+  (case' [cons h f ih])
+  (case' [nil])
+  (intros w ds hn hw) (simp only [fin-loop]) (exact hw)
+  (intros w ds hn hw)
+  (cases ds)
+  (simp only [fin-loop]) (exact hw)
+  (rename_i d t)
+  (simp only [tbl-all Bool.and_eq_true] at hn)
+  (have na := (And.left hn)) (simp only [hk-noc] at na)
+  (have na2 := (bnot-true _ na))
+  (have hn2 := (hk-noc-all (:comps w) (:comps (finalize-one w d)) t (fn [y :- Nat] (hk-has-finalize-one w d y)) (And.right hn)))
+  (have hn3 (= (tbl-all (hk-noc (:comps (finalize-one w d)))
+                 (List.append Nat t (tbl-filter (final-comp-id (finalize-one w d)) (tbl-scan edge-cred (fin-drop (:acts w) d) (:edges w))))) true))
+  (rw [filter-final-nil]) (rw [hk-append-nil]) (exact hn2)
+  (simp only [fin-loop])
+  (exact (ih _ _ hn3 (hmk-finalize-one hxm w d na2 hw))))
+(a/theorem hmk-finalize-debtor [hxm :- (List Nat), w :- World, d :- Nat]
+  (=> (= (tbl-has comp-id d (:comps w)) false) (= (hmk hxm w) true) (= (hmk hxm (finalize-debtor w d)) true))
+  (intros hd h)
+  (have hn (= (tbl-all (hk-noc (:comps w)) (List.cons Nat d (List.nil Nat))) true)) (simp only [tbl-all hk-noc hd Bool.not_false Bool.and_self])
+  (exact (hmk-fin-loop hxm (fin-fuel w) w _ hn h)))
 (a/theorem hk-fin-loop-has [fuel :- (List Nat)]
   (forall [w :- World, ds :- (List Nat), y :- Nat] (= (tbl-has comp-id y (:comps (:world (fin-loop fuel w ds)))) (tbl-has comp-id y (:comps w))))
   (induction fuel)
@@ -1069,178 +1136,72 @@
   (intros r m)
   (simp only [hk-noc (hk-src-not-comp w (source-id r) h (has-of-mem SourceRow source-id r (:sources w) m)) Bool.not_false]))
 
-(override! HMK 'inv-deliver-res '[inv-finalize-debtor nat-fold-inv inv-fire-edge inv-source-upd]
-  '(a/theorem hmk-deliver-res [hxm :- (List Nat), w :- World, x :- Nat, v :- Nat, rr :- RunResult]
-     (=> (= (tbl-has comp-id x (:comps w)) false) (= (hmk hxm w) true) (= (hmk hxm (deliver-res w x v rr)) true))
-     (intros hx h)
-     (have h0 := (hmk-source-upd hxm w x (source-write v) (source-write-source-id v) h))
-     (have h1 := (nat-fold-hmk hxm (fire-edge rr) (hmk-fire-edge hxm rr) (edges-onto x (:edges w)) _ h0))
-     (have h2 := (nat-fold-hmk hxm (fire-edge rr) (hmk-fire-edge hxm rr) (waits-on x (:edges w)) _ h1))
-     (have hx2 (= (tbl-has comp-id x (:comps (nat-fold (fire-edge rr) (nat-fold (fire-edge rr) (source-upd w x (source-write v)) (edges-onto x (:edges w))) (waits-on x (:edges w))))) false))
-     (exact (Eq.trans (hk-fold-fire-has rr (waits-on x (:edges w)) _ x)
-              (Eq.trans (hk-fold-fire-has rr (edges-onto x (:edges w)) (source-upd w x (source-write v)) x) hx)))
-     (simp only [deliver-res])
-     (exact (hmk-finalize-debtor hxm _ x hx2 h2))))
-(override! HMK 'inv-end-link '[inv-deliver-res inv-source-upd]
-  '(a/theorem hmk-end-link [hxm :- (List Nat), w :- World, x :- Nat, fl :- Bool, v :- Nat]
-     (=> (= (hmk hxm w) true) (= (hmk hxm (end-link w x fl v)) true))
-     (intro h)
-     (cases hp (link-pending w x))
-     (simp only [end-link hp]) (exact h)
-     (have hx := (hk-src-not-comp w x (hmk-sample hxm w h) (link-pending-has w x hp)))
-     (simp only [end-link hp realize-link])
-     (exact (hmk-deliver-res hxm (source-upd w x (link-done-row fl 0)) x _ _ hx (hmk-source-upd hxm w x (link-done-row fl 0) (link-done-row-id fl 0) h)))))
-(override! HMK 'inv-realize-link '[inv-deliver-res inv-source-upd]
-  '(a/theorem hmk-realize-link [hxm :- (List Nat), w :- World, x :- Nat, v :- Nat, fl :- Bool, n :- Nat]
-     (=> (= (tbl-has comp-id x (:comps w)) false) (= (hmk hxm w) true) (= (hmk hxm (realize-link w x v fl n)) true))
-     (intros hx h)
-     (simp only [realize-link])
-     (exact (hmk-deliver-res hxm (source-upd w x (link-done-row fl n)) x v _ hx (hmk-source-upd hxm w x (link-done-row fl n) (link-done-row-id fl n) h)))))
-(override! HMK 'inv-link-next-raw '[inv-realize-link inv-source-ins-fresh]
-  '(a/theorem hmk-link-next-raw [hxm :- (List Nat), w :- World, l :- Nat, v :- Nat]
-     (=> (= (tbl-has comp-id l (:comps w)) false) (= (hmk hxm w) true) (= (hmk hxm (link-next-raw w l v)) true))
-     (intros hx h)
-     (simp only [link-next-raw])
-     (exact (hmk-realize-link hxm (bump (source-ins w (new-link (:next-id w) root-scope-id 0))) l v false _ hx
-              (hmk-source-ins-fresh hxm w (new-link (:next-id w) root-scope-id 0) (rfl) h)))))
-(override! HMK 'link-realize-raw-inv '[inv-link-next-raw inv-realize-link]
-  '(a/theorem link-realize-raw-hmk [hxm :- (List Nat), w :- World, l :- Nat, tag :- Nat, v :- Nat, n :- Nat]
-     (=> (= (tbl-has comp-id l (:comps w)) false) (= (hmk hxm w) true) (= (hmk hxm (:world (link-realize-raw w l tag v n))) true))
-     (intros hx h)
-     (cases h1 (Nat.beq tag res-ok))
-     (case [true]
-       (cases h2 (Nat.beq n (:next-id w)))
-       (case [false] (simp only [link-realize-raw h1 h2 refuse]) (exact h))
-       (case [true] (simp only [link-realize-raw h1 h2 accept]) (exact (hmk-link-next-raw hxm w l v hx h))))
-     (case [false]
-       (cases h2 (Nat.beq n 0))
-       (case [false] (simp only [link-realize-raw h1 h2 refuse]) (exact h))
-       (case [true]
-         (cases h3 (Nat.beq tag res-none))
-         (case [true] (simp only [link-realize-raw h1 h2 h3 accept]) (exact (hmk-realize-link hxm w l 0 false 0 hx h)))
-         (case [false]
-           (cases h4 (Nat.beq tag res-err))
-           (case [false] (simp only [link-realize-raw h1 h2 h3 h4 refuse]) (exact h))
-           (case [true] (simp only [link-realize-raw h1 h2 h3 h4 accept]) (exact (hmk-realize-link hxm w l v true 0 hx h))))))))
-(override! HMK 't-link-realize-inv '[link-realize-raw-inv]
-  '(a/theorem t-link-realize-hmk [hxm :- (List Nat), w :- World, l :- Nat, tag :- Nat, v :- Nat, n :- Nat]
-     (=> (= (hmk hxm w) true) (= (hmk hxm (:world (t-link-realize w l tag v n))) true))
-     (intro h)
-     (cases hf (source-find w l)) (case' [some s]) (case' [none])
-     (simp only [t-link-realize hf refuse]) (exact h)
-     (have hx := (hk-src-not-comp w l (hmk-sample hxm w h) (tbl-find-has SourceRow source-id l s (:sources w) hf)))
-     (cases hg (link-idle w s))
-     (simp only [t-link-realize hf hg refuse]) (exact h)
-     (simp only [t-link-realize hf hg]) (exact (link-realize-raw-hmk hxm w l tag v n hx h))))
-(override! HMK 'inv-append-raw '[inv-realize-link inv-source-ins-fresh inv-source-upd]
-  '(a/theorem hmk-append-raw [hxm :- (List Nat), w :- World, x :- Nat, v :- Nat, old :- Nat]
-     (=> (= (tbl-has comp-id old (:comps w)) false) (= (hmk hxm w) true) (= (hmk hxm (append-raw w x v old)) true))
-     (intros hx h)
-     (simp only [append-raw])
-     (exact (hmk-realize-link hxm (bump (source-ins (source-upd w x (stream-set-tail (:next-id w))) (new-link (:next-id w) root-scope-id x))) old v false _ hx
-              (hmk-source-ins-fresh hxm (source-upd w x (stream-set-tail (:next-id w))) (new-link (:next-id w) root-scope-id x) (rfl)
-                (hmk-source-upd hxm w x (stream-set-tail (:next-id w)) (stream-set-tail-id _) h))))))
-(override! HMK 't-append-inv '[inv-append-raw]
-  '(a/theorem t-append-hmk [hxm :- (List Nat), w :- World, x :- Nat, v :- Nat, t :- Nat]
-     (=> (= (hmk hxm w) true) (= (hmk hxm (:world (t-append w x v t))) true))
-     (intro h)
-     (cases hf (source-find w x)) (case' [some s]) (case' [none])
-     (simp only [t-append hf refuse]) (exact h)
-     (cases hg (Bool.and (open-kind sk-stream s) (Bool.and (Nat.beq t (:next-id w)) (link-pending w (:tail s)))))
-     (simp only [t-append hf hg refuse]) (exact h)
-     (have hp (= (link-pending w (:tail s)) true)) (simp only [Bool.and_eq_true] at hg) (exact (And.right (And.right hg)))
-     (have hx := (hk-src-not-comp w (:tail s) (hmk-sample hxm w h) (link-pending-has w (:tail s) hp)))
-     (simp only [t-append hf hg accept]) (exact (hmk-append-raw hxm w x v _ hx h))))
-(override! HMK 'inv-close-raw '[inv-close-source inv-end-link]
-  '(a/theorem hmk-close-raw [hxm :- (List Nat), w :- World, x :- Nat, t :- Nat, tag :- Nat, v :- Nat]
-     (=> (= (tbl-has comp-id x (:comps w)) false) (= (hmk hxm w) true) (= (hmk hxm (close-raw w x t tag v)) true))
-     (intros hx h)
-     (simp only [close-raw])
-     (exact (hmk-close-source hxm (end-link w t (Nat.beq tag res-err) v) x (Eq.trans (hk-has-end-link w t _ v x) hx) (hmk-end-link hxm w t _ v h)))))
-(override! HMK 't-close-inv '[inv-close-raw]
-  '(a/theorem t-close-hmk [hxm :- (List Nat), w :- World, x :- Nat, tag :- Nat, v :- Nat]
-     (=> (= (hmk hxm w) true) (= (hmk hxm (:world (t-close w x tag v))) true))
-     (intro h)
-     (cases hf (source-find w x)) (case' [some s]) (case' [none])
-     (simp only [t-close hf refuse]) (exact h)
-     (have hx := (hk-src-not-comp w x (hmk-sample hxm w h) (tbl-find-has SourceRow source-id x s (:sources w) hf)))
-     (cases hg (Bool.and (open-kind sk-stream s) (close-tag-ok tag)))
-     (simp only [t-close hf hg refuse]) (exact h)
-     (simp only [t-close hf hg accept]) (exact (hmk-close-raw hxm w x _ tag v hx h))))
-(override! HMK 'inv-close-source '[inv-end-stream inv-close-source0]
-  '(a/theorem hmk-close-source [hxm :- (List Nat), w :- World, x :- Nat]
-     (=> (= (tbl-has comp-id x (:comps w)) false) (= (hmk hxm w) true) (= (hmk hxm (close-source w x)) true))
-     (intros hx h)
-     (simp only [close-source])
-     (exact (hmk-close-source0 hxm _ x (Eq.trans (hk-has-end-stream w x x) hx) (hmk-end-stream hxm w x h)))))
-(override! HMK 'inv-close-source0 '[inv-wake-closed inv-source-upd inv-finalize-debtor]
-  '(a/theorem hmk-close-source0 [hxm :- (List Nat), w :- World, x :- Nat]
-     (=> (= (tbl-has comp-id x (:comps w)) false) (= (hmk hxm w) true) (= (hmk hxm (close-source0 w x)) true))
-     (intros hx h)
-     (simp only [close-source0])
-     (have h1 := (hmk-wake-closed hxm (source-upd w x source-close-row) x (hmk-source-upd hxm w x source-close-row source-close-row-id h)))
-     (have hx2 (= (tbl-has comp-id x (:comps (wake-closed (source-upd w x source-close-row) x))) false))
-     (exact (Eq.trans (hk-has-wake-closed (source-upd w x source-close-row) x x) hx))
-     (exact (hmk-finalize-debtor hxm (wake-closed (source-upd w x source-close-row) x) x hx2 h1))))
-(override! HMK 'inv-close-local '[nat-fold-inv inv-close-scope-id inv-close-source]
-  '(a/theorem hmk-close-local [hxm :- (List Nat), w :- World, sub :- (List Nat)]
-     (=> (= (hmk hxm w) true) (= (hmk hxm (close-local w sub)) true))
-     (intro h)
-     (have h1 := (nat-fold-hmk hxm close-scope-id (hmk-close-scope-id hxm) sub w h))
-     (have n0 := (hk-sources-noc w (source-owned-in sub) (hmk-sample hxm w h)))
-     (have n1 := (hk-noc-all (:comps w) (:comps (nat-fold close-scope-id w sub)) (tbl-scan source-id (source-owned-in sub) (:sources w))
-                   (fn [y :- Nat] (hk-fold-has close-scope-id (fn [w2 :- World, x2 :- Nat, y2 :- Nat] (Eq.refl (tbl-has comp-id y2 (:comps w2)))) sub w y))
-                   n0))
-     (simp only [close-local])
-     (exact (hmk-fold-noc hxm close-source (fn [w2 :- World, x2 :- Nat, hx :- (= (tbl-has comp-id x2 (:comps w2)) false), h2 :- (= (hmk hxm w2) true)]
-                                             (hmk-close-source hxm w2 x2 hx h2))
-              hk-has-close-source (tbl-scan source-id (source-owned-in sub) (:sources w)) (nat-fold close-scope-id w sub) n1 h1))))
-(override! HMK 'inv-fire-task-cancelled '[nat-fold-inv inv-fire-edge inv-finalize-debtor]
-  '(a/theorem hmk-fire-task-cancelled [hxm :- (List Nat), w :- World, d :- Nat]
-     (=> (= (tbl-has comp-id d (:comps w)) false) (= (hmk hxm w) true) (= (hmk hxm (fire-task-cancelled w d)) true))
-     (intros hd h)
-     (simp only [fire-task-cancelled])
-     (have h1 := (nat-fold-hmk hxm (fire-edge res-cancelled) (hmk-fire-edge hxm res-cancelled) (tbl-scan edge-id (on-task d) (:edges w)) w h))
-     (exact (hmk-finalize-debtor hxm (nat-fold (fire-edge res-cancelled) w (tbl-scan edge-id (on-task d) (:edges w))) d
-              (Eq.trans (hk-fold-fire-has res-cancelled (tbl-scan edge-id (on-task d) (:edges w)) w d) hd) h1))))
-(override! HMK 'inv-debtor-side '[inv-fire-task-cancelled inv-task-upd inv-invalidate-dependents inv-fire-waits-cancelled inv-clear-rtasks]
-  '(a/theorem hmk-debtor-side [hxm :- (List Nat), w :- World, r :- RunRow]
-     (=> (= (hmk hxm w) true) (= (hmk hxm (debtor-side w r)) true))
-     (intro h)
-     (cases hc (comp-find w (:of r)))
-     (have hd := (tbl-find-none-has CompRow comp-id (:of r) (:comps w) hc))
-     (simp only [debtor-side hc])
-     (exact (hmk-clear-rtasks hxm _ (:of r) (hmk-fire-task-cancelled hxm (task-upd w (:of r) task-cancel-result) (:of r) hd
-              (hmk-task-upd hxm w (:of r) task-cancel-result task-cancel-result-id h))))
-     (rename_i c)
-     (cases he (Nat.beq (:epoch r) (:epoch c)))
-     (simp only [debtor-side hc he]) (exact h)
-     (simp only [debtor-side hc he])
-     (exact (hmk-invalidate-dependents hxm (fire-waits-cancelled w (:of r)) (:of r) (hmk-fire-waits-cancelled hxm w (:of r) h)))))
-(override! HMK 'inv-fin-if-final '[inv-finalize-debtor]
-  '(a/theorem hmk-fin-if-final [hxm :- (List Nat), w :- World, d :- Nat]
-     (=> (= (hmk hxm w) true) (= (hmk hxm (fin-if-final w d)) true))
-     (intro h)
-     (cases hf (deb-final w d))
-     (simp only [fin-if-final hf]) (exact h)
-     (simp only [fin-if-final hf]) (exact (hmk-finalize-debtor hxm w d (hk-final-not-comp w d (hmk-sample hxm w h) hf) h))))
-(override! HMK 't-deliver-inv '[inv-finalize-debtor nat-fold-inv inv-fire-edge inv-deliver-fire]
-  '(a/theorem t-deliver-hmk [hxm :- (List Nat), w :- World, x :- Nat, v :- Nat]
-     (=> (= (hmk hxm w) true) (= (hmk hxm (:world (t-deliver w x v))) true))
-     (intro h)
-     (cases hs (source-find w x))
-     (simp only [t-deliver hs refuse]) (exact h)
-     (rename_i s)
-     (have hx := (hk-src-not-comp w x (hmk-sample hxm w h) (tbl-find-has SourceRow source-id x s (:sources w) hs)))
-     (cases hg (deliverable s))
-     (simp only [t-deliver hs hg refuse]) (exact h)
-     (have h1 := (nat-fold-hmk hxm (fire-edge (RunResult.mk res-ok v)) (hmk-fire-edge hxm (RunResult.mk res-ok v)) (waits-on x (:edges w))
-                   (deliver-fire w x v) (hmk-deliver-fire hxm w x v h)))
-     (have hx2 (= (tbl-has comp-id x (:comps (nat-fold (fire-edge (RunResult.mk res-ok v)) (deliver-fire w x v) (waits-on x (:edges w))))) false))
-     (exact (Eq.trans (hk-fold-fire-has (RunResult.mk res-ok v) (waits-on x (:edges w)) (deliver-fire w x v) x)
-              (Eq.trans (hk-fold-fire-has (RunResult.mk res-ok v) (edges-onto x (:edges w)) (source-upd w x (source-write v)) x) hx)))
-     (simp only [t-deliver hs hg accept deliver-raw])
-     (exact (hmk-finalize-debtor hxm _ x hx2 h1))))
+(tree/restate! HMK '[nat-fold-inv inv-source-upd])
+(tree/restate! HMK '[inv-source-upd inv-deliver-res])
+(a/theorem hmk-end-link [hxm :- (List Nat), w :- World, x :- Nat, fl :- Bool, v :- Nat]
+  (=> (= (hmk hxm w) true) (= (hmk hxm (end-link w x fl v)) true))
+  (intro h)
+  (cases hp (link-pending w x))
+  (simp only [end-link hp]) (exact h)
+  (have hx := (hk-src-not-comp w x (hmk-sample hxm w h) (link-pending-has w x hp)))
+  (simp only [end-link hp realize-link])
+  (exact (hmk-deliver-res hxm (source-upd w x (link-done-row fl 0)) x _ _ hx (hmk-source-upd hxm w x (link-done-row fl 0) (link-done-row-id fl 0) h))))
+(tree/restate! HMK '[inv-source-upd])
+(tree/restate! HMK '[inv-source-ins-fresh])
+(tree/restate! HMK '[inv-source-ins-fresh inv-source-upd])
+(tree/restate! HMK '[inv-wake-closed inv-source-upd])
+(tree/restate! HMK '[inv-end-stream])
+(tree/restate! HMK '[nat-fold-inv inv-close-scope-id inv-close-source])
+(a/theorem hmk-close-local [hxm :- (List Nat), w :- World, sub :- (List Nat)]
+  (=> (= (hmk hxm w) true) (= (hmk hxm (close-local w sub)) true))
+  (intro h)
+  (have h1 := (nat-fold-hmk hxm close-scope-id (hmk-close-scope-id hxm) sub w h))
+  (have n0 := (hk-sources-noc w (source-owned-in sub) (hmk-sample hxm w h)))
+  (have n1 := (hk-noc-all (:comps w) (:comps (nat-fold close-scope-id w sub)) (tbl-scan source-id (source-owned-in sub) (:sources w))
+                (fn [y :- Nat] (hk-fold-has close-scope-id (fn [w2 :- World, x2 :- Nat, y2 :- Nat] (Eq.refl (tbl-has comp-id y2 (:comps w2)))) sub w y))
+                n0))
+  (simp only [close-local])
+  (exact (hmk-fold-noc hxm close-source (fn [w2 :- World, x2 :- Nat, hx :- (= (tbl-has comp-id x2 (:comps w2)) false), h2 :- (= (hmk hxm w2) true)]
+                                          (hmk-close-source hxm w2 x2 hx h2))
+           hk-has-close-source (tbl-scan source-id (source-owned-in sub) (:sources w)) (nat-fold close-scope-id w sub) n1 h1)))
+(tree/restate! HMK '[nat-fold-inv])
+(tree/restate! HMK '[inv-task-upd inv-invalidate-dependents inv-fire-waits-cancelled inv-clear-rtasks inv-fire-task-cancelled])
+(a/theorem hmk-debtor-side [hxm :- (List Nat), w :- World, r :- RunRow]
+  (=> (= (hmk hxm w) true) (= (hmk hxm (debtor-side w r)) true))
+  (intro h)
+  (cases hc (comp-find w (:of r)))
+  (have hd := (tbl-find-none-has CompRow comp-id (:of r) (:comps w) hc))
+  (simp only [debtor-side hc])
+  (exact (hmk-clear-rtasks hxm _ (:of r) (hmk-fire-task-cancelled hxm (task-upd w (:of r) task-cancel-result) (:of r) hd
+           (hmk-task-upd hxm w (:of r) task-cancel-result task-cancel-result-id h))))
+  (rename_i c)
+  (cases he (Nat.beq (:epoch r) (:epoch c)))
+  (simp only [debtor-side hc he]) (exact h)
+  (simp only [debtor-side hc he])
+  (exact (hmk-invalidate-dependents hxm (fire-waits-cancelled w (:of r)) (:of r) (hmk-fire-waits-cancelled hxm w (:of r) h))))
+(a/theorem hmk-fin-if-final [hxm :- (List Nat), w :- World, d :- Nat]
+  (=> (= (hmk hxm w) true) (= (hmk hxm (fin-if-final w d)) true))
+  (intro h)
+  (cases hf (deb-final w d))
+  (simp only [fin-if-final hf]) (exact h)
+  (simp only [fin-if-final hf]) (exact (hmk-finalize-debtor hxm w d (hk-final-not-comp w d (hmk-sample hxm w h) hf) h)))
+(tree/restate! HMK '[nat-fold-inv inv-deliver-fire])
+(a/theorem t-deliver-hmk [hxm :- (List Nat), w :- World, x :- Nat, v :- Nat]
+  (=> (= (hmk hxm w) true) (= (hmk hxm (:world (t-deliver w x v))) true))
+  (intro h)
+  (cases hs (source-find w x))
+  (simp only [t-deliver hs refuse]) (exact h)
+  (rename_i s)
+  (have hx := (hk-src-not-comp w x (hmk-sample hxm w h) (tbl-find-has SourceRow source-id x s (:sources w) hs)))
+  (cases hg (deliverable s))
+  (simp only [t-deliver hs hg refuse]) (exact h)
+  (have h1 := (nat-fold-hmk hxm (fire-edge (RunResult.mk res-ok v)) (hmk-fire-edge hxm (RunResult.mk res-ok v)) (waits-on x (:edges w))
+                (deliver-fire w x v) (hmk-deliver-fire hxm w x v h)))
+  (have hx2 (= (tbl-has comp-id x (:comps (nat-fold (fire-edge (RunResult.mk res-ok v)) (deliver-fire w x v) (waits-on x (:edges w))))) false))
+  (exact (Eq.trans (hk-fold-fire-has (RunResult.mk res-ok v) (waits-on x (:edges w)) (deliver-fire w x v) x)
+           (Eq.trans (hk-fold-fire-has (RunResult.mk res-ok v) (edges-onto x (:edges w)) (source-upd w x (source-write v)) x) hx)))
+  (simp only [t-deliver hs hg accept deliver-raw])
+  (exact (hmk-finalize-debtor hxm _ x hx2 h1)))
 
 ;; ---- T7: the removed track edge is unmarked (a new edge, or a site edge on the source)
 (a/theorem hk-find-upd [A :- Type, idf :- (=> A Nat), x :- Nat, f :- (=> A A),
@@ -1262,53 +1223,52 @@
   (simp only [edge-find insert-edge-fresh insert-edge bump edge-ins set-next-id set-edges tbl-ins tbl-find edge-set-marked edge-set-id edge-id Nat.beq_refl] at hf)
   (have z := (Option.some.inj hf))
   (rw [← z]))
-(override! HMK 'inv-track-fin '[]
-  '(a/theorem hmk-track-fin [hxm :- (List Nat), s :- SourceRow, y :- Nat, w :- World]
-     (=> (forall [e :- EdgeRow] (=> (= (edge-find w y) (Option.some EdgeRow e)) (= (:marked e) false)))
-         (= (hmk hxm w) true) (= (hmk hxm (track-fin s y w)) true))
-     (intros hu h)
-     (cases ho (:open s))
-     (simp only [track-fin ho]) (exact (hmk-remove-edge hxm w y (hk-u-of-unm hxm w y hu) h))
-     (simp only [track-fin ho]) (exact h)))
-(override! HMK 'inv-track-raw '[inv-track-fin insert-edge-fresh-inv-sample inv-edge-upd inv-run-upd]
-  '(a/theorem hmk-track-raw [hxm :- (List Nat), w :- World, r :- RunRow, x :- Nat, s :- SourceRow, k :- Nat]
-     (=> (= (comp-has w (:of r)) true) (= (source-find w x) (Option.some SourceRow s))
-         (= (hmk hxm w) true) (= (hmk hxm (track-raw w r x s k)) true))
-     (intros hc hs h)
-     (have hxn := (hk-src-not-comp w x (hmk-sample hxm w h) (tbl-find-has SourceRow source-id x s (:sources w) hs)))
-     (have h2 (= (hmk hxm (match (site-edge (:edges w) (:of r) (:effect-index r) x)
-                             [none (track-new w r x s k)]
-                             [(some e) (comp-upd (track-fin s (:id e) (edge-upd w (:id e) (edge-reread (track-cont r k) s)))
-                                                 (:of r) (comp-consume-adopt (:effect-index r) x))])) true))
-     (cases he (site-edge (:edges w) (:of r) (:effect-index r) x))
-     (simp only [track-new])
-     (have h3 := (insert-edge-fresh-hmk hxm w (track-edge r x s k) (track-edge-ok w r x s k hc hs) h))
-     (have h4 := (hmk-track-fin hxm s (:next-id w) (insert-edge-fresh w (track-edge r x s k))
-                   (fn [e2 :- EdgeRow, hf2 :- (= (edge-find (insert-edge-fresh w (track-edge r x s k)) (:next-id w)) (Option.some EdgeRow e2))]
-                     (hk-find-fresh w (track-edge r x s k) e2 hf2)) h3))
-     (exact (hmk-comp-upd-m hxm (track-fin s (:next-id w) (insert-edge-fresh w (track-edge r x s k))) (:of r)
-              (comp-consume-adopt (:effect-index r) x) (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _)
-              (fn [c :- CompRow, hc2 :- (= (hk-wt c) true)] hc2) h4))
-     (rename_i e)
-     (have sm := (site-edge-mem (:edges w) (:of r) (:effect-index r) x e he))
-     (have fs := (find-self EdgeRow edge-id e (:edges w) (l5-edge-nodup w (hmk-sample hxm w h)) (And.left sm)))
-     (have fs2 (= (edge-find w (:id e)) (Option.some EdgeRow e))) (exact fs)
-     (have de := (Nat.eq_of_beq_eq_true (And.right sm)))
-     (have hdn (= (tbl-has comp-id (:debtor e) (:comps w)) false)) (rw [de]) (exact hxn)
-     (have um := (hk-found-noncomp hxm w (:id e) e (hmk-rest-of hxm w h) fs2 hdn))
-     (have h3 := (hmk-edge-upd hxm w (:id e) (edge-reread (track-cont r k) s) (edge-reread-edge-id _ _) (edge-reread-kind _ _)
-                   (edge-reread-creditor _ _) (edge-reread-debtor _ _) (edge-reread-marked _ _) h))
-     (have fu := (hk-find-upd EdgeRow edge-id (:id e) (edge-reread (track-cont r k) s) (edge-reread-edge-id _ _) (:edges w) e fs))
-     (have h4 := (hmk-track-fin hxm s (:id e) (edge-upd w (:id e) (edge-reread (track-cont r k) s))
-                   (fn [e2 :- EdgeRow, hf2 :- (= (edge-find (edge-upd w (:id e) (edge-reread (track-cont r k) s)) (:id e)) (Option.some EdgeRow e2))]
-                     (Eq.trans (congrArg (fn [q :- EdgeRow] (:marked q)) (Eq.symm (Option.some.inj (Eq.trans (Eq.symm fu) hf2))))
-                               (Eq.trans (edge-reread-marked (track-cont r k) s e) um)))
-                   h3))
-     (exact (hmk-comp-upd-m hxm (track-fin s (:id e) (edge-upd w (:id e) (edge-reread (track-cont r k) s))) (:of r)
-              (comp-consume-adopt (:effect-index r) x) (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _)
-              (fn [c :- CompRow, hc2 :- (= (hk-wt c) true)] hc2) h4))
-     (simp only [track-raw])
-     (exact (hmk-run-upd hxm _ (:id r) run-tick run-tick-run-id h2))))
+(a/theorem hmk-track-fin [hxm :- (List Nat), s :- SourceRow, y :- Nat, w :- World]
+  (=> (forall [e :- EdgeRow] (=> (= (edge-find w y) (Option.some EdgeRow e)) (= (:marked e) false)))
+      (= (hmk hxm w) true) (= (hmk hxm (track-fin s y w)) true))
+  (intros hu h)
+  (cases ho (:open s))
+  (simp only [track-fin ho]) (exact (hmk-remove-edge hxm w y (hk-u-of-unm hxm w y hu) h))
+  (simp only [track-fin ho]) (exact h))
+(tree/restate! HMK '[insert-edge-fresh-inv-sample inv-edge-upd inv-run-upd])
+(a/theorem hmk-track-raw [hxm :- (List Nat), w :- World, r :- RunRow, x :- Nat, s :- SourceRow, k :- Nat]
+  (=> (= (comp-has w (:of r)) true) (= (source-find w x) (Option.some SourceRow s))
+      (= (hmk hxm w) true) (= (hmk hxm (track-raw w r x s k)) true))
+  (intros hc hs h)
+  (have hxn := (hk-src-not-comp w x (hmk-sample hxm w h) (tbl-find-has SourceRow source-id x s (:sources w) hs)))
+  (have h2 (= (hmk hxm (match (site-edge (:edges w) (:of r) (:effect-index r) x)
+                          [none (track-new w r x s k)]
+                          [(some e) (comp-upd (track-fin s (:id e) (edge-upd w (:id e) (edge-reread (track-cont r k) s)))
+                                              (:of r) (comp-consume-adopt (:effect-index r) x))])) true))
+  (cases he (site-edge (:edges w) (:of r) (:effect-index r) x))
+  (simp only [track-new])
+  (have h3 := (insert-edge-fresh-hmk hxm w (track-edge r x s k) (track-edge-ok w r x s k hc hs) h))
+  (have h4 := (hmk-track-fin hxm s (:next-id w) (insert-edge-fresh w (track-edge r x s k))
+                (fn [e2 :- EdgeRow, hf2 :- (= (edge-find (insert-edge-fresh w (track-edge r x s k)) (:next-id w)) (Option.some EdgeRow e2))]
+                  (hk-find-fresh w (track-edge r x s k) e2 hf2)) h3))
+  (exact (hmk-comp-upd-m hxm (track-fin s (:next-id w) (insert-edge-fresh w (track-edge r x s k))) (:of r)
+           (comp-consume-adopt (:effect-index r) x) (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _)
+           (fn [c :- CompRow, hc2 :- (= (hk-wt c) true)] hc2) h4))
+  (rename_i e)
+  (have sm := (site-edge-mem (:edges w) (:of r) (:effect-index r) x e he))
+  (have fs := (find-self EdgeRow edge-id e (:edges w) (l5-edge-nodup w (hmk-sample hxm w h)) (And.left sm)))
+  (have fs2 (= (edge-find w (:id e)) (Option.some EdgeRow e))) (exact fs)
+  (have de := (Nat.eq_of_beq_eq_true (And.right sm)))
+  (have hdn (= (tbl-has comp-id (:debtor e) (:comps w)) false)) (rw [de]) (exact hxn)
+  (have um := (hk-found-noncomp hxm w (:id e) e (hmk-rest-of hxm w h) fs2 hdn))
+  (have h3 := (hmk-edge-upd hxm w (:id e) (edge-reread (track-cont r k) s) (edge-reread-edge-id _ _) (edge-reread-kind _ _)
+                (edge-reread-creditor _ _) (edge-reread-debtor _ _) (edge-reread-marked _ _) h))
+  (have fu := (hk-find-upd EdgeRow edge-id (:id e) (edge-reread (track-cont r k) s) (edge-reread-edge-id _ _) (:edges w) e fs))
+  (have h4 := (hmk-track-fin hxm s (:id e) (edge-upd w (:id e) (edge-reread (track-cont r k) s))
+                (fn [e2 :- EdgeRow, hf2 :- (= (edge-find (edge-upd w (:id e) (edge-reread (track-cont r k) s)) (:id e)) (Option.some EdgeRow e2))]
+                  (Eq.trans (congrArg (fn [q :- EdgeRow] (:marked q)) (Eq.symm (Option.some.inj (Eq.trans (Eq.symm fu) hf2))))
+                            (Eq.trans (edge-reread-marked (track-cont r k) s e) um)))
+                h3))
+  (exact (hmk-comp-upd-m hxm (track-fin s (:id e) (edge-upd w (:id e) (edge-reread (track-cont r k) s))) (:of r)
+           (comp-consume-adopt (:effect-index r) x) (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _)
+           (fn [c :- CompRow, hc2 :- (= (hk-wt c) true)] hc2) h4))
+  (simp only [track-raw])
+  (exact (hmk-run-upd hxm _ (:id r) run-tick run-tick-run-id h2)))
 
 ;; ---- release-world: every remaining edge is a host edge, never marked
 (a/theorem hk-dok-host [hxm :- (List Nat), cs :- (List CompRow), e :- EdgeRow]
@@ -1320,17 +1280,17 @@
   (have k1 := (Nat.eq_of_beq_eq_true (And.left p)))
   (simp only [hk-dok not-host host-cred])
   (rw [k1]))
-(override! HMK 'inv-revoke-roots '[inv-set-pending-act inv-set-pins inv-drop-edges inv-set-released]
-  '(a/theorem hmk-revoke-roots [hxm :- (List Nat), w :- World]
-     (=> (= (hmk hxm w) true) (= (hmk hxm (revoke-roots w)) true))
-     (intro h)
-     (have h1 := (hmk-set-released hxm w true h))
-     (have r := (hmk-rest-of hxm _ h1)) (simp only [hmk-rest] at r)
-     (have p := (tbl-all-mono EdgeRow (hk-e hxm (:comps (set-released w true))) (hk-dok hxm (:comps (set-released w true)) not-host)
-                  (fn [e :- EdgeRow, he :- (= (hk-e hxm (:comps (set-released w true)) e) true)] (hk-dok-host hxm (:comps (set-released w true)) e he))
-                  (:edges (set-released w true)) r))
-     (simp only [revoke-roots])
-     (exact (hmk-set-pending-act hxm _ 0 (hmk-set-pins hxm _ _ (hmk-drop-edges hxm (set-released w true) not-host p h1))))))
+(tree/restate! HMK '[inv-set-pending-act inv-set-pins inv-drop-edges inv-set-released])
+(a/theorem hmk-revoke-roots [hxm :- (List Nat), w :- World]
+  (=> (= (hmk hxm w) true) (= (hmk hxm (revoke-roots w)) true))
+  (intro h)
+  (have h1 := (hmk-set-released hxm w true h))
+  (have r := (hmk-rest-of hxm _ h1)) (simp only [hmk-rest] at r)
+  (have p := (tbl-all-mono EdgeRow (hk-e hxm (:comps (set-released w true))) (hk-dok hxm (:comps (set-released w true)) not-host)
+               (fn [e :- EdgeRow, he :- (= (hk-e hxm (:comps (set-released w true)) e) true)] (hk-dok-host hxm (:comps (set-released w true)) e he))
+               (:edges (set-released w true)) r))
+  (simp only [revoke-roots])
+  (exact (hmk-set-pending-act hxm _ 0 (hmk-set-pins hxm _ _ (hmk-drop-edges hxm (set-released w true) not-host p h1)))))
 
 ;; ---- reactivation: comp-react-row on an idle computation (no marked edge on it is justified by waiting)
 (a/theorem hmk-comp-react [hxm :- (List Nat), w :- World, c :- CompRow]
@@ -1347,51 +1307,43 @@
   (have z := (tbl-all-mem CompRow (hk-wif d) c (:comps w) hd hm))
   (simp only [hk-wif hcd hk-wt hi Bool.not_true Bool.false_or Bool.false_and] at z) (cases z)
   (exact (hmk-intro hxm _ (inv-comp-upd w (:id c) comp-react-row comp-react-row-id comp-react-row-pending (hmk-sample hxm w h)) r)))
-(override! HMK 'inv-react-one '[inv-react-edges]
-  '(a/theorem hmk-react-one [hxm :- (List Nat), w :- World, c :- CompRow]
-     (=> (List.Mem c (:comps w)) (= (:idle c) true) (= (hmk hxm w) true) (= (hmk hxm (react-one w c)) true))
-     (intros hm hi h)
-     (simp only [react-one])
-     (exact (hmk-react-edges hxm (:validity c) (comp-upd w (:id c) comp-react-row) (:id c) (hmk-comp-react hxm w c hm hi h)))))
-(override! HMK 'inv-react-loop '[inv-react-one]
-  '(a/theorem hmk-react-loop [hxm :- (List Nat), fuel :- (List Nat)]
-     (forall [w :- World, q :- (List Nat)] (=> (= (hmk hxm w) true) (= (hmk hxm (react-loop fuel w q)) true)))
-     (induction fuel)
-     (case' [cons h f ih])
-     (case' [nil])
-     (intros w q hw) (simp only [react-loop]) (exact hw)
-     (intros w q hw)
-     (cases q)
-     (simp only [react-loop]) (exact hw)
-     (rename_i x t)
-     (cases hc (comp-find w x))
-     (simp only [react-loop hc]) (exact (ih w t hw))
-     (rename_i c)
-     (cases hi (:idle c))
-     (simp only [react-loop hc hi]) (exact (ih w t hw))
-     (simp only [react-loop hc hi])
-     (exact (ih _ _ (hmk-react-one hxm w c (tbl-find-mem CompRow comp-id x c (:comps w) hc) hi hw)))))
+(tree/restate! HMK '[inv-react-edges])
+(a/theorem hmk-react-one [hxm :- (List Nat), w :- World, c :- CompRow]
+  (=> (List.Mem c (:comps w)) (= (:idle c) true) (= (hmk hxm w) true) (= (hmk hxm (react-one w c)) true))
+  (intros hm hi h)
+  (simp only [react-one])
+  (exact (hmk-react-edges hxm (:validity c) (comp-upd w (:id c) comp-react-row) (:id c) (hmk-comp-react hxm w c hm hi h))))
+(a/theorem hmk-react-loop [hxm :- (List Nat), fuel :- (List Nat)]
+  (forall [w :- World, q :- (List Nat)] (=> (= (hmk hxm w) true) (= (hmk hxm (react-loop fuel w q)) true)))
+  (induction fuel)
+  (case' [cons h f ih])
+  (case' [nil])
+  (intros w q hw) (simp only [react-loop]) (exact hw)
+  (intros w q hw)
+  (cases q)
+  (simp only [react-loop]) (exact hw)
+  (rename_i x t)
+  (cases hc (comp-find w x))
+  (simp only [react-loop hc]) (exact (ih w t hw))
+  (rename_i c)
+  (cases hi (:idle c))
+  (simp only [react-loop hc hi]) (exact (ih w t hw))
+  (simp only [react-loop hc hi])
+  (exact (ih _ _ (hmk-react-one hxm w c (tbl-find-mem CompRow comp-id x c (:comps w) hc) hi hw))))
 
 ;; ---- Rule R's detach: a detached source is no computation
-(override! HMK 'inv-detach-source '[inv-wake-closed inv-source-upd inv-finalize-debtor]
-  '(a/theorem hmk-detach-source [hxm :- (List Nat), w :- World, x :- Nat]
-     (=> (= (tbl-has comp-id x (:comps w)) false) (= (hmk hxm w) true) (= (hmk hxm (detach-source w x)) true))
-     (intros hx h)
-     (have h1 := (hmk-wake-closed hxm (source-upd w x source-detach-row) x (hmk-source-upd hxm w x source-detach-row source-detach-row-id h)))
-     (have hx2 (= (tbl-has comp-id x (:comps (wake-closed (source-upd w x source-detach-row) x))) false))
-     (exact (Eq.trans (hk-has-wake-closed (source-upd w x source-detach-row) x x) hx))
-     (exact (hmk-finalize-debtor hxm (wake-closed (source-upd w x source-detach-row) x) x hx2 h1))))
-(override! HMK 'inv-detach '[nat-fold-inv inv-detach-comp inv-detach-task inv-detach-source]
-  '(a/theorem hmk-detach [hxm :- (List Nat), w :- World]
-     (=> (= (hmk hxm w) true) (= (hmk hxm (detach w)) true))
-     (intro h)
-     (have n0 := (hk-sources-noc w (src-orphan w) (hmk-sample hxm w h)))
-     (have h1 := (hmk-fold-noc hxm detach-source (fn [w2 :- World, x2 :- Nat, hx :- (= (tbl-has comp-id x2 (:comps w2)) false), h2 :- (= (hmk hxm w2) true)]
-                                                   (hmk-detach-source hxm w2 x2 hx h2))
-                   hk-has-detach-source (tbl-scan source-id (src-orphan w) (:sources w)) w n0 h))
-     (simp only [detach])
-     (exact (nat-fold-hmk hxm detach-comp (hmk-detach-comp hxm) (tbl-scan comp-id (comp-orphan w) (:comps w)) _
-              (nat-fold-hmk hxm detach-task (hmk-detach-task hxm) (tbl-scan task-id (task-orphan w) (:tasks w)) _ h1)))))
+(tree/restate! HMK '[inv-wake-closed inv-source-upd])
+(tree/restate! HMK '[nat-fold-inv inv-detach-comp inv-detach-task inv-detach-source])
+(a/theorem hmk-detach [hxm :- (List Nat), w :- World]
+  (=> (= (hmk hxm w) true) (= (hmk hxm (detach w)) true))
+  (intro h)
+  (have n0 := (hk-sources-noc w (src-orphan w) (hmk-sample hxm w h)))
+  (have h1 := (hmk-fold-noc hxm detach-source (fn [w2 :- World, x2 :- Nat, hx :- (= (tbl-has comp-id x2 (:comps w2)) false), h2 :- (= (hmk hxm w2) true)]
+                                                (hmk-detach-source hxm w2 x2 hx h2))
+                hk-has-detach-source (tbl-scan source-id (src-orphan w) (:sources w)) w n0 h))
+  (simp only [detach])
+  (exact (nat-fold-hmk hxm detach-comp (hmk-detach-comp hxm) (tbl-scan comp-id (comp-orphan w) (:comps w)) _
+           (nat-fold-hmk hxm detach-task (hmk-detach-task hxm) (tbl-scan task-id (task-orphan w) (:tasks w)) _ h1))))
 
 ;; ===========================================================================
 ;; Part E. T11: the dispatched computation C is strong (done-epoch < epoch) from the needs-run
@@ -1526,16 +1478,13 @@
 (prim! HSW 'inv-comp-del-unref '(hswr-comp-del hsc w x R))
 (prim! HSW 'inv-filter-world '(hswr-filter-world hsc w K R))
 (def ^:private hk-gd-cm '#{comp-inc-epoch comp-demand-row comp-replace-row comp-make-idle comp-demote-row comp-clear-run})
-(defn hsw-patch [form]
-  (->> (@#'spindel.v2.inv.idle/fix-f form)
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-comp-upd (first y)) (>= (count y) 6)))
-                    (fn [[_ w x f hid hp & more]]
-                      (let [h (hk-fhead f)]
-                        (if (contains? hk-gd-cm h)
-                          (apply list 'hsw-comp-upd-m 'hsc w x f hid hp (hk-lapp f (symbol (str h "-gcm"))) more)
-                          (apply list 'hsw-comp-upd 'hsc w x f hid hp '(fn [c :- CompRow] (Eq.refl (gdkey c))) more)))))))
-(doseq [[n _] @@#'spindel.v2.inv.copier/source-theorems] (patch! HSW n hsw-patch))
-(lcopy! HSW 'inv-cancel-pred)
+;; hsw on the generic tree: a computation edit keeps hsw by gd's key lemmas
+(tree/part! HSW
+  :sites (tree/row-sites 'inv-comp-upd (constantly true)
+                         (fn [F] (if (contains? hk-gd-cm (hk-fhead F))
+                                   (list 'hsw-comp-upd-m 'hsc 'w 'x F 'hid 'hp (hk-lapp F (symbol (str (hk-fhead F) "-gcm"))) 'h0)
+                                   (list 'hsw-comp-upd 'hsc 'w 'x F 'hid 'hp '(fn [c :- CompRow] (Eq.refl (gdkey c))) 'h0)))))
+(tree/restate! HSW '[inv-cancel-pred])
 
 (a/theorem hsw-sif [hsc :- Nat, w :- World] (=> (= (hsw-rest hsc w) true) (= (tbl-all (hk-sif hsc) (:comps w)) true))
   (intro h)
@@ -1581,18 +1530,18 @@
   (have ec := (Nat.eq_of_beq_eq_true (And.right (And.left s1))))
   (simp only [hk-dok hk0 hk-safe ec hs Bool.or_true Bool.false_or])
   (simp only [hk-dok hk0 Bool.true_or]))
-(override! HMK 'inv-cut-suffix '[inv-drop-edges]
-  '(a/theorem hmk-cut-suffix [hxm :- (List Nat), w :- World, c :- Nat, has :- Bool, cut :- Nat, cid :- Nat]
-     (=> (= (tbl-all (hk-sif c) (:comps w)) true) (= (hmk hxm w) true) (= (hmk hxm (cut-suffix w c has cut cid)) true))
-     (intros hs h)
-     (have p := (all-of-mem EdgeRow (hk-dok hxm (:comps w) (keep-prefix c has cid)) (:edges w)
-                  (fn [r :- EdgeRow, m :- (List.Mem r (:edges w))] (hk-dok-cut hxm (:comps w) c has cid r hs))))
-     (have h1 := (hmk-drop-edges hxm w (keep-prefix c has cid) p h))
-     (simp only [cut-suffix])
-     (exact (hmk-comp-upd-m hxm (drop-edges w (keep-prefix c has cid)) c
-              (comp-cut-row has cut (bases-of (tbl-filter (suffix-edge c has cid) (:edges w))))
-              (comp-cut-row-id has cut _) (comp-cut-row-pending has cut _)
-              (fn [q :- CompRow, hq :- (= (hk-wt q) true)] hq) h1))))
+(tree/restate! HMK '[inv-drop-edges])
+(a/theorem hmk-cut-suffix [hxm :- (List Nat), w :- World, c :- Nat, has :- Bool, cut :- Nat, cid :- Nat]
+  (=> (= (tbl-all (hk-sif c) (:comps w)) true) (= (hmk hxm w) true) (= (hmk hxm (cut-suffix w c has cut cid)) true))
+  (intros hs h)
+  (have p := (all-of-mem EdgeRow (hk-dok hxm (:comps w) (keep-prefix c has cid)) (:edges w)
+               (fn [r :- EdgeRow, m :- (List.Mem r (:edges w))] (hk-dok-cut hxm (:comps w) c has cid r hs))))
+  (have h1 := (hmk-drop-edges hxm w (keep-prefix c has cid) p h))
+  (simp only [cut-suffix])
+  (exact (hmk-comp-upd-m hxm (drop-edges w (keep-prefix c has cid)) c
+           (comp-cut-row has cut (bases-of (tbl-filter (suffix-edge c has cid) (:edges w))))
+           (comp-cut-row-id has cut _) (comp-cut-row-pending has cut _)
+           (fn [q :- CompRow, hq :- (= (hk-wt q) true)] hq) h1)))
 (a/theorem hk-kx-found [kxy :- Nat, kxd :- Nat, w :- World, e2 :- EdgeRow]
   (=> (= (kx-rest kxy kxd w) true) (= (edge-find w kxy) (Option.some EdgeRow e2)) (= (:debtor e2) kxd))
   (intros h hf)
@@ -1613,53 +1562,52 @@
   (have dd := (hk-kx-found (:id e) (:debtor e) w e2 k hf2))
   (have nc2 (= (tbl-has comp-id (:debtor e2) (:comps w)) false)) (rw [dd]) (exact nc)
   (exact (hk-found-noncomp hxm w (:id e) e2 (hmk-rest-of hxm w h) hf2 nc2)))
-(override! HMK 'inv-consume-entry '[inv-edge-upd inv-edge-set-phase]
-  '(a/theorem hmk-consume-entry [hxm :- (List Nat), w :- World, e :- EdgeRow]
-     (=> (= (kx-rest (:id e) (:debtor e) w) true) (= (hmk hxm w) true) (= (hmk hxm (consume-entry w e)) true))
-     (intros k h)
-     (cases hf (deb-final w (:debtor e)))
-     (cases hr (Nat.beq (:cont e) cont-restart))
-     (simp only [consume-entry hr hf])
-     (exact (hmk-edge-upd hxm w (:id e) (edge-rearm (deb-value w (:debtor e)) (deb-version w (:debtor e)))
-              (edge-rearm-edge-id _ _) (edge-rearm-kind _ _) (edge-rearm-creditor _ _) (edge-rearm-debtor _ _) (edge-rearm-marked _ _) h))
-     (simp only [consume-entry hr hf])
-     (exact (hmk-edge-set-phase hxm w (:id e) ph-armed h))
-     (simp only [consume-entry hf])
-     (exact (hmk-remove-edge hxm w (:id e) (hk-u-kx hxm w e h k hf) h))))
-(override! HMK 'inv-dispatch-raw '[inv-cancel-pred inv-cut-suffix inv-consume-entry inv-new-run-of]
-  '(a/theorem hmk-dispatch-raw [hxm :- (List Nat), w :- World, c :- CompRow]
-     (=> (List.Mem c (:comps w)) (= (Nat.beq (:done-epoch c) (:epoch c)) false) (= (gd w) true) (= (hmk hxm w) true)
-         (= (hmk hxm (dispatch-raw w c)) true))
-     (intros hm hd hg h)
-     (have s0 := (hsw-start w c hg hm hd))
-     (have s1 := (hsw-sif (:id c) (cancel-pred w c) (hsw-rest-of _ _ (hsw-cancel-pred (:id c) w c s0))))
-     (have h1 := (hmk-cancel-pred hxm w c h))
-     (cases he (entry-edge w (:id c)))
-     (simp only [dispatch-raw he])
-     (exact (hmk-new-run-of hxm (cut-suffix (cancel-pred w c) (:id c) false 0 0) c 0
-              (hmk-cut-suffix hxm (cancel-pred w c) (:id c) false 0 0 s1 h1)))
-     (rename_i e)
-     (have k0 := (kx-of-mem w e (gd-sample w hg) (entry-mem w (:id c) e he)))
-     (have k1 := (kx-cut-suffix (:id e) (:debtor e) (cancel-pred w c) (:id c) true (:at e) (:id e)
-                   (kx-cancel-pred (:id e) (:debtor e) w c k0)))
-     (simp only [dispatch-raw he])
-     (exact (hmk-new-run-of hxm (consume-entry (cut-suffix (cancel-pred w c) (:id c) true (:at e) (:id e)) e) c (entry-ei e)
-              (hmk-consume-entry hxm (cut-suffix (cancel-pred w c) (:id c) true (:at e) (:id e)) e
-                (kx-rest-of _ _ _ k1)
-                (hmk-cut-suffix hxm (cancel-pred w c) (:id c) true (:at e) (:id e) s1 h1))))))
-(override! HMK 't11-inv '[inv-dispatch-raw]
-  '(a/theorem t11-hmk [hxm :- (List Nat), w :- World, cid :- Nat, fresh :- Nat]
-     (=> (= (gd w) true) (= (hmk hxm w) true) (= (hmk hxm (:world (t11-dispatch w cid fresh))) true))
-     (intros hg h)
-     (cases hc (comp-find w cid))
-     (simp only [t11-dispatch hc refuse]) (exact h)
-     (rename_i c)
-     (cases hgg (Bool.and (Nat.beq fresh (:next-id w)) (Bool.and (Bool.not (:idle c)) (Bool.and (needs-run w c) (eligible w c)))))
-     (simp only [t11-dispatch hc hgg refuse]) (exact h)
-     (have hg2 := hgg) (simp only [Bool.and_eq_true needs-run] at hg2)
-     (have hd := (bnot-true _ (And.left (And.left (And.right (And.right hg2))))))
-     (simp only [t11-dispatch hc hgg accept])
-     (exact (hmk-dispatch-raw hxm w c (tbl-find-mem CompRow comp-id cid c (:comps w) hc) hd hg h))))
+(tree/restate! HMK '[inv-edge-upd inv-edge-set-phase])
+(a/theorem hmk-consume-entry [hxm :- (List Nat), w :- World, e :- EdgeRow]
+  (=> (= (kx-rest (:id e) (:debtor e) w) true) (= (hmk hxm w) true) (= (hmk hxm (consume-entry w e)) true))
+  (intros k h)
+  (cases hf (deb-final w (:debtor e)))
+  (cases hr (Nat.beq (:cont e) cont-restart))
+  (simp only [consume-entry hr hf])
+  (exact (hmk-edge-upd hxm w (:id e) (edge-rearm (deb-value w (:debtor e)) (deb-version w (:debtor e)))
+           (edge-rearm-edge-id _ _) (edge-rearm-kind _ _) (edge-rearm-creditor _ _) (edge-rearm-debtor _ _) (edge-rearm-marked _ _) h))
+  (simp only [consume-entry hr hf])
+  (exact (hmk-edge-set-phase hxm w (:id e) ph-armed h))
+  (simp only [consume-entry hf])
+  (exact (hmk-remove-edge hxm w (:id e) (hk-u-kx hxm w e h k hf) h)))
+(tree/restate! HMK '[inv-cancel-pred inv-new-run-of])
+(a/theorem hmk-dispatch-raw [hxm :- (List Nat), w :- World, c :- CompRow]
+  (=> (List.Mem c (:comps w)) (= (Nat.beq (:done-epoch c) (:epoch c)) false) (= (gd w) true) (= (hmk hxm w) true)
+      (= (hmk hxm (dispatch-raw w c)) true))
+  (intros hm hd hg h)
+  (have s0 := (hsw-start w c hg hm hd))
+  (have s1 := (hsw-sif (:id c) (cancel-pred w c) (hsw-rest-of _ _ (hsw-cancel-pred (:id c) w c s0))))
+  (have h1 := (hmk-cancel-pred hxm w c h))
+  (cases he (entry-edge w (:id c)))
+  (simp only [dispatch-raw he])
+  (exact (hmk-new-run-of hxm (cut-suffix (cancel-pred w c) (:id c) false 0 0) c 0
+           (hmk-cut-suffix hxm (cancel-pred w c) (:id c) false 0 0 s1 h1)))
+  (rename_i e)
+  (have k0 := (kx-of-mem w e (gd-sample w hg) (entry-mem w (:id c) e he)))
+  (have k1 := (kx-cut-suffix (:id e) (:debtor e) (cancel-pred w c) (:id c) true (:at e) (:id e)
+                (kx-cancel-pred (:id e) (:debtor e) w c k0)))
+  (simp only [dispatch-raw he])
+  (exact (hmk-new-run-of hxm (consume-entry (cut-suffix (cancel-pred w c) (:id c) true (:at e) (:id e)) e) c (entry-ei e)
+           (hmk-consume-entry hxm (cut-suffix (cancel-pred w c) (:id c) true (:at e) (:id e)) e
+             (kx-rest-of _ _ _ k1)
+             (hmk-cut-suffix hxm (cancel-pred w c) (:id c) true (:at e) (:id e) s1 h1)))))
+(a/theorem t11-hmk [hxm :- (List Nat), w :- World, cid :- Nat, fresh :- Nat]
+  (=> (= (gd w) true) (= (hmk hxm w) true) (= (hmk hxm (:world (t11-dispatch w cid fresh))) true))
+  (intros hg h)
+  (cases hc (comp-find w cid))
+  (simp only [t11-dispatch hc refuse]) (exact h)
+  (rename_i c)
+  (cases hgg (Bool.and (Nat.beq fresh (:next-id w)) (Bool.and (Bool.not (:idle c)) (Bool.and (needs-run w c) (eligible w c)))))
+  (simp only [t11-dispatch hc hgg refuse]) (exact h)
+  (have hg2 := hgg) (simp only [Bool.and_eq_true needs-run] at hg2)
+  (have hd := (bnot-true _ (And.left (And.left (And.right (And.right hg2))))))
+  (simp only [t11-dispatch hc hgg accept])
+  (exact (hmk-dispatch-raw hxm w c (tbl-find-mem CompRow comp-id cid c (:comps w) hc) hd hg h)))
 
 ;; ===========================================================================
 ;; Part F. The bundle gives h-mark
@@ -2182,50 +2130,43 @@
   (rw [e])
   (exact (hk-wif-rc c _ rc)))
 
-(override! HMK 'inv-create-comp-raw '[]
-  '(a/theorem hmk-create-comp-raw [hxm :- (List Nat), w :- World, c :- Nat, owner :- Nat, inputs :- (List Nat), body :- Nat]
-     (=> (= (gd w) true) (= (g7 w) true) (= (hmk hxm w) true) (= (hmk hxm (create-comp-raw w c owner inputs body)) true))
-     (intros hg h7 h)
-     (cases hc (comp-find w c))
-     (simp only [create-comp-raw hc])
-     (exact (hmk-comp-ins hxm w (new-comp-row w (:next-id w) owner inputs body) (Eq.refl true) (rfl) (rfl) h))
-     (rename_i row)
-     (cases hi (nat-list-eq (:inputs row) inputs))
-     (simp only [create-comp-raw hc hi])
-     (exact (hmk-mfr hxm w c row inputs body hc hg h7 h))
-     (simp only [create-comp-raw hc hi])
-     (exact (hmk-comp-upd-m hxm w c comp-adopt-row comp-adopt-row-id comp-adopt-row-pending (fn [q :- CompRow, hq :- (= (hk-wt q) true)] hq) h))))
-(override! HMK 't3-inv '[inv-create-comp-raw inv-run-upd]
-  '(a/theorem t3-hmk [hxm :- (List Nat), w :- World, st :- Nat, c :- Nat, inputs :- (List Nat), body :- Nat]
-     (=> (= (gd w) true) (= (g7 w) true) (= (hmk hxm w) true) (= (hmk hxm (:world (t3-create w st c inputs body))) true))
-     (intros hg h7 h)
-     (cases ht (tok-run w st))
-     (simp only [t3-create ht refuse]) (exact h)
-     (rename_i r)
-     (cases hg2 (create-ok w c))
-     (simp only [t3-create ht hg2 refuse]) (exact h)
-     (simp only [t3-create ht hg2 accept])
-     (exact (hmk-run-upd hxm _ (:id r) run-tick run-tick-run-id
-              (hmk-comp-upd-m hxm _ (:of r) _ (comp-rebasis-id _) (comp-rebasis-pending _)
-                (fn [q :- CompRow, hq :- (= (hk-wt q) true)] hq)
-                (hmk-create-comp-raw hxm w c (src-owner w r) inputs body hg h7 h))))))
-(override! HMK 't3-top-inv '[inv-create-comp-raw]
-  '(a/theorem t3-top-hmk [hxm :- (List Nat), w :- World, scope :- Nat, c :- Nat, inputs :- (List Nat), body :- Nat]
-     (=> (= (gd w) true) (= (g7 w) true) (= (hmk hxm w) true) (= (hmk hxm (:world (t3-create-top w scope c inputs body))) true))
-     (intros hg h7 h)
-     (cases hg2 (Bool.and (create-ok w c) (scope-open-at w scope)))
-     (simp only [t3-create-top hg2 refuse]) (exact h)
-     (simp only [t3-create-top hg2 accept])
-     (exact (hmk-create-comp-raw hxm w c scope inputs body hg h7 h))))
+(a/theorem hmk-create-comp-raw [hxm :- (List Nat), w :- World, c :- Nat, owner :- Nat, inputs :- (List Nat), body :- Nat]
+  (=> (= (gd w) true) (= (g7 w) true) (= (hmk hxm w) true) (= (hmk hxm (create-comp-raw w c owner inputs body)) true))
+  (intros hg h7 h)
+  (cases hc (comp-find w c))
+  (simp only [create-comp-raw hc])
+  (exact (hmk-comp-ins hxm w (new-comp-row w (:next-id w) owner inputs body) (Eq.refl true) (rfl) (rfl) h))
+  (rename_i row)
+  (cases hi (nat-list-eq (:inputs row) inputs))
+  (simp only [create-comp-raw hc hi])
+  (exact (hmk-mfr hxm w c row inputs body hc hg h7 h))
+  (simp only [create-comp-raw hc hi])
+  (exact (hmk-comp-upd-m hxm w c comp-adopt-row comp-adopt-row-id comp-adopt-row-pending (fn [q :- CompRow, hq :- (= (hk-wt q) true)] hq) h)))
+(tree/restate! HMK '[inv-run-upd])
+(a/theorem t3-hmk [hxm :- (List Nat), w :- World, st :- Nat, c :- Nat, inputs :- (List Nat), body :- Nat]
+  (=> (= (gd w) true) (= (g7 w) true) (= (hmk hxm w) true) (= (hmk hxm (:world (t3-create w st c inputs body))) true))
+  (intros hg h7 h)
+  (cases ht (tok-run w st))
+  (simp only [t3-create ht refuse]) (exact h)
+  (rename_i r)
+  (cases hg2 (create-ok w c))
+  (simp only [t3-create ht hg2 refuse]) (exact h)
+  (simp only [t3-create ht hg2 accept])
+  (exact (hmk-run-upd hxm _ (:id r) run-tick run-tick-run-id
+           (hmk-comp-upd-m hxm _ (:of r) _ (comp-rebasis-id _) (comp-rebasis-pending _)
+             (fn [q :- CompRow, hq :- (= (hk-wt q) true)] hq)
+             (hmk-create-comp-raw hxm w c (src-owner w r) inputs body hg h7 h)))))
+(a/theorem t3-top-hmk [hxm :- (List Nat), w :- World, scope :- Nat, c :- Nat, inputs :- (List Nat), body :- Nat]
+  (=> (= (gd w) true) (= (g7 w) true) (= (hmk hxm w) true) (= (hmk hxm (:world (t3-create-top w scope c inputs body))) true))
+  (intros hg h7 h)
+  (cases hg2 (Bool.and (create-ok w c) (scope-open-at w scope)))
+  (simp only [t3-create-top hg2 refuse]) (exact h)
+  (simp only [t3-create-top hg2 accept])
+  (exact (hmk-create-comp-raw hxm w c scope inputs body hg h7 h)))
 
 ;; ===========================================================================
-;; Part H. The copy: every transition of raw0 except T2 (write) and T12 (complete), whose
-;; overrides are in spindel.v2.inv.marks-step; T3 and T11 take gd and g7 / gd
+;; Part H. The restatements: every transition of raw0 except T2 (write) and T12 (complete), whose
+;; own proofs are in spindel.v2.inv.marks-step; T3 and T11 take gd and g7 / gd
 ;; ===========================================================================
 
-(doseq [r '[t1-full-inv t1-top-inv t7-inv t8-full-inv t8-unobserve-inv t9-inv t15-full-inv t17-inv t18-inv t19-inv
-            t20-pin-inv t20-unpin-inv t3-inv t3-top-inv t4-inv t4-top-inv t5-inv t6-inv t11-inv sched-inv t22-inv t22-un-inv
-            t-handle-new-inv t-deliver-inv t-post-inv t-take-inv t-release-inv t-finalize-inv t-cancel-inv t-release-world-inv
-            t-open-scope-inv t-close-scope-inv t-detach-inv t-finally-enter-inv t-finally-exit-inv t-slice-exit-inv
-            inv-cancel-losers inv-detach]]
-  (lcopy! HMK r))
+(tree/restate! HMK '[t1-full-inv t1-top-inv t7-inv t8-full-inv t9-inv t15-full-inv t17-inv t18-inv t19-inv t20-pin-inv t20-unpin-inv t4-inv t4-top-inv t5-inv t6-inv sched-inv t22-inv t-handle-new-inv t-post-inv t-take-inv t-release-inv t-finalize-inv t-cancel-inv t-release-world-inv t-open-scope-inv t-close-scope-inv t-detach-inv t-finally-enter-inv t-finally-exit-inv t-slice-exit-inv inv-cancel-losers])
