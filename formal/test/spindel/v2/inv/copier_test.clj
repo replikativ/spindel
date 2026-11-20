@@ -6,6 +6,7 @@
             [spindel.v2.engine :as en]
             [spindel.v2.inv.acts :as acts]
             [spindel.v2.inv.copier :as lit]
+            [spindel.v2.inv.i10-task]
             [spindel.v2.engine-test :as et]
             [spindel.v2.inv-test :as it]))
 

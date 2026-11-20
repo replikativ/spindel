@@ -7,19 +7,18 @@
   `patch!` rewrites a source proof before the copy where a call needs an extra fact):
     gl   I10, task part: every run's `of` is below the allocator, every run of a task K is K.run,
          a task without result has its run, not done. Stated over key projections of the run and
-         task rows (`rkeys`, `tkeys`), so an edit that keeps the keys is a frame. Overrides: a run
-         made alive (resume, park: `gl-run-upd-up`), T14's local part and T12 (the run is done,
-         its task gets its result: the exempt rest `glx`), T13 (`retire-rest`), run creation
-         (T4 `gl-spawn-rows`, T5/T11 `gl-comp-run-o`), the Rule R filter (alive runs are kept:
-         `normalized` of every round, from P2 with acts-alive).
+         task rows (`rkeys`, `tkeys`), so an edit that keeps the keys is a frame. Its lemmas here:
+         a run made alive (resume, park: `gl-run-upd-up`), the exempt rest `glx` (T14's local part
+         and T12: the run is done, its task gets its result), T13 (`retire-rest`), run creation
+         (T4 `gl-spawn-rows-o`, T5/T11 `gl-comp-run-o`), the Rule R filter (alive runs are kept:
+         `normalized` of every round, from P2 with acts-alive). Not copied: it goes through the
+         generic tree (spindel.v2.pres.tree), with its table and step in spindel.v2.inv.i10-task.
     ch   T11 keeps C: computation cx exists through the predecessor's cancel and the cut.
     g9   I9, resources: every resource's owner is below the allocator and listed in its run's
          `resources`, phases are valid, and `lit-i9-res`. Overrides: T14's cancel-res
          (`g9-cancel-mid`), T17 arm (not in a cleanup slice, Z#40), T15 ack.
 
-  Theorems:
-    step-gl            ga w, gl w, rule-r-safe raw -> gl (world-step w it)
-    step-lit-i10-task  ... -> inv-i10-task (world-step w it)   (literal I10, task part)
+  Theorems (step-gl and step-lit-i10-task, I10's task part, are in spindel.v2.inv.i10-task):
     step-g9            g9 w, rule-r-safe raw -> g9 (world-step w it)
     step-lit-i9-res    ... -> lit-i9-res (world-step w it)      (literal I9, resources)
     filter-safe-of-refs   P3 core: inv-sample, acts-alive, normalized and `p3-refs` (dep edges have
@@ -369,27 +368,9 @@
       B)))
 
 ;; ---------------------------------------------------------------------------
-;; The part gl: I10, task part (spec §6 I10; formal/notes/proof-layout.md §4.5)
-;;
-;; 1. In words: (a) every run's `of` is below the allocator; (b) a run R of a task K is K.run; (c) a
-;;    task without a result has an alive run. `gl-rest` is `l10k` over the run keys, the task keys
-;;    and the allocator (Part A).
-;; 2. View: runs, tasks, next-id (`gl-rest-frame-<field>` for every other field, from `defpart`).
-;;    Finer, column level: the key lists `kw` (run key id/of/alive, task key id/run/done, next-id),
-;;    frame `gl-rest-kw` (Part C).
-;; 3. Exempt form: `glx k` (Part C), (c) may fail for task k. Break `glx-kill` (a run made done);
-;;    repairs `gl-task-done-x` (the task gets its result), `gl-of-glx-comp` (k is a computation),
-;;    `gl-of-glx-find` (no task k); transport `glx-kw`. Uniform names `gl-exempt-<role>` (Part C).
-;; 4. Cells, the edits that write the view: a run or task update that keeps the keys (`gl-run-upd`,
-;;    `gl-task-upd`; the key equation is `rfl` at every call site, the bundle's extra args); a fresh
-;;    insert and `bump` (`gl-rest-bump`: (a) only gains room). Run creation, run death and the
-;;    filter are composite-level (5.). Every other primitive is a frame.
-;; 5. Deferred within a step (overrides): T14's local part (`gl-cancel-run-local-o`: break at the
-;;    run's cancel, repair in `cancel-debtor`) and T12 (`gl-complete-body-mid`: break at the run's
-;;    completion, repair at `complete-task`). Content without a break: T13 (`gl-retire-local-o`,
-;;    `retire-rest`), new runs (`gl-spawn-rows-o`, `gl-comp-run-o`), Rule R's filter (`gl-rule-r-round`).
-;;    The other overrides and the patches pass a fact down to those (proof-layout.md §4.5).
-;; 6. Companions: `ga` (`step-gl`).
+;; The part gl: I10, task part (spec §6 I10; formal/notes/proof-layout.md §4.5). Here: its predicate
+;; (Part A), view and cells (below), keys and exempt form (Part C). Its table in the generic tree and
+;; its step theorem, with the fixed comment block of proof-layout.md §4.4: spindel.v2.inv.i10-task.
 
 (def GL (mk-bundle 'gl [] "gl-"
           {'inv-run-upd ['(fn [r :- RunRow] (Eq.refl (rkey r))) 4]
@@ -1347,21 +1328,9 @@
            (gl-rest-of w h)))
   (exact (gl-intro _ (inv-run-upd w x f hf (gl-sample w h)) hr)))
 
-(defn- up-patch [form]
-  (subst-forms (app-of? 'inv-run-upd)
-               (fn [[_ w x f hid & more]]
-                 (apply list 'gl-run-upd-up w x f hid '(fn [r :- RunRow] (Eq.refl (RKey.mk (:id r) (:of r) true))) more))
-               form))
-(doseq [o '[inv-park-if inv-take-park]] (patch! GL o up-patch))
-
 ;; Z#50: resume wakes only a parked run (alive before and after), so it keeps the run keys
 (a/theorem run-wake-rkey [r :- RunRow] (= (rkey (run-wake r)) (rkey r))
   (simp only [rkey run-wake-alive]))
-(patch! GL 'inv-resume
-  (fn [form] (subst-forms (app-of? 'inv-run-upd)
-                          (fn [[_ w x f hid & more]] (apply list 'gl-run-upd w x f hid 'run-wake-rkey more))
-                          form)))
-
 ;; ---- the exempt world predicate
 
 (a/defn glx [k :- Nat, w :- World] Bool (l10kx k (rkeys (:runs w)) (tkeys (:tasks w)) (:next-id w)))
@@ -1430,46 +1399,6 @@
   (exact (Eq.trans (Eq.trans (Eq.refl _) (kw-fold res-cancel kw-res-cancel (:resources r) _))
                    (kw-fold drop-act kw-drop-act _ _))))
 
-(lcopy! GL 'inv-fire-task-cancelled)
-(lcopy! GL 'inv-clear-rtasks)
-(lcopy! GL 'inv-invalidate-dependents)
-(lcopy! GL 'inv-fire-waits-cancelled)
-
-(a/theorem gl-cancel-run-local-o [w :- World, r :- RunRow, rep :- Bool]
-  (=> (List.Mem r (:runs w)) (= (gl w) true) (= (gl (cancel-run-local w r rep)) true))
-  (intros hm h)
-  (have hs := (gl-sample w h))
-  (have hms := (cancel-mid-sample w r hs))
-  (have hx (= (glx (:of r) (cancel-mid w r)) true))
-  (rw [(glx-kw (:of r) _ _ (cancel-mid-kw w r))])
-  (exact (glx-kill w r run-cancel-row (fn [q :- RunRow] (Eq.refl (rk-down (rkey q)))) hs hm h))
-  (have e (= (cancel-run-local w r rep) (cancel-debtor rep (cancel-mid w r) r))) (rfl)
-  (rw [e])
-  (cases hc (Bool.and rep (comp-has (cancel-mid w r) (:of r))))
-  (case [true]
-    (simp only [cancel-debtor hc])
-    (simp only [Bool.and_eq_true] at hc)
-    (exact (gl-of-glx-comp _ (:of r) hms hx (And.right hc))))
-  (case [false]
-    (simp only [cancel-debtor hc])
-    (cases hf (comp-find (cancel-mid w r) (:of r)))
-    (case [none]
-      (simp only [debtor-side hf])
-      (exact (gl-clear-rtasks _ (:of r) (gl-fire-task-cancelled _ (:of r)
-               (gl-task-done-x _ (:of r) task-cancel-result task-cancel-result-id tkey-cancel-result hms hx)))))
-    (case [some c]
-      (have hg := (gl-of-glx-comp _ (:of r) hms hx (tbl-find-has CompRow comp-id (:of r) c _ hf)))
-      (cases he (Nat.beq (:epoch r) (:epoch c)))
-      (case [false] (simp only [debtor-side hf he]) (exact hg))
-      (case [true]
-        (simp only [debtor-side hf he])
-        (exact (gl-invalidate-dependents _ (:of r) (gl-fire-waits-cancelled _ (:of r) hg)))))))
-
-(override! GL 'inv-cancel-run-local '[inv-fire-task-cancelled inv-invalidate-dependents inv-fire-waits-cancelled]
-  '(a/theorem gl-cancel-run-local [w :- World, r :- RunRow, rep :- Bool]
-     (=> (List.Mem r (:runs w)) (= (gl w) true) (= (gl (cancel-run-local w r rep)) true))
-     (intros hm h) (exact (gl-cancel-run-local-o w r rep hm h))))
-
 ;; ---- T13 (retire): the run row goes, its task's run is cleared (the task has its result)
 
 (a/theorem kw-run-del-congr [w :- World, w2 :- World, x :- Nat]
@@ -1537,75 +1466,13 @@
   (exact (retire-rest w r hs hm ha (gl-rest-of w h)))
   (exact (gl-intro _ (inv-retire-local w r hs) hr)))
 
-(override! GL 'inv-retire-local '[]
-  '(a/theorem gl-retire-local [w :- World, r :- RunRow]
-     (=> (List.Mem r (:runs w)) (= (run-alive r) false) (= (gl w) true) (= (gl (retire-local w r)) true))
-     (intros hm ha h) (exact (gl-retire-local-o w r hm ha h))))
-
 (a/theorem retirable-dead [r :- RunRow] (=> (= (retirable r) true) (= (run-alive r) false))
   (intro h)
   (simp only [retirable Bool.and_eq_true] at h)
   (have e (= (:act r) act-done)) (exact (Nat.eq_of_beq_eq_true (And.left h)))
   (simp only [run-alive e Nat.beq_refl Bool.not_true]))
 
-(patch! GL 'inv-job-apply
-  (fn [form]
-    (->> form
-         (subst-forms (app-of? 'inv-cancel-run-local)
-                      (fn [[hd w r rep h]] (list hd w r rep '(tbl-find-mem RunRow run-id rid r (:runs w) hf) h)))
-         (subst-forms (app-of? 'inv-retire-local)
-                      (fn [[hd w r h]] (list hd w r '(tbl-find-mem RunRow run-id rid r (:runs w) hf) '(retirable-dead r ha) h))))))
-
 ;; ---- T12 (complete): the run is done, its task gets the result (ok/err, never none)
-
-(lcopy! GL 'inv-settle)
-(lcopy! GL 'inv-cancel-res)
-(lcopy! GL 'inv-fire-edge)
-
-(a/theorem gl-complete-body-mid [w :- World, r :- RunRow, res :- RunResult]
-  (=> (List.Mem r (:runs w)) (= (Nat.beq (:tag res) res-none) false) (= (gl w) true)
-      (= (gl (:world (complete-body (run-upd w (:id r) run-complete-row) r res))) true))
-  (intros hm ht h)
-  (have hs := (gl-sample w h))
-  (have hs1 := (inv-run-upd w (:id r) run-complete-row run-complete-row-id hs))
-  (have hx := (glx-kill w r run-complete-row (fn [q :- RunRow] (Eq.refl (rk-down (rkey q)))) hs hm h))
-  (cases hc (comp-find (run-upd w (:id r) run-complete-row) (:of r)))
-  (case [none]
-    (cases hk (task-find (run-upd w (:id r) run-complete-row) (:of r)))
-    (case [none] (simp only [complete-body hc hk]) (exact (gl-of-glx-find _ (:of r) hs1 hx hk)))
-    (case [some k]
-      (simp only [complete-body hc hk complete-task])
-      (have ek (= (task-id k) (:of r))) (exact (tbl-find-id TaskRow task-id (:of r) k _ hk))
-      (have hx2 (= (glx (:id k) (run-upd w (:id r) run-complete-row)) true))
-      (have ek2 (= (:id k) (:of r))) (exact ek)
-      (rw [ek2]) (exact hx)
-      (exact (nat-fold-gl (fire-edge res) (gl-fire-edge res) _ _
-               (gl-cancel-res _ r (gl-task-done-x _ (:id k) (task-result-row res) (task-result-row-id res)
-                                    (fn [q :- TaskRow] (tkey-result-row res q ht)) hs1 hx2))))))
-  (case [some c]
-    (have hg := (gl-of-glx-comp _ (:of r) hs1 hx (tbl-find-has CompRow comp-id (:of r) c _ hc)))
-    (cases he (Nat.beq (:epoch r) (:epoch c)))
-    (case [false] (simp only [complete-body hc he]) (exact hg))
-    (case [true]
-      (simp only [complete-body hc he complete-comp])
-      (exact (gl-settle _ (:id c) _ (gl-cancel-res _ r
-               (gl-comp-upd _ (:id c) (comp-result-row res (:epoch r)) (comp-result-row-id res (:epoch r))
-                 (comp-result-row-pending res (:epoch r)) hg)))))))
-
-(lcopy! GL 'inv-retire-after)
-(lcopy! GL 'inv-run-cascade)
-(lcopy! GL 'inv-fin-if-final)
-
-(a/theorem gl-complete-raw-o [w :- World, r :- RunRow, res :- RunResult]
-  (=> (List.Mem r (:runs w)) (= (Nat.beq (:tag res) res-none) false) (= (gl w) true) (= (gl (complete-raw w r res)) true))
-  (intros hm ht h)
-  (simp only [complete-raw])
-  (exact (gl-fin-if-final _ (:of r) (gl-run-cascade _ _ (gl-retire-after _ (:id r) (gl-complete-body-mid w r res hm ht h))))))
-
-(override! GL 'inv-complete-raw '[]
-  '(a/theorem gl-complete-raw [w :- World, r :- RunRow, res :- RunResult]
-     (=> (List.Mem r (:runs w)) (= (Nat.beq (:tag res) res-none) false) (= (gl w) true) (= (gl (complete-raw w r res)) true))
-     (intros hm ht h) (exact (gl-complete-raw-o w r res hm ht h))))
 
 (a/theorem tag-ok-none [tag :- Nat] (=> (= (res-tag-ok tag) true) (= (Nat.beq tag res-none) false))
   (intro h)
@@ -1624,36 +1491,6 @@
   (case [true] (rfl))
   (case [false] (simp [hb] at h2)))
 
-(override! GL 't12-inv '[inv-complete-raw]
-  '(a/theorem t12-gl [w :- World, st :- Nat, tag :- Nat, v :- Nat]
-     (=> (= (res-tag-ok tag) true) (= (gl w) true) (= (gl (:world (t12-complete w st tag v))) true))
-     (intros hg h)
-     (cases ht (tok-run w st)) (case' [some r]) (case' [none])
-     (simp only [t12-complete ht refuse]) (exact h)
-     (cases hn (run-normal r))
-     (simp only [t12-complete ht hn refuse]) (exact h)
-     (simp only [t12-complete ht hn accept])
-     (exact (gl-complete-raw w r (RunResult.mk tag v) (And.left (tok-facts w st r ht)) (tag-ok-none tag hg) h))))
-
-(override! GL 'inv-retire-one '[inv-retire-pre inv-complete-raw inv-run-cascade]
-  '(a/theorem gl-retire-one [v :- Nat, w :- World, rid :- Nat]
-     (=> (= (gl w) true) (= (gl (retire-one v w rid)) true))
-     (intro h)
-     (cases hf (run-find w rid))
-     (case [none] (simp only [retire-one hf]) (exact h))
-     (case [some r]
-       (have hp := (gl-retire-pre w r h))
-       (cases hf1 (run-find (retire-pre w r) rid))
-       (case [none] (simp only [retire-one hf hf1]) (exact hp))
-       (case [some r1]
-         (cases ha (Bool.and (run-alive r1) (run-of-local (retire-pre w r) r1)))
-         (case [true] (simp only [retire-one hf hf1 ha])
-           (exact (gl-complete-raw _ r1 _ (retire-r1-mem w r r1 rid hf1) (task-final-res-tag _ _ v) hp)))
-         (case [false] (simp only [retire-one hf hf1 ha retire-full]) (exact (gl-run-cascade _ _ hp)))))))
-
-(patch! GL 'raw0-inv
-  (fn [form] (subst-forms #(= % '(t12-inv w _ _ _ h)) (fn [_] '(t12-inv w _ _ _ (refused-tag-ok w st tag hc) h)) form)))
-
 ;; ---- T4/T5/T11: the new run (and T4's task)
 
 (a/theorem gl-spawn-rows-o [w :- World, owner :- Nat, inputs :- (List Nat), loc :- Bool]
@@ -1665,11 +1502,6 @@
   (exact (l10k-ins-task (rkeys (:runs w)) (tkeys (:tasks w)) (:next-id w) (+ (:next-id w) 3) (+ (:next-id w) 1)
            (gl-rest-of w h) lt (tasks-below w hs)))
   (exact (gl-intro _ (inv-spawn-rows w owner inputs loc hs) hr)))
-
-(override! GL 'inv-spawn-rows '[]
-  '(a/theorem gl-spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat), loc :- Bool]
-     (=> (= (gl w) true) (= (gl (spawn-rows w owner inputs loc)) true))
-     (intro h) (exact (gl-spawn-rows-o w owner inputs loc h))))
 
 ;; a computation's new run: of = an existing computation (no task id, below the allocator)
 (a/theorem gl-comp-run-o [w :- World, cid :- Nat, ep :- Nat, ei :- Nat, f :- (=> CompRow CompRow),
@@ -1686,21 +1518,19 @@
            (gl-rest-of w h) le lt2 (not-id-tasks cid (:tasks w) (comp-not-task w cid hs hc))))
   (exact (gl-intro _ (inv-comp-upd _ cid f hid hp (inv-add-run-scope w cid ep 0 ei hs)) hr)))
 
-(override! GL 'inv-start-raw '[]
-  '(a/theorem gl-start-raw [w :- World, c :- CompRow]
-     (=> (= (comp-has w (:id c)) true) (= (gl w) true) (= (gl (start-raw w c)) true))
-     (intros hc h)
-     (simp only [start-raw])
-     (exact (gl-comp-run-o w (:id c) (start-epoch c) 0 (comp-start-row (:next-id w)) (comp-start-row-id (:next-id w))
-              (comp-start-row-pending (:next-id w)) hc h))))
+(a/theorem gl-start-raw [w :- World, c :- CompRow]
+  (=> (= (comp-has w (:id c)) true) (= (gl w) true) (= (gl (start-raw w c)) true))
+  (intros hc h)
+  (simp only [start-raw])
+  (exact (gl-comp-run-o w (:id c) (start-epoch c) 0 (comp-start-row (:next-id w)) (comp-start-row-id (:next-id w))
+           (comp-start-row-pending (:next-id w)) hc h)))
 
-(override! GL 'inv-new-run-of '[]
-  '(a/theorem gl-new-run-of [w :- World, c :- CompRow, ei :- Nat]
-     (=> (= (comp-has w (:id c)) true) (= (gl w) true) (= (gl (new-run-of w c ei)) true))
-     (intros hc h)
-     (simp only [new-run-of])
-     (exact (gl-comp-run-o w (:id c) (:epoch c) ei (comp-set-run (:next-id w)) (comp-set-run-id (:next-id w))
-              (comp-set-run-pending (:next-id w)) hc h))))
+(a/theorem gl-new-run-of [w :- World, c :- CompRow, ei :- Nat]
+  (=> (= (comp-has w (:id c)) true) (= (gl w) true) (= (gl (new-run-of w c ei)) true))
+  (intros hc h)
+  (simp only [new-run-of])
+  (exact (gl-comp-run-o w (:id c) (:epoch c) ei (comp-set-run (:next-id w)) (comp-set-run-id (:next-id w))
+           (comp-set-run-pending (:next-id w)) hc h)))
 
 (a/theorem find-comp-has [w :- World, cid :- Nat, c :- CompRow]
   (=> (= (comp-find w cid) (Option.some CompRow c)) (= (comp-has w (:id c)) true))
@@ -1708,9 +1538,6 @@
   (have e (= (comp-id c) cid)) (exact (tbl-find-id CompRow comp-id cid c (:comps w) hf))
   (have e2 (= (:id c) cid)) (exact e)
   (rw [e2]) (exact (tbl-find-has CompRow comp-id cid c (:comps w) hf)))
-
-(patch! GL 't5-inv
-  (fn [form] (subst-forms #(= % '(inv-start-raw w c h)) (fn [_] '(inv-start-raw w c (find-comp-has w cid c hc) h)) form)))
 
 ;; ---- T11 keeps C: bundle `ch cx` = inv-sample and computation cx exists, through the
 ;; predecessor's cancel and the cut (no computation is removed there)
@@ -1790,28 +1617,6 @@
 (lcopy! CH 'inv-cancel-pred)
 (lcopy! CH 'inv-cut-suffix)
 (lcopy! CH 'inv-consume-entry)
-(lcopy! GL 'inv-cancel-pred)
-(lcopy! GL 'inv-cut-suffix)
-(lcopy! GL 'inv-consume-entry)
-
-(override! GL 'inv-dispatch-raw '[inv-new-run-of]
-  '(a/theorem gl-dispatch-raw [w :- World, c :- CompRow]
-     (=> (= (comp-has w (:id c)) true) (= (gl w) true) (= (gl (dispatch-raw w c)) true))
-     (intros hc h)
-     (have h1 := (gl-cancel-pred w c h))
-     (have k1 := (ch-cancel-pred (:id c) w c (ch-intro (:id c) w (gl-sample w h) hc)))
-     (cases he (entry-edge w (:id c))) (case' [some e]) (case' [none])
-     (simp only [dispatch-raw he])
-     (exact (gl-new-run-of _ c 0 (ch-rest-of (:id c) _ (ch-cut-suffix (:id c) _ (:id c) false 0 0 k1))
-              (gl-cut-suffix _ (:id c) false 0 0 h1)))
-     (simp only [dispatch-raw he])
-     (exact (gl-new-run-of _ c _
-              (ch-rest-of (:id c) _ (ch-consume-entry (:id c) _ e (ch-cut-suffix (:id c) _ (:id c) true (:at e) (:id e) k1)))
-              (gl-consume-entry _ e (gl-cut-suffix _ (:id c) true (:at e) (:id e) h1))))))
-
-(patch! GL 't11-inv
-  (fn [form] (subst-forms #(= % '(inv-dispatch-raw w c h)) (fn [_] '(inv-dispatch-raw w c (find-comp-has w cid c hc) h)) form)))
-
 ;; ---- Rule R: the filter keeps every run that is not done (normalized: they are live)
 
 (a/defn alive-kept [K :- (=> Nat Bool), k :- RKey] Bool (Bool.or (Bool.not (:alive k)) (K (:id k))))
@@ -1902,49 +1707,6 @@
            (fn [r :- RunRow, hm :- (List.Mem r (:runs w)), ha :- (= (run-alive r) true)]
              (keep-of-live w (:id r) (normalized-runs w r hn hm ha)))
            h hf)))
-
-(lcopy! GL 'inv-normalize)
-
-(a/theorem gl-rule-r-round [w :- World]
-  (=> (= (acts-alive w) true) (= (gl w) true) (= (filter-safe (normalize w)) true) (= (gl (rule-r-round w)) true))
-  (intros ha h hf)
-  (simp only [rule-r-round])
-  (exact (gl-rule-r-filter-o (normalize w) (normalized-ok w (gl-sample w h) ha) (gl-normalize w h) hf)))
-
-(a/theorem gl-rr-loop [fuel :- (List Nat)]
-  (forall [w0 :- World] (=> (= (acts-alive w0) true) (= (gl w0) true) (= (rr-safe fuel w0) true)
-                            (= (gl (rr-loop fuel (rule-r-round w0))) true)))
-  (induction fuel)
-  (case [nil] (intros w0 ha h hs) (simp only [rr-safe] at hs) (simp only [rr-loop]) (exact (gl-rule-r-round w0 ha h hs)))
-  (case [cons x f ih]
-    (intros w0 ha h hs)
-    (simp only [rr-safe Bool.and_eq_true] at hs)
-    (have h1 := (gl-rule-r-round w0 ha h (And.left hs)))
-    (cases ho (no-orphans (rule-r-round w0)))
-    (case [false]
-      (simp only [ho] at hs) (simp only [rr-loop ho])
-      (exact (ih (rule-r-round w0) (acts-alive-round w0 (gl-sample w0 h) ha) h1 (And.right hs))))
-    (case [true] (simp only [rr-loop ho]) (exact h1))))
-
-(a/theorem gl-rule-r [w :- World]
-  (=> (= (acts-alive w) true) (= (gl w) true) (= (rule-r-safe w) true) (= (gl (rule-r w)) true))
-  (intros ha h hs)
-  (simp only [rule-r-safe] at hs) (simp only [rule-r])
-  (exact (gl-rr-loop (rr-fuel w) w ha h hs)))
-
-(lcopy! GL 'raw-inv)
-
-;; the bundle is preserved by every step (hypotheses of step-acts)
-(a/theorem step-gl [w :- World, it :- Item]
-  (=> (= (ga w) true) (= (gl w) true) (= (rule-r-safe (:world (raw w it))) true) (= (gl (:world (world-step w it))) true))
-  (intros hg h hs)
-  (cases ha (:accepted (raw w it)))
-  (case [false] (have e1 := (step-refuse w it ha)) (simp only [e1 refuse]) (exact h))
-  (case [true]
-    (have e2 := (step-accepted w it ha)) (rw [e2])
-    (exact (gl-rule-r (:world (raw w it)) (raw-acts-alive w it hg) (raw-gl w it h) hs))))
-
-(a/theorem gl-empty [] (= (gl empty-world) true) (rfl))
 
 ;; ---- the literal I10 (task part)
 
@@ -2052,13 +1814,6 @@
   (simp only [inv-i10-task Bool.and_eq_true])
   (exact (And.intro (all-of-mem RunRow (task-run-is w) (:runs w) (fn [r :- RunRow, hm :- (List.Mem r (:runs w))] (gl-task-run-is w r h hm)))
                     (all-of-mem TaskRow (task-has-run w) (:tasks w) (fn [t :- TaskRow, hm :- (List.Mem t (:tasks w))] (gl-task-has-run w t h hm))))))
-
-;; Theorem: literal I10, task part (every run of a task K is K.run; a task without result has
-;; its run, not done), through every step
-(a/theorem step-lit-i10-task [w :- World, it :- Item]
-  (=> (= (ga w) true) (= (gl w) true) (= (rule-r-safe (:world (raw w it))) true)
-      (= (inv-i10-task (:world (world-step w it))) true))
-  (intros hg h hs) (exact (gl-i10-task _ (step-gl w it hg h hs))))
 
 ;; ===========================================================================
 ;; Part D. I9, resources: an unwinding run's resources are cancelling or fired

@@ -71,7 +71,7 @@
 (prim! GNF 'inv-fork-del '(gnf-rest-fork-del nids w x R))
 (prim! GNF 'inv-filter-world '(gnf-rest-filter nids w K R))
 
-(tree/restate! GNF 'p-gnf '[inv-remove-empty-at nat-fold-inv inv-cancel-losers inv-normalize])   ; the generic tree (spindel.v2.pres.tree) instead of a copy
+(tree/restate! GNF '[inv-remove-empty-at nat-fold-inv inv-cancel-losers inv-normalize])   ; the generic tree (spindel.v2.pres.tree) instead of a copy
 
 (a/theorem gnf-rule-r-round [nids :- (List Nat), w :- World]
   (=> (= (gnf nids w) true) (= (filter-safe (normalize w)) true) (= (gnf nids (rule-r-round w)) true))

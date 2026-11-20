@@ -35,6 +35,7 @@
             [spindel.v2.inv.acts :refer :all]
             [spindel.v2.inv :refer :all]
             [spindel.v2.inv.copier :refer :all]
+            [spindel.v2.inv.i10-task]
             [spindel.v2.inv.idle :refer :all]
             [spindel.v2.inv.tomb :refer :all]))
 
@@ -176,7 +177,7 @@
 (prim! MDK 'inv-drop-act '(ep-filter (both marked-dep (dep-in mkm)) (cred-ne a) (:edges w) R))
 (prim! MDK 'inv-drop-edges '(ep-filter (both marked-dep (dep-in mkm)) p (:edges w) R))
 
-(tree/restate! MDK 'p-mdk '[inv-fire-edge nat-fold-inv])   ; the generic tree (spindel.v2.pres.tree) instead of a copy
+(tree/restate! MDK '[inv-fire-edge nat-fold-inv])   ; the generic tree (spindel.v2.pres.tree) instead of a copy
 
 ;; ---- the mark targets are dep edges (unique edge ids)
 
@@ -2694,7 +2695,7 @@
   (simp only [kx-rest insert-edge-fresh bump insert-edge edge-ins set-next-id set-edges tbl-ins tbl-all n1 (And.right h) l Bool.and_self]))
 (prim! KX 'insert-edge-fresh-inv-sample '(kx-rest-ins kxy kxd w e R))
 
-(tree/restate! KX 'p-kx '[inv-cancel-pred inv-cut-suffix])   ; the generic tree (spindel.v2.pres.tree) instead of a copy
+(tree/restate! KX '[inv-cancel-pred inv-cut-suffix])   ; the generic tree (spindel.v2.pres.tree) instead of a copy
 
 (a/theorem run-ref-ok-edge [w :- World, e :- EdgeRow]
   (=> (= (inv-sample w) true) (List.Mem e (:edges w)) (= (Nat.blt (:id e) (:next-id w)) true))
