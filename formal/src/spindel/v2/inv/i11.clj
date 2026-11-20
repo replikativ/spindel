@@ -5,7 +5,7 @@
 
   Bundle gw = inv-sample and: id 2 is the root scope's (a scope of kind root or with id 2 is the
   root scope with parent 0), no run scope is 2, the allocator is above 2, no fork marker is owned
-  by the root scope (C1c stage B; before it: no fork markers). Copied over the raw transition and normalization (`lcopy!`); overrides:
+  by the root scope (C1c stage B; before it: no fork markers). Restated over the raw transition and normalization by the generic tree; own proofs:
   run creation (`add-run-scope`: the new scope is next-id + 1) and detach (the re-parented scope is
   a run's scope, not 2).
   Reach: from the roots, every node is the root scope or reached from the obligations
@@ -18,6 +18,7 @@
   Theorems: step-gw, i11a-of, p3d = p3c && gw && inv-i11a with step-p3d, p3d-empty and
   step-i11a-total (no honest hypothesis)."
   (:require [ansatz.core :as a]
+            [spindel.v2.pres.tree :as tree]
             [spindel.v2.pres.frames :as frames]
             [clojure.string :as str]
             [spindel.v2.state :refer :all]
@@ -189,6 +190,10 @@
 (prim! GW 'inv-run-del '(gw-rest-run-del w x R))
 (prim! GW 'inv-scope-del '(gw-rest-scope-del w x R))
 (prim! GW 'inv-filter-world '(gw-rest-filter w K R))
+(tree/part! GW
+  :over '{t-own-inv         t-own-gw            ; own: the marker's owner is not the root scope
+          inv-add-run-scope gw-add-run-scope    ; T4/T5/T11: the new run's scope is a run scope (> 2)
+          t-detach-inv      t-detach-gw})       ; detach: the task's run scope is not 2
 
 ;; C1c stage B: a marker goes (fk-ok kept); own adds one whose owner is not the root scope (own-ok)
 (a/theorem gw-rest-fork-del [w :- World, x :- Nat] (=> (= (gw-rest w) true) (= (gw-rest (fork-del w x)) true))
@@ -198,21 +203,20 @@
   (exact (tbl-all-del ForkRow fork-id x _ _ (fn [f :- ForkRow, p :- (= (fk-ok f) true), q :- (= (Nat.beq (fork-id f) x) false)] p) _ (And.left (And.right (And.right h)))))
   (simp only [gw-rest gwk fork-del set-forks a (And.left h) (And.left (And.right h)) (And.right (And.right (And.right h))) Bool.and_self]))
 (prim! GW 'inv-fork-del '(gw-rest-fork-del w x R))
-(override! GW 't-own-inv '[]
-  '(a/theorem t-own-gw [w :- World, s :- Nat, m :- Nat]
-     (=> (= (gw w) true) (= (gw (:world (t-own w s m))) true))
-     (intro h)
-     (cases ho (own-ok w s))
-     (case [false] (simp only [t-own ho refuse]) (exact h))
-     (case [true]
-       (simp only [t-own ho accept])
-       (have o := (own-ok-parts w s ho))
-       (have f1 (= (fk-ok (ForkRow.mk (:next-id w) m s)) true)) (simp only [fk-ok ne2 (And.left (And.right o)) Bool.not_false])
-       (have h0 := (gw-rest-of w h)) (simp only [gw-rest gwk Bool.and_eq_true] at h0)
-       (have r1 (= (gw-rest (fork-ins w (ForkRow.mk (:next-id w) m s))) true))
-       (simp only [gw-rest gwk fork-ins set-forks tbl-ins tbl-all f1 (And.left h0) (And.left (And.right h0))
-                   (And.left (And.right (And.right h0))) (And.right (And.right (And.right h0))) Bool.and_self Bool.true_and])
-       (exact (gw-intro _ (inv-fork-ins-fresh w (ForkRow.mk (:next-id w) m s) (rfl) (gw-sample w h)) (gw-rest-bump _ r1))))))
+(a/theorem t-own-gw [w :- World, s :- Nat, m :- Nat]
+  (=> (= (gw w) true) (= (gw (:world (t-own w s m))) true))
+  (intro h)
+  (cases ho (own-ok w s))
+  (case [false] (simp only [t-own ho refuse]) (exact h))
+  (case [true]
+    (simp only [t-own ho accept])
+    (have o := (own-ok-parts w s ho))
+    (have f1 (= (fk-ok (ForkRow.mk (:next-id w) m s)) true)) (simp only [fk-ok ne2 (And.left (And.right o)) Bool.not_false])
+    (have h0 := (gw-rest-of w h)) (simp only [gw-rest gwk Bool.and_eq_true] at h0)
+    (have r1 (= (gw-rest (fork-ins w (ForkRow.mk (:next-id w) m s))) true))
+    (simp only [gw-rest gwk fork-ins set-forks tbl-ins tbl-all f1 (And.left h0) (And.left (And.right h0))
+                (And.left (And.right (And.right h0))) (And.right (And.right (And.right h0))) Bool.and_self Bool.true_and])
+    (exact (gw-intro _ (inv-fork-ins-fresh w (ForkRow.mk (:next-id w) m s) (rfl) (gw-sample w h)) (gw-rest-bump _ r1)))))
 
 ;; T4/T5/T11: the new run's scope is next-id + 1 (> 2), a run scope
 (a/theorem gw-add-run-scope-o [w :- World, of :- Nat, epoch :- Nat, parent :- Nat, ei :- Nat]
@@ -231,10 +235,9 @@
   (simp only [add-run-scope])
   (have he (= (scope-id (new-scope-row (+ (:next-id w) 1) parent)) (:next-id (bump (run-ins w (new-run-row (:next-id w) of epoch (+ (:next-id w) 1) ei)))))) (rfl)
   (exact (gw-scope-ins-fresh _ (new-scope-row (+ (:next-id w) 1) parent) (Eq.refl false) he h1)))
-(override! GW 'inv-add-run-scope '[]
-  '(a/theorem gw-add-run-scope [w :- World, of :- Nat, epoch :- Nat, parent :- Nat, ei :- Nat]
-     (=> (= (gw w) true) (= (gw (add-run-scope w of epoch parent ei)) true))
-     (intro h) (exact (gw-add-run-scope-o w of epoch parent ei h))))
+(a/theorem gw-add-run-scope [w :- World, of :- Nat, epoch :- Nat, parent :- Nat, ei :- Nat]
+  (=> (= (gw w) true) (= (gw (add-run-scope w of epoch parent ei)) true))
+  (intro h) (exact (gw-add-run-scope-o w of epoch parent ei h)))
 
 ;; detach: the task's run scope (a run's scope: not 2) gets the new parent
 (a/theorem gw-set-parent [w :- World, x :- Nat, p :- Nat]
@@ -268,24 +271,23 @@
     (have q := (tbl-all-mem RunRow _ r _ a0 (tbl-find-mem RunRow run-id (:run t) r (:runs w) hf)))
     (simp only [ne2] at q) (exact (bnot-true _ q))))
 
-(lcopy! GW 'inv-remove-if-empty)
-(override! GW 't-detach-inv '[inv-remove-if-empty]
-  '(a/theorem t-detach-gw [w :- World, k :- Nat, s :- Nat]
-     (=> (= (gw w) true) (= (gw (:world (t-detach w k s))) true))
-     (intro h)
-     (cases hf (task-find w k))
-     (case [none] (simp only [t-detach hf refuse]) (exact h))
-     (case [some t]
-       (cases hg (detach-ok w t s))
-       (case [false] (simp only [t-detach hf hg refuse]) (exact h))
-       (case [true]
-         (simp only [t-detach hf hg accept remove-empty-at detach-move])
-         (have h1 := (gw-task-upd w k (task-set-owner s) (task-set-owner-id s) h))
-         (have hne (= (Nat.beq (task-run-scope w t) 2) false)) (exact (trs-ne2 w t h))
-         (exact (gw-remove-if-empty _ _ (gw-set-parent _ (task-run-scope w t) s hne h1)))))))
+(tree/restate! GW '[inv-remove-if-empty])
+(a/theorem t-detach-gw [w :- World, k :- Nat, s :- Nat]
+  (=> (= (gw w) true) (= (gw (:world (t-detach w k s))) true))
+  (intro h)
+  (cases hf (task-find w k))
+  (case [none] (simp only [t-detach hf refuse]) (exact h))
+  (case [some t]
+    (cases hg (detach-ok w t s))
+    (case [false] (simp only [t-detach hf hg refuse]) (exact h))
+    (case [true]
+      (simp only [t-detach hf hg accept remove-empty-at detach-move])
+      (have h1 := (gw-task-upd w k (task-set-owner s) (task-set-owner-id s) h))
+      (have hne (= (Nat.beq (task-run-scope w t) 2) false)) (exact (trs-ne2 w t h))
+      (exact (gw-remove-if-empty _ _ (gw-set-parent _ (task-run-scope w t) s hne h1))))))
 
-(lcopy! GW 'raw-inv)
-(lcopy! GW 'inv-normalize)
+(tree/restate! GW '[raw-inv])
+(tree/restate! GW '[inv-normalize])
 
 (a/theorem gw-rule-r-round [w :- World]
   (=> (= (gw w) true) (= (filter-safe (normalize w)) true) (= (gw (rule-r-round w)) true))

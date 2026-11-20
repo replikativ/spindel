@@ -14,14 +14,15 @@
   The graph lemmas are generic over the parent function (Part A): a sub-graph keeps acyclicity
   (deletion, Rule R's filter), a fresh node no edge points to keeps it (scope creation: the id is
   next-id, the parent 0 or an existing scope, so below next-id), and re-parenting x under p keeps
-  it when x is neither p nor above p (detach under the guard). The copy over the raw transition and
-  normalization is spindel.v2.inv.copier's (`mk-bundle`, `prim!`, `lcopy!`), as spindel.v2.inv.i1-scopes's G1:
-  overrides at run creation (`gcy-add-run-scope`: the parent is 0 or the owner scope), open-scope
+  it when x is neither p nor above p (detach under the guard). The restatement over the raw transition and
+  normalization is the generic tree's (spindel.v2.pres.tree), as spindel.v2.inv.i1-scopes's G1:
+  own proofs at run creation (`gcy-add-run-scope`: the parent is 0 or the owner scope), open-scope
   (the current scope exists, `open-ok`) and detach (`t-detach-gcy`: the guard).
 
   Theorems: step-gcy (Rule R's honest hypothesis), step-acyc / acyc-empty (from p3b, no hypothesis),
   step-acyclic, step-acyclic-reach."
   (:require [ansatz.core :as a]
+            [spindel.v2.pres.tree :as tree]
             [spindel.v2.pres.frames :as frames]
             [clojure.string :as str]
             [spindel.v2.state :refer :all]
@@ -521,8 +522,7 @@
 ;; ===========================================================================
 
 (def GCY (mk-bundle 'gcy [] "gcy-" {'inv-scope-upd ['(fn [s :- ScopeRow] (Eq.refl (:parent s))) 4]}))
-(swap! (:renames GCY) assoc 'inv-parts 'gcy-parts 'inv-scope-upd 'gcy-scope-upd 'inv-scope-ins-fresh 'gcy-scope-ins-fresh
-       'inv-add-run-scope 'gcy-add-run-scope)
+(swap! (:renames GCY) assoc 'inv-parts 'gcy-parts 'inv-scope-upd 'gcy-scope-upd 'inv-scope-ins-fresh 'gcy-scope-ins-fresh)
 (defpart GCY :reads '[next-id scopes])
 (frames/frame-theorem! 'gcy-rest-mark-edge 'gcy-rest 'mark-edge-inv-sample)
 (frames/frame-theorem! 'gcy-rest-unmark-edge 'gcy-rest 'unmark-edge-inv-sample)
@@ -536,57 +536,59 @@
 
 ;; callers of add-run-scope: a computation run scope has parent 0 (Z#26), a task run scope its owner
 ;; scope when that exists (task-scope-parent)
-(defn- add-hp [form] (subst-forms (app-of? 'inv-add-run-scope) (fn [y] (concat (take 6 y) ['(Eq.refl true)] (drop 6 y))) form))
-(patch! GCY 'inv-start-raw add-hp)
-(patch! GCY 'inv-new-run-of add-hp)
-(override! GCY 'inv-spawn-rows '[]
-  '(a/theorem gcy-spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat), loc :- Bool]
-     (=> (= (gcy w) true) (= (gcy (spawn-rows w owner inputs loc)) true))
-     (intro h)
-     (simp only [spawn-rows])
-     (have h1 (= (gcy (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc)))) true))
-     (exact (gcy-task-ins-fresh w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc) (rfl) h))
-     (exact (gcy-add-run-scope (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc)))
-              (:next-id w) 0 (task-scope-parent w owner) 0 (cy-tsp-has w owner) h1))))
+(tree/part! GCY
+  :over '{inv-add-run-scope   gcy-add-run-scope   ; the run scope's parent exists (or is 0)
+          inv-spawn-rows      gcy-spawn-rows
+          t-open-scope-inv    t-open-scope-gcy
+          t-detach-inv        t-detach-gcy}
+  :ctx '{inv-add-run-scope [(= (Bool.or (Nat.beq parent 0) (scope-has w parent)) true)]}
+  :pass '{inv-start-raw  {inv-add-run-scope [(Eq.refl true)]}     ; parent 0
+          inv-new-run-of {inv-add-run-scope [(Eq.refl true)]}})
+(a/theorem gcy-spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat), loc :- Bool]
+  (=> (= (gcy w) true) (= (gcy (spawn-rows w owner inputs loc)) true))
+  (intro h)
+  (simp only [spawn-rows])
+  (have h1 (= (gcy (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc)))) true))
+  (exact (gcy-task-ins-fresh w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc) (rfl) h))
+  (exact (gcy-add-run-scope (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc)))
+           (:next-id w) 0 (task-scope-parent w owner) 0 (cy-tsp-has w owner) h1)))
 ;; open-scope: the new explicit scope's parent is the run's current scope, which exists (open-ok)
-(override! GCY 't-open-scope-inv '[]
-  '(a/theorem t-open-scope-gcy [w :- World, st :- Nat, s :- Nat]
-     (=> (= (gcy w) true) (= (gcy (:world (t-open-scope w st s))) true))
-     (intro h)
-     (cases ht (tok-run w st)) (case' [some r]) (case' [none])
-     (simp only [t-open-scope ht refuse]) (exact h)
-     (cases hg (Bool.and (Nat.beq s (:next-id w)) (open-ok w r)))
-     (simp only [t-open-scope ht hg refuse]) (exact h)
-     (have hs (= s (:next-id w))) (simp only [Bool.and_eq_true Nat.beq_eq] at hg) (exact (And.left hg))
-     (have hc (= (Bool.or (Nat.beq (cur-scope w r) 0) (scope-has w (cur-scope w r))) true))
-     (simp only [open-ok Bool.and_eq_true] at hg) (simp only [(And.right (And.right hg)) Bool.or_true])
-     (simp only [t-open-scope ht hg accept])
-     (exact (gcy-scope-ins-fresh w (ScopeRow.mk s (cur-scope w r) scope-explicit true) hs hc h))))
-(lcopy! GCY 'inv-remove-if-empty)
+(a/theorem t-open-scope-gcy [w :- World, st :- Nat, s :- Nat]
+  (=> (= (gcy w) true) (= (gcy (:world (t-open-scope w st s))) true))
+  (intro h)
+  (cases ht (tok-run w st)) (case' [some r]) (case' [none])
+  (simp only [t-open-scope ht refuse]) (exact h)
+  (cases hg (Bool.and (Nat.beq s (:next-id w)) (open-ok w r)))
+  (simp only [t-open-scope ht hg refuse]) (exact h)
+  (have hs (= s (:next-id w))) (simp only [Bool.and_eq_true Nat.beq_eq] at hg) (exact (And.left hg))
+  (have hc (= (Bool.or (Nat.beq (cur-scope w r) 0) (scope-has w (cur-scope w r))) true))
+  (simp only [open-ok Bool.and_eq_true] at hg) (simp only [(And.right (And.right hg)) Bool.or_true])
+  (simp only [t-open-scope ht hg accept])
+  (exact (gcy-scope-ins-fresh w (ScopeRow.mk s (cur-scope w r) scope-explicit true) hs hc h)))
+(tree/restate! GCY '[inv-remove-if-empty])
 (a/theorem cy-not-true [b :- Bool] (=> (= (Bool.not b) true) (= b false))
   (intro h) (cases b) (rfl) (simp at h))
 ;; detach (Z#69): the run scope is re-parented under the open scope s, which the guard keeps out of
 ;; the run scope's subtree (`scope-within w s rs = false`): no cycle
-(override! GCY 't-detach-inv '[inv-remove-if-empty]
-  '(a/theorem t-detach-gcy [w :- World, k :- Nat, s :- Nat]
-     (=> (= (gcy w) true) (= (gcy (:world (t-detach w k s))) true))
-     (intro h)
-     (cases hf (task-find w k))
-     (case [none] (simp only [t-detach hf refuse]) (exact h))
-     (case [some t]
-       (cases hg (detach-ok w t s))
-       (case [false] (simp only [t-detach hf hg refuse]) (exact h))
-       (case [true]
-         (have hg2 := hg)
-         (simp only [detach-ok Bool.and_eq_true] at hg2)
-         (have hs2 (= (scope-has w s) true)) (exact (cy-open-has w s (And.left (And.right (And.right hg2)))))
-         (have hw (= (scope-within w s (task-run-scope w t)) false)) (exact (cy-not-true _ (And.right (And.right (And.right hg2)))))
-         (simp only [t-detach hf hg accept remove-empty-at detach-move])
-         (have h1 := (gcy-task-upd w k (task-set-owner s) (task-set-owner-id s) h))
-         (exact (gcy-remove-if-empty _ _ (gcy-set-parent (task-upd w k (task-set-owner s)) (task-run-scope w t) s hw hs2 h1)))))))
+(a/theorem t-detach-gcy [w :- World, k :- Nat, s :- Nat]
+  (=> (= (gcy w) true) (= (gcy (:world (t-detach w k s))) true))
+  (intro h)
+  (cases hf (task-find w k))
+  (case [none] (simp only [t-detach hf refuse]) (exact h))
+  (case [some t]
+    (cases hg (detach-ok w t s))
+    (case [false] (simp only [t-detach hf hg refuse]) (exact h))
+    (case [true]
+      (have hg2 := hg)
+      (simp only [detach-ok Bool.and_eq_true] at hg2)
+      (have hs2 (= (scope-has w s) true)) (exact (cy-open-has w s (And.left (And.right (And.right hg2)))))
+      (have hw (= (scope-within w s (task-run-scope w t)) false)) (exact (cy-not-true _ (And.right (And.right (And.right hg2)))))
+      (simp only [t-detach hf hg accept remove-empty-at detach-move])
+      (have h1 := (gcy-task-upd w k (task-set-owner s) (task-set-owner-id s) h))
+      (exact (gcy-remove-if-empty _ _ (gcy-set-parent (task-upd w k (task-set-owner s)) (task-run-scope w t) s hw hs2 h1))))))
 
-(lcopy! GCY 'raw-inv)
-(lcopy! GCY 'inv-normalize)
+(tree/restate! GCY '[raw-inv])
+(tree/restate! GCY '[inv-normalize])
 
 ;; ===========================================================================
 ;; Part E. Rule R and the step
