@@ -13,6 +13,10 @@
             [spindel.v2.inv.comp-facts :as cf]
             [spindel.v2.inv.marks :as mk]
             [spindel.v2.inv.marks-step]
+            [spindel.v2.inv.tomb :as tomb]
+            [spindel.v2.inv.acyclic :as acy]
+            [spindel.v2.inv.i1-scopes :as i1s]
+            [spindel.v2.inv.i11 :as i11]
             [spindel.v2.pres.tree :as tree]))
 
 (defn- declared? [s] (some? (.lookup ^ansatz.kernel.Env @a/ansatz-env (ansatz.kernel.Name/fromString (str s)))))
@@ -111,3 +115,12 @@
               t-link-realize-inv link-realize-raw-inv inv-realize-link inv-deliver-res inv-resume inv-fill-slot]]
     (is (tree/variant? mk/HMK x) (str x))))
 
+(deftest scope-and-tomb-parts-are-not-copied
+  (doseq [B [tomb/GY acy/GCY i1s/G1 i11/GW]]
+    (is (empty? @(:overrides B)) (str (:pred B)))
+    (is (empty? @(:patches B)) (str (:pred B))))
+  ;; gy takes g7 from the step's input at T7 and T6; g1 and gcy take "the parent is a scope" where a
+  ;; run joins a scope
+  (is (tree/variant? tomb/GY 'raw0-track-inv))
+  (doseq [x '[t7-inv t6-inv]] (is (contains? (get-in @tree/parts ['gy :ctx]) x) (str x)))
+  (doseq [p '[g1 gcy]] (is (contains? (get-in @tree/parts [p :ctx]) 'inv-add-run-scope) (str p))))

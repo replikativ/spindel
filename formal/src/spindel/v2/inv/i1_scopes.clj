@@ -18,6 +18,7 @@
   removes whole subtrees, detach re-parents to an open scope). The other I1 clauses are proved in
   spindel.v2.inv.i1-owners (owners) and spindel.v2.inv.i1-runs (resource owners, run entities and scopes; `inv-i1`)."
   (:require [ansatz.core :as a]
+            [spindel.v2.pres.tree :as tree]
             [spindel.v2.state :refer :all]
             [spindel.v2.edits :refer :all]
             [spindel.v2.reach :refer :all]
@@ -472,13 +473,13 @@
 ;;    (`g1-scope-ins-fresh`; the premise is the guard `open-ok` at T16's open, `task-scope-parent` at a
 ;;    run's scope); closing a subtree that is removed whole (`g1-remove-if-empty`); re-parenting to
 ;;    an open scope (`g1-set-parent`, T-detach). Every other primitive is a frame.
-;; 5. Deferred within a step: none. The overrides (`inv-spawn-rows`, `t-open-scope-inv`,
-;;    `t-detach-inv`) and patches (`inv-start-raw`, `inv-new-run-of`) pass the parent's existence
+;; 5. Deferred within a step: none. g1's own proofs (`inv-spawn-rows`, `t-open-scope-inv`,
+;;    `t-detach-inv`) and passes (`inv-start-raw`, `inv-new-run-of`) give the parent's existence
 ;;    from the guard on the path to the new scope.
 ;; 6. Companions: none (`step-g1`).
 
 (def G1 (mk-bundle 'g1 [] "g1-" {'inv-scope-upd ['(fn [s :- ScopeRow] (Eq.refl (skw s))) 4]}))
-(swap! (:renames G1) assoc 'inv-parts 'g1-parts 'inv-remove-if-empty 'g1-remove-if-empty 'inv-add-run-scope 'g1-add-run-scope)
+(swap! (:renames G1) assoc 'inv-parts 'g1-parts)
 (defpart G1
   :reads '[scopes]
   :cells '{inv-scope-upd g1-scope-upd                 ; keeps the parent and the kind
@@ -490,49 +491,52 @@
 
 ;; callers of add-run-scope: a computation run scope has parent 0 (Z#26), a task run scope its owner
 ;; scope when that exists (task-scope-parent)
-(defn- add-hp [form] (subst-forms (app-of? 'inv-add-run-scope) (fn [y] (concat (take 6 y) ['(Eq.refl true)] (drop 6 y))) form))
-(patch! G1 'inv-start-raw add-hp)
-(patch! G1 'inv-new-run-of add-hp)
-(override! G1 'inv-spawn-rows '[]
-  '(a/theorem g1-spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat), loc :- Bool]
-     (=> (= (g1 w) true) (= (g1 (spawn-rows w owner inputs loc)) true))
-     (intro h)
-     (simp only [spawn-rows])
-     (have h1 (= (g1 (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc)))) true))
-     (exact (g1-task-ins-fresh w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc) (rfl) h))
-     (exact (g1-add-run-scope (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc)))
-              (:next-id w) 0 (task-scope-parent w owner) 0 (tsp-has w owner) h1))))
-(override! G1 't-open-scope-inv '[]
-  '(a/theorem t-open-scope-g1 [w :- World, st :- Nat, s :- Nat]
-     (=> (= (g1 w) true) (= (g1 (:world (t-open-scope w st s))) true))
-     (intro h)
-     (cases ht (tok-run w st)) (case' [some r]) (case' [none])
-     (simp only [t-open-scope ht refuse]) (exact h)
-     (cases hg (Bool.and (Nat.beq s (:next-id w)) (open-ok w r)))
-     (simp only [t-open-scope ht hg refuse]) (exact h)
-     (have hs (= s (:next-id w))) (simp only [Bool.and_eq_true Nat.beq_eq] at hg) (exact (And.left hg))
-     (have hc (= (Bool.or (Nat.beq (cur-scope w r) 0) (scope-has w (cur-scope w r))) true))
-     (simp only [open-ok Bool.and_eq_true] at hg) (simp only [(And.right (And.right hg)) Bool.or_true])
-     (simp only [t-open-scope ht hg accept])
-     (exact (g1-scope-ins-fresh w (ScopeRow.mk s (cur-scope w r) scope-explicit true) hs hc h))))
-(override! G1 't-detach-inv '[]
-  '(a/theorem t-detach-g1 [w :- World, k :- Nat, s :- Nat]
-     (=> (= (g1 w) true) (= (g1 (:world (t-detach w k s))) true))
-     (intro h)
-     (cases hf (task-find w k))
-     (case [none] (simp only [t-detach hf refuse]) (exact h))
-     (case [some t]
-       (cases hg (detach-ok w t s))
-       (case [false] (simp only [t-detach hf hg refuse]) (exact h))
-       (case [true]
-         (have hs2 (= (scope-has w s) true))
-         (simp only [detach-ok Bool.and_eq_true] at hg) (exact (open-at-has w s (And.left (And.right (And.right hg)))))
-         (simp only [t-detach hf hg accept remove-empty-at detach-move])
-         (have h1 := (g1-task-upd w k (task-set-owner s) (task-set-owner-id s) h))
-         (exact (g1-remove-if-empty _ _ (g1-set-parent (task-upd w k (task-set-owner s)) (task-run-scope w t) s hs2 h1)))))))
+(tree/part! G1
+  :over '{inv-remove-if-empty g1-remove-if-empty     ; an emptied scope goes with its parent link kept
+          inv-add-run-scope   g1-add-run-scope       ; the run scope's parent exists (or is 0)
+          inv-spawn-rows      g1-spawn-rows          ; T4: the task scope's parent (task-scope-parent)
+          t-open-scope-inv    t-open-scope-g1        ; the opened scope's parent is the current one
+          t-detach-inv        t-detach-g1}           ; the task's run scope moves to an existing scope
+  :ctx '{inv-add-run-scope [(= (Bool.or (Nat.beq parent 0) (scope-has w parent)) true)]}
+  :pass '{inv-start-raw  {inv-add-run-scope [(Eq.refl true)]}     ; parent 0
+          inv-new-run-of {inv-add-run-scope [(Eq.refl true)]}})
+(a/theorem g1-spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat), loc :- Bool]
+  (=> (= (g1 w) true) (= (g1 (spawn-rows w owner inputs loc)) true))
+  (intro h)
+  (simp only [spawn-rows])
+  (have h1 (= (g1 (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc)))) true))
+  (exact (g1-task-ins-fresh w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc) (rfl) h))
+  (exact (g1-add-run-scope (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc)))
+           (:next-id w) 0 (task-scope-parent w owner) 0 (tsp-has w owner) h1)))
+(a/theorem t-open-scope-g1 [w :- World, st :- Nat, s :- Nat]
+  (=> (= (g1 w) true) (= (g1 (:world (t-open-scope w st s))) true))
+  (intro h)
+  (cases ht (tok-run w st)) (case' [some r]) (case' [none])
+  (simp only [t-open-scope ht refuse]) (exact h)
+  (cases hg (Bool.and (Nat.beq s (:next-id w)) (open-ok w r)))
+  (simp only [t-open-scope ht hg refuse]) (exact h)
+  (have hs (= s (:next-id w))) (simp only [Bool.and_eq_true Nat.beq_eq] at hg) (exact (And.left hg))
+  (have hc (= (Bool.or (Nat.beq (cur-scope w r) 0) (scope-has w (cur-scope w r))) true))
+  (simp only [open-ok Bool.and_eq_true] at hg) (simp only [(And.right (And.right hg)) Bool.or_true])
+  (simp only [t-open-scope ht hg accept])
+  (exact (g1-scope-ins-fresh w (ScopeRow.mk s (cur-scope w r) scope-explicit true) hs hc h)))
+(a/theorem t-detach-g1 [w :- World, k :- Nat, s :- Nat]
+  (=> (= (g1 w) true) (= (g1 (:world (t-detach w k s))) true))
+  (intro h)
+  (cases hf (task-find w k))
+  (case [none] (simp only [t-detach hf refuse]) (exact h))
+  (case [some t]
+    (cases hg (detach-ok w t s))
+    (case [false] (simp only [t-detach hf hg refuse]) (exact h))
+    (case [true]
+      (have hs2 (= (scope-has w s) true))
+      (simp only [detach-ok Bool.and_eq_true] at hg) (exact (open-at-has w s (And.left (And.right (And.right hg)))))
+      (simp only [t-detach hf hg accept remove-empty-at detach-move])
+      (have h1 := (g1-task-upd w k (task-set-owner s) (task-set-owner-id s) h))
+      (exact (g1-remove-if-empty _ _ (g1-set-parent (task-upd w k (task-set-owner s)) (task-run-scope w t) s hs2 h1))))))
 
-(lcopy! G1 'raw-inv)
-(lcopy! G1 'inv-normalize)
+(tree/restate! G1 '[raw-inv])
+(tree/restate! G1 '[inv-normalize])
 
 ;; ===========================================================================
 ;; Part F. Rule R and the step
