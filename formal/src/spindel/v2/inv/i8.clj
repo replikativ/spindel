@@ -1666,9 +1666,13 @@
          t11-inv              [hga (= (ga w) true)]
          inv-dispatch-raw     [hga (= (ga w) true) hc (= (comp-has w (:id c)) true)]}
   :gates '{c0-gate-inv hc0}                                                                 ; C0: the root scope is open
-  :pass '{raw0-inv             {t4-inv [(bshut-cur w st hc)] t1-body-inv [(bshut-cur w st hc) hc0]
-                                t1-top-full-inv [hc0] t-create-link-inv [hc0] t-append-inv [hc0]
-                                t-link-realize-inv [(root-ok-any (Nat.beq tag res-ok) w hc0)]}
+  :pass '{;; raw0's guards, per item: body-shut gives cur-closed (P10); C0's gate gives root-ok-if
+          raw0-spawn-inv         {t4-inv [(bshut-cur w st hc)]}
+          raw0-create-source-inv {t1-body-inv [(bshut-cur w st hc) hc0]}
+          raw0-create-source-top-inv {t1-top-full-inv [hc0]}
+          raw0-create-link-inv   {t-create-link-inv [hc0]}
+          raw0-append-inv        {t-append-inv [hc0]}
+          raw0-link-realize-inv  {t-link-realize-inv [(root-ok-any (Nat.beq tag res-ok) w hc0)]}
           raw-inv              {inv-cancel-losers [(raw0g-ga w it hga)]}
           ;; owners of new tasks and sources
           t4-inv               {inv-spawn-rows [(owner-ok8 w r (base-of w h) (cur-of-tok w st r hcc ht))]}

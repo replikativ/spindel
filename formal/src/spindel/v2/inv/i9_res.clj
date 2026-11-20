@@ -53,7 +53,7 @@
          inv-arm-park         [(List.Mem r (:runs w)) (= (run-unwinding r) false)]}  ; the arming run: a row, not unwinding
   :own '{t17-inv [hc (= (fin-shut w st) false)]}                               ; raw0's guard: not in a cleanup slice
   :pass '{inv-job-apply {inv-cancel-run-local [(tbl-find-mem RunRow run-id rid r (:runs w) hf)]}     ; run-find found it
-          raw0-inv      {t17-inv [hc]}                                                               ; the guard
+          raw0-arm-inv  {t17-inv [hc]}                                                               ; the guard
           t17-inv       {inv-arm-park [(And.left (tok-facts w st r ht))                              ; the token's run,
                                        (cleanup-not-unw w st r (fin-shut-cleanup w st hc) ht)]}})    ;   not unwinding
 

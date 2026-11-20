@@ -23,7 +23,11 @@
   The facts are the part's, in its own vocabulary. A node whose proof passes or takes such facts
   (or calls a gate the part takes) gets the part's own generic lemma `pres-x@<part>`, generated from
   the base proof with the part's passes; every other node uses the shared `pres-x`. So a part's
-  facts reach only its own lemmas, and a reader finds all of them in the part's table."
+  facts reach only its own lemmas, and a reader finds all of them in the part's table.
+
+  raw0, the item dispatcher, is cut by item: the tree derives `raw0-<item>-inv` from raw0-inv's base
+  proof (one branch each) and proves raw0-inv by dispatching to them, so a part that passes into one
+  transition regenerates one branch, not the dispatcher (`raw0-split`)."
   (:require [ansatz.core :as a]
             [clojure.string :as str]
             [clojure.walk :as walk]
@@ -34,7 +38,10 @@
             [spindel.v2.pres.frames :as frames]
             [spindel.v2.pres.exempt :as exempt]))
 
-(def ^:private theorem-source @#'c/theorem-source)
+(def ^:private base-theorem-source @#'c/theorem-source)
+;; lemmas the tree derives from a base proof (raw0's branches, below), by name
+(defonce ^:private derived (atom {}))
+(defn- theorem-source [x] (or (get @derived x) (base-theorem-source x)))
 (def ^:private eval-theorem! @#'c/eval-theorem!)
 (def ^:private copy-form @#'c/copy-form)
 (def ^:private copy-name @#'c/copy-name)
@@ -62,6 +69,54 @@
 (def dispatched '{inv-run-upd 2 inv-task-upd 2 inv-resource-upd 2 inv-source-upd 2 inv-scope-upd 2 inv-serve-or 3
                   inv-scope-ins-fresh 1})
 
+;; raw0 by item. raw0-inv's base proof is one `cases it` over the 49 items, each branch the item's
+;; guard (if any) and its transition. A part that passes a fact into one transition would need its
+;; own copy of the whole dispatcher; so the tree cuts raw0's base proof into one lemma per item,
+;; `raw0-<item>-inv` (the branch's tactics, found by counting the goals they open and close), checks
+;; each for inv-sample, and proves raw0-inv by dispatching to them (`sources`). A part then gets its
+;; own lemma only for the branches it passes into. raw0-inv's statement is the base one.
+(defn- item-ctors []
+  (let [[_ _ _ & ctors] (first (filter #(and (seq? %) (= 'a/inductive (first %)) (= 'Item (second %)))
+                                       (@#'c/ns-source-forms 'spindel.v2.step)))]
+    (for [[nm & fields] ctors] [nm (mapv (fn [[f t]] [f t]) fields)])))
+
+(defn- raw0-branches
+  "[ctor fields segment] per item: raw0-inv's tactics for that item, rename_i dropped (its names
+  become the fields' names)."
+  []
+  (let [[_ _ _ _ & proof] (base-theorem-source 'raw0-inv)
+        _ (assert (= (take 3 proof) '((intro h) (cases it) (all_goals (simp only [raw0])))))]
+    (loop [tacs (drop 3 proof) ctors (item-ctors) acc []]
+      (if-let [[nm fields] (first ctors)]
+        (let [[seg rest-tacs]
+              (loop [ts tacs open 1 seg []]
+                (if (zero? open) [seg ts]
+                    (let [[t & more] ts]
+                      (recur more (case (first t) cases (inc open) exact (dec open) open) (conj seg t)))))
+              ren (some #(when (= 'rename_i (first %)) (rest %)) seg)
+              fields (if ren (mapv (fn [n [_ ty]] [n ty]) ren fields) fields)]
+          (recur rest-tacs (rest ctors) (conj acc [nm fields (remove #(= 'rename_i (first %)) seg)])))
+        (do (assert (empty? tacs)) acc)))))
+
+(defn- raw0-branch-name [ctor] (symbol (str "raw0-" (name ctor) "-inv")))
+
+(defn- raw0-branch-form [[ctor fields seg]]
+  (let [item (if (seq fields) (apply list (symbol (str "Item." (name ctor))) (map first fields)) (symbol (str "Item." (name ctor))))]
+    (apply list 'a/theorem (raw0-branch-name ctor) (vec (concat '[w :- World] (mapcat (fn [[f t]] [f :- t]) fields)))
+           (list '=> '(= (inv-sample w) true) (list '= (list 'inv-sample (list :world (list 'raw0 'w item))) true))
+           '(intro h) '(simp only [raw0]) seg)))
+
+(defn- raw0-dispatch [branches]
+  (let [[hd nm binders stmt] (base-theorem-source 'raw0-inv)]
+    (apply list hd nm binders stmt '(intro h) '(cases it)
+           (for [[ctor fields] branches]
+             (list 'exact (apply list (raw0-branch-name ctor) (concat ['w] (repeat (count fields) '_) ['h])))))))
+
+(def ^:private raw0-split
+  (let [bs (raw0-branches)]
+    (reset! derived (into {} (for [b bs] [(raw0-branch-name (first b)) (raw0-branch-form b)])))
+    {:branches bs :dispatch (raw0-dispatch bs)}))
+
 ;; Sources: nodes whose generic proof is not their base proof: a row function the base proof leaves
 ;; to unification is named. One that mentions a local of the proof is generalized (`site-gen`: the
 ;; site is stated for every value of the parameter: T-open-scope's parent, T-finally-enter's
@@ -72,7 +127,8 @@
                   (theorem-source x))))
 
 (def sources
-  {'inv-link-demand-raw (name-row-fn 'inv-link-demand-raw 'inv-source-upd '(link-set-rtask (:next-id w)))
+  {'raw0-inv (:dispatch raw0-split)
+   'inv-link-demand-raw (name-row-fn 'inv-link-demand-raw 'inv-source-upd '(link-set-rtask (:next-id w)))
    't-open-scope-inv
    (walk/postwalk-replace
     {'(ScopeRow.mk s (cur-scope w r) scope-explicit true)
@@ -102,7 +158,12 @@
 ;; Generation
 ;; ===========================================================================
 
-(def ^:private S (delay (set (keep (fn [[n g]] (when (@#'c/statement-mentions-inv? g) n)) @@#'c/source-theorems))))
+(def ^:private S0 (delay (set (keep (fn [[n g]] (when (@#'c/statement-mentions-inv? g) n)) @@#'c/source-theorems))))
+(def ^:private S (delay (into @S0 (keys @derived))))
+;; the lemmas in load order: the base sources, raw0's branches just before raw0-inv
+(def ^:private order
+  (delay (vec (mapcat (fn [[n _]] (if (= n 'raw0-inv) (concat (map first (sort-by key @derived)) [n]) [n]))
+                      @@#'c/source-theorems))))
 
 ;; pred -> the part's table (see part!)
 (defonce parts (atom {}))
@@ -340,8 +401,10 @@
         _ (swap! (:renames probe) assoc 'inv-parts 'inv-parts)
         closure (set (@#'c/closure probe 'step-inv))
         derived? (fn [p] (let [cs (callees nil p)] (and (seq cs) (not-any? #(= 'inv-intro (second %)) cs))))
-        nodes (vec (filter #(and (closure %) (not ('#{inv-parts inv-intro} %)) (or (not (prims %)) (derived? %)))
-                            (map first @@#'c/source-theorems)))]
+        nodes (vec (filter #(and (or (closure %) (contains? @derived %)) (not ('#{inv-parts inv-intro} %))
+                                 (or (not (prims %)) (derived? %)))
+                            @order))]
+    (doseq [[_ f] (sort-by key @derived)] (ev f))   ; raw0's branches, checked for inv-sample
     (doseq [x nodes] (ev (pres-form nil x)))
     (reset! tree {:nodes nodes :prims prims})))
 
@@ -445,7 +508,7 @@
                    (recur (subvec todo 1) seen)
                    (recur (into (subvec todo 1) (when (node? n) (deps n))) (conj seen n)))
                  seen))]
-    (count (doall (for [x (filter need (map first @@#'c/source-theorems))
+    (count (doall (for [x (filter need @order)
                         :when (not (contains? @(:renames B) x))]
                     (if (node? x) (restate-one! B x) (c/prim! B x nil)))))))
 
