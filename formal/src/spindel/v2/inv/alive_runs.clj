@@ -543,7 +543,7 @@
      (rw [runs-iec]) (exact o)
      (simp only [take-park])
      (exact (ar-run-upd-on _ (:id r) run-tick-park run-tick-park-id (fn [q :- RunRow] (Eq.refl (:of q))) o2 h1))))
-;; T6/take/arm: i8's overrides (the parked run is alive; KA through the await wiring), for ar
+;; T6/take/arm: i8's templates `park-overrides` (the parked run is alive; KA through the await wiring), for ar
 (defn- ar-from-g8 [form]
   (letfn [(strip [x] (cond (seq? x) (apply list (map strip (remove #{'x8s} x)))
                            (vector? x) (let [v (vec x) i (.indexOf v 'x8s)] (mapv strip (if (>= i 0) (into (subvec v 0 i) (subvec v (+ i 3))) v)))
@@ -555,7 +555,7 @@
                            :else x))]
     (strip form)))
 (doseq [o '[t-take-inv inv-arm-park t17-inv inv-await-post inv-await-raw t6-inv]]
-  (let [{:keys [deps form]} (get @(:overrides spindel.v2.inv.i8/G8) o)]
+  (let [{:keys [deps form]} (get spindel.v2.inv.i8/park-overrides o)]
     (override! AR o deps (ar-from-g8 form))))
 
 ;; ---- new runs of a task: no computation has the task's id

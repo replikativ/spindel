@@ -1,6 +1,6 @@
 # Readable preservation proofs for the v2 model: options and the target layout
 
-Status: agreed design, 2026-11-19; stage 3 under way (§5c: `gl`; §5d: `g9`; §5e: contexts declared per part). It is the plan for making the layer-1 preservation proofs (`inv-step`)
+Status: agreed design, 2026-11-19; stage 3 under way (§5c: `gl`; §5d: `g9`; §5e: contexts declared per part; §5f: `g8`). It is the plan for making the layer-1 preservation proofs (`inv-step`)
 readable; the staging is in section 5. Stage 0 is this note and the README section "How the step proof
 works". The numbers describe the model as of the restructure (PR #304, e04b1a9) and were measured
 without changing it: a static read of the sources with a small s-expression reader (the appendix says what
@@ -1278,6 +1278,114 @@ which takes facts in this part: give x a :pass for it").
   per-part `raw0` is the cost of moving the guards into the parts.
 - **Suite**: `clojure -M:test`, 290 tests, 208,308 assertions, 0 failures, 0 errors (oracle samples 1–60
   included; the tree test checks the part lemmas, a gate on a toy part, and gl/g9).
+
+## 5f. Stage 3: `g8` on the tree
+
+**Result.** `g8` goes through the tree, on per-part contexts (§5e). Its 51 overrides, 3 patches
+(`g8-patch` over every source, `g8-add-ga` on raw0 and raw0g) and 7 `lcopy!` calls are gone; `inv.i8`
+Part H is its table. All `g8` names keep their statements; one hand lemma that no longer has a caller
+(`g8-take-park-o`) and the T11 key lemmas of the old dispatch override are deleted.
+
+| | before (copier) | after (tree) |
+|---|---|---|
+| overrides / patches / `lcopy!` | 51 / 3 / 7 | 0 / 0 / 0 |
+| own proofs (`:over`) | (overrides) | 7: the cascade (break, repair, ghost escape list, exit by P4), `add-run-scope`, `spawn-rows`, `stream-rows` (two inserts with different owners), `start-raw`, `new-run-of` (a computation's run), T13's retire fold (`nat-fold-pres2`, `g8` with `ga`) |
+| sites | `g8-patch`, extra arguments | 12: a run dies (T12), is made parked (take, await: with a context), wakes; a task's owner changes (detach: with a context; Rule R; T14's cancel result); a source is consumed, closes, is orphaned; `serve-or` at its two `keep`s |
+| `:ctx` / `:own` / `:pass` | (overrides) | 11 / 37 / 62 terms at 45 callers; `:gates` 1 (C0), `:src` 1 (T11's dispatch, `ga` and `ch`) |
+| part lemmas `pres-x@g8` | | 47 |
+
+R4 worked as planned: `ga` is an own fact of 17 nodes from raw to the cascades, passed with `ga`'s own
+lemmas (`ga-ack-raw`, `ga-run-upd-free`, `ga-retire-pre`, `raw0g-ga`, `ga-zero-handles`, ...); one new
+bridge lemma (`slice-exit-free`, the exiting run has no activation). The helper bundle `ka` (the
+awaiting run stays alive) is carried the same way through the await, with its copier lemmas.
+
+The P10 guard is one group of rows in the table: raw0's `body-shut` refusal gives `cur-closed w st =
+false` to T4 and T1, and T1 carries it to its two creations (four rows, one comment). Every other fact
+`g8` takes is a projection of a transition's own guard, by a one-line lemma next to the table
+(`root-ok-of-true`, `x8-new-source`, `x8-link-open`, `detach-open`, `await-ok-normal`, `take-park-ok`).
+
+Found on the way, in the tree:
+
+- A bundle's extra argument on an inserted row (`scope-ins-fresh`, whose row must be open) cannot be
+  passed at a callee in general (the row is abstract there); `scope-ins-fresh` is now dispatched per
+  row, like an update primitive per row function, and T-open-scope's row (whose parent is a local)
+  is generalized by `site-gen`. A cell with an extra argument at an undispatched callee is an error.
+- An own fact's name must not clash with a name the base proof binds (`ho` in T1-stream's
+  `readopt-source` case); the table uses distinct names.
+
+### Readability, measured
+
+**Source lines** (`inv.i8`; code lines, then comment lines, counted per top-level form):
+
+| before (copier) | code | comments | after (tree) | code | comments |
+|---|---|---|---|---|---|
+| 51 overrides | 541 | 5 | the table (`part!`) | 142 | 14, and 27 code lines with a reason at the end |
+| 3 patches (`g8-patch`, `g8-add-ga`, `g8-ga-calls`) and the `serve-or` extra argument | 45 | 1 | own proofs (6; 5 were override bodies, 42 lines) | 40 | 0 |
+| 7 `lcopy!` | 7 | 3 | bridge lemmas (7, guard projections) | 26 | 3 |
+| helpers only the old overrides used (11) | 85 | 2 | `restate!` (4) | 4 | 5 |
+| **total** | **678** | **11** | **total** | **212** | **22** (+27 inline) |
+
+Not counted: `park-overrides` (65 lines at the end of `inv.i8`), the six former park and await
+proofs kept as a template for the copier bundles `gd` and `ar`, which rename them (`gd-from-g8`,
+`ar-from-g8`); they go when those parts move to the tree.
+
+**Passes and own facts.** The table has 74 pass terms (at 62 caller-callee entries) and 37 own rows.
+
+- 30 of the 74 terms forward a fact the caller declared itself, by its name (`hga` 19 times, `hc0` 5,
+  `hcc` 2, `hro`, `ho`, `hk`, `hal`). 25 of them have the same statement at the call (the callee's
+  fact, its binders replaced by the call's arguments, is the caller's fact); 5 more need unification
+  (the 4 gated `hc0`, where the call leaves the gate's flag to unification) or a definitional step
+  (`hal` at `arm-park`, `run-alive` of the armed run).
+- 44 carry a real fact: a guard projection (`bool-and-right`, `root-ok-true`, `detach-open`, ...), a
+  lookup (`tok-facts`, `find-comp-has`), or a lemma that carries a fact through edits (`ga-ack-raw`,
+  `take-park-ok`, the `ka` chain).
+- 12 of the 37 own rows only forward (`raw0g`, `raw0`, `t14`, `t-cancel`, `t16`, `t-close-scope`,
+  `t11`, `cancel-pred`, `cancel-losers`, `dispatch-raw`, `t-link-realize`, `park-if`); the other 25 use
+  the fact in a real term.
+
+**Proposed inference rule (not implemented).** When node x calls c, c takes fact P in the part, and x
+has no :pass for c: if every argument of the call is a binder of x, x takes P (its binders renamed to
+the call's arguments) as an own fact under a fresh name and passes it; its callers repeat. An
+explicit :pass (a real term) stops the propagation. A declared own fact with the same statement is
+reused, not added again. This is H made automatic for the forwarding case, with no local context
+needed: the facts are premises of x's statement, not hypotheses of its proof. Under it, `g8`'s table
+would drop the 25 syntactic forwards (30 with unification at the gate) and the 12 forwarding own rows:
+74 → 44–49 pass terms, 37 → 25 own rows, about 142 → 112 code lines. The `ga` chain would read as
+four rows: the cascade takes `ga`, `raw` takes it, and T15, T-slice-exit, T-release-world, T12,
+complete-raw and retire-one say how it is carried; the 12 nodes between them would be inferred.
+
+**Load.** In PR A (§5e) the touched namespaces went 79.6 → 104.0 s, while the untouched ones went
+365 → 467 s (host load, +28%); at that factor the touched ones would have been about 102 s. The part
+that is not host load is `raw0`: a part that passes a guard into a transition needs its own variant of
+`raw0`, the item dispatcher (49 items, the guard checks and a `simp only` per branch), and that
+variant costs about 6 s, once per part (`gl`, `g9`; `g8` adds one, gated). The variants cannot share
+the shared `pres-raw0`: their passes use the hypotheses raw0's branches introduce (`hc`, `ht`), which
+exist only inside its proof. They could share work if `raw0`'s proof were split per item (one lemma
+per branch, `raw0` a dispatch over them): a part's variant would then regenerate only the branches it
+passes into (`g9`: one, `gl`: one, `g8`: about 15), and the rest would stay shared. That is a change to
+the base proof in `engine.clj`, not done here.
+
+### Gate (`g8`)
+
+- **Statements** (name-independent fingerprints): against PR A (§5e), 16,686 identical; 2 changed, both
+  shared generic lemmas (`pres-add-run-scope`, `pres-t-open-scope`: `scope-ins-fresh` is now a site);
+  11 missing, the deleted helpers of the old T11 and take overrides (`g8-take-park-o`, `comp-has-find8`,
+  `tasks-sdel-fold`, `t8ks-retire-with`, `t8ks-close-with`, `t8ks-job`, `t8ks-cascade`,
+  `t8ks-cancel-pred`, `kw8-consume-entry`, `kw8-cut-suffix`, `tclosed-kw8`; nothing references them);
+  57 new: 47 `pres-x@g8`, 7 bridge lemmas, `g8-new-run-of-comp`, `g8-cancel-losers` (restated; the old
+  raw override never copied it) and `g8-run-cascade` (the copier's name of the overridden cascade, an
+  alias). Against f87fb4f every surviving name is identical (16,650; the 27 changed are `pres-*`).
+  `inv-step`, `reach-inv`, `inv-empty`, `sys-reach-inv`, `l5-safety-total`, `step-p3m`,
+  `mv-refinement` unchanged.
+- **Load**, back to back against PR A: touched namespaces 112.6 → 117.0 s: `inv.i8` 11.1 → 15.1 s (47
+  part lemmas, `raw0`'s gated variant among them, instead of 51 overrides and a patched copy),
+  `pres.tree` 11.5 → 11.9 s, `inv.comp-facts` 10.3 → 11.1 s, `inv.alive-runs` 8.1 → 8.9 s, the rest
+  within ±1 s. Untouched 369 → 344 s (host load); whole model 482 → 461 s.
+- **Suite**: `clojure -M:test`, 291 tests, 208,317 assertions, 0 failures, 0 errors (oracle samples 1–60
+  included; the tree test also checks that `g8` is not copied and that `ga` reaches the cascades).
+- **Found by the gate**: `gd` and `ar` (copier bundles) built six of their overrides by renaming `g8`'s
+  (`gd-from-g8`, `ar-from-g8`). Those six forms are kept, unchanged, as `park-overrides` at the end of
+  `inv.i8`, and both read them from there.
 
 ## 6. Key pieces to read: the whole proof in 14 stops, in reading order (current names)
 

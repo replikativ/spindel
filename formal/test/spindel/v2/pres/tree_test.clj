@@ -1,13 +1,14 @@
 (ns spindel.v2.pres.tree-test
   "The generic tree (spindel.v2.pres.tree): every lemma of the step's closure that calls others has
   its shared generic lemma; a part gets its own (pres-x@part) only on its context paths; a gate gives
-  a part's continuations its fact; the parts converted to the tree (gl, g9) have no copier overrides
+  a part's continuations its fact; the parts converted to the tree (gl, g9, g8) have no copier overrides
   or patches left."
   (:require [clojure.test :refer [deftest is]]
             [ansatz.core :as a]
             [spindel.v2.inv.copier :as c]
             [spindel.v2.inv.i10-task]
             [spindel.v2.inv.i9-res]
+            [spindel.v2.inv.i8 :as i8]
             [spindel.v2.pres.tree :as tree]))
 
 (defn- declared? [s] (some? (.lookup ^ansatz.kernel.Env @a/ansatz-env (ansatz.kernel.Name/fromString (str s)))))
@@ -50,3 +51,11 @@
   (is (empty? @(:patches c/G9)))
   (is (= '{inv-cancel-run-local g9-cancel-run-local, inv-ack-raw g9-ack-raw-o, inv-arm-park g9-arm-park}
          (get-in @tree/parts ['g9 :over]))))
+
+(deftest g8-is-not-copied
+  (is (empty? @(:overrides i8/G8)))
+  (is (empty? @(:patches i8/G8)))
+  ;; the companion ga reaches the cascades from raw (raw -> raw0g -> raw0 -> the transitions)
+  (doseq [x '[raw-inv raw0g-inv raw0-inv t15-full-inv inv-complete-raw inv-cancel-pred]]
+    (is (tree/variant? i8/G8 x) (str x)))
+  (is (not (tree/variant? i8/G8 'inv-job-apply))))
