@@ -1520,6 +1520,38 @@ computation is awake, `t11-awake`). `raw0`'s patch for T7 is one pass (`raw0-tra
   1–62; the tree test also checks that `g7`, `awo` and `kdb` have no overrides or patches, the
   generic computation sites, and that T6, T-take, T17, T11, schedule and finalize are table rows).
 
+## 5j. Stage 3: `gd` and `hkw` on the tree
+
+**Result.** `gd` (computation facts: `C.run`, done-epoch) and its companion `hkw hkc hke` (T11's
+predecessor keeps the epoch) go through the tree; `inv.comp-facts` Part C is `gd`'s table. The
+`gd-add-hyps` patches of `raw0`, `raw0g`, `raw` and `t8-obs` are own facts: `g7` and `g10r` from
+the step's input, declared at `raw`, `raw0g`, `raw0` and `t8-obs`, and inferred at `raw0`'s
+branches (T6, T22, T8, T12). `gd` no longer reads `inv.i8/park-overrides`: take, arm, T-take, T17
+and the await's post take the same facts as in `g8`'s table (the parked run is alive; `ka` through
+the wiring); `ar` still reads the template.
+
+| | before (copier) | after (tree) |
+|---|---|---|
+| `gd`: overrides / patches / `lcopy!` | 23 (+6 from `g8`'s template) / 5 / 3 | 0 / 0 / 0 |
+| `hkw`: patches / `lcopy!` | 1 / 3 | 0 / 0 |
+| `gd`'s own proofs (`:over`) | (overrides) | 18: new runs (T4, T5, T11), T11's dispatch, T12's completion, reactivation, the await's pre-step and T6's raw step, the host await, T8 |
+| `gd`'s sites | `gd-patch` (every computation and run edit) | every computation and run site, by one rule each (monotone in `gd`'s keys; by lemma where the row function changes them); parks with a context |
+| `:ctx` / `:own` / `:pass` | (overrides) | 6 / 8 / 6 callers |
+| part lemmas `pres-x@gd` | | 16 |
+
+### Gate (`gd`)
+
+- **Statements** (name-independent fingerprints, against #321): 17,068 identical, none changed or
+  missing; 65 new: 49 `raw0-<item>-gd` and 16 `pres-x@gd`. Every `gd` and `hkw` name keeps its
+  statement. `inv-step`, `reach-inv`, `inv-empty`, `sys-reach-inv`, `l5-safety-total`, `step-p3m`,
+  `mv-refinement` unchanged.
+- **Load**, back to back, one JVM at a time: touched namespaces 21.6 → 24.0 s (`inv.comp-facts` 8.4 →
+  5.6 s; `pres.tree` 7.9 → 10.9 s and `inv.idle` 5.3 → 7.6 s, whose code this PR barely changes:
+  host noise); untouched 325 → 345 s; whole model 346 → 369 s.
+- **Suite**: `clojure -M:test`, 297 tests, 208,410 assertions, 0 failures, 0 errors (oracle samples
+  1–62; the tree test also checks that `gd` and `hkw` have no overrides or patches and that `g7` and
+  `g10r` reach `raw0`'s branches).
+
 ## 6. Key pieces to read: the whole proof in 14 stops, in reading order (current names)
 
 1. `inv`, `inv-step`, `Reach1`, `reach-inv` (`top.clj`): the headline and its four-line induction.

@@ -10,6 +10,7 @@
             [spindel.v2.inv.i9-res]
             [spindel.v2.inv.i8 :as i8]
             [spindel.v2.inv.idle :as idle]
+            [spindel.v2.inv.comp-facts :as cf]
             [spindel.v2.pres.tree :as tree]))
 
 (defn- declared? [s] (some? (.lookup ^ansatz.kernel.Env @a/ansatz-env (ansatz.kernel.Name/fromString (str s)))))
@@ -88,4 +89,14 @@
   ;; T6, T-take, T17, T11, schedule, finalize: plumbing in the table, not g7's own proofs
   (doseq [x '[t6-inv t-take-inv t17-inv t11-inv sched-inv t-finalize-inv inv-take-park inv-arm-park]]
     (is (tree/variant? idle/G7 x) (str x))))
+
+(deftest gd-is-not-copied
+  (doseq [B [cf/GD cf/HKW]]
+    (is (empty? @(:overrides B)) (str (:pred B)))
+    (is (empty? @(:patches B)) (str (:pred B))))
+  ;; g7 and g10r from the step's input reach T6, T22, T8 and T12 through raw: declared at raw, raw0g,
+  ;; raw0, inferred at raw0's branches
+  (is (= '[(= (g7 w) true) (= (g10r w) true)] (vec (take-nth 2 (rest (get (tree/table-own cf/GD) 'raw0-inv))))))
+  (doseq [x '[raw0-await-inv raw0-host-await-inv raw0-complete-inv raw0-observe-inv t6-inv t22-inv]]
+    (is (tree/variant? cf/GD x) (str x))))
 
