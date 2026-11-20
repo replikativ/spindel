@@ -19,6 +19,8 @@
             [spindel.v2.inv.i11 :as i11]
             [spindel.v2.inv.base :as base]
             [spindel.v2.inv.i10 :as i10]
+            [spindel.v2.inv.i5 :as i5]
+            [spindel.v2.inv.i1-owners :as i1o]
             [spindel.v2.pres.tree :as tree]))
 
 (defn- declared? [s] (some? (.lookup ^ansatz.kernel.Env @a/ansatz-env (ansatz.kernel.Name/fromString (str s)))))
@@ -157,3 +159,16 @@
   ;; g10r is g10 at empty exempt lists; only T5's start is its own
   (is (tree/variant? i10/G10R 't5-inv))
   (is (declared? 't-cancel-g10-r)))
+
+(deftest g5-and-the-owner-parts-are-not-copied
+  (doseq [B [i5/G5 i1o/NZ i1o/GSO]]
+    (is (empty? @(:overrides B)) (str (:pred B)))
+    (is (empty? @(:patches B)) (str (:pred B))))
+  ;; g5 and gso take an extra argument at an inserted source or task row and at a phase edit: sites
+  (is (= 1 ('inv-source-ins-fresh tree/dispatched)))
+  (is (= 1 ('inv-task-ins-fresh tree/dispatched)))
+  (is (some '#{ph-fired} (tree/site-keys 'inv-edge-set-phase)))
+  ;; the fired edge is the world's: g5 passes it at the two callers of fire-dep, which forwards it
+  (doseq [x '[inv-fire-edge inv-settle-edge inv-fire-dep t7-inv]] (is (tree/variant? i5/G5 x) (str x)))
+  (doseq [x '[t1-full-inv t1-stream-inv]] (is (tree/variant? i1o/GSO x) (str x)))
+  (is (not-any? #(tree/variant? i1o/NZ %) '[inv-normalize inv-norm-round inv-detach])))

@@ -6,8 +6,8 @@
   The existence half is Rule R's: its loop runs rounds until no row has a missing owner
   (`no-orphans`), so the step's world has none once the loop stops for that reason, not for its fuel.
   Termination (`rule-r-no-orphans`): the owner count (`own-count`, rows with a non-zero owner)
-  never grows through normalization (bundle NZ, every inv-sample lemma of `normalize` re-checked by
-  lit's copier) or the filter, and drops at each round whose input has an orphan (`detach-lt`:
+  never grows through normalization (bundle NZ, every inv-sample lemma of `normalize` restated by
+  the generic step tree) or the filter, and drops at each round whose input has an orphan (`detach-lt`:
   detach sets the first orphan's owner to 0; the owner view `ow` of sources, tasks and computation
   keys is kept by the fires inside detach-source); the fuel 1 + #ids exceeds the count.
   The closed half: bundle `gso` (a source with owner 0 is closed, and every run's scope is not 0, so
@@ -33,6 +33,7 @@
             [spindel.v2.progress.casc :refer :all]
             [spindel.v2.inv.acts :refer :all]
             [spindel.v2.inv :refer :all]
+            [spindel.v2.pres.tree :as tree]
             [spindel.v2.inv.copier :refer :all]
             [spindel.v2.inv.idle :refer :all]
             [spindel.v2.inv.base :refer :all]
@@ -170,16 +171,7 @@
            'inv-task-upd ['(fn [t :- TaskRow] (Eq.refl (nzt t))) 4]
            'inv-comp-upd ['(fn [c :- CompRow] (Eq.refl (nzc c))) 5]}))
 (swap! (:renames NZ) assoc 'inv-parts 'nzb-parts 'inv-source-upd 'nzb-source-upd 'inv-task-upd 'nzb-task-upd
-       'inv-comp-upd 'nzb-comp-upd 'src-detach* 'nzb-source-detach 'task-detach* 'nzb-task-detach 'comp-detach* 'nzb-comp-detach)
-(defn nz-patch [form]
-  (->> form
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-source-upd (first y)) (= 'source-detach-row (nth y 3 nil))))
-                    (fn [[_ w x _ _ h]] (list 'src-detach* w x h)))
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-task-upd (first y)) (= 'task-detach-row (nth y 3 nil))))
-                    (fn [[_ w x _ _ h]] (list 'task-detach* w x h)))
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-comp-upd (first y)) (= 'comp-detach-row (nth y 3 nil))))
-                    (fn [[_ w x _ _ _ h]] (list 'comp-detach* w x h)))))
-(doseq [[n _] @@#'spindel.v2.inv.copier/source-theorems] (patch! NZ n nz-patch))
+       'inv-comp-upd 'nzb-comp-upd)
 (doseq [o '[inv-scope-upd inv-pub-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-cleanup-ins inv-set-pins
             inv-resource-del inv-scope-del inv-act-upd inv-run-upd inv-run-del inv-bump inv-edge-upd inv-fork-del]]
   (prim! NZ o nil))
@@ -236,14 +228,14 @@
 (a/theorem nzb-task-cancel [nzn :- Nat, w :- World, x :- Nat]
   (=> (= (nzb nzn w) true) (= (nzb nzn (task-upd w x task-cancel-result)) true))
   (intro h) (exact (nzb-task-upd nzn w x task-cancel-result task-cancel-result-id nzt-cancel-result h)))
-(swap! (:renames NZ) assoc 'tcr* 'nzb-task-cancel)
-(defn nz-patch2 [form]
-  (->> (nz-patch form)
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-task-upd (first y)) (= 'task-cancel-result (nth y 3 nil))))
-                    (fn [[_ w x _ _ h]] (list 'tcr* w x h)))))
-(doseq [[n _] @@#'spindel.v2.inv.copier/source-theorems] (patch! NZ n nz-patch2))
+;; nzb on the generic tree: a detached or cancelled row keeps its owner (the four row lemmas above)
+(tree/part! NZ
+  :sites '{[inv-source-upd source-detach-row] (nzb-source-detach nzn w x h0)
+           [inv-task-upd task-detach-row]     (nzb-task-detach nzn w x h0)
+           [inv-comp-upd comp-detach-row]     (nzb-comp-detach nzn w x h0)
+           [inv-task-upd task-cancel-result]  (nzb-task-cancel nzn w x h0)})
 
-(lcopy! NZ 'inv-normalize)
+(tree/restate! NZ '[inv-normalize])
 
 ;; ===========================================================================
 ;; Part B. Detach lowers it when there is an orphan; Rule R terminates with no orphan
@@ -818,14 +810,7 @@
             'inv-source-ins-fresh ['(Eq.refl true) 3]}))
 (swap! (:renames GSO) assoc 'inv-parts 'gso-parts 'inv-source-upd 'gso-source-upd 'inv-run-upd 'gso-run-upd
        'inv-source-ins-fresh 'gso-source-ins
-       'inv-add-run-scope 'gso-add-run-scope 'src-close* 'gso-source-close 'src-detach* 'gso-source-detach)
-(defn gso-patch [form]
-  (->> form
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-source-upd (first y)) (= 'source-close-row (nth y 3 nil))))
-                    (fn [[_ w x _ _ h]] (list 'src-close* w x h)))
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-source-upd (first y)) (= 'source-detach-row (nth y 3 nil))))
-                    (fn [[_ w x _ _ h]] (list 'src-detach* w x h)))))
-(doseq [[n _] @@#'spindel.v2.inv.copier/source-theorems] (patch! GSO n gso-patch))
+       'inv-add-run-scope 'gso-add-run-scope)
 (a/theorem gso-rest-run-del [w :- World, x :- Nat] (=> (= (gso-rest w) true) (= (gso-rest (run-del w x)) true))
   (intro h) (simp only [gso-rest Bool.and_eq_true] at h)
   (simp only [gso-rest run-del set-runs (And.left h) (all-sub-del RunRow rscope-nz run-id x (:runs w) (And.right h)) Bool.and_self]))
@@ -840,93 +825,100 @@
   (cases hm (Nat.beq (:kind s) sk-mailbox)) (all_goals (simp only [src0-ok nzs source-consume ha hm] at h)) (all_goals (simp only [src0-ok nzs source-consume ha hm])) (all_goals (exact h)))
 (a/theorem gso-source-consume [w :- World, x :- Nat] (=> (= (gso w) true) (= (gso (source-upd w x source-consume)) true))
   (intro h) (exact (gso-source-upd w x source-consume source-consume-id src0-consume h)))
-(swap! (:renames GSO) assoc 'src-consume* 'gso-source-consume)
-(defn gso-patch2 [form]
-  (->> (gso-patch form)
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-source-upd (first y)) (= 'source-consume (nth y 3 nil))))
-                    (fn [[_ w x _ _ h]] (list 'src-consume* w x h)))
-       (subst-forms #(= % '(inv-create-source-cur w r kind v h)) (fn [_] '(inv-create-source-cur w r kind v (tok-run-mem w st r ht) h)))
-       (subst-forms #(= % '(inv-create-stream-cur w r v h)) (fn [_] '(inv-create-stream-cur w r v (tok-run-mem w st r ht) h)))))
-(doseq [[n _] @@#'spindel.v2.inv.copier/source-theorems] (patch! GSO n gso-patch2))
-(override! GSO 'inv-serve-or '[inv-fire-edge]
-  '(a/theorem gso-serve-or [w :- World, x :- Nat, res :- RunResult, keep :- (=> SourceRow SourceRow),
-                            hk :- (forall [s :- SourceRow] (= (source-id (keep s)) (source-id s))),
-                            hg :- (forall [s :- SourceRow] (=> (= (src0-ok s) true) (= (src0-ok (keep s)) true)))]
-     (=> (= (gso w) true) (= (gso (serve-or w x res keep)) true))
-     (intro h)
-     (cases hz (Nat.beq (oldest-waiter w x) 0))
-     (simp only [serve-or hz]) (exact (gso-fire-edge res w _ h))
-     (simp only [serve-or hz]) (exact (gso-source-upd w x keep hk hg h))))
-(override! GSO 't1-top-inv '[]
-  '(a/theorem t1-top-gso [w :- World, scope :- Nat, kind :- Nat, v :- Nat, fresh :- Nat]
-     (=> (= (gso w) true) (= (gso (:world (t1-create-source-top w scope kind v fresh))) true))
-     (intro h)
-     (cases hg (Bool.and (Bool.and (Nat.beq fresh (:next-id w)) (src-kind-ok kind)) (scope-open-at w scope)))
-     (simp only [t1-create-source-top hg refuse]) (exact h)
-     (have hso (= (scope-open-at w scope) true)) (simp only [Bool.and_eq_true] at hg) (exact (And.right hg))
-     (simp only [t1-create-source-top hg accept])
-     (exact (gso-source-ins w (new-source (:next-id w) scope kind v) (rfl)
-              (src0-new (:next-id w) scope kind v (scope-pos w scope (gso-sample w h) (open-at-has w scope hso))) h))))
-(override! GSO 'inv-create-source-cur '[inv-record-basis inv-run-upd]
-  '(a/theorem gso-create-source-cur [w :- World, r :- RunRow, kind :- Nat, v :- Nat]
-     (=> (List.Mem r (:runs w)) (= (gso w) true) (= (gso (create-source-cur w r kind v)) true))
-     (intros hm h)
-     (have nz (= (Nat.beq (src-owner-cur w r) 0) false))
-     (cases hc (in-comp w r))
-     (case [true] (simp only [src-owner-cur hc]) (exact (comp-pos w (:of r) (gso-sample w h) hc)))
-     (case [false] (simp only [src-owner-cur hc]) (exact (cur-scope-nz w r (tbl-all-mem RunRow rscope-nz r (:runs w) (gso-runs w h) hm))))
-     (simp only [create-source-cur])
-     (exact (gso-run-upd _ (:id r) run-tick run-tick-run-id (fn [q :- RunRow] (Eq.refl (:scope q)))
-              (gso-record-basis _ r (:next-id w)
-                (gso-source-ins w (new-source (:next-id w) (src-owner-cur w r) kind v) (rfl) (src0-new (:next-id w) _ kind v nz) h))))))
+;; gso on the generic tree: its table. Its own proofs follow: a new source, stream or link is owned
+;; (by a scope that exists, or by the run's computation or scope).
+(tree/part! GSO
+  :over '{inv-serve-or          gso-serve-or
+          t1-top-inv            t1-top-gso
+          inv-create-source-cur gso-create-source-cur
+          inv-stream-rows       gso-stream-rows
+          inv-create-stream-cur gso-create-stream-cur
+          t1-top-full-inv       t1-top-full-gso
+          t-create-link-top-inv t-create-link-top-gso}
+  ;; ---- sites: a closed, detached or consumed source row keeps its owner
+  :sites '{[inv-source-upd source-close-row]  (gso-source-close w x h0)
+           [inv-source-upd source-detach-row] (gso-source-detach w x h0)
+           [inv-source-upd source-consume]    (gso-source-consume w x h0)}
+  ;; ---- facts from the path: the creating run is the world's (the token's run); a stream's owner exists
+  :ctx '{inv-create-source-cur [(List.Mem r (:runs w))]
+         inv-create-stream-cur [(List.Mem r (:runs w))]
+         inv-stream-rows       [(= (Nat.beq owner 0) false)]}
+  :pass '{t1-full-inv   {inv-create-source-cur [(tok-run-mem w st r ht)]}
+          t1-stream-inv {inv-create-stream-cur [(tok-run-mem w st r ht)]}})
+(tree/restate! GSO '[inv-fire-edge])
+(a/theorem gso-serve-or [w :- World, x :- Nat, res :- RunResult, keep :- (=> SourceRow SourceRow),
+                         hk :- (forall [s :- SourceRow] (= (source-id (keep s)) (source-id s))),
+                         hg :- (forall [s :- SourceRow] (=> (= (src0-ok s) true) (= (src0-ok (keep s)) true)))]
+  (=> (= (gso w) true) (= (gso (serve-or w x res keep)) true))
+  (intro h)
+  (cases hz (Nat.beq (oldest-waiter w x) 0))
+  (simp only [serve-or hz]) (exact (gso-fire-edge res w _ h))
+  (simp only [serve-or hz]) (exact (gso-source-upd w x keep hk hg h)))
+(a/theorem t1-top-gso [w :- World, scope :- Nat, kind :- Nat, v :- Nat, fresh :- Nat]
+  (=> (= (gso w) true) (= (gso (:world (t1-create-source-top w scope kind v fresh))) true))
+  (intro h)
+  (cases hg (Bool.and (Bool.and (Nat.beq fresh (:next-id w)) (src-kind-ok kind)) (scope-open-at w scope)))
+  (simp only [t1-create-source-top hg refuse]) (exact h)
+  (have hso (= (scope-open-at w scope) true)) (simp only [Bool.and_eq_true] at hg) (exact (And.right hg))
+  (simp only [t1-create-source-top hg accept])
+  (exact (gso-source-ins w (new-source (:next-id w) scope kind v) (rfl)
+           (src0-new (:next-id w) scope kind v (scope-pos w scope (gso-sample w h) (open-at-has w scope hso))) h)))
+(tree/restate! GSO '[inv-record-basis inv-run-upd])
+(a/theorem gso-create-source-cur [w :- World, r :- RunRow, kind :- Nat, v :- Nat]
+  (=> (List.Mem r (:runs w)) (= (gso w) true) (= (gso (create-source-cur w r kind v)) true))
+  (intros hm h)
+  (have nz (= (Nat.beq (src-owner-cur w r) 0) false))
+  (cases hc (in-comp w r))
+  (case [true] (simp only [src-owner-cur hc]) (exact (comp-pos w (:of r) (gso-sample w h) hc)))
+  (case [false] (simp only [src-owner-cur hc]) (exact (cur-scope-nz w r (tbl-all-mem RunRow rscope-nz r (:runs w) (gso-runs w h) hm))))
+  (simp only [create-source-cur])
+  (exact (gso-run-upd _ (:id r) run-tick run-tick-run-id (fn [q :- RunRow] (Eq.refl (:scope q)))
+           (gso-record-basis _ r (:next-id w)
+             (gso-source-ins w (new-source (:next-id w) (src-owner-cur w r) kind v) (rfl) (src0-new (:next-id w) _ kind v nz) h)))))
 
 ;; C0: a stream (owned like a source) and its first tail link (the root scope's); a top-level link
 (a/theorem src0-stream [id :- Nat, o :- Nat, v :- Nat] (=> (= (Nat.beq o 0) false) (= (src0-ok (new-stream id o v)) true))
   (intro h) (simp only [src0-ok nzs new-stream h Bool.not_false Bool.true_or]))
 (a/theorem src0-link [id :- Nat, o :- Nat, t :- Nat] (=> (= (Nat.beq o 0) false) (= (src0-ok (new-link id o t)) true))
   (intro h) (simp only [src0-ok nzs new-link h Bool.not_false Bool.true_or]))
-(override! GSO 'inv-stream-rows '[]
-  '(a/theorem gso-stream-rows [w :- World, owner :- Nat, v :- Nat]
-     (=> (= (Nat.beq owner 0) false) (= (gso w) true) (= (gso (stream-rows w owner v)) true))
-     (intros nz h)
-     (simp only [stream-rows])
-     (exact (gso-source-ins (bump (source-ins w (new-stream (:next-id w) owner v))) (new-link (+ (:next-id w) 1) root-scope-id (:next-id w))
-              (rfl) (Eq.refl true) (gso-source-ins w (new-stream (:next-id w) owner v) (rfl) (src0-stream (:next-id w) owner v nz) h)))))
-(override! GSO 'inv-create-stream-cur '[inv-record-basis inv-run-upd inv-stream-rows]
-  '(a/theorem gso-create-stream-cur [w :- World, r :- RunRow, v :- Nat]
-     (=> (List.Mem r (:runs w)) (= (gso w) true) (= (gso (create-stream-cur w r v)) true))
-     (intros hm h)
-     (have nz (= (Nat.beq (src-owner-cur w r) 0) false))
-     (cases hc (in-comp w r))
-     (case [true] (simp only [src-owner-cur hc]) (exact (comp-pos w (:of r) (gso-sample w h) hc)))
-     (case [false] (simp only [src-owner-cur hc]) (exact (cur-scope-nz w r (tbl-all-mem RunRow rscope-nz r (:runs w) (gso-runs w h) hm))))
-     (simp only [create-stream-cur])
-     (exact (gso-run-upd _ (:id r) run-tick run-tick-run-id (fn [q :- RunRow] (Eq.refl (:scope q)))
-              (gso-record-basis _ r (:next-id w) (gso-stream-rows w (src-owner-cur w r) v nz h))))))
-(override! GSO 't1-top-full-inv '[t1-top-inv inv-stream-rows]
-  '(a/theorem t1-top-full-gso [w :- World, scope :- Nat, kind :- Nat, v :- Nat, fresh :- Nat]
-     (=> (= (gso w) true) (= (gso (:world (t1-top-full w scope kind v fresh))) true))
-     (intro h)
-     (cases hk (Nat.beq kind sk-stream))
-     (simp only [t1-top-full hk]) (exact (t1-top-gso w scope kind v fresh h))
-     (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (scope-open-at w scope)))
-     (simp only [t1-top-full hk hg refuse]) (exact h)
-     (have hso (= (scope-open-at w scope) true)) (simp only [Bool.and_eq_true] at hg) (exact (And.right hg))
-     (simp only [t1-top-full hk hg accept])
-     (exact (gso-stream-rows w scope v (scope-pos w scope (gso-sample w h) (open-at-has w scope hso)) h))))
-(override! GSO 't-create-link-top-inv '[]
-  '(a/theorem t-create-link-top-gso [w :- World, scope :- Nat, l :- Nat]
-     (=> (= (gso w) true) (= (gso (:world (t-create-link-top w scope l))) true))
-     (intro h)
-     (cases hg (Bool.and (Nat.beq l (:next-id w)) (scope-open-at w scope)))
-     (simp only [t-create-link-top hg refuse]) (exact h)
-     (have hso (= (scope-open-at w scope) true)) (simp only [Bool.and_eq_true] at hg) (exact (And.right hg))
-     (simp only [t-create-link-top hg accept])
-     (exact (gso-source-ins w (new-link (:next-id w) scope 0) (rfl)
-              (src0-link (:next-id w) scope 0 (scope-pos w scope (gso-sample w h) (open-at-has w scope hso))) h))))
+(a/theorem gso-stream-rows [w :- World, owner :- Nat, v :- Nat]
+  (=> (= (Nat.beq owner 0) false) (= (gso w) true) (= (gso (stream-rows w owner v)) true))
+  (intros nz h)
+  (simp only [stream-rows])
+  (exact (gso-source-ins (bump (source-ins w (new-stream (:next-id w) owner v))) (new-link (+ (:next-id w) 1) root-scope-id (:next-id w))
+           (rfl) (Eq.refl true) (gso-source-ins w (new-stream (:next-id w) owner v) (rfl) (src0-stream (:next-id w) owner v nz) h))))
+(tree/restate! GSO '[inv-record-basis inv-run-upd])
+(a/theorem gso-create-stream-cur [w :- World, r :- RunRow, v :- Nat]
+  (=> (List.Mem r (:runs w)) (= (gso w) true) (= (gso (create-stream-cur w r v)) true))
+  (intros hm h)
+  (have nz (= (Nat.beq (src-owner-cur w r) 0) false))
+  (cases hc (in-comp w r))
+  (case [true] (simp only [src-owner-cur hc]) (exact (comp-pos w (:of r) (gso-sample w h) hc)))
+  (case [false] (simp only [src-owner-cur hc]) (exact (cur-scope-nz w r (tbl-all-mem RunRow rscope-nz r (:runs w) (gso-runs w h) hm))))
+  (simp only [create-stream-cur])
+  (exact (gso-run-upd _ (:id r) run-tick run-tick-run-id (fn [q :- RunRow] (Eq.refl (:scope q)))
+           (gso-record-basis _ r (:next-id w) (gso-stream-rows w (src-owner-cur w r) v nz h)))))
+(a/theorem t1-top-full-gso [w :- World, scope :- Nat, kind :- Nat, v :- Nat, fresh :- Nat]
+  (=> (= (gso w) true) (= (gso (:world (t1-top-full w scope kind v fresh))) true))
+  (intro h)
+  (cases hk (Nat.beq kind sk-stream))
+  (simp only [t1-top-full hk]) (exact (t1-top-gso w scope kind v fresh h))
+  (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (scope-open-at w scope)))
+  (simp only [t1-top-full hk hg refuse]) (exact h)
+  (have hso (= (scope-open-at w scope) true)) (simp only [Bool.and_eq_true] at hg) (exact (And.right hg))
+  (simp only [t1-top-full hk hg accept])
+  (exact (gso-stream-rows w scope v (scope-pos w scope (gso-sample w h) (open-at-has w scope hso)) h)))
+(a/theorem t-create-link-top-gso [w :- World, scope :- Nat, l :- Nat]
+  (=> (= (gso w) true) (= (gso (:world (t-create-link-top w scope l))) true))
+  (intro h)
+  (cases hg (Bool.and (Nat.beq l (:next-id w)) (scope-open-at w scope)))
+  (simp only [t-create-link-top hg refuse]) (exact h)
+  (have hso (= (scope-open-at w scope) true)) (simp only [Bool.and_eq_true] at hg) (exact (And.right hg))
+  (simp only [t-create-link-top hg accept])
+  (exact (gso-source-ins w (new-link (:next-id w) scope 0) (rfl)
+           (src0-link (:next-id w) scope 0 (scope-pos w scope (gso-sample w h) (open-at-has w scope hso))) h)))
 
-(lcopy! GSO 'raw-inv)
-(lcopy! GSO 'inv-normalize)
+(tree/restate! GSO '[raw-inv inv-normalize])
 
 (a/theorem gso-filter-world [w :- World, K :- (=> Nat Bool)]
   (=> (= (gso w) true) (= (filter-safe-k K w) true) (= (gso (filter-world K w)) true))

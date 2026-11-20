@@ -1783,6 +1783,45 @@ computation (`Eq.refl true`), where four `casc-patch` patches were.
   1–62; the tree test also checks that
   `g10`, `nq` and `g10r` have no overrides or patches and that `g10`'s part lemmas take its lists).
 
+## 5p. Stage 4, group 5a: `g5`, `nzb` and `gso` on the tree
+
+**Result.** I5's part `g5 x5d` (`inv.i5`) and the two owner parts of `inv.i1-owners` (`nzb`, the
+owner count of normalization, and `gso`, the source owners) go through the tree. Neither namespace
+has a copier override, patch or `lcopy!` left. Group 5 of the plan is cut in two: the run parts of
+`inv.i1-runs` (`grx`, `gr0`, `krb`, `neb`) follow as 5b, because `gr0` reuses `grx`'s lemmas at the
+empty list, which the tree has no form for yet.
+
+| | before (copier): overrides / patches / `lcopy!` | after (tree) |
+|---|---|---|
+| `g5` | 21 / 4 / 2 | 20 own proofs, `:ctx` 3, `:pass` 3 callers; 4 part lemmas |
+| `nzb` | 0 / 2 (over every source) / 1 | 4 sites |
+| `gso` | 7 / 2 (over every source) / 2 | 7 own proofs, 3 sites, `:ctx` 3, `:pass` 2 callers; 2 part lemmas |
+
+- **`g5`.** `fire-dep` and `fire-edge` were plumbing for the companion kx (the fired edge is the
+  world's), as in `svb`, and are generated. The other 19 overrides are content.
+- **One patch became an own proof.** `g5`'s write takes the guard's source row as an extra binder
+  (`g5-write-raw … s`), so its statement is not the base statement with facts added, and T2's
+  patch (pass the row and the two guard facts) has no table form. `t2-g5` is written out: T2's
+  base proof (7 lines) with that call. The name and statement are the copier's.
+- **`nzb` and `gso`.** The plan expected the helper symbols the patches renamed (`src-detach*`,
+  `tcr*`, `src-close*`, …) to need `:src`. They are plain sites: each was a row lemma at one row
+  function.
+
+**Tree changes.** Three more callees are dispatched: `inv-source-ins-fresh` and
+`inv-task-ins-fresh` per inserted row, `inv-edge-set-phase` per phase. `g5` and `gso` take an
+extra argument there that is `rfl` only at a concrete row or phase. `g8` already took a fact at
+every inserted source ("its owner is not closed"), keyed by the callee; such a `:ctx` or `:pass`
+row keyed by a dispatched callee itself now holds at every site of it, and a site with facts and
+no `:sites` entry gets the part's cell at the site's premises. `g8`'s table is unchanged.
+
+**Order.** The copier evaluated an override when first used; the tree restates eagerly, so an own
+proof stands after everything its callees need: `g5-serve-or` after `fire-edge`, `g5-dispatch-raw`
+after the cascade's lemmas.
+
+### Gate (group 5a)
+
+GATE-G5
+
 ## 6. Key pieces to read: the whole proof in 14 stops, in reading order (current names)
 
 1. `inv`, `inv-step`, `Reach1`, `reach-inv` (`top.clj`): the headline and its four-line induction.
