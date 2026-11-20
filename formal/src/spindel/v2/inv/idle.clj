@@ -2069,7 +2069,7 @@
 (prim! EDB 'inv-drop-cred '(edb-rest-filter kc0 (drop-cred-edges w a) w (cred-ne a) (rfl) R))
 (prim! EDB 'inv-drop-act '(edb-rest-filter kc0 (drop-act w a) w (cred-ne a) (rfl) R))
 (prim! EDB 'inv-drop-edges '(edb-rest-filter kc0 (drop-edges w p) w p (rfl) R))
-(tree/restate! EDB 'p-edb '[inv-end-basis])   ; the generic tree (spindel.v2.pres.tree) instead of a copy
+(tree/restate! EDB '[inv-end-basis])   ; the generic tree (spindel.v2.pres.tree) instead of a copy
 
 (a/theorem end-basis-no-dep [w :- World, c :- Nat, cid :- Nat]
   (=> (= (inv-sample w) true) (= (tbl-all (not-dep-of c) (:edges w)) true)

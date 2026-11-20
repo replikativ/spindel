@@ -1121,7 +1121,7 @@
 (prim! NEB 'inv-run-del '(all-sub-del RunRow (ne-ok k3r) run-id x (:runs w) R))
 
 (lcopy! KRB 'inv-job-apply)
-(tree/restate! NEB 'p-neb '[inv-job-apply])   ; the generic tree (spindel.v2.pres.tree) instead of a copy
+(tree/restate! NEB '[inv-job-apply])   ; the generic tree (spindel.v2.pres.tree) instead of a copy
 
 (a/defn is-jr [k :- Nat, j :- Job] Bool (match j [(jcancel a b) false] [(jretire x) (Nat.beq x k)] [(jclose s) false]))
 (a/defn jr-in [k :- Nat, ks :- (List Job)] Bool (tbl-any (is-jr k) ks))

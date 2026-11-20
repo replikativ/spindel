@@ -1,6 +1,6 @@
 # Readable preservation proofs for the v2 model: options and the target layout
 
-Status: agreed design, 2026-11-19. It is the plan for making the layer-1 preservation proofs (`inv-step`)
+Status: agreed design, 2026-11-19; stage 3 started (§5c). It is the plan for making the layer-1 preservation proofs (`inv-step`)
 readable; the staging is in section 5. Stage 0 is this note and the README section "How the step proof
 works". The numbers describe the model as of the restructure (PR #304, e04b1a9) and were measured
 without changing it: a static read of the sources with a small s-expression reader (the appendix says what
@@ -864,6 +864,220 @@ saved. The gain the note estimates comes with the chain parts, whose copies are 
 Statements: all 16,496 theorems of stage 1 have identical fingerprints; 172 are new (the tree, the six
 `Leaf` instances, the three cells).
 
+## 5c. Stage 3 on `gl`: the generic tree by open recursion, and how a part gets its facts
+
+**Result.** `gl` goes through the generic tree. Its 9 overrides and 6 patches are gone from the copier;
+what is left is a table of 3 site entries and 6 entries for its own composite proofs, and every lemma the
+copier used to generate for it (176) is restated under its old name and statement. Getting there needed a
+change to stage 2's tree, not only new fields: the two total structures `Leaf` and `Over` cannot carry a
+part that breaks its invariant inside a transition. The tree is now written by *open recursion*: each
+composite's generic lemma takes its callees' statements as hypotheses. The facts the base proof drops are
+declared once in the tree, per callee (N), and passed at the call sites by the tree's own proofs (H).
+Generating them from the elaborator (T) was measured and is not worth it.
+
+### What stage 2's tree could not do
+
+Stage 2's `Leaf Q` had one field per primitive in the bare shape, among them `inv-run-upd`,
+`inv-task-upd` and `inv-run-del`. A Lean structure is total, so a part must prove every field. `gl`
+cannot: a run update in general may kill a run (T14, T12), and the copier fed `gl` a key-preservation
+proof at every call site (its extra argument) that the bare field does not have. Per-call-site fields
+(the §5b rule) fix the shape but not the break: at T14's `run-upd … run-cancel-row` the part is false
+until the same composite repairs it, so no statement of that leaf, with any context, holds for `gl`.
+Such a leaf may only be reached through a composite the part overrides.
+
+`Over Q P` did not allow that either. `over-default` filled every field with the stage-2 default copy
+(`gqd-`), which re-proves each override point from the leaves. `inv-job-apply`, `inv-cascade` and
+`inv-run-cascade` are `Over` fields whose default reaches `inv-cancel-run-local` through `gqd-`, so a
+part that overrides `cancel-run-local` but takes the default of `job-apply` still needs the break leaf.
+The default of an outer override point has to call the part's proof of the inner one: open recursion.
+
+### The tree now (`spindel.v2.pres.tree`)
+
+```
+pres-x : ∀ Q, x's binders, (S c over Q, for every lemma c that x's proof calls) → S x over Q
+```
+
+`S c over Q` is c's statement with `inv-sample` replaced by `gp Q` (Base and Q). The proof of `pres-x`
+is x's base proof, with each callee replaced by its hypothesis; 189 of them, generated from the source
+text of `edits`/`step`/`rule`/`engine`. A part restates each lemma the copier generated for it as one
+application, `pres-x` applied to the part's own lemma for each callee (`restate!`), bottom up. A part's
+own proof of a composite replaces the generic one at that node (`part!` `:over`). There is no `Leaf` or
+`Over` structure, no default copy, and no list of override points: any node can be overridden, and a part
+proves exactly the callees of the nodes it takes from the tree.
+
+Two kinds of callee need more than the base lemma's statement:
+
+- **Sites.** An update primitive is one hypothesis per row function: `run-upd` at `run-wake` and at
+  `run-tick` are different hypotheses, with f fixed. A part proves each site it reaches, by default from
+  its cell and the bundle's extra argument (for `gl`, `rfl` on the run key at every site but three).
+  `t-finally-enter` names its row function only through unification; its tree source states it,
+  generalized over the finalizer it pushes (`site-gen`).
+- **Contexts.** Facts the base proof checks on the path and drops. They are declared per callee, as
+  premises a part may use there (`contexts`); the tree's proofs pass them at the call sites (`passes`:
+  an argument inserted at a call; `sources`: a tree proof that differs from the base proof, for a node
+  that must take a context to pass it on). A part that does not need a context drops it with
+  `ctx-<x>`, proved once. That is the §5b default rule, as a hypothesis type instead of a field.
+
+`gl` needed contexts only on composites, never on a primitive leaf: what its leaves need is a fact about
+the row function (a site), and what its composites need is a fact from the path.
+
+### `gl` before and after
+
+| | before (copier) | after (tree) |
+|---|---|---|
+| cells | `defpart GL` (view, 10 cells, frames) | unchanged |
+| run updates | extra argument `rfl`; `up-patch` on `park-if`, `take-park`; patch of `resume` | 3 site entries (`run-wake`, `run-park-row`, `run-tick-park`); every other site from the extra argument |
+| own proofs | overrides of `cancel-run-local`, `complete-raw`, `retire-local`, `spawn-rows` (4 one-line wrappers of the `-o` lemmas) | `:over` entries naming the `-o` lemmas; the old names become aliases |
+| new runs | overrides of `start-raw`, `new-run-of` | two hand lemmas (unchanged statements) as `:over` entries |
+| plumbing | overrides of `t12-inv`, `inv-retire-one`, `inv-dispatch-raw`; patches of `inv-job-apply`, `raw0-inv`, `t5-inv`, `t11-inv` | none in `gl`; in the tree: 7 contexts, 6 passes, 2 sources, shared by every part |
+| generated | 176 copies (`lcopy!`, 15 roots) | 169 restatements, 4 aliases, 2 hand lemmas, 1 restated primitive |
+
+The table (`spindel.v2.inv.i10-task`):
+
+```clojure
+(tree/part! GL
+  :sites '{[inv-run-upd run-wake]      (gl-run-upd w x run-wake hf run-wake-rkey h0)  ; resume: key kept, by lemma
+           [inv-run-upd run-park-row]  (gl-run-upd-up …)                                ; park: alive goes up
+           [inv-run-upd run-tick-park] (gl-run-upd-up …)}                               ; take, parked: same
+  :over '{inv-cancel-run-local gl-cancel-run-local-o   ; T14 local: break glx-kill, repair in debtor-side
+          inv-complete-raw     gl-complete-raw-o       ; T12: break glx-kill, repair at complete-task
+          inv-retire-local     gl-retire-local-o       ; T13: retire-rest
+          inv-spawn-rows       gl-spawn-rows-o         ; T4: a task and its alive run, together
+          inv-start-raw        gl-start-raw            ; T5: a new run of an existing computation
+          inv-new-run-of       gl-new-run-of})         ; T11: same
+```
+
+The tree's side, every line with its reason (`contexts`, `passes`):
+
+| callee | context | passed at |
+|---|---|---|
+| `cancel-run-local` | `r ∈ runs` | `job-apply`: `run-find` found it |
+| `retire-local` | `r ∈ runs`, `run-alive r = false` | `job-apply`: found; `retirable` means done |
+| `complete-raw` | `r ∈ runs`, result tag not none | `t12` (`tok-facts`, the tag guard), `retire-one` (found; an err result) |
+| `start-raw`, `new-run-of` | `comp-has w c.id` | `t5` (`comp-find` found it), `dispatch-raw` |
+| `t12-inv` (own) | `res-tag-ok tag` | `raw0`: the refusal guard |
+| `dispatch-raw` (own) | `comp-has w c.id` | `t11`; carried through `cancel-pred`, `cut-suffix`, `consume-entry` by `ch` |
+
+Against the success criteria: 9 overrides and 6 patches became 3 site entries and 6 own-proof entries.
+Of the six, four are content (two deferred violations, T13's retire, T4's insert); `start-raw` and
+`new-run-of` are two three-line adapters of one lemma, `gl-comp-run-o`. Merging them into one entry needs
+a context on `add-run-scope` and a new lemma; not done. Every context premise is one line with a reason.
+No statement changed.
+
+`ch` does not disappear (§4.5 predicted it would). Its fact, `comp-has w c.id`, is not a table-level frame
+of `cancel-pred` and `cut-suffix`: both write the comps table (`comp-upd`, the pending resync of
+`drop-edges`). It survives because they keep the computation ids, a column-level frame whose proof is
+`ch`'s copy. `ch` stays a copier bundle; the tree's `dispatch-raw` uses its lemmas. Converting `ch` to
+the tree would put it between the generic lemmas of `cut-suffix` and of `dispatch-raw`; small, not done.
+
+### N, H, T compared (on `gl`'s and `g9`'s call sites and the 24 of §5b)
+
+- **N (statements from the overrides).** The difference between an override's statement and its base
+  lemma's, computed for every override of `gl` and `g9`: 7 contexts for `gl`, 3 for `g9`, each one or two
+  premises. They are shared: `g9`'s context at `cancel-run-local` is `gl`'s (`r ∈ runs`). No context
+  had to be widened when it was used.
+- **H (the tree passes them).** 6 call-site insertions and 2 tree proofs (`t12`, `dispatch-raw`, whose
+  own statements take the context), plus one source for `t-finally-enter`'s row function. Written once,
+  in the tree, for every part; before, `gl` and `g9` each carried the same `job-apply` patch.
+- **T (from the elaborator).** Replacing the call by `?_` and printing the state (`refine'`,
+  `trace_state`; no ansatz change needed) gives the local context at a call site. Over 39 sites: 91 path
+  hypotheses (2.3 per site, at most 10), 86 characters per site. For `gl`'s 8 context sites, 0 contain the
+  needed fact as stated; 6 contain a raw fact it follows from by one lemma (`run-find w rid = some r` for
+  `r ∈ runs`, plus a variable `rid` the callee does not have); 2 lack it altogether, because it was
+  established in a caller one level up (`t12`'s tag guard comes from `raw0`; `dispatch-raw`'s computation
+  from `t11`, carried through three edits). The hypotheses carry the base proof's local names (`hf`,
+  `ha`, `hc`) and print projections as field indices (`c.11`, `w.14`), so a generated statement changes
+  when the base proof is renamed or restructured. T is a development aid (print the context at a call
+  site, to choose a context), not a generator.
+
+### `g9`: are per-primitive leaves too coarse?
+
+Yes, and per call site is finer than needed. `g9`'s two resource lemmas (`g9-res-upd-q` at
+`res-cancel-row` and at `res-set-phase rp-fired`) are the only two `resource-upd` sites of the step, with
+different row functions; one hypothesis per (primitive, row function) separates them. For `gl` and `g9`
+no (primitive, row function) pair needs different proofs at different sites (`run-tick` has 13 sites,
+all `rfl` on both keys). `g9` on the tree would be: 2 site
+entries, own proofs at `cancel-run-local` (`g9-cancel-mid`, using the shared context), `ack-raw` and
+`arm-park`; new contexts `arm-park` (`r ∈ runs`, not unwinding) and `t17` (own: not in a cleanup slice),
+one pass in `raw0`. Its 4 overrides and 4 patches go; not converted here.
+
+### The generic tree as real source (prototype: `notes/real-source-proto.clj`)
+
+`src-cancel-run-local` is T14's local part written by hand over Q, its five callees as named hypotheses
+(`kill`, `acts`, `res`, `cleanup`, `debtor`); its proof is the base proof's five lines with those names.
+`inv-cancel-run-local-derived` restates the base lemma (same statement) from it with Q the trivial part.
+Findings:
+
+- The derivation is not free. `gp triv w` is `inv-sample w && true`, which is not `inv-sample w` by
+  definition (`Bool.and` is stuck on its first argument), so each callee's base lemma is wrapped
+  (`triv-up`/`triv-down`): 5 lambdas, 12 lines for a 5-line lemma. Putting Q first in `gp` would make the
+  trivial part definitional, but then every part's restatement (`gl w` is `inv-sample w && gl-rest w`)
+  needs the wrapping instead.
+- For someone editing `rule.clj`: the transition's proof moves to the generic lemma, written with
+  hypothesis names instead of lemma names, and its hypothesis list must name every callee with its
+  statement (the 5-line proof gets a 6-line signature). Adding a callee means adding a hypothesis, and a
+  wrapper in the derived base lemma. Today the editor writes the base proof only, and the tree follows.
+- Load (one JVM, warm): the generated `pres-cancel-run-local` checks in 13 ms, the hand-written one in
+  10 ms; the base lemma in 6 ms, the derived one in 7 ms. Across the tree, real source would save the
+  generation of the 189 generic lemmas (7.5 s, the whole cost of the tree namespace) and add a signature
+  per composite to the source.
+
+Recommendation: keep the base proof as the source and the generic lemmas generated, as now. The generated
+`pres-` lemmas are mechanical (callee to hypothesis), checked once, and printable (`tree/pres-form`), and
+everything a reader needs to decide is in the tree's three declared tables. Real source pays only if the
+base proof itself is to be read as the generic one, which no reader asked for.
+
+### Gate
+
+- **Statements** (name-independent fingerprints of every theorem, stage 2 against this stage): 16,496
+  identical, 0 changed. 172 removed: the stage-2 tree's internals (`gq-*`, `gqd-*` and their equation
+  lemmas, the `p-<part>` Leaf instances, `over-default`) and three cells stage 2 added where a part's copy
+  never used them (`edb-close-scope-id`, `edb-comp-del-unref`, `mdk-close-scope-id`); nothing references
+  any of them. 197 new: 189 `pres-*`, 5 `ctx-*`, `gp-sample`, `gp-parts`, `gp`'s equation lemma.
+  `inv-step`, `reach-inv`, `inv-empty`, `sys-reach-inv`, `l5-safety-total`, `step-p3m`, `mv-refinement`
+  unchanged; `inv` is a definition, its source untouched.
+- **Load**, two runs back to back (one JVM each, 1 GB): the namespaces this stage touches took 63.4 s
+  before and 65.7 s after: `inv.copier` 15.4 → 11.4 s (gl's copies gone), `pres.tree` 1.8 → 10.3 s (it
+  now covers the whole step: 189 generic lemmas instead of 59 composites twice), `inv.i10-task` 0.6 s,
+  the five stage-2 parts' namespaces 46.0 → 43.5 s. The untouched namespaces went 315.9 → 295.6 s (host
+  load); the whole model 379 → 361 s. The tree is a one-time cost of about 8.5 s; `gl` alone saved 4 s
+  of copies, so it pays once two or three more chain parts move (their copies are larger).
+- **Suite**: `clojure -M:test`, 288 tests, 208,300 assertions, 0 failures, 0 errors (the oracle on samples
+  1–60 included; stage 2: 286 tests, the tree test now has three).
+
+### Revised plan for the rest of stage 3
+
+The tree by open recursion makes stage 3 a per-part table plus tree lines; stage 4 (companions) becomes
+the same mechanism: a companion is a context, carried through intermediate worlds by the companion's own
+restated lemmas, as `ch` carries `comp-has` here.
+
+| part | what it needs | estimate |
+|---|---|---|
+| `g9` | 2 sites, 3 own proofs, 2 contexts, 1 pass (above) | ½ day |
+| `g8` | contexts at the insert composites (owner open: `cur-closed`, `root-ok-if`, `scope-open-at`); revival (9 overrides) needs a context *on a site* (`run-upd` of a run that is a live row), which the tree does not have yet: a site context, keyed by (primitive, row function), about a day; `ga` (15 overrides, `g8-add-ga`) as a companion context on the cascade, carried by `ga`'s restated lemmas | 4–6 days |
+| `hmk` | 13 "not a computation id" overrides become contexts at the source, activation and link composites; companions `gd`, `g7`, `gy`, `g10r`, `v14` as contexts | 3–5 days |
+| `g7`, `gd` | companions (`ga`; `g7`, `g10r`) as contexts; `gd`'s `cmono` frames as sites | 2–3 days each |
+
+About 2½–3½ weeks with stage 4 folded in; the main risk is now carrying companions through the cascade
+(R4), not the shape of the leaves (R1, R2 are settled: no structures, and contexts are declared, not
+generated).
+
+### What the earlier sections got wrong
+
+- §4.2, §5b: `Leaf` and `Over` as total structures, with `Over.default` from the leaves, cannot carry a
+  part that breaks its invariant inside a composite; the tree is open recursion (above). R1's structure
+  sizes no longer matter.
+- §4.5: `ch` does not disappear (a column-level frame, not a table-level one). Of `gl`'s overrides, the
+  plumbing ones were `t12`, `retire-one` and `dispatch-raw` (3); four more were one-line wrappers of
+  content lemmas; `start-raw` stays content like `new-run-of`. `gl`'s "7 leaf entries" are 3 sites:
+  `bump` is a cell, `run-upd/kill` and `task-upd/result` are inside the overridden composites,
+  `filter-world` is in `gl`'s own Rule R proof, which the tree does not cover.
+- §3 (A): `g9` needs fields per (primitive, row function), not per call site.
+- §2.5, §3 (A+): the path facts `gl` needs sit on composites, not on primitive leaves; a primitive leaf
+  needs facts about its row function. "Contextual leaves" are contextual callees, of either kind.
+- §5b's 24 sites: the "facts in scope" column counted case-split tokens; the elaborator shows 0–10
+  hypotheses per site (above).
+
 ## 6. Key pieces to read: the whole proof in 14 stops, in reading order (current names)
 
 1. `inv`, `inv-step`, `Reach1`, `reach-inv` (`top.clj`): the headline and its four-line induction.
@@ -877,10 +1091,10 @@ Statements: all 16,496 theorems of stage 1 have identical fingerprints; 172 are 
 6. `filter-safe-of-refs` (`inv/copier.clj:3004`), `step-rule-r-safe` (`inv/base.clj:2133`): P3, Rule R's
    filter is safe; the shared premise of every part.
 7. `p3b`, `step-p3b` (`inv/base.clj:2112-2146`): how parts are assembled with their companions.
-8. `step-gl` (`inv/copier.clj:1866`): one part's step theorem: refusal, then raw, then Rule R, with the
+8. `step-gl` (`inv/i10_task.clj`): one part's step theorem: refusal, then raw, then Rule R, with the
    companion `ga`.
 9. `gl-rest`/`l10k`, `kw`, `gl-rest-kw` (`inv/copier.clj:77`, `1097`): a part, its view and its frame.
-10. `glx`, `glx-kill`, `gl-task-done-x`, `gl-cancel-run-local-o` (`inv/copier.clj` ~1304-1400): a
+10. `glx`, `glx-kill`, `gl-task-done-x` (`inv/copier.clj`), `gl-cancel-run-local-o` (`inv/i10_task.clj`): a
     violation deferred within a step: its break and its repair.
 11. `mk-bundle`, `prim-form`, `copy-subst`, `lcopy!` (`inv/copier.clj:188-293`): how a part reuses the
     base proof today. This is the piece the generic tree replaces.

@@ -151,14 +151,18 @@ that emits the same copier calls:
   instance at commit, with uniform aliases `<part>-exempt-<role>` (`break`, `repair`, `mono`, `loop`,
   `exit`, `transport`) for the lemmas that open and close deferred violations.
 
-- `spindel.v2.pres.tree` checks the composite lemmas once over an abstract part (`Leaf Q`: the
-  primitive obligations; `Over Q P`: the composites some bundle overrides, defaulting to the generic
-  proof). `restate!` gives a part its generated lemmas as applications of the generic ones: so far
-  `edb`, `gnf`, `kc`, `kx`, `mdk`, `neb` (notes/proof-layout.md section 5b).
+- `spindel.v2.pres.tree` checks every composite lemma of the base proof once, over an abstract part Q,
+  by open recursion: `pres-<x>` proves x for Q from one hypothesis per lemma x's proof calls. An update
+  primitive is one hypothesis per row function (a *site*: `run-upd` at `run-wake` is not `run-upd` at
+  `run-tick`). The tree also passes the facts the base proof checks but drops (`contexts`: the run is a
+  row, the computation exists, ...), at the call sites (`passes`, `sources`). `restate!` gives a part
+  its generated lemmas as applications of the generic ones, with the part's own lemma for every callee;
+  `part!` declares where the part's own proof replaces the generic one. On the tree so far: `gl`
+  (`inv.i10-task`), `edb`, `gnf`, `kc`, `kx`, `mdk`, `neb` (notes/proof-layout.md sections 5b, 5c).
 
-`gl` (`inv.copier`), `g1` (`inv.i1-scopes`) and `g8` (`inv.i8`) carry a fixed comment block before their
-declaration: the part in words, its view, its exempt form, its cells, where it is deferred within a
-step, and its companions.
+`gl` (`inv.i10-task`), `g1` (`inv.i1-scopes`) and `g8` (`inv.i8`) carry a fixed comment block before
+their declaration: the part in words, its view, its exempt form, its cells, where it is deferred within
+a step, and its companions.
 
 ### Reading list: the whole proof in 14 stops
 
@@ -175,13 +179,13 @@ Kernel names are global; find a name with `grep -rn "(a/theorem NAME \["` (or `a
 6. `filter-safe-of-refs` (`inv.copier`), `step-rule-r-safe` (`inv.base`): P3, Rule R's filter is safe;
    the premise every part shares.
 7. `p3b`, `step-p3b` (`inv.base`): how parts are assembled with their companions.
-8. `step-gl` (`inv.copier`): one part's step theorem: a refused item, then raw, then Rule R, with the
+8. `step-gl` (`inv.i10-task`): one part's step theorem: a refused item, then raw, then Rule R, with the
    companion `ga`.
 9. `gl-rest`, `l10k`, `kw`, `gl-rest-kw` (`inv.copier`): a part, its view (what it reads) and its frame.
-10. `glx`, `glx-kill`, `gl-task-done-x`, `gl-cancel-run-local-o` (`inv.copier`): a violation deferred
-    within a step: its break and its repair.
-11. `mk-bundle`, `prim-form`, `copy-subst`, `lcopy!` (`inv.copier`): how a part reuses the base proof
-    today.
+10. `glx`, `glx-kill`, `gl-task-done-x` (`inv.copier`), `gl-cancel-run-local-o` (`inv.i10-task`): a
+    violation deferred within a step: its break and its repair.
+11. `mk-bundle`, `prim-form`, `copy-subst`, `lcopy!` (`inv.copier`): how most parts reuse the base proof
+    today; `pres-form`, `restate!`, `part!` (`pres.tree`): how `gl` does, from the generic tree.
 12. `g8-close-local`, `g8-cascade`, `g8-cascade-done` (`inv.i8`), `casc-done-ga` (`inv.acts`): an
     exemption set as ghost state in a loop, emptied by P4.
 13. `step-p3m`, `l5-safety-total` (`inv.members.step`): the end of the chain and what it buys (L5's
