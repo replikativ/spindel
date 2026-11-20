@@ -161,13 +161,44 @@
                   "(in-ns 'is.simm.partial-cps.ioc) (def invert-impl (fn [& _] nil))"
                   "org.replikativ.spindel.v2.sci.cps/bp"]]
        (is (= :refused (attempt src)) src))
-     (testing "a rebound name does not reach the compiled compiler"
-       (ev w ctx "(ns-unmap 'is.simm.partial-cps.ioc 'invert-impl)
-                  (intern 'is.simm.partial-cps.ioc 'invert-impl (fn [& _] (throw (ex-info \"hijacked\" {}))))
-                  (in-ns 'user)"))
+
      (let [t (ev w ctx "(def cleaned (atom 0)) (task (try (await gate) (finally (swap! cleaned inc))))")]
        (Thread/sleep 20)
        (v2/cancel-task! t)
        (is (s/wait-until #(= 1 (ev w ctx "@cleaned"))) "later bodies still register their finally regions"))
      (is (= 3 (v (ev w ctx "(task (inc (await (task 2))))"))))
+     (v2/release-world! w))))
+
+(deftest the-installed-namespace-mappings-are-read-only
+  ;; SCI guards built-in vars, not mappings; ns-unmap, intern and remove-ns
+  ;; of an installed namespace would change what later code (any agent's)
+  ;; names. They are refused; other namespaces are unaffected
+  (checked
+   (let [w (s/vworld)
+         ctx (s/interpreter {} {:effects {'fx/eff `effect-for-read-only-test}})
+         attempt (fn [src] (try (ev w ctx src) :changed
+                                (catch Exception e
+                                  (if (some #(= ::v2sci/read-only-namespace (:type (ex-data %)))
+                                            (take-while some? (iterate ex-cause e)))
+                                    :refused
+                                    e))))]
+     (doseq [src ["(ns-unmap 'org.replikativ.spindel.v2.core 'task)"
+                  "(intern 'org.replikativ.spindel.v2.core 'await (fn [x] [:plain x]))"
+                  "(intern 'org.replikativ.spindel.v2.core 'spawn!)"
+                  "(remove-ns 'org.replikativ.spindel.v2.core)"
+                  "(ns-unmap 'is.simm.partial-cps.ioc 'invert-impl)"
+                  "(remove-ns 'is.simm.partial-cps.ioc)"
+                  "(ns-unmap 'is.simm.partial-cps.runtime 'thunk?)"
+                  "(ns-unmap 'fx 'eff)"
+                  "(intern 'fx 'eff identity)"
+                  "(remove-ns 'fx)"]]
+       (is (= :refused (attempt src)) src))
+     (is (= 1 (v (ev w ctx "(ns agent-b (:require [org.replikativ.spindel.v2.core :refer [task]])) (task 1)")))
+         "later code still names the v2 task")
+     (is (= 2 (v (ev w ctx "(ns agent-c (:require [org.replikativ.spindel.v2.core :refer [spin await]])) (spin (await (spin 2)))")))
+         "and the v2 await")
+     (testing "other namespaces keep the usual behaviour"
+       (is (= :changed (attempt "(def x 1) (ns-unmap 'user 'x)")))
+       (is (= :changed (attempt "(intern 'fx 'other 1)")))
+       (is (= :changed (attempt "(create-ns 'scratch) (remove-ns 'scratch)"))))
      (v2/release-world! w))))

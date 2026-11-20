@@ -14,8 +14,10 @@
    with partial-cps's `ioc/invert`, interpreted in the context so that names
    resolve against SCI's namespaces. Captured inputs are the locals in `&env`
    that occur in the body's text. The compiler is read-only to interpreted
-   code: the installed vars and ioc's are `:sci/built-in`, and the breakpoint
-   handler is a value, not a name.
+   code: the installed vars and ioc's are `:sci/built-in`, the breakpoint
+   handler is a value, not a name, and `ns-unmap`, `intern` and `remove-ns`
+   refuse the installed namespaces (`guard-mappings!`). A `def` of a new name
+   inside one is still possible: SCI has no namespace-level guard.
 
    **No engine internals in SCI.** The expansion calls host functions that
    are spliced into the code as values; no SCI namespace names them. They are
@@ -564,6 +566,38 @@
 ;; ---------------------------------------------------------------------------
 ;; Installation
 
+(defn- guard-mappings!
+  "SCI guards the root and metadata of `:sci/built-in` vars, not namespace
+   mappings: `ns-unmap`, `intern` and `remove-ns` change them for every
+   later evaluation. This replaces those three in the context's
+   `clojure.core` with versions that refuse to touch the installed
+   namespaces (`:protected` in `cfg`: namespace symbols, and qualified
+   symbols of single exposed effects) and otherwise do what SCI's do."
+  [ctx cfg]
+  (let [[unmap intern* remove-ns*] (sci/eval-string* ctx "[clojure.core/ns-unmap clojure.core/intern clojure.core/remove-ns]")
+        core (sci/create-ns 'clojure.core)
+        ns-sym (fn [x] (symbol (str x)))
+        protected? (fn [n sym]
+                     (let [ps (:protected @cfg)]
+                       (or (contains? ps n) (and sym (contains? ps (symbol (str n) (str sym)))))))
+        refuse (fn [n] (throw (ex-info (str "The mappings of namespace " n " are read-only.")
+                                       {:type ::read-only-namespace :ns n})))]
+    (sci/add-namespace!
+     ctx 'clojure.core
+     {'ns-unmap (sci/new-var 'ns-unmap (fn [n sym] (if (protected? (ns-sym n) sym) (refuse (ns-sym n)) (unmap n sym)))
+                             (read-only core))
+      'intern (sci/new-var 'intern (fn
+                                     ([n sym] (if (protected? (ns-sym n) sym) (refuse (ns-sym n)) (intern* n sym)))
+                                     ([n sym v] (if (protected? (ns-sym n) sym) (refuse (ns-sym n)) (intern* n sym v))))
+                           (read-only core))
+      'remove-ns (sci/new-var 'remove-ns (fn [n]
+                                           (let [n' (ns-sym n)]
+                                             (if (or (protected? n' nil)
+                                                     (some #(= (str n') (namespace %)) (filter qualified-symbol? (:protected @cfg))))
+                                               (refuse n')
+                                               (remove-ns* n))))
+                              (read-only core))})))
+
 (defn- read-only
   "Var metadata SCI refuses to redefine, `alter-var-root` or `alter-meta!`
    (`:sci/built-in`): code in the interpreter cannot change how later bodies
@@ -643,6 +677,10 @@
                              {'spin (resolve-core (if (= old :task) "task" "spin"))})
          (sci/add-namespace! ctx 'org.replikativ.spindel.effects.await
                              {'await (resolve-core "await")})))
+     (swap! cfg assoc :protected
+            (cond-> #{core-ns 'is.simm.partial-cps.ioc 'is.simm.partial-cps.runtime}
+              old (into ['org.replikativ.spindel.spin.cps 'org.replikativ.spindel.effects.await])))
+     (guard-mappings! ctx cfg)
      (doseq [[s h] effects] (expose-effect! ctx s h))
      ctx)))
 
@@ -661,6 +699,7 @@
         n (symbol (name sci-sym))
         ns-sym (symbol (namespace sci-sym))]
     (sci/add-namespace! ctx ns-sym {n (sci/new-var n (outside n) (read-only (sci/create-ns ns-sym)))})
+    (swap! cfg update :protected conj sci-sym)
     (swap! cfg assoc-in [:effects sci-sym] ((:custom (:abi @cfg)) registered-sym))
     nil))
 
