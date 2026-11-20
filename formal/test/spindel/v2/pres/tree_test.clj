@@ -9,6 +9,7 @@
             [spindel.v2.inv.i10-task]
             [spindel.v2.inv.i9-res]
             [spindel.v2.inv.i8 :as i8]
+            [spindel.v2.inv.idle :as idle]
             [spindel.v2.pres.tree :as tree]))
 
 (defn- declared? [s] (some? (.lookup ^ansatz.kernel.Env @a/ansatz-env (ansatz.kernel.Name/fromString (str s)))))
@@ -75,3 +76,16 @@
   ;; raw0, raw0g, T14, ... only forward ga: inferred, not declared
   (is (not (contains? (:own (get @tree/parts 'g8)) 'raw0-inv)))
   (is (= '[(= (ga w) true)] (vec (take-nth 2 (rest (get (tree/table-own i8/G8) 'raw0-inv)))))))
+
+(deftest g7-is-not-copied
+  ;; g7 and its companions awo (awc awr) and kdb (kc0 kl0 kd0): parameterised parts, Q := (B p)
+  (doseq [B [idle/G7 idle/AWO idle/KDB]]
+    (is (empty? @(:overrides B)) (str (:pred B)))
+    (is (empty? @(:patches B)) (str (:pred B))))
+  ;; a computation edit is one site per row function, generic in its arguments
+  (is (some #{'(comp-start-row rid)} (tree/site-keys 'inv-comp-upd)))
+  (is (contains? (get-in @tree/parts ['awo :sites]) '[inv-comp-upd (comp-cut-row h k bs)]))
+  ;; T6, T-take, T17, T11, schedule, finalize: plumbing in the table, not g7's own proofs
+  (doseq [x '[t6-inv t-take-inv t17-inv t11-inv sched-inv t-finalize-inv inv-take-park inv-arm-park]]
+    (is (tree/variant? idle/G7 x) (str x))))
+

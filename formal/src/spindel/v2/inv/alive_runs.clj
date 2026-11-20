@@ -877,9 +877,14 @@
                                    :else x))
                            x))
                  form))
-(doseq [o '[inv-norm-round inv-norm-loop inv-normalize]]
-  (let [{:keys [deps form]} (get @(:overrides spindel.v2.inv.idle/G7) o)]
-    (override! AR o deps (ar-from-g7 form))))
+;; g7's own proofs of normalization (inv.idle, its table's :over), renamed
+(defn- idle-theorem [nm]
+  (first (filter #(and (seq? %) (= 'a/theorem (first %)) (= nm (second %)))
+                 (@#'spindel.v2.inv.copier/ns-source-forms 'spindel.v2.inv.idle))))
+(doseq [[o nm deps] '[[inv-norm-round g7-norm-round [inv-run-cascade inv-detach inv-demote]]
+                      [inv-norm-loop g7-norm-loop [inv-norm-round]]
+                      [inv-normalize g7-normalize [inv-norm-loop inv-detach]]]]
+  (override! AR o deps (ar-from-g7 (idle-theorem nm))))
 
 ;; ===========================================================================
 ;; Part E. The copy, Rule R, the step, the literal I10 computation part

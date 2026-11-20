@@ -1571,9 +1571,6 @@
   (intros h ho) (simp only [x8 x8k new-link (open-not-closed w s h ho) Bool.not_false Bool.or_true]))
 (a/theorem detach-open [w :- World, t :- TaskRow, s :- Nat] (=> (= (detach-ok w t s) true) (= (scope-open-at w s) true))
   (intro hg) (simp only [detach-ok Bool.and_eq_true] at hg) (exact (And.left (And.right (And.right hg)))))
-(a/theorem await-ok-normal [w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, fresh :- Nat, b :- Bool]
-  (=> (= (Bool.and (await-ok w r ds mode fresh) b) true) (= (run-normal r) true))
-  (intro hg) (simp only [await-ok Bool.and_eq_true] at hg) (exact (And.left (And.right (And.left hg)))))
 ;; take-park's edits before the run update keep the run rows
 (a/theorem take-park-ok [w :- World, r :- RunRow, x :- Nat, k :- Nat]
   (=> (= (tbl-all (run-ok-for (:id r)) (:runs w)) true)

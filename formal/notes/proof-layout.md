@@ -1460,6 +1460,66 @@ the part gets its own lemma for that branch only:
   checks the 49 branches, that `gl` and `g9` share the dispatcher, and that a gate-only part gets
   exactly the 6 gated branches). Rebased on #318, with oracle samples 1–62: 295 tests, 208,383 assertions, 0 failures, 0 errors.
 
+## 5i. Stage 3: `g7` and its companions on the tree; parameterised parts
+
+**Result.** `g7` (I7, the idle shape) and its companion bundles `awo awc awr` (the awaiting or
+dispatched computation is awake, its run rows its own) and `kdb kc0 kl0 kd0` (demote's cascade kills
+every alive run of C) go through the tree. `edb` already did. The copier's overrides, patches and
+`lcopy!` calls for these bundles are gone; `inv.idle` Part C is `g7`'s table.
+
+**Parameterised parts.** A bundle with parameters is the part Q := (B p) for fixed p, as stage 1
+found for the copier: every restated lemma takes p first and keeps it fixed from input to output
+world. `restate!`, the sites and the cells already applied the parameters (`g8`'s `x8s`); `awo` (2)
+and `kdb` (3) needed no other change. A parameter that changes inside a composite stays content:
+`g7`'s own proofs instantiate `awo` at `(:id c) 0` (T11, reactivation) or `(:of r) (:id r)` (the
+await) and carry it with `awo`'s restated lemmas.
+
+**Tree extensions.**
+- **A computation edit is a site per row function** (`inv-comp-upd` is dispatched). Its arguments
+  are the site's parameters (`site-gen`, named as the binders of the function's id lemma), so a part
+  states each function once: `[inv-comp-upd (comp-start-row rid)]`. A row function left to
+  unification (`_`) is read off its id lemma, as the copier's `fix-f` did (`tree/fill-rows`).
+- **Inserts are sites per row or edge** (`inv-comp-ins-fresh`, `insert-edge-fresh-inv-sample`,
+  `inv-insert-edge-checked`). A bundle's extra argument that is rfl only at a concrete row (`g7`'s
+  `edge-new-ok` of a wait or observe edge, `:idle r = false` of a new computation) then
+  elaborates. Three base proofs leave the inserted edge to unification; `tree/sources` names it
+  (take-park, react-add, await-step).
+- **`tree/site-keys` and `tree/row-sites`**: a part's sites for a family of row functions, one rule
+  each (what the copier's patches did: `g7`'s waking rows, its run ends; `awo`'s no-sleep rows;
+  `kdb`'s run ends).
+
+| | before (copier) | after (tree) |
+|---|---|---|
+| `g7`: overrides / patches / `lcopy!` | 29 / 2 (all sources; raw0) / 3 | 0 / 0 / 0 |
+| `awo`, `kdb`: patches / `lcopy!` | 2 / 3 call sites (11 roots) | 0 / 0 |
+| `g7`'s own proofs (`:over`) | (overrides) | 21: the inserted dep edge (`edge-new-ok`), T7's tracking edge, T4/T5's new runs, reactivation, T11's dispatch, the T6 await, demote, normalization |
+| `g7`'s sites | `g7-patch` | 15 (8 waking computation rows, 4 run ends, resume; schedule/finalize and take: a run enters a slice or parks, with a context) |
+| `:ctx` / `:own` / `:pass` | (overrides) | 5 / 2 / 9 callers |
+| part lemmas `pres-x@g7` | | 9 |
+
+8 overrides become table rows: schedule and finalize (the found run's rows satisfy `rq`, `enter-q`),
+take and arm (the run is a row and alive, as `g8`), T-take, T17, T6 and T11 (the dispatched
+computation is awake, `t11-awake`). `raw0`'s patch for T7 is one pass (`raw0-track-inv {t7-inv
+[hc]}`). `inv.alive-runs` (`ar`) renamed three of `g7`'s overrides; it now reads those proofs from
+`inv.idle`'s source.
+
+### Gate (`g7`)
+
+- **Statements** (name-independent fingerprints, against #320): 16,971 identical; 34 changed, all
+  generic lemmas of the tree (27 shared `pres-*` and 7 `pres-*@g8`: computation edits and inserts are
+  now sites, so their hypotheses are per row function); none missing; 63 new: 49 `raw0-<item>-g7`
+  (the copier restated `raw0` whole), 9 `pres-x@g7`, and 5 lemmas (`g7-run-upd-q`, `rq-of-mem`,
+  `enter-q`, `tick-park-q`, `t11-awake`). Every `g7`, `awo`, `kdb`, `edb` name keeps its statement;
+  `await-ok-normal` moved from `inv.i8` to `inv.idle` unchanged. `inv-step`, `reach-inv`,
+  `inv-empty`, `sys-reach-inv`, `l5-safety-total`, `step-p3m`, `mv-refinement` unchanged.
+- **Load**, back to back: touched namespaces 47.8 → 49.7 s (`pres.tree` 11.4 → 16.8 s: more sites
+  per generic lemma; `inv.idle` 13.6 → 14.6 s; `inv.i8` 14.2 → 10.4 s; `inv.alive-runs` 8.7 →
+  7.8 s). Untouched 487 → 621 s and whole model 535 → 670 s: host load (another session's JVMs ran
+  during the second measure).
+- **Suite**: `clojure -M:test`, 296 tests, 208,399 assertions, 0 failures, 0 errors (oracle samples
+  1–62; the tree test also checks that `g7`, `awo` and `kdb` have no overrides or patches, the
+  generic computation sites, and that T6, T-take, T17, T11, schedule and finalize are table rows).
+
 ## 6. Key pieces to read: the whole proof in 14 stops, in reading order (current names)
 
 1. `inv`, `inv-step`, `Reach1`, `reach-inv` (`top.clj`): the headline and its four-line induction.

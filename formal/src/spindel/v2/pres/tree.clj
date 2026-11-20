@@ -25,6 +25,10 @@
   the base proof with the part's passes; every other node uses the shared `pres-x`. So a part's
   facts reach only its own lemmas, and a reader finds all of them in the part's table.
 
+  A part may be parameterised (g8's x8s, g7's companions awo awc awr and kdb kc0 kl0 kd0): its
+  predicate is Q := (B p) for the fixed parameters p, which every restated lemma takes first, as the
+  copier's lemmas did; the generic lemmas do not see them.
+
   raw0, the item dispatcher, is cut by item: the tree derives `raw0-<item>-inv` from raw0-inv's base
   proof (one branch each) and proves raw0-inv by dispatching to them, so a part that passes into one
   transition regenerates one branch, not the dispatcher (`raw0-split`)."
@@ -41,7 +45,8 @@
 (def ^:private base-theorem-source @#'c/theorem-source)
 ;; lemmas the tree derives from a base proof (raw0's branches, below), by name
 (defonce ^:private derived (atom {}))
-(defn- theorem-source [x] (or (get @derived x) (base-theorem-source x)))
+(declare fill-rows)
+(defn- theorem-source [x] (some-> (or (get @derived x) (base-theorem-source x)) fill-rows))
 (def ^:private eval-theorem! @#'c/eval-theorem!)
 (def ^:private copy-form @#'c/copy-form)
 (def ^:private copy-name @#'c/copy-name)
@@ -65,9 +70,43 @@
 ;; The tree's own declarations
 ;; ===========================================================================
 
-;; Callees dispatched per row function (or per inserted row), with that argument's position.
+;; Callees dispatched per row function (or per inserted row or edge), with that argument's position.
+;; A part's fact or extra argument may then depend on the row: an inserted edge is a site so that a
+;; bundle's `edge-new-ok` is rfl at a concrete edge (g7).
 (def dispatched '{inv-run-upd 2 inv-task-upd 2 inv-resource-upd 2 inv-source-upd 2 inv-scope-upd 2 inv-serve-or 3
-                  inv-scope-ins-fresh 1})
+                  inv-scope-ins-fresh 1 inv-comp-upd 2 inv-comp-ins-fresh 1 insert-edge-fresh-inv-sample 1
+                  inv-insert-edge-checked 1})
+
+;; A computation edit is one site per row function: its arguments are the site's parameters
+;; (`site-gen`, named as the binders of the function's id lemma `<f>-comp-id` / `<f>-id`), so a part
+;; states it once, e.g. [inv-comp-upd (comp-start-row rid)]. A row function the base proof leaves to
+;; unification (`_`) is read off that id lemma, its next argument, as the copier's bundles did.
+(defn- id-lemma-row [sufs hid]
+  (let [h (if (seq? hid) (first hid) hid) n (name h)
+        base (some #(when (str/ends-with? n %) (subs n 0 (- (count n) (count %)))) sufs)]
+    (when (and base (base-theorem-source h)) [(symbol base) h])))
+
+(defn- gen? [F] (and (seq? F) (= 'site-gen (first F))))
+(def ^:private comp-upd-binders '#{w x f hid hp})
+
+(defn- generic-row
+  "F as a site generic in its arguments: (site-gen [params] (f params) args), params named as f's id
+  lemma's binders (renamed apart from inv-comp-upd's)."
+  [F hid]
+  (if-let [[f idl] (id-lemma-row ["-comp-id" "-id"] hid)]
+    (let [args (cond (seq? F) (vec (rest F)) (= '_ F) (if (seq? hid) (vec (rest hid)) []) :else [])
+          [_ _ bs] (base-theorem-source idl)
+          ps (vec (take (* 3 (count args)) bs))
+          ps (vec (map-indexed (fn [i y] (if (and (zero? (mod i 3)) (comp-upd-binders y)) (symbol (str (name y) "0")) y)) ps))]
+      (if (seq args) (list* 'site-gen ps (apply list f (take-nth 3 ps)) args) f))
+    F))
+
+(defn- fill-rows [form]
+  (walk/prewalk (fn [y] (cond (not (seq? y)) y
+                              (and (= 'inv-comp-upd (first y)) (or (= '_ (nth y 3 nil)) (seq? (nth y 3 nil))) (not (gen? (nth y 3 nil))))
+                              (apply list (assoc (vec y) 3 (generic-row (nth y 3) (nth y 4 nil))))
+                              :else y))
+                form))
 
 ;; raw0 by item. raw0-inv's base proof is one `cases it` over the 49 items, each branch the item's
 ;; guard (if any) and its transition. A part that passes a fact into one transition would need its
@@ -129,6 +168,9 @@
 (def sources
   {'raw0-inv (:dispatch raw0-split)
    'inv-link-demand-raw (name-row-fn 'inv-link-demand-raw 'inv-source-upd '(link-set-rtask (:next-id w)))
+   'inv-take-park (name-row-fn 'inv-take-park 'inv-insert-edge-checked '(take-edge r (:next-id w) x))
+   'inv-react-add (name-row-fn 'inv-react-add 'inv-insert-edge-checked '(valid-edge w c v))
+   'inv-await-step (name-row-fn 'inv-await-step 'inv-insert-edge-checked '(await-edge (:world acc) r a mode k d))
    't-open-scope-inv
    (walk/postwalk-replace
     {'(ScopeRow.mk s (cur-scope w r) scope-explicit true)
@@ -176,7 +218,6 @@
 
 ;; a site's row function: a form, or (site-gen [params] pattern value...) when it mentions a local of
 ;; the proof (the site is then stated for every value of the params)
-(defn- gen? [F] (and (seq? F) (= 'site-gen (first F))))
 (defn- site-key [F] (if (gen? F) (nth F 2) F))
 (defn- site-params [F] (if (gen? F) (second F) []))
 (defn- site-vals [F] (if (gen? F) (drop 3 F) []))
@@ -348,6 +389,11 @@
   for a dispatched callee."
   [B x]
   (proof-callees x (drop 4 (proof-form B x))))
+
+(defn site-keys
+  "The row functions (site keys) of callee p's sites in the shared proofs, for a part's :sites."
+  [p]
+  (vec (distinct (for [x (:nodes @tree) [k a b] (callees nil x) :when (and (= k :site) (= a p))] (site-key b)))))
 
 (defn variant?
   "Does part B prove node x by its own generic lemma pres-x@B? When x passes or takes B's facts, B
