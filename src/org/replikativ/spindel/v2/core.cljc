@@ -2831,15 +2831,26 @@
         true)
       :else false)))
 
+(defn- isolated!
+  "Runs `(f)` for another caller on the processing thread: a throw is that
+   caller's, reported here, never raised into the thread that drives the
+   turn (an unrelated host operation, or the drainer)."
+  [what f]
+  (try (f)
+       (catch #?(:clj Throwable :cljs :default) t
+         #?(:clj (binding [*out* *err*] (println what "failed:" t))
+            :cljs (js/console.error what "failed:" t)))))
+
 (defn- run-callbacks!
-  "Host callbacks run between items, on the processing thread (H3)."
+  "Host callbacks run between items, on the processing thread (H3), each
+   isolated."
   [w]
   (let [cbs (g w rw/W-CALLBACKS)]
     (when (pos? (acount cbs))
       (let [batch (acopy cbs)]
         (aclear! cbs)
         (dotimes [i (acount batch)]
-          (let [[cb [v err?]] (rv w (anth batch i))] (cb v err?)))
+          (let [[cb [v err?]] (rv w (anth batch i))] (isolated! "host callback" #(cb v err?))))
         true))))
 
 (defn- ingress [w] (g w rw/W-INGRESS))
@@ -2868,7 +2879,10 @@
         (if (zero? n)
           true
           (if-let [item (hs/mpsc-poll! (ingress w))]
-            (do (item) (recur (dec n) (and unborn? (g w rw/W-UNBORN))))
+            ;; a queued item is another caller's: its throw is reported, not
+            ;; raised into this turn's driver (an item run inline by its own
+            ;; caller, ingress-body's fast and held paths, throws to that caller)
+            (do (isolated! "host item" item) (recur (dec n) (and unborn? (g w rw/W-UNBORN))))
             (cond (and (not unborn?) (drain-step! w)) (recur (dec n) false)
                   (run-callbacks! w) (recur n unborn?)
                   :else false))))
