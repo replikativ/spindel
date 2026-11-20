@@ -1593,6 +1593,46 @@ world). `finalize-debtor` (its fuel loop is an induction) and `drop-act` take it
   1–62; the tree test also checks that `hmk` and `hsw` have no overrides or patches and that the
   "not a computation id" chain is generated).
 
+## 5l. Stage 4, group 1: `gy`, `gcy`, `g1` and `gw` on the tree
+
+**Result.** Stage 4 moves the bundles still on the copier to the tree, group by group, and then
+deletes the copier. Group 1 is the tombstone part `gy` (`inv.tomb`) and the three scope parts:
+`gcy` (`inv.acyclic`), `g1` (`inv.i1-scopes`) and `gw` (`inv.i11`). No tree change was needed.
+
+| | before (copier): overrides / patches / `lcopy!` | after (tree) |
+|---|---|---|
+| `gy` | 24 (in two form lists, 4 call sites) / 4 (`gy-patch` over every source; `raw`, `raw0g`, `raw0`) / 3 | 24 own proofs; sites by two rules (a run that ends or leaves its slice, a computation edit that clears the flag) and resume; `:ctx` 2, `:own` 4, `:pass` 1 |
+| `gcy` | 3 / 2 / 3 | 4 own proofs, `:ctx` 1, `:pass` 2 |
+| `g1` | 3 / 2 / 2 | 5 own proofs (two were hand renames), `:ctx` 1, `:pass` 2 |
+| `gw` | 3 / 0 / 3 | 3 own proofs |
+
+- **`gy`'s companion `g7`** (the awaiting or tracking run is alive) is an own fact of `raw`, `raw0g`,
+  `raw0` and T7's branch, and a context of T7 and T6; T6's branch takes it by inference. T7 also
+  takes `raw0`'s guard (not in a cleanup slice), passed at the branch. That replaces the three
+  `add-premise` patches.
+- **"The parent is a scope"** (`g1`, `gcy`): `add-run-scope` takes it as a context, and T5's start and
+  T11's new run pass `rfl` (parent 0). That replaces the `add-hp` patches. `g1`'s hand renames of
+  `remove-if-empty` and `add-run-scope` are `:over` entries.
+- The part lemmas are few: `gy` 5 (`raw`, `raw0g`, `raw0`, and the branches of T6 and T7), `g1` and
+  `gcy` 2 each (`start-raw`, `new-run-of`), `gw` none.
+
+**What the plan got wrong.** It counted `gy` as 4 overrides: `inv.tomb` holds 24 override forms in
+two lists and registers them in loops. All 24 are content (dep edges, new runs, parked runs, the
+demotion's tombstone, normalization) and stay as own proofs.
+
+### Gate (group 1)
+
+- **Statements** (name-independent fingerprints, against #323): 17,210 identical, none changed or
+  missing; 205 new: 196 `raw0-<item>-<part>` (49 per part; the copier restated `raw0` whole) and 9
+  part lemmas `pres-x@<part>`. `inv-step`, `reach-inv`, `inv-empty`, `sys-reach-inv`,
+  `l5-safety-total`, `step-p3m`, `mv-refinement` unchanged.
+- **Load**, back to back, one JVM at a time: touched namespaces 26.5 → 16.2 s (`inv.tomb` 7.4 →
+  6.3 s, `inv.acyclic` 6.3 → 3.2 s, `inv.i1-scopes` 6.3 → 3.1 s, `inv.i11` 6.5 → 3.6 s); untouched
+  394 → 529 s and whole model 421 → 545 s (host load: other sessions' JVMs during the second measure).
+- **Suite**: `clojure -M:test`, 299 tests, 208,439 assertions, 0 failures, 0 errors (oracle samples
+  1–62; the tree test also checks that the
+  four parts have no overrides or patches and where `gy`, `g1` and `gcy` take their facts).
+
 ## 6. Key pieces to read: the whole proof in 14 stops, in reading order (current names)
 
 1. `inv`, `inv-step`, `Reach1`, `reach-inv` (`top.clj`): the headline and its four-line induction.
