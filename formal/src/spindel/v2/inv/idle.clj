@@ -8,10 +8,12 @@
     clean  an idle computation has no run and no adoption basis or baselines
     sn     a run that holds the slice in normal mode is alive (a track / an await is by an
            alive run, so its computation is not idle)
-  Every composite inv-sample lemma is re-checked for the bundle by spindel.v2.inv.copier's `lcopy!`;
-  primitives: an edit that keeps the computation keys (id, idle, clean), the run keys (id, of,
-  alive, slice and mode) and the edge keys (kind, creditor, marked) is a frame; overrides where
-  a computation wakes or sleeps, a run is created or parked, a dep edge is inserted."
+  Every composite inv-sample lemma is restated for the bundle by the generic tree
+  (spindel.v2.pres.tree, Part C's table); primitives: an edit that keeps the computation keys (id,
+  idle, clean), the run keys (id, of, alive, slice and mode) and the edge keys (kind, creditor,
+  marked) is a frame; sites where a computation wakes, a run ends, enters a slice or parks; g7's own
+  proofs where a computation wakes or sleeps, a run is created, a dep edge is inserted. The
+  companions awo (Part D) and kdb (Part G) are parameterised parts of the tree."
   (:require [ansatz.core :as a]
             [spindel.v2.pres.tree :as tree]
             [clojure.string :as str]
@@ -736,34 +738,80 @@
 (def ^:private comp-fns '#{comp-react-row comp-demand-row comp-start-row comp-replace-row comp-consume-adopt
                            comp-rebasis comp-result-row comp-clear-run})
 (defn- fhead [f] (if (seq? f) (first f) f))
-;; `_` as the row function: read it off the id lemma (`<f>-id`, `<f>-run-id`, `<f>-comp-id`)
+;; a function applied to a row function's arguments: (f a b) -> (lem a b)
+(defn- lemma-app [f lem] (if (seq? f) (apply list lem (rest f)) lem))
+;; `_` as the row function: read it off the id lemma (`<f>-id`, `<f>-run-id`, `<f>-comp-id`); for the
+;; copier bundles of other namespaces (the tree reads it the same way, `tree/fill-rows`)
 (defn- f-of-hid [f hid]
   (if (not= '_ f) f
       (let [h (fhead hid) n (name h)
             base (some (fn [suf] (when (str/ends-with? n suf) (subs n 0 (- (count n) (count suf))))) ["-run-id" "-comp-id" "-id"])]
         (if base (if (seq? hid) (apply list (symbol base) (rest hid)) (symbol base)) f))))
-(defn- lemma-app [f lem] (if (seq? f) (apply list lem (rest f)) lem))
 (defn- fix-f [form]
   (subst-forms (fn [y] (and (seq? y) (#{'inv-run-upd 'inv-comp-upd} (first y)) (= '_ (nth y 3 nil))))
                (fn [y] (let [v (vec y)] (apply list (assoc v 3 (f-of-hid (nth v 3) (nth v 4)))))) form))
-(defn g7-patch [form]
-  (->> (fix-f form)
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-run-upd (first y)) (contains? run-fns (fhead (nth y 3 nil)))))
-                    (fn [[_ w x f hid & more]]
-                      (let [[d s] (run-fns (fhead f))]
-                        (apply list 'g7-run-upd-m w x f hid (lemma-app f d) (lemma-app f s) more))))
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-run-upd (first y)) (= 'run-wake (nth y 3 nil))))
-                    (fn [[_ w x f hid & more]] (apply list 'g7-run-upd w x f hid 'run-wake-rk7 more)))
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-comp-upd (first y)) (contains? comp-fns (fhead (nth y 3 nil)))))
-                    (fn [[_ w x f hid hp & more]]
-                      (let [h (name (fhead f))]
-                        (apply list 'g7-comp-upd-m w x f hid hp (lemma-app f (symbol (str h "-nsl"))) (lemma-app f (symbol (str h "-kcl"))) more))))))
-
-(doseq [[n _] @@#'spindel.v2.inv.copier/source-theorems] (patch! G7 n g7-patch))
+(defn- row-lemma [F suffix] (lemma-app F (symbol (str (name (fhead F)) suffix))))
+(defn- row-sites
+  "{[p F] (entry F)} for the sites of p in the generic tree whose row function's head is in fns."
+  [p fns entry]
+  (into {} (for [F (tree/site-keys p) :when (contains? fns (fhead F))] [[p F] (entry F)])))
 
 ;; ===========================================================================
-;; Part C. Overrides
+;; Part C. g7 on the generic tree (spindel.v2.pres.tree): its table, its own proofs
 ;; ===========================================================================
+
+(tree/part! G7
+  ;; ---- the part's own proofs (content)
+  :over '{inv-insert-edge-checked g7-insert-edge-checked ; edge-new-ok: a dep edge's creditor is awake (rfl for the others: the bundle's extra argument)
+          inv-track-raw        g7-track-raw         ; T7: the tracking computation is awake; its new edge
+          t7-inv               t7-g7                ; T7: not in a cleanup slice, so the run's computation is awake
+          inv-spawn-rows       g7-spawn-rows        ; T4: the new task's run (no computation: awake)
+          inv-start-raw        g7-start-raw         ; T5: the computation wakes, its run
+          inv-react-add        g7-react-add         ; reactivation: the computation is awake while its edges are added
+          inv-react-edges      g7-react-edges
+          inv-react-one        g7-react-one
+          inv-cut-suffix       g7-cut-suffix        ; T11: C is awake through the cancel, the cut and the entry (awo)
+          inv-new-run-of       g7-new-run-of
+          inv-dispatch-raw     g7-dispatch-raw
+          inv-park-if          g7-park-if           ; T6: the awaiting run's computation is awake, the parked rows its own (awo)
+          inv-await-step       g7-await-step
+          inv-await-wire       g7-await-wire
+          inv-await-post       g7-await-post
+          inv-await-raw        g7-await-raw
+          inv-demote-finish    g7-demote-finish     ; demote: C's runs are dead and its dep edges gone, so it sleeps clean
+          inv-demote           g7-demote
+          inv-norm-round       g7-norm-round        ; normalization with acts-alive (demote's cascade)
+          inv-norm-loop        g7-norm-loop
+          inv-normalize        g7-normalize}
+  ;; ---- sites: the row functions that change g7's keys
+  :sites (merge
+          ;; a computation wakes, or keeps its idle state and clean shape: no-sleep and keeps-clean, by lemma
+          (row-sites 'inv-comp-upd comp-fns (fn [F] (list 'g7-comp-upd-m 'w 'x F 'hid 'hp (row-lemma F "-nsl") (row-lemma F "-kcl") 'h0)))
+          ;; a run ends or leaves its slice: run-down and sn-keep, by lemma
+          (row-sites 'inv-run-upd (set (keys run-fns))
+                     (fn [F] (list 'g7-run-upd-m 'w 'x F 'hf (first (run-fns F)) (second (run-fns F)) 'h0)))
+          '{[inv-run-upd run-wake]      (g7-run-upd w x run-wake hf run-wake-rk7 h0)        ; resume: keys kept, by lemma
+            [inv-run-upd run-enter-row] (g7-run-upd-q w x run-enter-row hf h0 h1)          ; schedule, finalize: enter a slice
+            [inv-run-upd run-tick-park] (g7-run-upd-q w x run-tick-park hf h0 h1)})        ; take: the run parks
+  ;; ---- facts from the path: what g7's own proofs and sites take ...
+  :ctx '{t7-inv                      [(= (in-cleanup w st) false)]
+         inv-dispatch-raw            [(= (awake (:comps w) (:id c)) true)]
+         inv-await-raw               [(List.Mem r (:runs w)) (= (run-alive r) true)]
+         [inv-run-upd run-enter-row] [(= (tbl-all (same-id-then run-id x (rq run-enter-row)) (:runs w)) true)]  ; the run's rows enter as rq says
+         [inv-run-upd run-tick-park] [(= (tbl-all (same-id-then run-id x (rq run-tick-park)) (:runs w)) true)]}
+  ;; ---- ... and the facts nodes take from above them and pass on
+  :own '{inv-take-park  [hm (List.Mem r (:runs w)) hal (= (run-alive r) true)]           ; take: the run is a row, alive
+         inv-arm-park   [hm (List.Mem r (:runs w)) hal (= (run-alive r) true)]}
+  :pass '{raw0-track-inv {t7-inv [hc]}                                                       ; raw0's guard: not in a cleanup slice
+          sched-inv      {[inv-run-upd run-enter-row] [(enter-q w rid r (base-of w h) hf (sched-sn w r hg))]}  ; an active run
+          t-finalize-inv {[inv-run-upd run-enter-row] [(enter-q w rid r (base-of w h) hf (fin-sn w r hg))]}    ; an unwinding run
+          inv-take-park  {[inv-run-upd run-tick-park] [(tick-park-q w r x k (base-of w h) hm hal)]}
+          inv-arm-park   {inv-take-park [(arm-raw-mem w r kind hm) hal]}
+          t-take-inv     {inv-take-park [(And.left (tok-facts w st r ht)) (normal-alive r (bool-and-left _ _ (bool-and-right _ _ hg)))]}
+          t17-inv        {inv-arm-park [(And.left (tok-facts w st r ht)) (normal-alive r (bool-and-left _ _ (bool-and-right _ _ hg)))]}
+          t11-inv        {inv-dispatch-raw [(t11-awake w cid fresh c (base-of w h) hc hg)]}  ; C is not idle (the guard)
+          t6-inv         {inv-await-raw [(And.left (tok-facts w st r ht)) (normal-alive r (await-ok-normal w r ds mode fresh _ hg))]}})
+
 
 ;; ---- a run edit on the rows with one id, all satisfying the conditions (unique ids)
 
@@ -813,6 +861,16 @@
   (have hq := (uniq-all RunRow run-id (rq f) r (:runs w) (lit-runs-nodup w (g7-sample w h)) hm (both-of RunRow (run-down f) (sn-keep f) r hd hs)))
   (exact (g7-intro _ (inv-run-upd w (:id r) f hf (g7-sample w h))
            (g7k-run-upd-q (:id r) f (:comps w) (:runs w) (:edges w) hq (g7-rest-of w h)))))
+;; a run edit whose rows (unique ids) all satisfy rq: the site lemma of schedule, finalize, take
+(a/theorem g7-run-upd-q [w :- World, x :- Nat, f :- (=> RunRow RunRow), hf :- (forall [r :- RunRow] (= (run-id (f r)) (run-id r)))]
+  (=> (= (tbl-all (same-id-then run-id x (rq f)) (:runs w)) true) (= (g7 w) true) (= (g7 (run-upd w x f)) true))
+  (intros hq h)
+  (exact (g7-intro _ (inv-run-upd w x f hf (g7-sample w h)) (g7k-run-upd-q x f (:comps w) (:runs w) (:edges w) hq (g7-rest-of w h)))))
+(a/theorem rq-of-mem [w :- World, r :- RunRow, f :- (=> RunRow RunRow)]
+  (=> (= (inv-sample w) true) (List.Mem r (:runs w)) (= (run-down f r) true) (= (sn-keep f r) true)
+      (= (tbl-all (same-id-then run-id (:id r) (rq f)) (:runs w)) true))
+  (intros h hm hd hs)
+  (exact (uniq-all RunRow run-id (rq f) r (:runs w) (lit-runs-nodup w h) hm (both-of RunRow (run-down f) (sn-keep f) r hd hs))))
 
 ;; ---- T-schedule and finalize enter a slice: an active run (alive), or an unwinding one
 
@@ -835,32 +893,16 @@
   (=> (= (run-find w rid) (Option.some RunRow r)) (And (List.Mem r (:runs w)) (= (:id r) rid)))
   (intro hf)
   (exact (And.intro (tbl-find-mem RunRow run-id rid r (:runs w) hf) (tbl-find-id RunRow run-id rid r (:runs w) hf))))
+;; schedule and finalize: the found run enters a slice
+(a/theorem enter-q [w :- World, rid :- Nat, r :- RunRow]
+  (=> (= (inv-sample w) true) (= (run-find w rid) (Option.some RunRow r)) (= (sn-keep run-enter-row r) true)
+      (= (tbl-all (same-id-then run-id rid (rq run-enter-row)) (:runs w)) true))
+  (intros h hf hs)
+  (have p := (find-run-mem w rid r hf))
+  (rw [← (And.right p)])
+  (exact (rq-of-mem w r run-enter-row h (And.left p) (enter-dwn r) hs)))
 
-(override! G7 'sched-inv '[]
-  '(a/theorem sched-g7 [w :- World, rid :- Nat]
-     (=> (= (g7 w) true) (= (g7 (:world (t-schedule w rid))) true))
-     (intro h)
-     (cases hf (run-find w rid)) (case' [some r]) (case' [none])
-     (simp only [t-schedule hf refuse]) (exact h)
-     (cases hg (sched-ok w r))
-     (simp only [t-schedule hf hg refuse]) (exact h)
-     (simp only [t-schedule hf hg accept])
-     (have p := (find-run-mem w rid r hf))
-     (rw [← (And.right p)])
-     (exact (g7-run-upd-at w r run-enter-row run-enter-row-id (And.left p) (enter-dwn r) (sched-sn w r hg) h))))
 
-(override! G7 't-finalize-inv '[]
-  '(a/theorem t-finalize-g7 [w :- World, rid :- Nat]
-     (=> (= (g7 w) true) (= (g7 (:world (t-finalize w rid))) true))
-     (intro h)
-     (cases hf (run-find w rid)) (case' [some r]) (case' [none])
-     (simp only [t-finalize hf refuse]) (exact h)
-     (cases hg (cleanup-ready w r))
-     (simp only [t-finalize hf hg refuse]) (exact h)
-     (simp only [t-finalize hf hg accept])
-     (have p := (find-run-mem w rid r hf))
-     (rw [← (And.right p)])
-     (exact (g7-run-upd-at w r run-enter-row run-enter-row-id (And.left p) (enter-dwn r) (fin-sn w r hg) h))))
 
 ;; ---- take: the run parks (alive: run-normal), its new wait edge is no dep edge
 
@@ -875,66 +917,35 @@
 
 (a/theorem runs-iec [w :- World, e :- EdgeRow] (= (:runs (insert-edge-checked w e)) (:runs w))
   (cases hk (edge-ok-in w e)) (all_goals (simp only [insert-edge-checked hk insert-edge-fresh bump insert-edge edge-ins set-next-id set-edges])))
+;; take: the alive run parks, after its activation and wait edge
+(a/theorem tick-park-q [w :- World, r :- RunRow, x :- Nat, k :- Nat]
+  (=> (= (inv-sample w) true) (List.Mem r (:runs w)) (= (run-alive r) true)
+      (= (tbl-all (same-id-then run-id (:id r) (rq run-tick-park))
+                  (:runs (insert-edge-checked (bump (act-ins w (take-act w r k))) (take-edge r (:next-id w) x)))) true))
+  (intros h hm ha)
+  (rw [runs-iec])
+  (exact (rq-of-mem w r run-tick-park h hm (park-dwn r run-tick-park ha (Eq.refl (:of r))) (tick-park-snk r))))
 
-(override! G7 'inv-take-park '[inv-insert-edge-checked]
-  '(a/theorem g7-take-park [w :- World, r :- RunRow, x :- Nat, k :- Nat]
-     (=> (List.Mem r (:runs w)) (= (run-alive r) true) (= (g7 w) true) (= (g7 (take-park w r x k)) true))
-     (intros hm ha h)
-     (have h1 := (g7-insert-edge-checked _ (take-edge r (:next-id w) x) (Eq.refl true)
-                   (g7-act-ins-fresh w (take-act w r k) (rfl) h)))
-     (have hm2 (List.Mem r (:runs (insert-edge-checked (bump (act-ins w (take-act w r k))) (take-edge r (:next-id w) x)))))
-     (rw [runs-iec]) (exact hm)
-     (simp only [take-park])
-     (exact (g7-run-upd-at _ r run-tick-park run-tick-park-id hm2 (park-dwn r run-tick-park ha (Eq.refl (:of r))) (tick-park-snk r) h1))))
 
 (a/theorem normal-alive [r :- RunRow] (=> (= (run-normal r) true) (= (run-alive r) true))
   (intro h) (simp only [run-normal Bool.and_eq_true] at h) (exact (And.left h)))
+;; T6's guard: the awaiting run is normal
+(a/theorem await-ok-normal [w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, fresh :- Nat, b :- Bool]
+  (=> (= (Bool.and (await-ok w r ds mode fresh) b) true) (= (run-normal r) true))
+  (intro hg) (simp only [await-ok Bool.and_eq_true] at hg) (exact (And.left (And.right (And.left hg)))))
 
-(override! G7 't-take-inv '[inv-take-park inv-take-now]
-  '(a/theorem t-take-g7 [w :- World, st :- Nat, x :- Nat, k :- Nat, fresh :- Nat]
-     (=> (= (g7 w) true) (= (g7 (:world (t-take w st x k fresh))) true))
-     (intro h)
-     (cases ht (tok-run w st)) (case' [some r]) (case' [none])
-     (simp only [t-take ht refuse]) (exact h)
-     (have p := (tok-facts w st r ht))
-     (cases hs (source-find w x)) (case' [some s]) (case' [none])
-     (simp only [t-take ht hs refuse]) (exact h)
-     (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (Bool.and (run-normal r) (takeable s))))
-     (simp only [t-take ht hs hg refuse]) (exact h)
-     (have hn (= (run-normal r) true)) (simp only [Bool.and_eq_true] at hg) (exact (And.left (And.right hg)))
-     (cases hv (take-ready s))
-     (simp only [t-take ht hs hg hv accept]) (exact (g7-take-park w r x k (And.left p) (normal-alive r hn) h))
-     (simp only [t-take ht hs hg hv accept]) (exact (g7-take-now w r x h))))
 
 ;; Z#55: arm = arm-raw (the resource), then take-park on the armed row
-(override! G7 'inv-arm-park '[inv-take-park inv-arm-raw]
-  '(a/theorem g7-arm-park [w :- World, r :- RunRow, kind :- Nat, k :- Nat]
-     (=> (List.Mem r (:runs w)) (= (run-alive r) true) (= (g7 w) true) (= (g7 (arm-park w r kind k)) true))
-     (intros hm ha h)
-     (simp only [arm-park])
-     (exact (g7-take-park _ (run-arm (:next-id w) r) (:next-id w) k (arm-raw-mem w r kind hm) ha (g7-arm-raw w r kind h)))))
 
-(override! G7 't17-inv '[inv-arm-park]
-  '(a/theorem t17-g7 [w :- World, st :- Nat, kind :- Nat, k :- Nat, fresh :- Nat]
-     (=> (= (g7 w) true) (= (g7 (:world (t17-arm w st kind k fresh))) true))
-     (intro h)
-     (cases ht (tok-run w st)) (case' [some r]) (case' [none])
-     (simp only [t17-arm ht refuse]) (exact h)
-     (have p := (tok-facts w st r ht))
-     (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (Bool.and (run-normal r) (arm-kind-ok kind))))
-     (simp only [t17-arm ht hg refuse]) (exact h)
-     (have hn (= (run-normal r) true)) (simp only [Bool.and_eq_true] at hg) (exact (And.left (And.right hg)))
-     (simp only [t17-arm ht hg accept]) (exact (g7-arm-park w r kind k (And.left p) (normal-alive r hn) h))))
 
 ;; ---- edge insertion behind the endpoint check
 
-(override! G7 'inv-insert-edge-checked '[]
-  '(a/theorem g7-insert-edge-checked [w :- World, e :- EdgeRow, hn :- (= (edge-new-ok (:comps w) e) true)]
-     (=> (= (g7 w) true) (= (g7 (insert-edge-checked w e)) true))
-     (intro h)
-     (cases hk (edge-ok-in w e))
-     (simp only [insert-edge-checked hk]) (exact h)
-     (simp only [insert-edge-checked hk]) (exact (g7-insert-edge-fresh w e hn hk h))))
+(a/theorem g7-insert-edge-checked [w :- World, e :- EdgeRow, hn :- (= (edge-new-ok (:comps w) e) true)]
+  (=> (= (g7 w) true) (= (g7 (insert-edge-checked w e)) true))
+  (intro h)
+  (cases hk (edge-ok-in w e))
+  (simp only [insert-edge-checked hk]) (exact h)
+  (simp only [insert-edge-checked hk]) (exact (g7-insert-edge-fresh w e hn hk h)))
 
 ;; ---- T7 track: the tracking run holds the slice in normal mode (not in a cleanup slice), so it
 ;; is alive (sn) and its computation is awake (a7)
@@ -965,51 +976,48 @@
   (simp only [a7-one hs Bool.not_true Bool.false_or] at ha)
   (exact ha))
 
-(override! G7 'inv-track-raw '[inv-track-fin]
-  '(a/theorem g7-track-raw [w :- World, r :- RunRow, x :- Nat, s :- SourceRow, k :- Nat]
-     (=> (= (comp-has w (:of r)) true) (= (source-find w x) (Option.some SourceRow s))
-         (= (awake (:comps w) (:of r)) true) (= (g7 w) true) (= (g7 (track-raw w r x s k)) true))
-     (intros hc hs haw h)
-     (have hn (= (edge-new-ok (:comps w) (track-edge r x s k)) true))
-     (simp [edge-new-ok track-edge obs-one haw ek-dep ek-observe])
-     (have h2 (= (g7 (match (site-edge (:edges w) (:of r) (:effect-index r) x)
-                        [none (track-new w r x s k)]
-                        [(some e) (comp-upd (track-fin s (:id e) (edge-upd w (:id e) (edge-reread (track-cont r k) s)))
-                                            (:of r) (comp-consume-adopt (:effect-index r) x))])) true))
-     (cases he (site-edge (:edges w) (:of r) (:effect-index r) x)) (case' [some e]) (case' [none])
-     (simp only [track-new])
-     (exact (g7-comp-upd-m _ (:of r) (comp-consume-adopt (:effect-index r) x)
-              (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _) (comp-consume-adopt-nsl _ _) (comp-consume-adopt-kcl _ _)
-              (g7-track-fin s (:next-id w) _ (g7-insert-edge-fresh w (track-edge r x s k) hn (track-edge-ok w r x s k hc hs) h))))
-     (exact (g7-comp-upd-m _ (:of r) (comp-consume-adopt (:effect-index r) x)
-              (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _) (comp-consume-adopt-nsl _ _) (comp-consume-adopt-kcl _ _)
-              (g7-track-fin s (:id e) _
-                (g7-edge-upd w (:id e) (edge-reread (track-cont r k) s) (edge-reread-edge-id _ _) (edge-reread-kind _ _)
-                  (edge-reread-creditor _ _) (edge-reread-debtor _ _) (edge-reread-marked _ _) h))))
-     (simp only [track-raw])
-     (exact (g7-run-upd _ (:id r) run-tick run-tick-run-id (fn [q :- RunRow] (Eq.refl (rk7 q))) h2))))
+(tree/restate! G7 '[inv-track-fin])
+(a/theorem g7-track-raw [w :- World, r :- RunRow, x :- Nat, s :- SourceRow, k :- Nat]
+  (=> (= (comp-has w (:of r)) true) (= (source-find w x) (Option.some SourceRow s))
+      (= (awake (:comps w) (:of r)) true) (= (g7 w) true) (= (g7 (track-raw w r x s k)) true))
+  (intros hc hs haw h)
+  (have hn (= (edge-new-ok (:comps w) (track-edge r x s k)) true))
+  (simp [edge-new-ok track-edge obs-one haw ek-dep ek-observe])
+  (have h2 (= (g7 (match (site-edge (:edges w) (:of r) (:effect-index r) x)
+                     [none (track-new w r x s k)]
+                     [(some e) (comp-upd (track-fin s (:id e) (edge-upd w (:id e) (edge-reread (track-cont r k) s)))
+                                         (:of r) (comp-consume-adopt (:effect-index r) x))])) true))
+  (cases he (site-edge (:edges w) (:of r) (:effect-index r) x)) (case' [some e]) (case' [none])
+  (simp only [track-new])
+  (exact (g7-comp-upd-m _ (:of r) (comp-consume-adopt (:effect-index r) x)
+           (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _) (comp-consume-adopt-nsl _ _) (comp-consume-adopt-kcl _ _)
+           (g7-track-fin s (:next-id w) _ (g7-insert-edge-fresh w (track-edge r x s k) hn (track-edge-ok w r x s k hc hs) h))))
+  (exact (g7-comp-upd-m _ (:of r) (comp-consume-adopt (:effect-index r) x)
+           (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _) (comp-consume-adopt-nsl _ _) (comp-consume-adopt-kcl _ _)
+           (g7-track-fin s (:id e) _
+             (g7-edge-upd w (:id e) (edge-reread (track-cont r k) s) (edge-reread-edge-id _ _) (edge-reread-kind _ _)
+               (edge-reread-creditor _ _) (edge-reread-debtor _ _) (edge-reread-marked _ _) h))))
+  (simp only [track-raw])
+  (exact (g7-run-upd _ (:id r) run-tick run-tick-run-id (fn [q :- RunRow] (Eq.refl (rk7 q))) h2)))
 
-(override! G7 't7-inv '[inv-track-raw]
-  '(a/theorem t7-g7 [w :- World, st :- Nat, x :- Nat, k :- Nat, fresh :- Nat]
-     (=> (= (in-cleanup w st) false) (= (g7 w) true) (= (g7 (:world (t7-track w st x k fresh))) true))
-     (intros hcl h)
-     (cases ht (tok-run w st)) (case' [some r]) (case' [none])
-     (simp only [t7-track ht refuse]) (exact h)
-     (have haw := (tok-awake w st r h ht hcl))
-     (cases hs (source-find w x)) (case' [some s]) (case' [none])
-     (simp only [t7-track ht hs refuse]) (exact h)
-     (cases hk (trackable s))
-     (simp only [t7-track ht hs hk refuse]) (exact h)
-     (cases hc (comp-has w (:of r)))
-     (cases hta (task-has w (:of r)))
-     (simp only [t7-track ht hs hk hc hta refuse]) (exact h)
-     (simp only [t7-track ht hs hk hc hta accept]) (exact (g7-run-upd w (:id r) run-tick run-tick-run-id (fn [q :- RunRow] (Eq.refl (rk7 q))) h))
-     (cases hf (Bool.or (Nat.beq fresh (:next-id w)) (opt-some (site-edge (:edges w) (:of r) (:effect-index r) x))))
-     (simp only [t7-track ht hs hk hc hf refuse]) (exact h)
-     (simp only [t7-track ht hs hk hc hf accept]) (exact (g7-track-raw w r x s k hc hs haw h))))
+(a/theorem t7-g7 [w :- World, st :- Nat, x :- Nat, k :- Nat, fresh :- Nat]
+  (=> (= (in-cleanup w st) false) (= (g7 w) true) (= (g7 (:world (t7-track w st x k fresh))) true))
+  (intros hcl h)
+  (cases ht (tok-run w st)) (case' [some r]) (case' [none])
+  (simp only [t7-track ht refuse]) (exact h)
+  (have haw := (tok-awake w st r h ht hcl))
+  (cases hs (source-find w x)) (case' [some s]) (case' [none])
+  (simp only [t7-track ht hs refuse]) (exact h)
+  (cases hk (trackable s))
+  (simp only [t7-track ht hs hk refuse]) (exact h)
+  (cases hc (comp-has w (:of r)))
+  (cases hta (task-has w (:of r)))
+  (simp only [t7-track ht hs hk hc hta refuse]) (exact h)
+  (simp only [t7-track ht hs hk hc hta accept]) (exact (g7-run-upd w (:id r) run-tick run-tick-run-id (fn [q :- RunRow] (Eq.refl (rk7 q))) h))
+  (cases hf (Bool.or (Nat.beq fresh (:next-id w)) (opt-some (site-edge (:edges w) (:of r) (:effect-index r) x))))
+  (simp only [t7-track ht hs hk hc hf refuse]) (exact h)
+  (simp only [t7-track ht hs hk hc hf accept]) (exact (g7-track-raw w r x s k hc hs haw h)))
 
-(patch! G7 'raw0-inv
-  (fn [form] (g7-patch (subst-forms #(= % '(t7-inv w _ _ _ _ h)) (fn [_] '(t7-inv w _ _ _ _ hc h)) form))))
 
 ;; ---- run creation: the new run's entity is awake (a task: no computation has its id)
 
@@ -1036,15 +1044,14 @@
   (case [false] (rfl))
   (case [true] (have l := (comp-below w (:next-id w) h hc)) (omega)))
 
-(override! G7 'inv-spawn-rows '[]
-  '(a/theorem g7-spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat), loc :- Bool]
-     (=> (= (g7 w) true) (= (g7 (spawn-rows w owner inputs loc)) true))
-     (intro h)
-     (simp only [spawn-rows])
-     (have h1 := (g7-task-ins-fresh w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc) (rfl) h))
-     (have a1 (= (awake (:comps (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc)))) (:next-id w)) true))
-     (exact (awake-fresh w (g7-sample w h)))
-     (exact (g7-add-run-scope _ (:next-id w) 0 (task-scope-parent w owner) 0 a1 h1))))
+(a/theorem g7-spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat), loc :- Bool]
+  (=> (= (g7 w) true) (= (g7 (spawn-rows w owner inputs loc)) true))
+  (intro h)
+  (simp only [spawn-rows])
+  (have h1 := (g7-task-ins-fresh w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc) (rfl) h))
+  (have a1 (= (awake (:comps (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc)))) (:next-id w)) true))
+  (exact (awake-fresh w (g7-sample w h)))
+  (exact (g7-add-run-scope _ (:next-id w) 0 (task-scope-parent w owner) 0 a1 h1)))
 
 (a/theorem awake-wake [x :- Nat, f :- (=> CompRow CompRow),
                        hid :- (forall [c :- CompRow] (= (comp-id (f c)) (comp-id c))),
@@ -1060,18 +1067,17 @@
       (have e (= (Nat.beq (:id hd) x) false)) (exact hx)
       (simp only [awake tbl-upd hx tbl-all ih not-idle-if-id e Bool.not_false Bool.true_or Bool.and_self]))))
 
-(override! G7 'inv-start-raw '[]
-  '(a/theorem g7-start-raw [w :- World, c :- CompRow]
-     (=> (= (g7 w) true) (= (g7 (start-raw w c)) true))
-     (intro h)
-     (have hr (= (g7-rest (start-raw w c)) true))
-     (simp only [g7-rest start-raw comp-upd add-run-scope bump scope-ins run-ins set-next-id set-scopes set-runs set-comps])
-     (have h1 := (g7k-comp-upd (:id c) (comp-start-row (:next-id w)) (comp-start-row-id (:next-id w))
-                   (comp-start-row-nsl (:next-id w)) (comp-start-row-kcl (:next-id w)) (:comps w) (:runs w) (:edges w) (g7-rest-of w h)))
-     (exact (g7k-run-ins _ (:runs w) (:edges w) (new-run-row (:next-id w) (:id c) (start-epoch c) (+ (:next-id w) 1) 0)
-              (awake-wake (:id c) (comp-start-row (:next-id w)) (comp-start-row-id (:next-id w)) (fn [q :- CompRow] (Eq.refl false)) (:comps w))
-              (Eq.refl true) h1))
-     (exact (g7-intro _ (inv-start-raw w c (g7-sample w h)) hr))))
+(a/theorem g7-start-raw [w :- World, c :- CompRow]
+  (=> (= (g7 w) true) (= (g7 (start-raw w c)) true))
+  (intro h)
+  (have hr (= (g7-rest (start-raw w c)) true))
+  (simp only [g7-rest start-raw comp-upd add-run-scope bump scope-ins run-ins set-next-id set-scopes set-runs set-comps])
+  (have h1 := (g7k-comp-upd (:id c) (comp-start-row (:next-id w)) (comp-start-row-id (:next-id w))
+                (comp-start-row-nsl (:next-id w)) (comp-start-row-kcl (:next-id w)) (:comps w) (:runs w) (:edges w) (g7-rest-of w h)))
+  (exact (g7k-run-ins _ (:runs w) (:edges w) (new-run-row (:next-id w) (:id c) (start-epoch c) (+ (:next-id w) 1) 0)
+           (awake-wake (:id c) (comp-start-row (:next-id w)) (comp-start-row-id (:next-id w)) (fn [q :- CompRow] (Eq.refl false)) (:comps w))
+           (Eq.refl true) h1))
+  (exact (g7-intro _ (inv-start-raw w c (g7-sample w h)) hr)))
 
 ;; ===========================================================================
 ;; Part D. The companion bundle awo awc awr: computation awc is awake and every run row with id
@@ -1229,15 +1235,16 @@
   (cases hi (:idle c)) (all_goals (simp only [no-sleep comp-set-run hi Bool.not_true Bool.not_false Bool.or_true Bool.true_or])))
 (def ^:private awo-comp-fns (conj comp-fns 'comp-cut-row 'comp-set-run))
 
-(defn awo-patch [form]
-  (subst-forms (fn [y] (and (seq? y) (= 'inv-comp-upd (first y)) (contains? awo-comp-fns (fhead (nth y 3 nil)))))
-               (fn [[_ w x f hid hp & more]]
-                 (apply list 'awo-comp-upd-m 'awc 'awr w x f hid hp (lemma-app f (symbol (str (name (fhead f)) "-nsl"))) more))
-               (fix-f form)))
-(doseq [[n _] @@#'spindel.v2.inv.copier/source-theorems] (patch! AWO n awo-patch))
+;; awo on the generic tree (spindel.v2.pres.tree): a computation edit by a waking row function keeps
+;; awc awake by its no-sleep lemma; the rest are the cells
+(tree/part! AWO
+  :sites (row-sites 'inv-comp-upd awo-comp-fns
+                    (fn [F] (list 'awo-comp-upd-m 'awc 'awr 'w 'x F 'hid 'hp (row-lemma F "-nsl") 'h0))))
+(tree/restate! AWO '[inv-cancel-pred inv-cut-suffix inv-consume-entry inv-react-add inv-await-step inv-await-pre
+                     inv-await-wire inv-fast-fill inv-fin-if-final])
 
 ;; ===========================================================================
-;; Part E. Overrides through the chains (with awo)
+;; Part E. g7's own proofs through the chains (with awo)
 ;; ===========================================================================
 
 (a/theorem of-at-zero [awc :- Nat, w :- World] (=> (= (inv-sample w) true) (= (tbl-all (run-of-at 0 awc) (:runs w)) true))
@@ -1260,36 +1267,34 @@
 
 ;; ---- reactivation: the reactivated computation is awake while its edges are added
 
-(override! G7 'inv-react-add '[inv-insert-edge-checked inv-raise-for]
-  '(a/theorem g7-react-add [w :- World, c :- Nat, v :- Valid]
-     (=> (= (awake (:comps w) c) true) (= (g7 w) true) (= (g7 (react-add w c v)) true))
-     (intros ha h)
-     (have hn (= (edge-new-ok (:comps w) (valid-edge w c v)) true))
-     (simp [edge-new-ok valid-edge obs-one ha ek-dep ek-observe])
-     (cases hk (react-ok w c v))
-     (simp only [react-add hk]) (exact h)
-     (simp only [react-add hk])
-     (exact (g7-raise-for _ c (:debtor v) (g7-insert-edge-checked w _ hn h)))))
+(tree/restate! G7 '[inv-raise-for])
+(a/theorem g7-react-add [w :- World, c :- Nat, v :- Valid]
+  (=> (= (awake (:comps w) c) true) (= (g7 w) true) (= (g7 (react-add w c v)) true))
+  (intros ha h)
+  (have hn (= (edge-new-ok (:comps w) (valid-edge w c v)) true))
+  (simp [edge-new-ok valid-edge obs-one ha ek-dep ek-observe])
+  (cases hk (react-ok w c v))
+  (simp only [react-add hk]) (exact h)
+  (simp only [react-add hk])
+  (exact (g7-raise-for _ c (:debtor v) (g7-insert-edge-checked w _ hn h))))
 
-(override! G7 'inv-react-edges '[inv-react-add]
-  '(a/theorem g7-react-edges [vs :- (List Valid)]
-     (forall [w :- World, c :- Nat] (=> (= (awo c 0 w) true) (= (g7 w) true) (= (g7 (react-edges w c vs)) true)))
-     (induction vs)
-     (case' [cons h t ih])
-     (case' [nil])
-     (intros w c ha hw) (simp only [react-edges]) (exact hw)
-     (intros w c ha hw) (simp only [react-edges])
-     (exact (ih _ c (awo-react-add c 0 w c h ha) (g7-react-add w c h (awo-awake c 0 w ha) hw)))))
+(a/theorem g7-react-edges [vs :- (List Valid)]
+  (forall [w :- World, c :- Nat] (=> (= (awo c 0 w) true) (= (g7 w) true) (= (g7 (react-edges w c vs)) true)))
+  (induction vs)
+  (case' [cons h t ih])
+  (case' [nil])
+  (intros w c ha hw) (simp only [react-edges]) (exact hw)
+  (intros w c ha hw) (simp only [react-edges])
+  (exact (ih _ c (awo-react-add c 0 w c h ha) (g7-react-add w c h (awo-awake c 0 w ha) hw))))
 
-(override! G7 'inv-react-one '[inv-react-edges]
-  '(a/theorem g7-react-one [w :- World, c :- CompRow]
-     (=> (= (g7 w) true) (= (g7 (react-one w c)) true))
-     (intro h)
-     (simp only [react-one])
-     (have h1 := (g7-comp-upd-m w (:id c) comp-react-row comp-react-row-id comp-react-row-pending comp-react-row-nsl comp-react-row-kcl h))
-     (have a1 (= (awake (:comps (comp-upd w (:id c) comp-react-row)) (:id c)) true))
-     (exact (awake-wake (:id c) comp-react-row comp-react-row-id (fn [q :- CompRow] (Eq.refl false)) (:comps w)))
-     (exact (g7-react-edges (:validity c) _ (:id c) (awo-zero (:id c) _ (g7-sample _ h1) a1) h1))))
+(a/theorem g7-react-one [w :- World, c :- CompRow]
+  (=> (= (g7 w) true) (= (g7 (react-one w c)) true))
+  (intro h)
+  (simp only [react-one])
+  (have h1 := (g7-comp-upd-m w (:id c) comp-react-row comp-react-row-id comp-react-row-pending comp-react-row-nsl comp-react-row-kcl h))
+  (have a1 (= (awake (:comps (comp-upd w (:id c) comp-react-row)) (:id c)) true))
+  (exact (awake-wake (:id c) comp-react-row comp-react-row-id (fn [q :- CompRow] (Eq.refl false)) (:comps w)))
+  (exact (g7-react-edges (:validity c) _ (:id c) (awo-zero (:id c) _ (g7-sample _ h1) a1) h1)))
 
 ;; ---- T11: C is awake (not idle) through the predecessor's cancel, the cut and the entry
 
@@ -1302,6 +1307,15 @@
   (have u := (uniq-all CompRow comp-id (fn [b :- CompRow] (Bool.not (:idle b))) c (:comps w) (comps-nodup w h) hm hq))
   (rw [e] at u)
   (exact u))
+;; T11: the computation the guard accepts is not idle, so awake
+(a/theorem t11-awake [w :- World, cid :- Nat, fresh :- Nat, c :- CompRow]
+  (=> (= (inv-sample w) true) (= (comp-find w cid) (Option.some CompRow c))
+      (= (Bool.and (Nat.beq fresh (:next-id w)) (Bool.and (Bool.not (:idle c)) (Bool.and (needs-run w c) (eligible w c)))) true)
+      (= (awake (:comps w) (:id c)) true))
+  (intros h hc hg)
+  (have hi (= (:idle c) false)) (simp only [Bool.and_eq_true] at hg) (exact (bnot-true _ (And.left (And.right hg))))
+  (have e (= (:id c) cid)) (exact (tbl-find-id CompRow comp-id cid c (:comps w) hc))
+  (rw [e]) (exact (find-awake w cid c h hc hi)))
 
 
 (a/theorem idle-same-ns [f :- (=> CompRow CompRow), hs :- (forall [c :- CompRow] (= (:idle (f c)) (:idle c)))]
@@ -1339,53 +1353,39 @@
   (exact (g7-intro _ (inv-comp-upd w x f hid hp (g7-sample w h))
            (g7k-comp-upd-aw x f hid hs (:comps w) (:runs w) (:edges w) ha (g7-rest-of w h)))))
 
-(override! G7 'inv-cut-suffix '[]
-  '(a/theorem g7-cut-suffix [w :- World, c :- Nat, has :- Bool, cut :- Nat, cid :- Nat]
-     (=> (= (awake (:comps w) c) true) (= (g7 w) true) (= (g7 (cut-suffix w c has cut cid)) true))
-     (intros ha h)
-     (simp only [cut-suffix])
-     (have a1 (= (awake (:comps (drop-edges w (keep-prefix c has cid))) c) true))
-     (simp only [drop-edges set-comps set-edges awake-resync]) (exact ha)
-     (exact (g7-comp-upd-aw _ c _ (comp-cut-row-id has cut _) (comp-cut-row-pending has cut _) (fn [q :- CompRow] (Eq.refl (:idle q))) a1
-              (g7-drop-edges w (keep-prefix c has cid) h)))))
+(a/theorem g7-cut-suffix [w :- World, c :- Nat, has :- Bool, cut :- Nat, cid :- Nat]
+  (=> (= (awake (:comps w) c) true) (= (g7 w) true) (= (g7 (cut-suffix w c has cut cid)) true))
+  (intros ha h)
+  (simp only [cut-suffix])
+  (have a1 (= (awake (:comps (drop-edges w (keep-prefix c has cid))) c) true))
+  (simp only [drop-edges set-comps set-edges awake-resync]) (exact ha)
+  (exact (g7-comp-upd-aw _ c _ (comp-cut-row-id has cut _) (comp-cut-row-pending has cut _) (fn [q :- CompRow] (Eq.refl (:idle q))) a1
+           (g7-drop-edges w (keep-prefix c has cid) h))))
 
-(override! G7 'inv-new-run-of '[]
-  '(a/theorem g7-new-run-of [w :- World, c :- CompRow, ei :- Nat]
-     (=> (= (awake (:comps w) (:id c)) true) (= (g7 w) true) (= (g7 (new-run-of w c ei)) true))
-     (intros ha h)
-     (simp only [new-run-of])
-     (have h1 := (g7-add-run-scope w (:id c) (:epoch c) 0 ei ha h))
-     (have a1 (= (awake (:comps (add-run-scope w (:id c) (:epoch c) 0 ei)) (:id c)) true)) (exact ha)
-     (exact (g7-comp-upd-aw _ (:id c) (comp-set-run (:next-id w)) (comp-set-run-id (:next-id w)) (comp-set-run-pending (:next-id w))
-              (fn [q :- CompRow] (Eq.refl (:idle q))) a1 h1))))
+(a/theorem g7-new-run-of [w :- World, c :- CompRow, ei :- Nat]
+  (=> (= (awake (:comps w) (:id c)) true) (= (g7 w) true) (= (g7 (new-run-of w c ei)) true))
+  (intros ha h)
+  (simp only [new-run-of])
+  (have h1 := (g7-add-run-scope w (:id c) (:epoch c) 0 ei ha h))
+  (have a1 (= (awake (:comps (add-run-scope w (:id c) (:epoch c) 0 ei)) (:id c)) true)) (exact ha)
+  (exact (g7-comp-upd-aw _ (:id c) (comp-set-run (:next-id w)) (comp-set-run-id (:next-id w)) (comp-set-run-pending (:next-id w))
+           (fn [q :- CompRow] (Eq.refl (:idle q))) a1 h1)))
 
-(override! G7 'inv-dispatch-raw '[inv-cancel-pred inv-consume-entry inv-new-run-of inv-cut-suffix]
-  '(a/theorem g7-dispatch-raw [w :- World, c :- CompRow]
-     (=> (= (awake (:comps w) (:id c)) true) (= (g7 w) true) (= (g7 (dispatch-raw w c)) true))
-     (intros ha h)
-     (have h1 := (g7-cancel-pred w c h))
-     (have k1 := (awo-cancel-pred (:id c) 0 w c (awo-zero (:id c) w (g7-sample w h) ha)))
-     (cases he (entry-edge w (:id c))) (case' [some e]) (case' [none])
-     (simp only [dispatch-raw he])
-     (have k2 := (awo-cut-suffix (:id c) 0 _ (:id c) false 0 0 k1))
-     (exact (g7-new-run-of _ c 0 (awo-awake (:id c) 0 _ k2) (g7-cut-suffix _ (:id c) false 0 0 (awo-awake (:id c) 0 _ k1) h1)))
-     (simp only [dispatch-raw he])
-     (have k3 := (awo-consume-entry (:id c) 0 _ e (awo-cut-suffix (:id c) 0 _ (:id c) true (:at e) (:id e) k1)))
-     (exact (g7-new-run-of _ c _ (awo-awake (:id c) 0 _ k3)
-              (g7-consume-entry _ e (g7-cut-suffix _ (:id c) true (:at e) (:id e) (awo-awake (:id c) 0 _ k1) h1))))))
+(tree/restate! G7 '[inv-cancel-pred inv-consume-entry])
+(a/theorem g7-dispatch-raw [w :- World, c :- CompRow]
+  (=> (= (awake (:comps w) (:id c)) true) (= (g7 w) true) (= (g7 (dispatch-raw w c)) true))
+  (intros ha h)
+  (have h1 := (g7-cancel-pred w c h))
+  (have k1 := (awo-cancel-pred (:id c) 0 w c (awo-zero (:id c) w (g7-sample w h) ha)))
+  (cases he (entry-edge w (:id c))) (case' [some e]) (case' [none])
+  (simp only [dispatch-raw he])
+  (have k2 := (awo-cut-suffix (:id c) 0 _ (:id c) false 0 0 k1))
+  (exact (g7-new-run-of _ c 0 (awo-awake (:id c) 0 _ k2) (g7-cut-suffix _ (:id c) false 0 0 (awo-awake (:id c) 0 _ k1) h1)))
+  (simp only [dispatch-raw he])
+  (have k3 := (awo-consume-entry (:id c) 0 _ e (awo-cut-suffix (:id c) 0 _ (:id c) true (:at e) (:id e) k1)))
+  (exact (g7-new-run-of _ c _ (awo-awake (:id c) 0 _ k3)
+           (g7-consume-entry _ e (g7-cut-suffix _ (:id c) true (:at e) (:id e) (awo-awake (:id c) 0 _ k1) h1)))))
 
-(override! G7 't11-inv '[inv-dispatch-raw]
-  '(a/theorem t11-g7 [w :- World, cid :- Nat, fresh :- Nat]
-     (=> (= (g7 w) true) (= (g7 (:world (t11-dispatch w cid fresh))) true))
-     (intro h)
-     (cases hc (comp-find w cid)) (case' [some c]) (case' [none])
-     (simp only [t11-dispatch hc refuse]) (exact h)
-     (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (Bool.and (Bool.not (:idle c)) (Bool.and (needs-run w c) (eligible w c)))))
-     (simp only [t11-dispatch hc hg refuse]) (exact h)
-     (have hi (= (:idle c) false)) (simp only [Bool.and_eq_true] at hg) (exact (bnot-true _ (And.left (And.right hg))))
-     (have e (= (:id c) cid)) (exact (tbl-find-id CompRow comp-id cid c (:comps w) hc))
-     (have ha (= (awake (:comps w) (:id c)) true)) (rw [e]) (exact (find-awake w cid c (g7-sample w h) hc hi))
-     (simp only [t11-dispatch hc hg accept]) (exact (g7-dispatch-raw w c ha h))))
 
 ;; ---- T6 await: the awaiting run's computation is awake, and the parked rows belong to it
 
@@ -1433,98 +1433,85 @@
     (have s1 (= (sn-one (run-park-row q)) true)) (simp [sn-one run-park-row])
     (simp only [same-id-then hx rq2 a1 s1 Bool.and_self Bool.or_true])))
 
-(override! G7 'inv-park-if '[]
-  '(a/theorem g7-park-if [awc :- Nat, w :- World, a :- Nat, rid :- Nat]
-     (=> (= (awo awc rid w) true) (= (g7 w) true) (= (g7 (park-if w a rid)) true))
-     (intros k h)
-     (cases ha (act-has w a))
-     (simp only [park-if ha]) (exact h)
-     (simp only [park-if ha])
-     (have q := (park-rq2 awc rid (:comps w) (:runs w) (awo-awake awc rid w k) (awo-of awc rid w k)))
-     (exact (g7-intro _ (inv-run-upd w rid run-park-row run-park-row-id (g7-sample w h))
-              (g7k-run-upd-abs rid run-park-row (:comps w) (:runs w) (:edges w) q (g7-rest-of w h))))))
+(a/theorem g7-park-if [awc :- Nat, w :- World, a :- Nat, rid :- Nat]
+  (=> (= (awo awc rid w) true) (= (g7 w) true) (= (g7 (park-if w a rid)) true))
+  (intros k h)
+  (cases ha (act-has w a))
+  (simp only [park-if ha]) (exact h)
+  (simp only [park-if ha])
+  (have q := (park-rq2 awc rid (:comps w) (:runs w) (awo-awake awc rid w k) (awo-of awc rid w k)))
+  (exact (g7-intro _ (inv-run-upd w rid run-park-row run-park-row-id (g7-sample w h))
+           (g7k-run-upd-abs rid run-park-row (:comps w) (:runs w) (:edges w) q (g7-rest-of w h)))))
 
-(override! G7 'inv-await-step '[inv-insert-edge-checked inv-raise-for inv-edge-upd]
-  '(a/theorem g7-await-step [r :- RunRow, a :- Nat, mode :- Nat, k :- Nat, acc :- AwAcc, d :- Nat]
-     (=> (= (awake (:comps (:world acc)) (:of r)) true) (= (g7 (:world acc)) true) (= (g7 (:world (await-step r a mode k acc d))) true))
-     (intros haw h)
-     (cases hd (as-dep (:world acc) r d))
-     (case [false]
-       (simp only [await-step hd])
-       (have hn (= (edge-new-ok (:comps (:world acc)) (await-edge (:world acc) r a mode k d)) true))
-       (simp [edge-new-ok await-edge hd obs-one ek-dep ek-wait ek-observe])
-       (exact (g7-insert-edge-checked _ _ hn h)))
-     (case [true]
-       (have hn (= (edge-new-ok (:comps (:world acc)) (await-edge (:world acc) r a mode k d)) true))
-       (simp [edge-new-ok await-edge hd obs-one haw ek-dep ek-observe])
-       (cases hs (site-edge (:edges (:world acc)) (:of r) (:effect-index r) d))
-       (case [none]
-         (simp only [await-step hd hs])
-         (simp only [await-new-dep])
-         (exact (g7-comp-upd-m _ (:of r) (comp-consume-adopt (:effect-index r) d)
-                  (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _) (comp-consume-adopt-nsl _ _) (comp-consume-adopt-kcl _ _)
-                  (g7-raise-for _ (:of r) d (g7-insert-edge-checked _ _ hn h)))))
-       (case [some e]
-         (simp only [await-step hd hs])
-         (exact (g7-comp-upd-m _ (:of r) (comp-consume-adopt (:effect-index r) d)
-                  (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _) (comp-consume-adopt-nsl _ _) (comp-consume-adopt-kcl _ _)
-                  (g7-edge-upd _ (:id e) (edge-reawait (await-cont r mode k)) (edge-reawait-edge-id _)
-                    (edge-reawait-kind _) (edge-reawait-creditor _) (edge-reawait-debtor _) (edge-reawait-marked _) h)))))))
+(tree/restate! G7 '[inv-raise-for inv-edge-upd])
+(a/theorem g7-await-step [r :- RunRow, a :- Nat, mode :- Nat, k :- Nat, acc :- AwAcc, d :- Nat]
+  (=> (= (awake (:comps (:world acc)) (:of r)) true) (= (g7 (:world acc)) true) (= (g7 (:world (await-step r a mode k acc d))) true))
+  (intros haw h)
+  (cases hd (as-dep (:world acc) r d))
+  (case [false]
+    (simp only [await-step hd])
+    (have hn (= (edge-new-ok (:comps (:world acc)) (await-edge (:world acc) r a mode k d)) true))
+    (simp [edge-new-ok await-edge hd obs-one ek-dep ek-wait ek-observe])
+    (exact (g7-insert-edge-checked _ _ hn h)))
+  (case [true]
+    (have hn (= (edge-new-ok (:comps (:world acc)) (await-edge (:world acc) r a mode k d)) true))
+    (simp [edge-new-ok await-edge hd obs-one haw ek-dep ek-observe])
+    (cases hs (site-edge (:edges (:world acc)) (:of r) (:effect-index r) d))
+    (case [none]
+      (simp only [await-step hd hs])
+      (simp only [await-new-dep])
+      (exact (g7-comp-upd-m _ (:of r) (comp-consume-adopt (:effect-index r) d)
+           (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _) (comp-consume-adopt-nsl _ _) (comp-consume-adopt-kcl _ _)
+               (g7-raise-for _ (:of r) d (g7-insert-edge-checked _ _ hn h)))))
+    (case [some e]
+      (simp only [await-step hd hs])
+      (exact (g7-comp-upd-m _ (:of r) (comp-consume-adopt (:effect-index r) d)
+           (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _) (comp-consume-adopt-nsl _ _) (comp-consume-adopt-kcl _ _)
+               (g7-edge-upd _ (:id e) (edge-reawait (await-cont r mode k)) (edge-reawait-edge-id _)
+                 (edge-reawait-kind _) (edge-reawait-creditor _) (edge-reawait-debtor _) (edge-reawait-marked _) h))))))
 
-(override! G7 'inv-await-wire '[inv-await-step]
-  '(a/theorem g7-await-wire [r :- RunRow, a :- Nat, mode :- Nat, k :- Nat, ds :- (List Nat)]
-     (forall [acc :- AwAcc] (=> (= (awo (:of r) (:id r) (:world acc)) true) (= (g7 (:world acc)) true)
-                                (= (g7 (:world (await-wire r a mode k acc ds))) true)))
-     (induction ds)
-     (case' [cons d t ih])
-     (case' [nil])
-     (intros acc ka h) (simp only [await-wire]) (exact h)
-     (intros acc ka h) (simp only [await-wire])
-     (exact (ih _ (awo-await-step (:of r) (:id r) r a mode k acc d ka)
-              (g7-await-step r a mode k acc d (awo-awake (:of r) (:id r) (:world acc) ka) h)))))
+(a/theorem g7-await-wire [r :- RunRow, a :- Nat, mode :- Nat, k :- Nat, ds :- (List Nat)]
+  (forall [acc :- AwAcc] (=> (= (awo (:of r) (:id r) (:world acc)) true) (= (g7 (:world acc)) true)
+                             (= (g7 (:world (await-wire r a mode k acc ds))) true)))
+  (induction ds)
+  (case' [cons d t ih])
+  (case' [nil])
+  (intros acc ka h) (simp only [await-wire]) (exact h)
+  (intros acc ka h) (simp only [await-wire])
+  (exact (ih _ (awo-await-step (:of r) (:id r) r a mode k acc d ka)
+           (g7-await-step r a mode k acc d (awo-awake (:of r) (:id r) (:world acc) ka) h))))
 
-(override! G7 'inv-await-post '[inv-fast-fill inv-park-if inv-fin-if-final]
-  '(a/theorem g7-await-post [awc :- Nat, a :- Nat, rid :- Nat, ds :- (List Nat), acc :- AwAcc]
-     (=> (= (awo awc rid (:world acc)) true) (= (g7 (:world acc)) true) (= (g7 (await-post a rid ds acc)) true))
-     (intros ka h)
-     (have h2 := (g7-act-upd (:world acc) a (act-set-members (mk-members (:pairs acc) 0 ds))
-                   (act-set-members-id (mk-members (:pairs acc) 0 ds)) h))
-     (have k2 := (awo-act-upd awc rid (:world acc) a (act-set-members (mk-members (:pairs acc) 0 ds))
-                   (act-set-members-id (mk-members (:pairs acc) 0 ds)) ka))
-     (have h3 := (nat-fold-g7 (fast-fill (:pairs acc)) (g7-fast-fill (:pairs acc)) (nat-distinct ds)
-                   (act-upd (:world acc) a (act-set-members (mk-members (:pairs acc) 0 ds))) h2))
-     (have k3 := (nat-fold-awo awc rid (fast-fill (:pairs acc)) (awo-fast-fill awc rid (:pairs acc)) (nat-distinct ds)
-                   (act-upd (:world acc) a (act-set-members (mk-members (:pairs acc) 0 ds))) k2))
-     (have h4 := (g7-park-if awc _ a rid k3 h3))
-     (exact (nat-fold-g7 fin-if-final g7-fin-if-final (nat-distinct ds) _ h4))))
+(tree/restate! G7 '[inv-fast-fill inv-fin-if-final])
+(a/theorem g7-await-post [awc :- Nat, a :- Nat, rid :- Nat, ds :- (List Nat), acc :- AwAcc]
+  (=> (= (awo awc rid (:world acc)) true) (= (g7 (:world acc)) true) (= (g7 (await-post a rid ds acc)) true))
+  (intros ka h)
+  (have h2 := (g7-act-upd (:world acc) a (act-set-members (mk-members (:pairs acc) 0 ds))
+                (act-set-members-id (mk-members (:pairs acc) 0 ds)) h))
+  (have k2 := (awo-act-upd awc rid (:world acc) a (act-set-members (mk-members (:pairs acc) 0 ds))
+                (act-set-members-id (mk-members (:pairs acc) 0 ds)) ka))
+  (have h3 := (nat-fold-g7 (fast-fill (:pairs acc)) (g7-fast-fill (:pairs acc)) (nat-distinct ds)
+                (act-upd (:world acc) a (act-set-members (mk-members (:pairs acc) 0 ds))) h2))
+  (have k3 := (nat-fold-awo awc rid (fast-fill (:pairs acc)) (awo-fast-fill awc rid (:pairs acc)) (nat-distinct ds)
+                (act-upd (:world acc) a (act-set-members (mk-members (:pairs acc) 0 ds))) k2))
+  (have h4 := (g7-park-if awc _ a rid k3 h3))
+  (exact (nat-fold-g7 fin-if-final g7-fin-if-final (nat-distinct ds) _ h4)))
 
-(override! G7 'inv-await-raw '[inv-await-wire inv-await-pre inv-await-post]
-  '(a/theorem g7-await-raw [w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
-     (=> (List.Mem r (:runs w)) (= (run-alive r) true) (= (g7 w) true) (= (g7 (await-raw w r ds mode k mine)) true))
-     (intros hm hal h)
-     (have q := (g7k-parts _ _ _ (g7-rest-of w h)))
-     (have a0 := (tbl-all-mem RunRow (a7-one (:comps w)) r (:runs w) (And.left q) hm))
-     (simp only [a7-one hal Bool.not_true Bool.false_or] at a0)
-     (have o0 (= (tbl-all (run-of-at (:id r) (:of r)) (:runs w)) true))
-     (exact (uniq-all RunRow run-id (fn [b :- RunRow] (Nat.beq (:of b) (:of r))) r (:runs w) (lit-runs-nodup w (g7-sample w h)) hm (Nat.beq_refl (:of r))))
-     (have k0 := (awo-intro (:of r) (:id r) w (g7-sample w h) (awo-rest-mk (:of r) (:id r) w a0 o0)))
-     (have g1 := (g7-await-pre w r ds mode k mine h))
-     (have k1 := (awo-await-pre (:of r) (:id r) w r ds mode k mine k0))
-     (have g2 := (g7-await-wire r (:next-id w) mode k (nat-distinct ds) (AwAcc.mk (await-pre w r ds mode k mine) (List.nil DE) true) k1 g1))
-     (have k2 := (awo-await-wire (:of r) (:id r) r (:next-id w) mode k (nat-distinct ds) (AwAcc.mk (await-pre w r ds mode k mine) (List.nil DE) true) k1))
-     (exact (g7-await-post (:of r) (:next-id w) (:id r) ds (await-acc w r ds mode k mine) k2 g2))))
+(tree/restate! G7 '[inv-await-pre])
+(a/theorem g7-await-raw [w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
+  (=> (List.Mem r (:runs w)) (= (run-alive r) true) (= (g7 w) true) (= (g7 (await-raw w r ds mode k mine)) true))
+  (intros hm hal h)
+  (have q := (g7k-parts _ _ _ (g7-rest-of w h)))
+  (have a0 := (tbl-all-mem RunRow (a7-one (:comps w)) r (:runs w) (And.left q) hm))
+  (simp only [a7-one hal Bool.not_true Bool.false_or] at a0)
+  (have o0 (= (tbl-all (run-of-at (:id r) (:of r)) (:runs w)) true))
+  (exact (uniq-all RunRow run-id (fn [b :- RunRow] (Nat.beq (:of b) (:of r))) r (:runs w) (lit-runs-nodup w (g7-sample w h)) hm (Nat.beq_refl (:of r))))
+  (have k0 := (awo-intro (:of r) (:id r) w (g7-sample w h) (awo-rest-mk (:of r) (:id r) w a0 o0)))
+  (have g1 := (g7-await-pre w r ds mode k mine h))
+  (have k1 := (awo-await-pre (:of r) (:id r) w r ds mode k mine k0))
+  (have g2 := (g7-await-wire r (:next-id w) mode k (nat-distinct ds) (AwAcc.mk (await-pre w r ds mode k mine) (List.nil DE) true) k1 g1))
+  (have k2 := (awo-await-wire (:of r) (:id r) r (:next-id w) mode k (nat-distinct ds) (AwAcc.mk (await-pre w r ds mode k mine) (List.nil DE) true) k1))
+  (exact (g7-await-post (:of r) (:next-id w) (:id r) ds (await-acc w r ds mode k mine) k2 g2)))
 
-(override! G7 't6-inv '[inv-await-raw]
-  '(a/theorem t6-g7 [w :- World, st :- Nat, ds :- (List Nat), mode :- Nat, k :- Nat, fresh :- Nat, mine :- (List Nat)]
-     (=> (= (g7 w) true) (= (g7 (:world (t6-await w st ds mode k fresh mine))) true))
-     (intro h)
-     (cases ht (tok-run w st)) (case' [some r]) (case' [none])
-     (simp only [t6-await ht refuse]) (exact h)
-     (have p := (tok-facts w st r ht))
-     (cases hg (Bool.and (await-ok w r ds mode fresh) (:ok (await-acc w r ds mode k mine))))
-     (simp only [t6-await ht hg refuse]) (exact h)
-     (have hn (= (run-normal r) true)) (simp only [await-ok Bool.and_eq_true] at hg) (exact (And.left (And.right (And.left hg))))
-     (simp only [t6-await ht hg accept]) (exact (g7-await-raw w r ds mode k mine (And.left p) (normal-alive r hn) h))))
 
 ;; ===========================================================================
 ;; Part G. Cascade completeness for one computation (demote): after run-cascade with the cancel
@@ -1604,16 +1591,13 @@
 (prim! KDB 'inv-remove-edge '(Eq.trans (kdb-rest-runs kc0 kl0 kd0 (remove-edge w x) w (runs-remove-edge w x)) R))
 (prim! KDB 'mark-edge-inv-sample '(Eq.trans (kdb-rest-runs kc0 kl0 kd0 (mark-edge w x) w (runs-mark-edge w x)) R))
 (prim! KDB 'unmark-edge-inv-sample '(Eq.trans (kdb-rest-runs kc0 kl0 kd0 (unmark-edge w x) w (runs-unmark-edge w x)) R))
-(defn kdb-patch [form]
-  (->> (fix-f form)
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-run-upd (first y)) (contains? run-fns (fhead (nth y 3 nil)))))
-                    (fn [[_ w x f hid & more]]
-                      (let [[d _] (run-fns (fhead f))]
-                        (apply list 'kdb-run-upd-m 'kc0 'kl0 'kd0 w x f hid (lemma-app f d) more))))
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-run-upd (first y)) (= 'run-wake (nth y 3 nil))))
-                    (fn [[_ w x f hid & more]] (apply list 'kdb-run-upd 'kc0 'kl0 'kd0 w x f hid 'run-wake-rk7 more)))))
-(doseq [[n _] @@#'spindel.v2.inv.copier/source-theorems] (patch! KDB n kdb-patch))
-(lcopy! KDB 'inv-job-apply)
+;; kdb on the generic tree: a run edit that ends a run or leaves its slice keeps the listed runs
+;; by its down lemma; resume keeps the run keys (by lemma)
+(tree/part! KDB
+  :sites (assoc (row-sites 'inv-run-upd (set (keys run-fns))
+                           (fn [F] (list 'kdb-run-upd-m 'kc0 'kl0 'kd0 'w 'x F 'hf (first (run-fns F)) 'h0)))
+                '[inv-run-upd run-wake] '(kdb-run-upd kc0 kl0 kd0 w x run-wake hf run-wake-rk7 h0)))
+(tree/restate! KDB '[inv-job-apply])
 
 ;; ---- a cancel job kills its run
 
@@ -1968,7 +1952,7 @@
 ;; edges are dropped; end-basis keeps both: KDB with empty lists (no run of C revives) and EDB (no dep
 ;; edge of C appears: every edge edit keeps kind and creditor, the rest remove edges)
 
-(lcopy! KDB 'inv-end-basis)
+(tree/restate! KDB '[inv-end-basis])
 
 (a/theorem kd-nil-of [c :- Nat, q :- RunRow] (=> (= (not-alive-of c q) true) (= (kd-one c (List.nil Nat) (List.nil Nat) q) true))
   (intro h)
@@ -2077,53 +2061,52 @@
   (intros h hn)
   (exact (edb-rest-of c _ (edb-end-basis c w cid (edb-intro c w h hn)))))
 
-(override! G7 'inv-demote-finish '[inv-drop-edges inv-comp-del-unref]
-  '(a/theorem g7-demote-finish [w :- World, cid :- Nat, vs :- (List Valid)]
-     (=> (= (tbl-all (not-alive-of cid) (:runs w)) true) (= (tbl-all (not-dep-of cid) (:edges w)) true)
-         (= (g7 w) true) (= (g7 (demote-finish w cid vs)) true))
-     (intros hna hnd h)
-     (cases hf (comp-find w cid)) (case' [some c]) (case' [none])
-     (simp only [demote-finish hf]) (exact h)
-     (cases hk (demote-keep w c))
-     (simp only [demote-finish hf hk])
-     (exact (g7-comp-del-unref _ cid (drop-edges-avoids w cid) (g7-drop-edges w (edge-avoids cid) h)))
-     (simp only [demote-finish hf hk])
-     (have hnc := (no-cred-of w cid (g7-sample w h) (g7-rest-of w h) (comp-find-has w cid c hf) hnd))
-     (exact (g7-intro _ (inv-comp-upd w cid (comp-demote-row vs) (comp-demote-row-id vs) (comp-demote-row-pending vs) (g7-sample w h))
-              (g7k-sleep cid (comp-demote-row vs) (comp-demote-row-id vs) (comp-demote-row-clean vs) (:comps w) (:runs w) (:edges w)
-                hna hnc (g7-rest-of w h))))))
+(tree/restate! G7 '[inv-drop-edges inv-comp-del-unref])
+(a/theorem g7-demote-finish [w :- World, cid :- Nat, vs :- (List Valid)]
+  (=> (= (tbl-all (not-alive-of cid) (:runs w)) true) (= (tbl-all (not-dep-of cid) (:edges w)) true)
+      (= (g7 w) true) (= (g7 (demote-finish w cid vs)) true))
+  (intros hna hnd h)
+  (cases hf (comp-find w cid)) (case' [some c]) (case' [none])
+  (simp only [demote-finish hf]) (exact h)
+  (cases hk (demote-keep w c))
+  (simp only [demote-finish hf hk])
+  (exact (g7-comp-del-unref _ cid (drop-edges-avoids w cid) (g7-drop-edges w (edge-avoids cid) h)))
+  (simp only [demote-finish hf hk])
+  (have hnc := (no-cred-of w cid (g7-sample w h) (g7-rest-of w h) (comp-find-has w cid c hf) hnd))
+  (exact (g7-intro _ (inv-comp-upd w cid (comp-demote-row vs) (comp-demote-row-id vs) (comp-demote-row-pending vs) (g7-sample w h))
+           (g7k-sleep cid (comp-demote-row vs) (comp-demote-row-id vs) (comp-demote-row-clean vs) (:comps w) (:runs w) (:edges w)
+             hna hnc (g7-rest-of w h)))))
 
 (a/theorem runs-demote-epoch [w :- World, cid :- Nat, b :- Bool] (= (:runs (demote-epoch w cid b)) (:runs w))
   (cases b) (all_goals (simp only [demote-epoch comp-upd set-comps])))
 
-(override! G7 'inv-demote '[inv-run-cascade inv-demote-epoch inv-drop-edges inv-end-basis inv-demote-finish]
-  '(a/theorem g7-demote [w :- World, cid :- Nat]
-     (=> (= (acts-alive w) true) (= (g7 w) true) (= (g7 (demote w cid)) true))
-     (intros ha h)
-     (cases hf (comp-find w cid)) (case' [some c]) (case' [none])
-     (simp only [demote hf]) (exact h)
-     (cases hi (:idle c))
-     (simp only [demote hf hi demote-edges])
-     (have e (= (:id c) cid)) (exact (tbl-find-id CompRow comp-id cid c (:comps w) hf))
-     (have na := (demote-dead w c (g7-sample w h) ha))
-     (rw [e] at na)
-     (have g1 := (g7-run-cascade w (cancel-jobs (demote-cancels w c)) h))
-     (have g2 := (g7-demote-epoch _ cid (demote-cur w c) g1))
-     (have g3 := (g7-drop-edges _ (not-dep-of cid) g2))
-     (have na3 (= (tbl-all (not-alive-of cid) (:runs (drop-edges (demote-epoch (run-cascade w (cancel-jobs (demote-cancels w c))) cid (demote-cur w c)) (not-dep-of cid)))) true))
-     (simp only [drop-edges set-comps set-edges runs-demote-epoch]) (exact na)
-     (have nd3 (= (tbl-all (not-dep-of cid) (:edges (drop-edges (demote-epoch (run-cascade w (cancel-jobs (demote-cancels w c))) cid (demote-cur w c)) (not-dep-of cid)))) true))
-     (simp only [drop-edges set-comps set-edges]) (exact (tbl-all-filter-self EdgeRow (not-dep-of cid) _))
-     (have g4 := (g7-end-basis _ cid g3))
-     (have na4 := (end-basis-dead _ cid cid (g7-sample _ g3) na3))
-     (have nd4 := (end-basis-no-dep _ cid cid (g7-sample _ g3) nd3))
-     (exact (g7-demote-finish _ cid _ na4 nd4 g4))
-     (simp only [demote hf hi]) (exact h)))
+(tree/restate! G7 '[inv-run-cascade inv-demote-epoch inv-drop-edges inv-end-basis])
+(a/theorem g7-demote [w :- World, cid :- Nat]
+  (=> (= (acts-alive w) true) (= (g7 w) true) (= (g7 (demote w cid)) true))
+  (intros ha h)
+  (cases hf (comp-find w cid)) (case' [some c]) (case' [none])
+  (simp only [demote hf]) (exact h)
+  (cases hi (:idle c))
+  (simp only [demote hf hi demote-edges])
+  (have e (= (:id c) cid)) (exact (tbl-find-id CompRow comp-id cid c (:comps w) hf))
+  (have na := (demote-dead w c (g7-sample w h) ha))
+  (rw [e] at na)
+  (have g1 := (g7-run-cascade w (cancel-jobs (demote-cancels w c)) h))
+  (have g2 := (g7-demote-epoch _ cid (demote-cur w c) g1))
+  (have g3 := (g7-drop-edges _ (not-dep-of cid) g2))
+  (have na3 (= (tbl-all (not-alive-of cid) (:runs (drop-edges (demote-epoch (run-cascade w (cancel-jobs (demote-cancels w c))) cid (demote-cur w c)) (not-dep-of cid)))) true))
+  (simp only [drop-edges set-comps set-edges runs-demote-epoch]) (exact na)
+  (have nd3 (= (tbl-all (not-dep-of cid) (:edges (drop-edges (demote-epoch (run-cascade w (cancel-jobs (demote-cancels w c))) cid (demote-cur w c)) (not-dep-of cid)))) true))
+  (simp only [drop-edges set-comps set-edges]) (exact (tbl-all-filter-self EdgeRow (not-dep-of cid) _))
+  (have g4 := (g7-end-basis _ cid g3))
+  (have na4 := (end-basis-dead _ cid cid (g7-sample _ g3) na3))
+  (have nd4 := (end-basis-no-dep _ cid cid (g7-sample _ g3) nd3))
+  (exact (g7-demote-finish _ cid _ na4 nd4 g4))
+  (simp only [demote hf hi]) (exact h))
 
 
 ;; ---- normalization with acts-alive (for demote's casc-done)
 
-(lcopy! G7 'inv-demote)
 
 (a/theorem g7-demote-fold [a :- Nat, k :- Nat, xs :- (List Nat)]
   (forall [w :- World] (=> (= (bn a k w) true) (= (g7 w) true) (= (g7 (nat-fold demote w xs)) true)))
@@ -2133,45 +2116,39 @@
     (intros w hb h) (simp only [nat-fold])
     (exact (ih (demote w hd) (bn-demote a k w hd hb) (g7-demote w hd (And.left (And.right (bn-parts a k w hb))) h)))))
 
-(override! G7 'inv-norm-round '[inv-run-cascade inv-detach inv-demote]
-  '(a/theorem g7-norm-round [w :- World]
-     (=> (= (acts-alive w) true) (= (g7 w) true) (= (g7 (norm-round w)) true))
-     (intros ha h)
-     (simp only [norm-round norm-round-lv])
-     (have b0 := (bn-intro (alive-cnt w) (act-cnt w) w (g7-sample w h) ha (Nat.le_refl _) (Nat.le_refl _)))
-     (exact (g7-detach _ (g7-demote-fold (alive-cnt w) (act-cnt w) _ _
-              (bn-run-cascade _ _ w _ b0) (g7-run-cascade w _ h))))))
+(tree/restate! G7 '[inv-run-cascade inv-detach])
+(a/theorem g7-norm-round [w :- World]
+  (=> (= (acts-alive w) true) (= (g7 w) true) (= (g7 (norm-round w)) true))
+  (intros ha h)
+  (simp only [norm-round norm-round-lv])
+  (have b0 := (bn-intro (alive-cnt w) (act-cnt w) w (g7-sample w h) ha (Nat.le_refl _) (Nat.le_refl _)))
+  (exact (g7-detach _ (g7-demote-fold (alive-cnt w) (act-cnt w) _ _
+           (bn-run-cascade _ _ w _ b0) (g7-run-cascade w _ h)))))
 
-(override! G7 'inv-norm-loop '[inv-norm-round]
-  '(a/theorem g7-norm-loop [fuel :- (List Nat)]
-     (forall [w :- World] (=> (= (acts-alive w) true) (= (g7 w) true) (= (g7 (norm-loop fuel w)) true)))
-     (induction fuel)
-     (case' [cons h f ih])
-     (case' [nil])
-     (intros w ha hw) (simp only [norm-loop]) (exact hw)
-     (intros w ha hw)
-     (cases hn (normalized w))
-     (simp only [norm-loop hn])
-     (exact (ih (norm-round w) (And.right (bn-round w (g7-sample w hw) ha)) (g7-norm-round w ha hw)))
-     (simp only [norm-loop hn]) (exact hw)))
+(a/theorem g7-norm-loop [fuel :- (List Nat)]
+  (forall [w :- World] (=> (= (acts-alive w) true) (= (g7 w) true) (= (g7 (norm-loop fuel w)) true)))
+  (induction fuel)
+  (case' [cons h f ih])
+  (case' [nil])
+  (intros w ha hw) (simp only [norm-loop]) (exact hw)
+  (intros w ha hw)
+  (cases hn (normalized w))
+  (simp only [norm-loop hn])
+  (exact (ih (norm-round w) (And.right (bn-round w (g7-sample w hw) ha)) (g7-norm-round w ha hw)))
+  (simp only [norm-loop hn]) (exact hw))
 
-(override! G7 'inv-normalize '[inv-norm-loop inv-detach]
-  '(a/theorem g7-normalize [w :- World]
-     (=> (= (acts-alive w) true) (= (g7 w) true) (= (g7 (normalize w)) true))
-     (intros ha h)
-     (have b := (bn-detach (alive-cnt w) (act-cnt w) w (bn-intro (alive-cnt w) (act-cnt w) w (g7-sample w h) ha (Nat.le_refl _) (Nat.le_refl _))))
-     (exact (g7-norm-loop (norm-fuel (detach w)) (detach w) (And.left (And.right (bn-parts _ _ _ b))) (g7-detach w h)))))
+(tree/restate! G7 '[inv-detach])
+(a/theorem g7-normalize [w :- World]
+  (=> (= (acts-alive w) true) (= (g7 w) true) (= (g7 (normalize w)) true))
+  (intros ha h)
+  (have b := (bn-detach (alive-cnt w) (act-cnt w) w (bn-intro (alive-cnt w) (act-cnt w) w (g7-sample w h) ha (Nat.le_refl _) (Nat.le_refl _))))
+  (exact (g7-norm-loop (norm-fuel (detach w)) (detach w) (And.left (And.right (bn-parts _ _ _ b))) (g7-detach w h))))
 
 ;; ===========================================================================
-;; Part F. The copies
+;; Part F. The raw step
 ;; ===========================================================================
 
-(doseq [r '[inv-cancel-pred inv-cut-suffix inv-consume-entry inv-react-add inv-await-step inv-await-pre inv-await-wire
-            inv-fast-fill inv-fin-if-final]]
-  (lcopy! AWO r))
-
-(lcopy! G7 'raw-inv)
-(lcopy! G7 'inv-normalize)
+(tree/restate! G7 '[raw-inv])
 
 ;; ===========================================================================
 ;; Part H. Rule R and the step
