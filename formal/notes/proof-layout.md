@@ -1902,7 +1902,17 @@ there that is `rfl` at a concrete row. One shared lemma changes (`pres-add-run-s
 
 ### Gate (group 6)
 
-GATE-G6
+- **Statements** (name-independent fingerprints, against group 5b): 17,850 identical; none
+  missing; 1 changed, the shared `pres-add-run-scope` (the inserted run row is a site); 152 new: 147
+  `raw0-<item>-<part>` (`gos`, `vq`, `mb`) and 5 part lemmas (`pres-x@mb` 4, `pres-job-apply@gos`).
+  Every `gox`, `gos`, `vq`, `vr` and `mb` name keeps its statement. `inv-step`, `reach-inv`,
+  `inv-empty`, `sys-reach-inv`, `l5-safety-total`, `step-p3m`, `mv-refinement` unchanged.
+- **Load**, one JVM at a time, against group 5b's measure: `completion.open-scopes` 9.0 → 3.8 s,
+  `inv.i14` 13.9 → 9.7 s, `progress.measures` 11.3 → 6.7 s, `pres.tree` 8.6 → 10.2 s. Untouched
+  namespaces read 297 → 350 s (host load; the figure moves by this much between runs).
+- **Suite**: `clojure -M:test`, 304 tests, 208,533 assertions, 0 failures, 0 errors (oracle samples
+  1–62; the tree test also checks that the
+  five parts have no overrides or patches and where `mb` takes its facts).
 
 ## 6. Key pieces to read: the whole proof in 14 stops, in reading order (current names)
 
