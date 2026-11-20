@@ -60,14 +60,37 @@
   (or (::config @(:env ctx))
       (throw (ex-info "v2.sci is not installed in this SCI context" {:type ::not-installed}))))
 
+;; [world run regions] of the adapter running on this thread; `regions` is
+;; [open-finally-regions in-finally-clauses] of the run as SCI code changed
+;; them through the spliced functions (the engine's R-FINS and R-INFIN)
+(def ^:private ^ThreadLocal adapting (ThreadLocal.))
+
+(defn- regions
+  "The region counts of the run on this thread, when the adapter runs it."
+  ^longs []
+  (when-let [^objects a (.get adapting)]
+    (when (and (identical? (aget a 0) (v2/cw)) (identical? (aget a 1) (v2/active-run)))
+      (aget a 2))))
+
+(defn- close-regions!
+  "Drops the run's open regions, whose SCI code cannot run (refusal) or which
+   SCI code left open (completion), so the run can retire."
+  [^longs b]
+  (dotimes [_ (aget b 1)] (v2/leave-finalizer!))
+  (dotimes [_ (aget b 0)] (v2/exit-finally!) (v2/leave-finalizer!))
+  (aset b 0 0)
+  (aset b 1 0))
+
 (defn- capture
-  "[interpreter continuation-context] of the SCI code running now. The
-   interpreter is SCI's current context when it belongs to `home`'s lineage,
-   else `home` (a host thread calling an SCI function)."
-  [home]
+  "[interpreter continuation-context fins infins] of the SCI code running
+   now. The interpreter is SCI's current context when it belongs to `home`'s
+   lineage, else `home` (a host thread calling an SCI function). A body
+   (`body? true`) starts with no open region; a continuation with the run's."
+  [home body?]
   (let [cur store/*ctx*
-        ctx (if (and cur (identical? (:sci.impl/lineage cur) (:sci.impl/lineage home))) cur home)]
-    [ctx (sci/capture-continuation-context ctx)]))
+        ctx (if (and cur (identical? (:sci.impl/lineage cur) (:sci.impl/lineage home))) cur home)
+        b (when-not body? (regions))]
+    [ctx (sci/capture-continuation-context ctx) (if b (aget b 0) 0) (if b (aget b 1) 0)]))
 
 (defn- select
   "The interpreter to run captured code of `ctx` in, for the world being
@@ -93,25 +116,45 @@
       (ex-cause t)
       t)))
 
-;; [world run] of the adapter running on this thread
-(def ^:private ^ThreadLocal adapting (ThreadLocal.))
+(defn- refuse!
+  "The run's SCI code cannot run here: its open regions are dropped (their
+   finalizers are SCI code) and the slice fails, so the run fails and
+   retires without running SCI code."
+  [b t]
+  (close-regions! b)
+  (throw (if (= ::no-interpreter (:type (ex-data t)))
+           t
+           (ex-info "no SCI interpreter for this world" {:type ::no-interpreter} t))))
 
 (defn- in-run
   "Runs `(f)` as code of the active run: in the interpreter selected for the
-   processed world, with the SCI bindings of `cap`, forcing its Thunks."
-  [cfg [ctx cc] f]
+   processed world, with the SCI bindings and region counts of `cap`,
+   forcing its Thunks."
+  [cfg [ctx cc fins infins] f]
   (let [w (v2/cw)
         r (v2/active-run)
         ^objects prev (.get adapting)]
     (if (and r prev (identical? w (aget prev 0)) (identical? r (aget prev 1)))
       (f)
-      (let [target (select cfg ctx)
-            run (sci/continuation-context-fn (sci/retarget-continuation-context cc target)
-                                             (fn [] (force-all (f))))]
-        (.set adapting (doto (object-array 2) (aset 0 w) (aset 1 r)))
-        (try (run)
-             (catch Throwable t (throw (unwrap t)))
-             (finally (.set adapting prev)))))))
+      (let [b (doto (long-array 2) (aset 0 (long fins)) (aset 1 (long infins)))
+            entered (volatile! false)]
+        (.set adapting (doto (object-array 3) (aset 0 w) (aset 1 r) (aset 2 b)))
+        (try
+          (let [target (select cfg ctx)
+                run (sci/continuation-context-fn (sci/retarget-continuation-context cc target)
+                                                 (fn [] (vreset! entered true) (force-all (f))))]
+            (run))
+          (catch Throwable t
+            (if @entered (throw (unwrap t)) (refuse! b t)))
+          (finally (.set adapting prev)))))))
+
+(defn- settled
+  "The engine continuation `k` (a body's ok or err): regions SCI code left
+   open are closed first, so the completed run retires."
+  [k]
+  (fn [v]
+    (when-let [b (regions)] (close-regions! b))
+    (k v)))
 
 (defn- in-interpreter
   "`f` for a host thread outside the slice (offload, external, await-op): it
@@ -138,18 +181,18 @@
   "The host functions spliced into expansions for the lineage of `home`."
   [cfg home]
   (let [k* (fn [cap k] (fn [v] (in-run cfg cap #(k v))))
-        body* (fn [cap body] (fn [ok err] (in-run cfg cap #(body ok err))))
+        body* (fn [cap body] (fn [ok err] (in-run cfg cap #(body (settled ok) (settled err)))))
         fx (fn [native]
              (fn [x k ek]
-               (let [cap (capture home)]
+               (let [cap (capture home false)]
                  (thunk-or-nil (native x (k* cap k) (k* cap ek))))))]
     {:create-comp (fn [site ins body]
-                    (v2/create-comp! site (inputs ins) (body* (capture home) body)))
+                    (v2/create-comp! site (inputs ins) (body* (capture home true) body)))
      :spawn (fn
-              ([site ins body] (v2/spawn! site (inputs ins) (body* (capture home) body)))
-              ([site ins body opts] (v2/spawn! site (inputs ins) (body* (capture home) body) opts)))
+              ([site ins body] (v2/spawn! site (inputs ins) (body* (capture home true) body)))
+              ([site ins body opts] (v2/spawn! site (inputs ins) (body* (capture home true) body) opts)))
      :new-aseq (fn [site ins step init]
-                 (let [cap (capture home)]
+                 (let [cap (capture home true)]
                    (v2/new-aseq-at site (inputs ins) (fn [s] (body* cap (step s))) init)))
      :track (fx (fn [x k ek] (v2/track-effect! (v2/row-of x) k ek)))
      :await (fx (fn [x k ek] (v2/await-effect! (v2/row-of x) k ek)))
@@ -158,27 +201,35 @@
      :consume (fx (fn [x k ek] (v2/consume-effect! (v2/row-of x) k ek)))
      :sleep (fx v2/sleep-effect!)
      :offload (fn [f opts k ek]
-                (let [cap (capture home)]
+                (let [cap (capture home false)]
                   (thunk-or-nil (v2/offload-effect! (in-interpreter cap f) opts (k* cap k) (k* cap ek)))))
      :external (fn [f k ek]
-                 (let [cap (capture home)
+                 (let [cap (capture home false)
                        f' (fn [complete!]
                             (let [cancel ((in-interpreter cap f) complete!)]
                               (if (fn? cancel) (in-interpreter cap cancel) cancel)))]
                    (thunk-or-nil (v2/external-effect! f' (k* cap k) (k* cap ek)))))
      :await-op (fn [op opts k ek]
-                 (let [cap (capture home)]
+                 (let [cap (capture home false)]
                    (thunk-or-nil (v2/await-op-effect! (in-interpreter cap op) opts (k* cap k) (k* cap ek)))))
      :savepoint (fn [site payload k ek]
-                  (let [cap (capture home)]
+                  (let [cap (capture home false)]
                     (thunk-or-nil (v2/savepoint-effect! site payload (k* cap k) (k* cap ek)))))
      :custom (fn [sym]
                (fn [args site k ek]
-                 (let [cap (capture home)]
+                 (let [cap (capture home false)]
                    (thunk-or-nil (v2/custom-effect! sym args site (k* cap k) (k* cap ek))))))
-     :enter-finally (fn [] (v2/enter-finally!) nil)
-     :exit-finally (fn [] (v2/exit-finally!) nil)
-     :leave-finalizer (fn [] (v2/leave-finalizer!) nil)
+     ;; balanced only: a region opens in a run the adapter runs and closes
+     ;; only when one is open (B3; unbalanced calls change nothing)
+     :enter-finally (fn [] (when-let [b (regions)] (v2/enter-finally!) (aset b 0 (inc (aget b 0)))) nil)
+     :exit-finally (fn [] (when-let [b (regions)]
+                            (when (pos? (aget b 0))
+                              (v2/exit-finally!) (aset b 0 (dec (aget b 0))) (aset b 1 (inc (aget b 1)))))
+                     nil)
+     :leave-finalizer (fn [] (when-let [b (regions)]
+                               (when (pos? (aget b 1))
+                                 (v2/leave-finalizer!) (aset b 1 (dec (aget b 1)))))
+                        nil)
      :open-scope (fn [] (Opaque. (v2/open-scope!)))
      :close-scope (fn [s] (when (instance? Opaque s) (v2/close-scope-fx! (.-x ^Opaque s))) nil)
      :push-path (fn [p] (Opaque. (v2/push-path! p)))

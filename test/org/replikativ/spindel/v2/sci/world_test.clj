@@ -170,3 +170,27 @@
        (v2/abandon! pub)
        (doseq [[iw _] instances] (v2/release-world! iw)))
      (v2/release-world! w))))
+
+(deftest a-refused-run-with-open-finally-regions-retires
+  ;; a refusal drops the run's open regions (their finalizers are SCI code
+  ;; that cannot run), so the run retires and its world completes; before,
+  ;; it stayed unretired and the fork never completed
+  (doseq [path [:resume :cancel]]
+    (testing (str "refused on " path)
+      (checked
+       (let [w (s/vworld)
+             d (binding [v2/*world* w] (v2/deferred))
+             p (s/interpreter {:bindings {'d d}})
+             _ (v2sci/set-resolver! p (registry-resolver (atom {w p}) nil))
+             t (ev w p "(def ran (atom 0)) (task (try (await d) (swap! ran inc) (finally (swap! ran inc))))")
+             child (v2/fork! w)]
+         (when (= path :resume)
+           (v2/deliver! (v2/in-world child d) :x)
+           (is (= ::v2sci/no-interpreter (:type (second (outcome (v2/in-world child t)))))))
+         (v2/release-world! child)
+         (is (not= ::timeout (v2/await-complete child 2000 ::timeout)) "the fork completes: its run retired")
+         (is (= 0 (sci/eval-string* p "@ran")) "no SCI code ran for the refused world")
+         (v2/deliver! d :y)
+         (is (= 1 (v t)))
+         (v2/release-world! w)
+         (is (not= ::timeout (v2/await-complete w 2000 ::timeout))))))))

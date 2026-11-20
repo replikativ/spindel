@@ -58,3 +58,21 @@
       (is (thrown? Exception (ev w ctx src)) src))
     (is (= 7 (ev w ctx "@h")) "the handle still works")
     (v2/release-world! w)))
+
+(deftest region-functions-cannot-unbalance-a-run
+  ;; the spliced finally functions are reachable through macroexpand; an
+  ;; unbalanced call changes nothing, so the run still retires
+  (checked
+   (let [w (s/vworld) ctx (s/interpreter)]
+     (ev w ctx "(def ex (macroexpand-1 '(org.replikativ.spindel.v2.core/with-scope :x)))
+                (def enter (first (second (second (nth ex 2)))))
+                (def fin (nth (nth ex 2) 2))
+                (def exit (first (second fin)))
+                (def leave (first (second (nth (nth fin 2) 2))))")
+     (is (= [:entered :exited :left]
+            [(v (ev w ctx "(task (enter) (enter) :entered)"))
+             (v (ev w ctx "(task (exit) (exit) :exited)"))
+             (v (ev w ctx "(task (leave) :left)"))]))
+     (is (= :outside (ev w ctx "(enter) (exit) (leave) :outside")) "outside a body they do nothing")
+     (v2/release-world! w)
+     (is (not= ::timeout (v2/await-complete w 2000 ::timeout)) "every run retired: the world completes"))))
