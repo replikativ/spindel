@@ -13,13 +13,17 @@
    captured inputs, the creation site), with SCI's resolution, and invert it
    with partial-cps's `ioc/invert`, interpreted in the context so that names
    resolve against SCI's namespaces. Captured inputs are the locals in `&env`
-   that occur in the body's text.
+   that occur in the body's text. The compiler is read-only to interpreted
+   code: the installed vars and ioc's are `:sci/built-in`, and the breakpoint
+   handler is a value, not a name.
 
    **No engine internals in SCI.** The expansion calls host functions that
    are spliced into the code as values; no SCI namespace names them. They are
-   still reachable as values (`macroexpand` shows them), so each is safe to
-   call with any arguments: it acts on the calling run only and returns no
-   row, world or scope (a scope is wrapped in an opaque value). A custom
+   still reachable as values (`macroexpand` shows them), so each one acts
+   only on the calling run and returns no row, world or scope: a scope or
+   saved path is an opaque value bound to the run (and world) that opened it
+   and refused elsewhere; the finally-region functions act only balanced,
+   and a body's completion closes regions its code left open. A custom
    effect is called through a function bound to its one exposed symbol.
 
    **Resume adapter (H-body).** Every body and every continuation handed to
@@ -33,8 +37,19 @@
    already runs in the adapter is called directly. So a body inherited by a
    fork resumes against the heap the resolver names for the fork, and SCI
    `binding`s that span an effect are restored on whichever thread resumes.
-   A resolver that returns nil refuses: the run fails without running SCI
-   code."
+
+   **Refusal.** When the resolver returns nil, or the interpreter cannot be
+   entered (another lineage, retired), the run fails without running SCI
+   code; its open finally regions are dropped (their finalizers are SCI
+   code), so it retires.
+
+   **No waiting in a slice (B7).** The interpreter's gate (SCI forks and
+   retirement take it exclusively) is taken with `tryLock`, which passes a
+   queued fork. While a fork or retirement holds it, or the resolver returns
+   a pending interpreter, the run parks and the slice is retried; a run that
+   is unwinding a cancellation cannot park, so its finalizers are dropped.
+   This reads SCI's internal gate field; SCI has no public non-blocking
+   entry."
   (:require [clojure.java.io :as io]
             [is.simm.partial-cps.runtime :as pr]
             [org.replikativ.spindel.v2.core :as v2]
@@ -146,6 +161,11 @@
   (throw (if (#{::no-interpreter ::interpreter-busy} (:type (ex-data t)))
            t
            (ex-info "no SCI interpreter for this world" {:type ::no-interpreter} t))))
+
+(defn- thunk-or-nil
+  "What an effect returns to the body: a Thunk of its own code, else nothing."
+  [x]
+  (when (pr/thunk? x) x))
 
 (declare in-run)
 
@@ -296,11 +316,6 @@
                  (= (rw/g r rw/ID) (rw/g r0 rw/ID))
                  (or (identical? w w0) (#'v2/inherited? w (or (row-of-x (.-x o)) r0))))
         (.-x o)))))
-
-(defn- thunk-or-nil
-  "What an effect returns to the body: a Thunk of its own code, else nothing."
-  [x]
-  (when (pr/thunk? x) x))
 
 (defn- inputs [v] (if (empty? v) v2/empty-inputs (object-array v)))
 
@@ -636,8 +651,12 @@
    body starts or resumes: `(select world interpreter)` is called inside the
    slice with the world being processed and the interpreter the code was
    captured in, and returns an interpreter of the same lineage (`sci/fork`s
-   of one context), or nil to refuse (the run fails without running SCI
-   code). nil removes the resolver: code runs where it was captured."
+   of one context); nil to refuse (the run fails without running SCI code
+   and its finalizers are dropped); or a pending value (promise, future) of
+   an interpreter it prepares off the slice, e.g. a lazy `sci/fork`: the run
+   parks until it is realized and asks again. It runs under the world's gate
+   and must not wait (B7): no `sci/fork` inside it. nil removes the
+   resolver: code runs where it was captured."
   [ctx select]
   (swap! (config ctx) assoc :select select)
   nil)
