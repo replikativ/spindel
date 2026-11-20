@@ -45,7 +45,6 @@
 (set! *warn-on-reflection* true)
 
 (def ^:private core-ns 'org.replikativ.spindel.v2.core)
-(def ^:private cps-ns 'org.replikativ.spindel.v2.sci.cps)
 
 ;; ---------------------------------------------------------------------------
 ;; Interpreter selection
@@ -375,9 +374,10 @@
   (bit-and 0x3fffffff (hash [(str @sci/ns) (:line (meta form)) (:column (meta form))])))
 
 (defn- breakpoints [cfg]
-  (into {} (map (fn [s] [s (symbol (str cps-ns) "bp")]))
-        (concat (map #(symbol (str core-ns) (str %)) (keys builtin-effects))
-                (keys (:effects @cfg)))))
+  (let [h (:bp @cfg)]
+    (into {} (map (fn [s] [s h]))
+          (concat (map #(symbol (str core-ns) (str %)) (keys builtin-effects))
+                  (keys (:effects @cfg))))))
 
 (defn- body-fn-form [cfg a env body]
   (let [r (gensym "r") e (gensym "e")
@@ -385,7 +385,8 @@
     (realize `(fn [~r ~e] ~((:invert @cfg) params (realize (register-finally (assoc a :env env) (cons 'do body))))))))
 
 (defn- bp
-  "The breakpoint handler of every effect (one SCI var, see ioc/invert)."
+  "The breakpoint handler of every effect: a value in the breakpoint map, not
+   a name SCI code could rebind (see `load-ioc!`)."
   [cfg a]
   (fn [ictx r e]
     (let [form (:form ictx)
@@ -430,6 +431,35 @@
 ;; ---------------------------------------------------------------------------
 ;; Installation
 
+(defn- read-only
+  "Var metadata SCI refuses to redefine, `alter-var-root` or `alter-meta!`
+   (`:sci/built-in`): code in the interpreter cannot change how later bodies
+   compile."
+  [ns-obj]
+  {:ns ns-obj :sci/built-in true})
+
+(def ^:private ioc-handler-lookup
+  ["(let [handler (resolve (breakpoints (var-name env head)))"
+   "(let [handler (let [h (breakpoints (var-name env head))] (if (symbol? h) (resolve h) h))"])
+
+(defn- load-ioc!
+  "Loads partial-cps's `ioc` into `ctx` and returns its `invert`. The
+   breakpoint handler is a value in the map (no name to rebind), every ioc
+   var is made read-only, and its macro-time registries (binding restorers
+   and scopes) are fixed empty: interpreted code cannot change the compiler."
+  [ctx]
+  (let [src (slurp (io/resource "is/simm/partial_cps/ioc.clj"))
+        [from to] ioc-handler-lookup]
+    (when-not (= 1 (count (re-seq (re-pattern (java.util.regex.Pattern/quote from)) src)))
+      (throw (ex-info "partial-cps ioc changed: the breakpoint handler lookup is not where v2.sci expects it"
+                      {:type ::incompatible-partial-cps})))
+    (sci/eval-string* ctx (.replace ^String src ^String from ^String to))
+    (sci/eval-string* (assoc ctx :unrestricted true)
+                      "(alter-var-root #'is.simm.partial-cps.ioc/binding-restorers (constantly (delay {})))
+                       (alter-var-root #'is.simm.partial-cps.ioc/binding-scopes (constantly (delay {})))
+                       (doseq [[_ v] (ns-interns 'is.simm.partial-cps.ioc)] (alter-meta! v assoc :sci/built-in true))")
+    (sci/eval-string* ctx "is.simm.partial-cps.ioc/invert")))
+
 (declare expose-effect!)
 
 (defn install!
@@ -461,18 +491,18 @@
      (doseq [[n c] {'java.lang.Throwable Throwable 'is.simm.partial-cps.ioc/Throwable Throwable}]
        (sci/add-class! ctx n c))
      ;; ioc's output calls these by name; nothing else of the runtime
-     (sci/add-namespace! ctx 'is.simm.partial-cps.runtime
-                         {'->thunk pr/->thunk 'thunk? pr/thunk? 'force-thunk pr/force-thunk
-                          'scope-continuation pr/scope-continuation})
-     (sci/eval-string* ctx (slurp (io/resource "is/simm/partial_cps/ioc.clj")))
-     (swap! cfg assoc :invert (sci/eval-string* ctx "is.simm.partial-cps.ioc/invert"))
-     (sci/add-namespace! ctx cps-ns
-                         {'bp (sci/new-var 'bp (bp cfg a) {:ns (sci/create-ns cps-ns)
-                                                           :is.simm.partial-cps.ioc/eager-arguments true})})
+     (let [n* (sci/create-ns 'is.simm.partial-cps.runtime)]
+       (sci/add-namespace! ctx 'is.simm.partial-cps.runtime
+                           (into {} (map (fn [[n f]] [n (sci/new-var n f (read-only n*))]))
+                                 {'->thunk pr/->thunk 'thunk? pr/thunk? 'force-thunk pr/force-thunk
+                                  'scope-continuation pr/scope-continuation})))
+     (swap! cfg assoc
+            :invert (load-ioc! ctx)
+            :bp (with-meta (bp cfg a) {:is.simm.partial-cps.ioc/eager-arguments true}))
      (let [n* (sci/create-ns core-ns)]
        (sci/add-namespace! ctx core-ns
-                           (merge (into {} (map (fn [[n f]] [n (sci/new-macro-var n f {:ns n*})])) ms)
-                                  (into {} (map (fn [n] [n (sci/new-var n (outside n) {:ns n*})]))
+                           (merge (into {} (map (fn [[n f]] [n (sci/new-macro-var n f (read-only n*))])) ms)
+                                  (into {} (map (fn [n] [n (sci/new-var n (outside n) (read-only n*))]))
                                         (keys builtin-effects)))))
      (when old
        (let [resolve-core #(sci/eval-string* ctx (str "(var " core-ns "/" % ")"))]
@@ -497,7 +527,7 @@
   (let [cfg (config ctx)
         n (symbol (name sci-sym))
         ns-sym (symbol (namespace sci-sym))]
-    (sci/add-namespace! ctx ns-sym {n (sci/new-var n (outside n) {:ns (sci/create-ns ns-sym)})})
+    (sci/add-namespace! ctx ns-sym {n (sci/new-var n (outside n) (read-only (sci/create-ns ns-sym)))})
     (swap! cfg assoc-in [:effects sci-sym] ((:custom (:abi @cfg)) registered-sym))
     nil))
 

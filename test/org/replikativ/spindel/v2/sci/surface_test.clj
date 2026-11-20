@@ -7,6 +7,8 @@
             [org.replikativ.spindel.v2.sci.support :as s :refer [checked ev v]]
             [sci.core :as sci]))
 
+(v2/register-effect! `effect-for-read-only-test (fn [_ _] [:value :effect]))
+
 (deftest the-surface-is-pinned
   ;; a new public is reviewed before sandbox code reaches it
   (let [w (s/vworld) ctx (s/interpreter)]
@@ -135,4 +137,37 @@
      (v2/deliver! d 1)
      (is (= :closed (v t)))
      (v2/release-world! child)
+     (v2/release-world! w))))
+
+(deftest the-body-compiler-is-read-only
+  ;; interpreted code cannot change how later bodies compile in its
+  ;; interpreter: the macros, effect names, runtime and ioc are read-only,
+  ;; and the breakpoint handler has no name
+  (checked
+   (let [w (s/vworld)
+         gate (binding [v2/*world* w] (v2/deferred))
+         ctx (s/interpreter {:bindings {'gate gate}} {:effects {'fx/eff `effect-for-read-only-test}})
+         attempt (fn [src] (try (ev w ctx src) :changed (catch Exception _ :refused)))]
+     (doseq [src ["(alter-var-root #'is.simm.partial-cps.ioc/invert-impl (fn [f] (fn [c x] (f c x))))"
+                  "(alter-var-root #'is.simm.partial-cps.ioc/invert (constantly nil))"
+                  "(alter-meta! #'is.simm.partial-cps.ioc/invert-impl dissoc :sci/built-in)"
+                  "(swap! is.simm.partial-cps.ioc/binding-scopes assoc 'x [])"
+                  "(swap! is.simm.partial-cps.ioc/binding-restorers assoc 'x {})"
+                  "(alter-var-root #'org.replikativ.spindel.v2.core/task (constantly (fn [& _] :hijacked)))"
+                  "(alter-var-root #'org.replikativ.spindel.v2.core/await (constantly identity))"
+                  "(alter-meta! #'org.replikativ.spindel.v2.core/task dissoc :macro)"
+                  "(alter-var-root #'is.simm.partial-cps.runtime/thunk? (constantly (constantly false)))"
+                  "(alter-var-root #'fx/eff (constantly identity))"
+                  "(in-ns 'is.simm.partial-cps.ioc) (def invert-impl (fn [& _] nil))"
+                  "org.replikativ.spindel.v2.sci.cps/bp"]]
+       (is (= :refused (attempt src)) src))
+     (testing "a rebound name does not reach the compiled compiler"
+       (ev w ctx "(ns-unmap 'is.simm.partial-cps.ioc 'invert-impl)
+                  (intern 'is.simm.partial-cps.ioc 'invert-impl (fn [& _] (throw (ex-info \"hijacked\" {}))))
+                  (in-ns 'user)"))
+     (let [t (ev w ctx "(def cleaned (atom 0)) (task (try (await gate) (finally (swap! cleaned inc))))")]
+       (Thread/sleep 20)
+       (v2/cancel-task! t)
+       (is (s/wait-until #(= 1 (ev w ctx "@cleaned"))) "later bodies still register their finally regions"))
+     (is (= 3 (v (ev w ctx "(task (inc (await (task 2))))"))))
      (v2/release-world! w))))
