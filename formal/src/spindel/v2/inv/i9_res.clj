@@ -35,8 +35,8 @@
 ;; 5. Content (:over below): T14's local part (the run unwinds and every resource it lists is
 ;;    cancelled: `g9-cancel-mid`), T15's ack (the resource goes and leaves its owner's list:
 ;;    `g9-ack-raw-o`), T17's arm (a new armed resource of a run that is not unwinding, Z#40:
-;;    `g9-arm-o`). The facts these need from the path (the run is a row; the arming run is not
-;;    unwinding, from raw0's guard `fin-shut`) are contexts of the tree (`tree/contexts`).
+;;    `g9-arm-o`). The facts these take from the path (:ctx, :own, :pass below): the run is a row;
+;;    the arming run is not unwinding, from raw0's guard `fin-shut`.
 ;; 6. Companions: none.
 
 (tree/part! G9
@@ -48,7 +48,14 @@
                                                         (fn [q :- ResRow, hq :- (= (res-quiet q) true)] (Eq.refl true)) h0)}
   :over '{inv-cancel-run-local g9-cancel-run-local     ; T14 local: cancel-mid, then the generic debtor side
           inv-ack-raw          g9-ack-raw-o            ; T15: the resource leaves its owner's list
-          inv-arm-park         g9-arm-park})           ; T17: arm (g9-arm-o), then the generic park
+          inv-arm-park         g9-arm-park}            ; T17: arm (g9-arm-o), then the generic park
+  :ctx '{inv-cancel-run-local [(List.Mem r (:runs w))]                         ; the cancelled run is a row
+         inv-arm-park         [(List.Mem r (:runs w)) (= (run-unwinding r) false)]}  ; the arming run: a row, not unwinding
+  :own '{t17-inv [hc (= (fin-shut w st) false)]}                               ; raw0's guard: not in a cleanup slice
+  :pass '{inv-job-apply {inv-cancel-run-local [(tbl-find-mem RunRow run-id rid r (:runs w) hf)]}     ; run-find found it
+          raw0-inv      {t17-inv [hc]}                                                               ; the guard
+          t17-inv       {inv-arm-park [(And.left (tok-facts w st r ht))                              ; the token's run,
+                                       (cleanup-not-unw w st r (fin-shut-cleanup w st hc) ht)]}})    ;   not unwinding
 
 ;; ---- T14's local part: the run unwinds, its resources are cancelled; then the debtor side
 

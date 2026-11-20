@@ -1,8 +1,8 @@
 (ns spindel.v2.pres.tree-test
   "The generic tree (spindel.v2.pres.tree): every lemma of the step's closure that calls others has
-  its generic lemma (and a bare one, for a node with an own context), every context default exists,
-  the parts converted to the tree (gl, g9) have no copier overrides or patches left, and an own
-  context reaches only the parts that need it."
+  its shared generic lemma; a part gets its own (pres-x@part) only on its context paths; a gate gives
+  a part's continuations its fact; the parts converted to the tree (gl, g9) have no copier overrides
+  or patches left."
   (:require [clojure.test :refer [deftest is]]
             [ansatz.core :as a]
             [spindel.v2.inv.copier :as c]
@@ -14,23 +14,28 @@
 
 (deftest every-node-has-its-generic-lemma
   (is (< 150 (count (:nodes @tree/tree))))
-  (doseq [x (:nodes @tree/tree)]
-    (is (declared? (tree/pres-name x)) (str x))
-    (when (get-in tree/contexts [x :own])
-      (is (declared? (symbol (str (tree/pres-name x) "-bare"))) (str x)))))
+  (doseq [x (:nodes @tree/tree)] (is (declared? (tree/pres-name x)) (str x))))
 
-(deftest contexts-have-defaults
-  (doseq [x (keys tree/contexts)]
-    (is (declared? (symbol (str "ctx-" (subs (name (tree/pres-name x)) 5)))) (str x))))
+(deftest part-lemmas-only-on-context-paths
+  ;; gl takes T12's guard and passes it to complete-raw; g9 takes T17's and passes it to arm-park
+  (is (tree/variant? c/GL 't12-inv))
+  (is (declared? (tree/pres-name c/GL 't12-inv)))   ; pres-t12@gl
+  (is (not (tree/variant? c/GL 't17-inv)))
+  (is (tree/variant? c/G9 't17-inv))
+  (is (not (tree/variant? c/G9 't12-inv)))
+  (is (not (tree/variant? c/G9 'inv-dispatch-raw)))
+  (is (= 10 (count (filter #(and (tree/variant? (if (= 'gl (first %)) c/GL c/G9) (second %)))
+                           (for [p '[gl g9] x (:nodes @tree/tree)] [p x]))))))
 
-(deftest own-contexts-are-opt-in
-  ;; gl needs T12's guard (its complete-raw takes the result's tag), g9 needs T17's (its arm-park
-  ;; takes the arming run); neither takes the other's
-  (is (tree/takes? c/GL 't12-inv))
-  (is (not (tree/takes? c/GL 't17-inv)))
-  (is (tree/takes? c/G9 't17-inv))
-  (is (not (tree/takes? c/G9 't12-inv)))
-  (is (not (tree/takes? c/G9 'inv-dispatch-raw))))
+(deftest a-gate-gives-the-continuation-its-fact
+  ;; a part taking C0's gate: raw0's continuations receive root-ok-if (checked for any Q)
+  (let [B (c/mk-bundle 'tgate [] "tgate-" {})]
+    (tree/part! B :gates '{c0-gate-inv hc0})
+    (is (tree/variant? B 'raw0-inv))
+    (doseq [x '[c0-gate-inv raw0-inv]]
+      (when-not (declared? (tree/pres-name B x)) (@#'tree/ev (tree/pres-form B x)))
+      (is (declared? (tree/pres-name B x)) (str x)))
+    (swap! tree/parts dissoc 'tgate)))
 
 (deftest gl-is-not-copied
   (is (empty? @(:overrides c/GL)))

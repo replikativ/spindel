@@ -40,8 +40,9 @@
 ;; 5. Deferred within a step, and content (:over below): T14's local part (break at the run's
 ;;    cancel, repair in `cancel-debtor`), T12 (break at the run's completion, repair at
 ;;    `complete-task`), T13 (`retire-rest`), new runs (T4 with its task, T5 and T11 of a computation).
-;;    The facts these need from the path (the run is a row, it is dead, the result is not none, the
-;;    computation exists) are contexts of the tree (`tree/contexts`), passed at the call sites.
+;;    The facts these take from the path (:ctx, :own, :pass below): the run is a row, it is dead,
+;;    the result is not none (raw0's refusal guard), the computation exists (carried through T11's
+;;    cancel and cut by the bundle `ch`).
 ;; 6. Companions: `ga` (`step-gl`: acts-alive for Rule R's filter).
 
 (tree/part! GL
@@ -55,7 +56,39 @@
           inv-retire-local     gl-retire-local-o       ; T13: clear the task's run, delete the dead run (retire-rest)
           inv-spawn-rows       gl-spawn-rows-o         ; T4: a task and its alive run, inserted together
           inv-start-raw        gl-start-raw            ; T5: a new run of an existing computation (gl-comp-run-o)
-          inv-new-run-of       gl-new-run-of})         ; T11: same
+          inv-new-run-of       gl-new-run-of}          ; T11: same
+  :ctx '{inv-cancel-run-local [(List.Mem r (:runs w))]                         ; the cancelled run is a row
+         inv-retire-local     [(List.Mem r (:runs w)) (= (run-alive r) false)] ; the retired run is a dead row
+         inv-complete-raw     [(List.Mem r (:runs w))                          ; the completed run is a row,
+                               (= (Nat.beq (:tag res) res-none) false)]        ;   its result is not none
+         inv-start-raw        [(= (comp-has w (:id c)) true)]                  ; the new run's `of` is a computation
+         inv-new-run-of       [(= (comp-has w (:id c)) true)]}                 ; same
+  :own '{t12-inv          [hg (= (res-tag-ok tag) true)]                       ; raw0's refusal guard: an ok or err tag
+         inv-dispatch-raw [hc (= (comp-has w (:id c)) true)]}                  ; T11's computation exists
+  :pass '{inv-job-apply  {inv-cancel-run-local [(tbl-find-mem RunRow run-id rid r (:runs w) hf)]     ; run-find found it
+                          inv-retire-local     [(tbl-find-mem RunRow run-id rid r (:runs w) hf)
+                                                (retirable-dead r ha)]}                              ; retirable: done
+          raw0-inv       {t12-inv [(refused-tag-ok w st tag hc)]}                                     ; complete not refused
+          t12-inv        {inv-complete-raw [(And.left (tok-facts w st r ht)) (tag-ok-res tag v hg)]}  ; the token's run
+          inv-retire-one {inv-complete-raw [(retire-r1-mem w r r1 rid hf1) (task-final-res-tag _ _ v)]} ; found; err result
+          t5-inv         {inv-start-raw [(find-comp-has w cid c hc)]}                                 ; comp-find found it
+          t11-inv        {inv-dispatch-raw [(find-comp-has w cid c hc)]}}                             ; same
+  ;; T11: comp-has (:id c) survives cancel-pred, cut-suffix and consume-entry, which keep the
+  ;; computation ids (the bundle `ch` of the copier: a frame of the comps table at column level)
+  :src '{inv-dispatch-raw
+         (a/theorem inv-dispatch-raw [w :- World, c :- CompRow]
+           (=> (= (comp-has w (:id c)) true) (= (inv-sample w) true) (= (inv-sample (dispatch-raw w c)) true))
+           (intros hc h)
+           (have h1 := (inv-cancel-pred w c h))
+           (have k1 := (ch-cancel-pred (:id c) w c (ch-intro (:id c) w (base-of w h) hc)))
+           (cases he (entry-edge w (:id c))) (case' [some e]) (case' [none])
+           (simp only [dispatch-raw he])
+           (exact (inv-new-run-of _ c 0 (ch-rest-of (:id c) _ (ch-cut-suffix (:id c) _ (:id c) false 0 0 k1))
+                    (inv-cut-suffix _ (:id c) false 0 0 h1)))
+           (simp only [dispatch-raw he])
+           (exact (inv-new-run-of _ c _
+                    (ch-rest-of (:id c) _ (ch-consume-entry (:id c) _ e (ch-cut-suffix (:id c) _ (:id c) true (:at e) (:id e) k1)))
+                    (inv-consume-entry _ e (inv-cut-suffix _ (:id c) true (:at e) (:id e) h1)))))})
 
 ;; ---- T14's local part (cancel): the run is done, its task gets err ::cancelled
 
