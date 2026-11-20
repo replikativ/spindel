@@ -1,6 +1,6 @@
 # Readable preservation proofs for the v2 model: options and the target layout
 
-Status: agreed design, 2026-11-19; stage 3 under way (§5c: `gl`; §5d: `g9`, and the per-part contexts `g8` needs). It is the plan for making the layer-1 preservation proofs (`inv-step`)
+Status: agreed design, 2026-11-19; stage 3 under way (§5c: `gl`; §5d: `g9`; §5e: contexts declared per part). It is the plan for making the layer-1 preservation proofs (`inv-step`)
 readable; the staging is in section 5. Stage 0 is this note and the README section "How the step proof
 works". The numbers describe the model as of the restructure (PR #304, e04b1a9) and were measured
 without changing it: a static read of the sources with a small s-expression reader (the appendix says what
@@ -1099,7 +1099,7 @@ The estimate of §5c held: 2 sites, 3 own proofs, 2 contexts, 1 pass (2 counting
 `g9-cancel-run-local` and `g9-arm-park` are three-line adapters: the content is `g9-cancel-mid` and
 `g9-arm-o`, followed by the generic debtor side and the generic park.
 
-### The tree extension: own contexts are opt-in
+### The tree extension: own contexts are opt-in (superseded by §5e)
 
 §5c's `:own?` contexts (`t12`, `dispatch-raw`) were global: every part restated those nodes with the
 context premise. `gl` needed that; `g9` did not, and its `t12-g9` and `g9-dispatch-raw` would have
@@ -1219,6 +1219,65 @@ About 2½–3 weeks, as §5c's total, with the redesign first instead of per-par
   guards sit on transitions (own contexts at T1, T4, raw0's `c0-gate`), and reach the insert composites
   through about ten passes; not two entries.
 - §5c, R4: the first obstacle for companions is where they are declared, before how they are carried.
+
+## 5e. Stage 3: contexts belong to the part
+
+**Result.** §5d's proposal, implemented: the tree has no shared `contexts` or `passes` tables any more.
+A part's table declares the facts it takes from the path and the terms that pass them; the tree
+generates the part's own generic lemma `pres-<x>@<part>` for the nodes on those paths, and every other
+node uses the shared `pres-<x>`, which is now the base proof over Q with bare callees. `gl` and `g9`
+moved their facts into their tables with no statement changing. The opt-in logic of §5d (`takes?`,
+`pres-<x>-bare`, the `ctx-<x>` defaults) is gone with the shared table.
+
+### The table
+
+| key | what | `gl` | `g9` |
+|---|---|---|---|
+| `:ctx` | x or [p F] -> facts the part's own proof (or site entry) takes there | 5 | 2 |
+| `:own` | x -> facts a generated node takes from above, named | `t12` (refusal guard), `dispatch-raw` (the computation exists) | `t17` (`fin-shut`) |
+| `:pass` | caller -> callee -> the terms passed, over the caller's locals | 6 callers, 7 terms | 3 callers |
+| `:src` | x -> the part's proof of x (base vocabulary) | `dispatch-raw` (carries `comp-has` with `ch`) | |
+| `:gates` | a gate node whose continuation takes its fact | | |
+
+A reader of `inv.i10-task` or `inv.i9-res` now sees every fact the part takes from the path, with its
+reason, in the part's file. The variants are few: `gl` 7 (`job-apply`, `raw0`, `t12`, `retire-one`, `t5`,
+`t11`, `dispatch-raw`), `g9` 3 (`job-apply`, `raw0`, `t17`). `raw0`'s variant (the item dispatcher) is
+the largest; it is generated per part that passes a guard into a transition.
+
+A missing pass is an error at restatement that names the caller, the callee and the part ("x calls c,
+which takes facts in this part: give x a :pass for it").
+
+### Extensions for `g8`
+
+- **Gates** (`tree/gates`): `c0-gate`'s continuation premise becomes `root-ok-if b w -> inv (:world o)`
+  for a part that takes the gate (`:gates {c0-gate-inv hc0}`); the gated proof is one line longer than
+  the base one, and every call's continuation in that part's variants becomes `(fn [hc0 :- _] ...)`, so
+  the part's passes into T1, T-create-link, T-link-realize and T-append can use `hc0`. Checked on a toy
+  part in `tree_test` (`raw0`'s gated variant elaborates for any Q).
+- **More sites**: `source-upd`, `scope-upd` and `serve-or` (at its `keep`) are dispatched per row
+  function, like `run-upd`. A part's default at a composite site is its restated lemma of the composite;
+  with a `:sites` entry for every row function (`g8`: `x8k` kept) the composite is not restated at all.
+  `link-demand-raw`'s row function, left to unification by the base proof, is named in `tree/sources`.
+- **Contexts on sites**: `:ctx {[p F] [facts]}` adds premises to that site's hypothesis in the part's
+  variants (its `:sites` entry takes them as `h0..`), and callers pass them like any other.
+
+### Gate (PR A)
+
+- **Statements** (name-independent fingerprints, f87fb4f against this stage): 16,663 identical. 25
+  changed, all shared generic lemmas `pres-*` (now bare, or calling the new sites); 5 missing, the
+  `ctx-*` defaults of the shared contexts of §5c; 11 new: the part lemmas (`pres-x@gl`: 7, `pres-x@g9`:
+  3) and `tag-ok-res`. Nothing outside the tree's restatements references a `pres-` or `ctx-` lemma
+  (#314's `pres-*-bare` and the other `ctx-*` go too). Every name of `edb`, `gnf`, `kc`, `kx`, `mdk`,
+  `neb`, `gl`, `g9` keeps its statement. `inv-step`, `reach-inv`, `inv-empty`, `sys-reach-inv`,
+  `l5-safety-total`, `step-p3m`, `mv-refinement` unchanged.
+- **Load**, back to back: the namespaces this stage touches took 79.6 s before and 104.0 s after:
+  `inv.copier` 12.9 → 6.4 s, `pres.tree` 11.7 → 11.8 s, `inv.i10-task` 0.8 → 7.3 s and `inv.i9-res`
+  6.7 s (each part now generates its own `raw0`, the item dispatcher: about 6 s per part that passes a
+  guard into a transition), `inv.base` 29.6 → 42.0 s, `inv.idle` 12.3 → 13.6 s, `inv.i1-runs` 10.6 →
+  14.1 s. The untouched namespaces went 365 → 467 s (host load); the whole model 445 → 571 s. The
+  per-part `raw0` is the cost of moving the guards into the parts.
+- **Suite**: `clojure -M:test`, 290 tests, 208,308 assertions, 0 failures, 0 errors (oracle samples 1–60
+  included; the tree test checks the part lemmas, a gate on a toy part, and gl/g9).
 
 ## 6. Key pieces to read: the whole proof in 14 stops, in reading order (current names)
 

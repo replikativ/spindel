@@ -154,13 +154,12 @@ that emits the same copier calls:
 - `spindel.v2.pres.tree` checks every composite lemma of the base proof once, over an abstract part Q,
   by open recursion: `pres-<x>` proves x for Q from one hypothesis per lemma x's proof calls. An update
   primitive is one hypothesis per row function (a *site*: `run-upd` at `run-wake` is not `run-upd` at
-  `run-tick`). The tree also passes the facts the base proof checks but drops (`contexts`: the run is a
-  row, the computation exists, ...), at the call sites (`passes`, `sources`); a fact from further up the
-  path is a node's own context, which only the parts that need it take. `restate!` gives a part its
-  generated lemmas as applications of the generic ones, with the part's own lemma for every callee;
-  `part!` declares where the part's own proof replaces the generic one. On the tree so far: `gl`
-  (`inv.i10-task`), `g9` (`inv.i9-res`), `edb`, `gnf`, `kc`, `kx`, `mdk`, `neb` (notes/proof-layout.md
-  sections 5b, 5c).
+  `run-tick`). `restate!` gives a part its generated lemmas as applications of the generic ones, with
+  the part's own lemma for every callee. The part's table (`part!`) declares where its own proof
+  replaces the generic one, and the facts it takes from the path (the run is a row, a guard, a
+  companion) with the terms that pass them; the nodes on those paths get the part's own generic lemma
+  (`pres-<x>@<part>`). On the tree so far: `gl` (`inv.i10-task`), `g9` (`inv.i9-res`), `edb`, `gnf`,
+  `kc`, `kx`, `mdk`, `neb` (notes/proof-layout.md sections 5b–5e).
 
 `gl` (`inv.i10-task`), `g9` (`inv.i9-res`), `g1` (`inv.i1-scopes`) and `g8` (`inv.i8`) carry a fixed comment block before
 their declaration: the part in words, its view, its exempt form, its cells, where it is deferred within
