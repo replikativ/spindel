@@ -6,15 +6,18 @@
                (`step-grel`), so released stays released (`step-released`).
     gk w       inv-sample w and K (`gk-rest` = `gk0-rest` and `gh-rest`): pending-act = 0, no publication
                row, and once released no pin and no host-creditor edge (`gk0-rest`) and every computation,
-               task and source has handle count 0 (`gh-rest`, `hz-all`); `step-k`, `k-empty`. The copy is
-               generic except where an edge is inserted (track, reactivation, await, take: no host root,
-               `host-free`; T8, T22: only while not released, raw0's `root-shut`/`host-await-bad`), at
-               pin/unpin, at a row edit of a computation/task/source (the count stays 0: default, `-z` for
-               decrements, `-open` for handle-new's h1 under the guard), at the creations (handles 1, only
-               while not released: `hr0 : root-shut w = false` threaded from raw0's guards through
-               `gk-threaded`) and at T21 (`t-release-world-gk`: revoke, then `zero-handles-hz`).
+               task and source has handle count 0 (`gh-rest`, `hz-all`); `step-k`, `k-empty`. On the
+               generic tree; its table (`tree/part! GK`) says where the base proof is not enough: where
+               an edge is inserted (track, reactivation, await, take: no host root, `host-free`; T8,
+               T22: only while not released, raw0's `root-shut`/`host-await-bad`), at pin/unpin, at a
+               row edit of a computation/task/source (the count stays 0: default, a site rule for
+               decrements, `-open` for handle-new's h1 under the guard), at the creations (handles 1,
+               only while not released: the fact `root-shut w = false` comes from raw0's guards and
+               is forwarded down to the creation) and at T21 (`t-release-world-gk`: revoke, then
+               `zero-handles-hz`).
 
-  The copy machinery is spindel.v2.inv.copier's (`mk-bundle`, `prim!`, `lcopy!`)."
+  Both parts are restated from the generic step tree (spindel.v2.pres.tree); the bundle record and
+  the primitive cells are spindel.v2.inv.copier's (`mk-bundle`, `prim!`)."
   (:require [ansatz.core :as a]
             [spindel.v2.pres.frames :as frames]
             [clojure.string :as str]
@@ -472,23 +475,13 @@
 (a/theorem cc-root [w :- World, st :- Nat] (=> (= (cc-shut w st) false) (= (root-shut w) false))
   (intro h) (cases hr (root-shut w)) (case [false] (rfl)) (case [true] (simp [cc-shut hr Bool.or_true] at h)))
 
-;; ---- the GK copy
-;; threaded: every theorem between a raw0 arm guarded by root-shut/body-shut/cc-shut and a row creation
-;; with handles 1 (or handle-new's h1) takes `hr0 : root-shut w = false` after its binders
-(def ^:private gk-threaded
-  '[inv-create-comp-raw t3-inv t3-top-inv inv-create-link-cur t-create-link-inv t-create-link-top-inv
-    inv-create-source-cur t1-full-inv t1-body-inv inv-create-stream-cur t1-stream-inv inv-stream-rows t1-top-inv
-    t1-top-full-inv inv-spawn-rows t4-inv t4-top-inv inv-link-demand-raw t-link-demand-inv inv-link-next-raw
-    link-realize-raw-inv t-link-realize-inv inv-append-raw t-append-inv
-    t-handle-new-inv new-task-handle-inv new-source-handle-inv])
-(defn- nbinders [n] (count (take-nth 3 (nth (@#'spindel.v2.inv.copier/theorem-source n) 2))))
+;; ---- gk on the generic tree (spindel.v2.pres.tree)
 (def GK (mk-bundle 'gk [] "gk-"
-          (merge {'inv-comp-upd ['(fn [c :- CompRow, z :- (= (:handles c) 0)] z) 5]
-                  'inv-task-upd ['(fn [t :- TaskRow, z :- (= (:handles t) 0)] z) 4]
-                  'inv-source-upd ['(fn [t :- SourceRow, z :- (= (:handles t) 0)] z) 4]
-                  'inv-serve-or ['(fn [t :- SourceRow, z :- (= (:handles t) 0)] z) 5]
-                  'inv-comp-ins-fresh ['hr0 2] 'inv-task-ins-fresh ['hr0 2] 'inv-source-ins-fresh ['hr0 2]}
-                 (into {} (for [n gk-threaded] [n ['hr0 (nbinders n)]])))))
+          ;; a row edit's cell takes "a zero count stays zero"; by default the count is copied
+          {'inv-comp-upd ['(fn [c :- CompRow, z :- (= (:handles c) 0)] z) 5]
+           'inv-task-upd ['(fn [t :- TaskRow, z :- (= (:handles t) 0)] z) 4]
+           'inv-source-upd ['(fn [t :- SourceRow, z :- (= (:handles t) 0)] z) 4]
+           'inv-serve-or ['(fn [t :- SourceRow, z :- (= (:handles t) 0)] z) 5]}))
 (swap! (:renames GK) assoc 'inv-parts 'gk-parts
        'insert-edge-fresh-inv-sample 'gk-insert-edge-fresh 'inv-insert-edge-checked 'gk-insert-edge-checked)
 
@@ -546,73 +539,115 @@
   (=> (= (root-shut w) false) (= (source-id r) (:next-id w)) (= (gk w) true) (= (gk (bump (source-ins w r))) true))
   (intros hr0 hr h) (exact (gk-intro _ (inv-source-ins-fresh w r hr (gk-sample w h)) (gk-rest-open (bump (source-ins w r)) (root-open w hr0) (Eq.trans (rfl) (gk-rest-k0 w (gk-rest-of w h)))))))
 (swap! (:renames GK) assoc
-       'inv-comp-upd 'gk-comp-upd 'inv-comp-upd-z 'gk-comp-upd 'inv-comp-upd-open 'gk-comp-upd-open
-       'inv-task-upd 'gk-task-upd 'inv-task-upd-z 'gk-task-upd 'inv-task-upd-open 'gk-task-upd-open
-       'inv-source-upd 'gk-source-upd 'inv-source-upd-z 'gk-source-upd 'inv-source-upd-open 'gk-source-upd-open
+       'inv-comp-upd 'gk-comp-upd 'inv-task-upd 'gk-task-upd 'inv-source-upd 'gk-source-upd
        'inv-comp-ins-fresh 'gk-comp-ins-fresh 'inv-task-ins-fresh 'gk-task-ins-fresh 'inv-source-ins-fresh 'gk-source-ins-fresh)
 
-;; patches compose (a theorem may get several)
-(defn- gk-patch! [n f] (let [old (get @(:patches GK) n identity)] (patch! GK n (comp f old))))
-
-;; a source theorem with one more premise (named hn) in front
-(defn- add-premise [prem hn form]
-  (let [[hd nm binders stmt & proof] form
-        stmt2 (if (and (seq? stmt) (= '=> (first stmt))) (apply list '=> prem (rest stmt)) (list '=> prem stmt))
-        [t1 & more] proof
-        t1b (cond (and (seq? t1) (= 'intro (first t1))) [(list 'intros hn (second t1))]
-                  (and (seq? t1) (= 'intros (first t1))) [(apply list 'intros hn (rest t1))]
-                  :else [(list 'intro hn) t1])]
-    (apply list hd nm binders stmt2 (concat t1b more))))
-(defn- repl-form [old new] (fn [form] (subst-forms #(= % old) (fn [_] new) form)))
-
-;; edges that are no host root: track, reactivation (dep edges), await (a dep edge, or a wait edge
-;; whose creditor is the fresh activation), take (a wait edge, creditor the fresh activation)
-(gk-patch! 'inv-track-raw
-  (repl-form '(insert-edge-fresh-inv-sample w (track-edge r x s k) (track-edge-ok w r x s k hc hs) h)
-             '(insert-edge-fresh-inv-sample w (track-edge r x s k) (track-edge-ok w r x s k hc hs) (host-free-nh w (track-edge r x s k) (Eq.refl true)) h)))
-(gk-patch! 'inv-react-add
-  (repl-form '(inv-insert-edge-checked w _ h) '(inv-insert-edge-checked w (valid-edge w c v) (host-free-nh w (valid-edge w c v) (Eq.refl true)) h)))
+;; row functions that keep the count only per case
+(a/theorem task-cancel-result-hk [t :- TaskRow] (= (:handles (task-cancel-result t)) (:handles t))
+  (cases hb (Nat.beq (:tag (:result t)) res-none)) (all_goals (simp only [task-cancel-result hb])))
+(a/theorem source-consume-hk [s :- SourceRow] (= (:handles (source-consume s)) (:handles s))
+  (cases ha (src-available s))
+  (all_goals (simp only [source-consume ha]))
+  (cases hk (Nat.beq (:kind s) sk-mailbox)) (all_goals (simp only [hk])))
 (a/theorem await-edge-nh [w :- World, r :- RunRow, a :- Nat, mode :- Nat, k :- Nat, d :- Nat]
   (=> (= (Nat.beq a 0) false) (= (not-host (await-edge w r a mode k d)) true))
   (intro ha)
   (cases hd (as-dep w r d))
   (all_goals (simp only [not-host host-cred await-edge hd ek-wait ek-dep ek-observe ha])))
-(gk-patch! 'inv-await-step
-  (fn [form] (->> form
-                  (add-premise '(= (Nat.beq a 0) false) 'ha0)
-                  (subst-forms #(= % '(inv-insert-edge-checked _ _ h))
-                               (fn [_] '(inv-insert-edge-checked _ _ (host-free-nh _ _ (await-edge-nh _ r a mode k d ha0)) h))))))
-(gk-patch! 'inv-await-wire
-  (fn [form] (->> form
-                  (add-premise '(= (Nat.beq a 0) false) 'ha0)
-                  (subst-forms #(= % '(inv-await-step r a mode k acc d h)) (fn [_] '(inv-await-step r a mode k acc d ha0 h))))))
-(gk-patch! 'inv-await-raw
-  (fn [form] (subst-forms #(and (seq? %) (= 'inv-await-wire (first %)))
-                          (fn [[hd r n m k ds & more]] (apply list hd r n m k ds '(next-pos w (gk-sample w h)) more)) form)))
-(gk-patch! 'inv-take-park
-  (repl-form '(inv-insert-edge-checked _ _ (inv-act-ins-fresh w (take-act w r k) (rfl) h))
-             '(inv-insert-edge-checked _ (take-edge r (:next-id w) x) (host-free-nh _ _ (take-edge-nh r w x (gk-sample w h)))
-                (inv-act-ins-fresh w (take-act w r k) (rfl) h))))
 
-;; host roots: T8 and T22 add one, refused by raw0 once released (root-shut, host-await-bad); pin
-(gk-patch! 't8-full-inv
-  (fn [form] (->> form
-                  (add-premise '(= (root-shut w) false) 'hr0)
-                  (subst-forms #(= % '(insert-edge-fresh-inv-sample w (observe-edge w d cb) he h))
-                               (fn [_] '(insert-edge-fresh-inv-sample w (observe-edge w d cb) he (host-free-open w _ hr0) h))))))
-(gk-patch! 't8-obs-inv
-  (fn [form] (->> form
-                  (add-premise '(= (root-shut w) false) 'hr0)
-                  (subst-forms #(= % '(t8-full-inv w d cb fresh h)) (fn [_] '(t8-full-inv w d cb fresh hr0 h))))))
-(gk-patch! 'inv-host-await-raw
-  (fn [form] (->> form
-                  (add-premise '(= (root-shut w) false) 'hr0)
-                  (subst-forms #(= % '(inv-insert-edge-checked w (host-wait-edge d) h))
-                               (fn [_] '(inv-insert-edge-checked w (host-wait-edge d) (host-free-open w _ hr0) h))))))
-(gk-patch! 't22-inv
-  (fn [form] (->> form
-                  (add-premise '(= (root-shut w) false) 'hr0)
-                  (subst-forms #(= % '(inv-host-await-raw w d h)) (fn [_] '(inv-host-await-raw w d hr0 h))))))
+;; The handle clause at a row edit that sets the count: a decrement, a zeroing and the two per-case
+;; functions keep a zero count (the cell's last argument); handle-new's h1 takes the guard (`-open`).
+(def ^:private gk-row-sites
+  (let [upd '{comp [inv-comp-upd gk-comp-upd CompRow [hid hp]] task [inv-task-upd gk-task-upd TaskRow [hf]]
+              source [inv-source-upd gk-source-upd SourceRow [hf]]}
+        zero (fn [row pf] (list 'fn ['c :- row 'z :- '(= (:handles c) 0)] pf))]
+    (into {} (for [[F pf] '{comp-dec-handles (sub1-zero (:handles c) z) task-dec-handles (sub1-zero (:handles c) z)
+                            source-dec-handles (sub1-zero (:handles c) z)
+                            comp-h0 (Eq.refl 0) task-h0 (Eq.refl 0) source-h0 (Eq.refl 0)
+                            task-cancel-result (Eq.trans (task-cancel-result-hk c) z)
+                            source-consume (Eq.trans (source-consume-hk c) z)
+                            comp-h1 :open task-h1 :open source-h1 :open}
+                   :let [[p cell row hs] (upd (symbol (first (str/split (name F) #"-"))))]]
+               [[p F] (if (= pf :open)
+                        (concat [(symbol (str cell "-open")) 'w 'x F] hs '[h0 h1])
+                        (concat [cell 'w 'x F] hs [(zero row pf) 'h0]))]))))
+
+(tree/part! GK
+  :over '{t20-pin-inv         t20-pin-gk
+          t20-unpin-inv       t20-unpin-gk
+          t-release-world-inv t-release-world-gk
+          inv-serve-or        gk-serve-or
+          inv-await-wire      gk-await-wire
+          inv-await-raw       gk-await-raw}
+  ;; ---- sites: the row edits that set a handle count; the creations (their cells take the guard first)
+  :sites (merge gk-row-sites
+                (tree/row-sites 'inv-comp-ins-fresh (constantly true) (fn [F] (list 'gk-comp-ins-fresh 'w F 'h2 'h0 'h1 'h3)))
+                (tree/row-sites 'inv-task-ins-fresh (constantly true) (fn [F] (list 'gk-task-ins-fresh 'w F 'h1 'h0 'h2)))
+                (tree/row-sites 'inv-source-ins-fresh (constantly true) (fn [F] (list 'gk-source-ins-fresh 'w F 'h1 'h0 'h2))))
+  ;; ---- facts from the path: a creation, handle-new's h1 and pin run only while not released
+  ;; (raw0's guards); a new edge is no host root, or the world is not released
+  :ctx '{inv-comp-ins-fresh             [(= (root-shut w) false)]
+         inv-task-ins-fresh             [(= (root-shut w) false)]
+         inv-source-ins-fresh           [(= (root-shut w) false)]
+         [inv-comp-upd comp-h1]         [(= (root-shut w) false)]
+         [inv-task-upd task-h1]         [(= (root-shut w) false)]
+         [inv-source-upd source-h1]     [(= (root-shut w) false)]
+         t20-pin-inv                    [(= (root-shut w) false)]
+         insert-edge-fresh-inv-sample   [(= (host-free w e) true)]
+         inv-insert-edge-checked        [(= (host-free w e) true)]}
+  :own '{inv-await-step     [ha0 (= (Nat.beq a 0) false)]     ; the fresh activation's id
+         t8-full-inv        [hr0 (= (root-shut w) false)]
+         inv-host-await-raw [hr0 (= (root-shut w) false)]
+         inv-stream-rows    [hr0 (= (root-shut w) false)]     ; the second row is inserted after the first:
+         inv-append-raw     [hr0 (= (root-shut w) false)]}    ; the guard is of the world before both
+  :pass '{;; edges that are no host root: track, reactivation (dep edges), await (a dep edge, or a wait
+          ;; edge whose creditor is the fresh activation), take (a wait edge, creditor the fresh activation)
+          inv-track-raw  {[insert-edge-fresh-inv-sample (track-edge r x s k)] [(host-free-nh w (track-edge r x s k) (Eq.refl true))]}
+          inv-react-add  {[inv-insert-edge-checked (valid-edge w c v)] [(host-free-nh w (valid-edge w c v) (Eq.refl true))]}
+          inv-await-step {[inv-insert-edge-checked (await-edge (:world acc) r a mode k d)] [(host-free-nh _ _ (await-edge-nh _ r a mode k d ha0))]}
+          inv-take-park  {[inv-insert-edge-checked (take-edge r (:next-id w) x)] [(host-free-nh _ _ (take-edge-nh r w x (base-of w h)))]}
+          ;; host roots: T8 and T22 add one, refused by raw0 once released (root-shut, host-await-bad)
+          t8-full-inv        {[insert-edge-fresh-inv-sample (observe-edge w d cb)] [(host-free-open w _ hr0)]}
+          inv-host-await-raw {[inv-insert-edge-checked (host-wait-edge d)] [(host-free-open w _ hr0)]}
+          inv-stream-rows    {inv-source-ins-fresh [hr0]}
+          inv-append-raw     {inv-source-ins-fresh [hr0]}
+          ;; raw0: the guards give the facts
+          raw0-create-source-inv     {t1-body-inv [(body-root w st hc)]}
+          raw0-create-source-top-inv {t1-top-full-inv [hc]}
+          raw0-observe-inv           {t8-obs-inv [hc]}
+          raw0-pin-inv               {t20-pin-inv [hc]}
+          raw0-create-comp-inv       {t3-inv [(cc-root w st hc)]}
+          raw0-create-comp-top-inv   {t3-top-inv [hc]}
+          raw0-spawn-inv             {t4-inv [(body-root w st hc)]}
+          raw0-spawn-top-inv         {t4-top-inv [hc]}
+          raw0-host-await-inv        {t22-inv [(host-await-root w _ hc)]}
+          raw0-handle-new-inv        {t-handle-new-inv [hc]}
+          raw0-create-link-inv       {t-create-link-inv [(cc-root w st hc)]}
+          raw0-create-link-top-inv   {t-create-link-top-inv [hc]}
+          raw0-link-demand-inv       {t-link-demand-inv [hc]}
+          raw0-link-realize-inv      {t-link-realize-inv [hc]}
+          raw0-append-inv            {t-append-inv [hc]}})
+
+;; await: the member edges' creditor is the fresh activation, whose id is not 0
+(tree/restate! GK '[inv-await-step inv-await-pre inv-await-post])
+(a/theorem gk-await-wire [r :- RunRow, a :- Nat, mode :- Nat, k :- Nat, ds :- (List Nat)]
+  (=> (= (Nat.beq a 0) false)
+      (forall [acc :- AwAcc] (=> (= (gk (:world acc)) true) (= (gk (:world (await-wire r a mode k acc ds))) true))))
+  (intro ha0)
+  (induction ds)
+  (case' [cons d t ih])
+  (case' [nil])
+  (intros acc h) (simp only [await-wire]) (exact h)
+  (intros acc h) (simp only [await-wire]) (exact (ih _ (gk-await-step r a mode k acc d ha0 h))))
+(a/theorem gk-await-raw [w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
+  (=> (= (gk w) true) (= (gk (await-raw w r ds mode k mine)) true))
+  (intro h)
+  (have h1 (= (gk (:world (await-acc w r ds mode k mine))) true))
+  (exact (gk-await-wire r (:next-id w) mode k (nat-distinct ds) (next-pos w (gk-sample w h))
+           (AwAcc.mk (await-pre w r ds mode k mine) (List.nil DE) true) (gk-await-pre w r ds mode k mine h)))
+  (exact (gk-await-post (:next-id w) (:id r) ds (await-acc w r ds mode k mine) h1)))
+
+;; pin and unpin
 (a/theorem gk0-set-pins-cons [w :- World, x :- Nat] (=> (= (root-shut w) false) (= (gk0-rest w) true) (= (gk0-rest (set-pins w (List.cons Nat x (:pins w)))) true))
   (intros hr h) (simp only [root-shut] at hr)
   (simp only [gk0-rest Bool.and_eq_true] at h)
@@ -640,22 +675,20 @@
   (intros hr h) (apply gk-rest-mk) (exact (gk0-set-pins-cons w x hr (gk-rest-k0 w h))) (exact (Eq.trans (rfl) (gk-rest-gh w h))))
 (a/theorem gk-set-pins-del [w :- World, x :- Nat] (=> (= (gk-rest w) true) (= (gk-rest (set-pins w (nat-del1 x (:pins w)))) true))
   (intro h) (apply gk-rest-mk) (exact (gk0-set-pins-del w x (gk-rest-k0 w h))) (exact (Eq.trans (rfl) (gk-rest-gh w h))))
-(override! GK 't20-pin-inv '[]
-  '(a/theorem t20-pin-gk [w :- World, x :- Nat]
-     (=> (= (root-shut w) false) (= (gk w) true) (= (gk (:world (t20-pin w x))) true))
-     (intros hr0 h)
-     (cases hg (pin-target w x))
-     (simp only [t20-pin hg refuse]) (exact h)
-     (simp only [t20-pin hg accept])
-     (exact (gk-intro _ (inv-set-pins w (List.cons Nat x (:pins w)) (gk-sample w h)) (gk-set-pins-cons w x hr0 (gk-rest-of w h))))))
-(override! GK 't20-unpin-inv '[]
-  '(a/theorem t20-unpin-gk [w :- World, x :- Nat]
-     (=> (= (gk w) true) (= (gk (:world (t20-unpin w x))) true))
-     (intro h)
-     (cases hm (nat-mem x (:pins w)))
-     (simp only [t20-unpin hm refuse]) (exact h)
-     (simp only [t20-unpin hm accept])
-     (exact (gk-intro _ (inv-set-pins w (nat-del1 x (:pins w)) (gk-sample w h)) (gk-set-pins-del w x (gk-rest-of w h))))))
+(a/theorem t20-pin-gk [w :- World, x :- Nat]
+  (=> (= (root-shut w) false) (= (gk w) true) (= (gk (:world (t20-pin w x))) true))
+  (intros hr0 h)
+  (cases hg (pin-target w x))
+  (simp only [t20-pin hg refuse]) (exact h)
+  (simp only [t20-pin hg accept])
+  (exact (gk-intro _ (inv-set-pins w (List.cons Nat x (:pins w)) (gk-sample w h)) (gk-set-pins-cons w x hr0 (gk-rest-of w h)))))
+(a/theorem t20-unpin-gk [w :- World, x :- Nat]
+  (=> (= (gk w) true) (= (gk (:world (t20-unpin w x))) true))
+  (intro h)
+  (cases hm (nat-mem x (:pins w)))
+  (simp only [t20-unpin hm refuse]) (exact h)
+  (simp only [t20-unpin hm accept])
+  (exact (gk-intro _ (inv-set-pins w (nat-del1 x (:pins w)) (gk-sample w h)) (gk-set-pins-del w x (gk-rest-of w h)))))
 ;; T21 revokes the roots: no pin, no host-creditor edge, no pending activation
 (a/theorem gk0-rest-revoke [w :- World] (=> (= (gk0-rest w) true) (= (gk0-rest (revoke-roots w)) true))
   (intro h)
@@ -766,75 +799,27 @@
   (exact (gk-intro _ (inv-zero-handles _ (inv-revoke-roots w (gk-sample w h))) (gk-rest-mk _ k0 g))))
 
 ;; T21 (`t-release-world`): revoke, zero the handles, close the root scope
-(override! GK 't-release-world-inv '[inv-run-cascade]
-  '(a/theorem t-release-world-gk [w :- World]
-     (=> (= (gk w) true) (= (gk (:world (t-release-world w))) true))
-     (intro h)
-     (cases hr (:released w))
-     (simp only [t-release-world hr accept release-world-raw])
-     (exact (gk-run-cascade _ _ (gk-zero-revoke w h)))
-     (simp only [t-release-world hr refuse]) (exact h)))
+(tree/restate! GK '[inv-run-cascade])
+(a/theorem t-release-world-gk [w :- World]
+  (=> (= (gk w) true) (= (gk (:world (t-release-world w))) true))
+  (intro h)
+  (cases hr (:released w))
+  (simp only [t-release-world hr accept release-world-raw])
+  (exact (gk-run-cascade _ _ (gk-zero-revoke w h)))
+  (simp only [t-release-world hr refuse]) (exact h))
 
 ;; serve-or's `keep` row edit keeps a zero count (its callers: enqueue, permit)
-(override! GK 'inv-serve-or '[inv-fire-edge]
-  '(a/theorem gk-serve-or [w :- World, x :- Nat, res :- RunResult, keep :- (=> SourceRow SourceRow),
-                           hk :- (forall [s :- SourceRow] (= (source-id (keep s)) (source-id s))),
-                           hz :- (forall [t :- SourceRow] (=> (= (:handles t) 0) (= (:handles (keep t)) 0)))]
-     (=> (= (gk w) true) (= (gk (serve-or w x res keep)) true))
-     (intro h)
-     (cases hz0 (Nat.beq (oldest-waiter w x) 0))
-     (simp only [serve-or hz0]) (exact (gk-fire-edge res w _ h))
-     (simp only [serve-or hz0]) (exact (gk-source-upd w x keep hk hz h))))
+(tree/restate! GK '[inv-fire-edge])
+(a/theorem gk-serve-or [w :- World, x :- Nat, res :- RunResult, keep :- (=> SourceRow SourceRow),
+                        hk :- (forall [s :- SourceRow] (= (source-id (keep s)) (source-id s))),
+                        hz :- (forall [t :- SourceRow] (=> (= (:handles t) 0) (= (:handles (keep t)) 0)))]
+  (=> (= (gk w) true) (= (gk (serve-or w x res keep)) true))
+  (intro h)
+  (cases hz0 (Nat.beq (oldest-waiter w x) 0))
+  (simp only [serve-or hz0]) (exact (gk-fire-edge res w _ h))
+  (simp only [serve-or hz0]) (exact (gk-source-upd w x keep hk hz h)))
 
-;; the handle clause: a row edit that sets the count (dec/h0) states that it keeps a zero count
-;; (`-z`); handle-new's h1 takes the guard (`-open`)
-(def ^:private hz-info '{inv-comp-upd [CompRow 5] inv-task-upd [TaskRow 4] inv-source-upd [SourceRow 4]})
-(def ^:private hz-dec '#{comp-dec-handles task-dec-handles source-dec-handles})
-(def ^:private hz-h0 '#{comp-h0 task-h0 source-h0})
-(def ^:private hz-h1 '#{comp-h1 task-h1 source-h1})
-;; row functions that keep the count only per case
-(a/theorem task-cancel-result-hk [t :- TaskRow] (= (:handles (task-cancel-result t)) (:handles t))
-  (cases hb (Nat.beq (:tag (:result t)) res-none)) (all_goals (simp only [task-cancel-result hb])))
-(a/theorem source-consume-hk [s :- SourceRow] (= (:handles (source-consume s)) (:handles s))
-  (cases ha (src-available s))
-  (all_goals (simp only [source-consume ha]))
-  (cases hk (Nat.beq (:kind s) sk-mailbox)) (all_goals (simp only [hk])))
-(def ^:private hz-hk '{task-cancel-result task-cancel-result-hk source-consume source-consume-hk})
-(defn- hz-patch [form]
-  (subst-forms
-    (fn [y] (and (seq? y) (hz-info (first y)) (> (count y) 3) (some #(contains? % (nth y 3)) [hz-dec hz-h0 hz-h1 hz-hk])))
-    (fn [y] (let [[row k] (hz-info (first y)) f (nth y 3) args (vec (rest y))
-                  pf (cond
-                       (hz-hk f) (list 'fn ['c :- row 'z :- '(= (:handles c) 0)] (list 'Eq.trans (list (hz-hk f) 'c) 'z))
-                       (hz-dec f)
-                       (list 'fn ['c :- row 'z :- '(= (:handles c) 0)] '(sub1-zero (:handles c) z))
-                       :else (list 'fn ['c :- row 'z :- '(= (:handles c) 0)] '(Eq.refl 0)))]
-              (if (hz-h1 f)
-                (apply list (symbol (str (first y) "-open")) (concat (take k args) ['hr0] (drop k args)))
-                (apply list (symbol (str (first y) "-z")) (concat (take k args) [pf] (drop k args))))))
-    form))
-(doseq [n gk-threaded] (gk-patch! n #(add-premise '(= (root-shut w) false) 'hr0 %)))
-(doseq [[n _] @@#'spindel.v2.inv.copier/source-theorems] (gk-patch! n hz-patch))
-
-;; raw0: the guards give the hypotheses
-(def ^:private gk-raw0-guard
-  '{t1-body-inv (body-root w st hc) t4-inv (body-root w st hc) t3-inv (cc-root w st hc) t-create-link-inv (cc-root w st hc)
-    t1-top-full-inv hc t3-top-inv hc t4-top-inv hc t-handle-new-inv hc t-create-link-top-inv hc t-link-demand-inv hc
-    t-link-realize-inv hc t-append-inv hc})
-(gk-patch! 'raw0-inv
-  (fn [form] (clojure.walk/postwalk
-               (fn [y] (if (and (seq? y) (contains? gk-raw0-guard (first y)))
-                         (list (list 'fn '[hr0 :- (= (root-shut w) false)] y) (gk-raw0-guard (first y)))
-                         y))
-               form)))
-(gk-patch! 'raw0-inv
-  (fn [form] (->> form
-                  (subst-forms #(= % '(t8-obs-inv w _ _ _ h)) (fn [_] '(t8-obs-inv w _ _ _ hc h)))
-                  (subst-forms #(= % '(t20-pin-inv w _ h)) (fn [_] '(t20-pin-inv w _ hc h)))
-                  (subst-forms #(= % '(t22-inv w _ _ h)) (fn [_] '(t22-inv w _ _ (host-await-root w _ hc) h))))))
-
-(lcopy! GK 'raw-inv)
-(lcopy! GK 'inv-normalize)
+(tree/restate! GK '[raw-inv inv-normalize])
 
 (a/theorem gk-rule-r-round [w :- World]
   (=> (= (gk w) true) (= (filter-safe (normalize w)) true) (= (gk (rule-r-round w)) true))
