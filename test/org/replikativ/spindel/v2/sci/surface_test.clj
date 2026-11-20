@@ -3,6 +3,7 @@
    no world. Ports sci/{lock,context,boundary,trampoline}_test."
   (:require [clojure.test :refer [deftest is testing]]
             [org.replikativ.spindel.v2.core :as v2]
+            [org.replikativ.spindel.v2.sci :as v2sci]
             [org.replikativ.spindel.v2.sci.support :as s :refer [checked ev v]]
             [sci.core :as sci]))
 
@@ -76,3 +77,62 @@
      (is (= :outside (ev w ctx "(enter) (exit) (leave) :outside")) "outside a body they do nothing")
      (v2/release-world! w)
      (is (not= ::timeout (v2/await-complete w 2000 ::timeout)) "every run retired: the world completes"))))
+
+(def ^:private scope-fns
+  "(def ex (macroexpand-1 '(org.replikativ.spindel.v2.core/with-scope :x)))
+   (def open-scope (first (second (second ex))))
+   (def close-scope (first (second (nth (nth (nth ex 2) 2) 2))))
+   (def stash (atom nil)) (def log (atom []))")
+
+(def ^:private opener
+  "(task (let [s (open-scope)]
+           (reset! stash s)
+           (task (try (await gate) :child-done (finally (swap! log conj :child-finally))))
+           (await gate)
+           :a-done))")
+
+(deftest a-scope-closes-only-in-the-run-that-opened-it
+  ;; a scope handed out by the spliced open-scope is bound to its run: another
+  ;; run, or a run of an unrelated world, closing it changes nothing
+  (checked
+   (let [w1 (s/vworld) w2 (s/vworld)
+         gate (binding [v2/*world* w1] (v2/deferred))
+         ctx (s/interpreter {:bindings {'gate gate}})]
+     (ev w1 ctx scope-fns)
+     (let [a (ev w1 ctx opener)]
+       (is (s/wait-until #(some? (ev w1 ctx "@stash"))))
+       (testing "another run of the same world"
+         (is (= :b-closed (v (ev w1 ctx "(task (close-scope @stash) :b-closed)"))))
+         (is (= [] (ev w1 ctx "@log")) "the scope's task was not cancelled"))
+       (testing "a run of an unrelated world"
+         (is (= :c-closed (v (ev w2 ctx "(task (close-scope @stash) :c-closed)"))))
+         (is (= [] (ev w1 ctx "@log"))))
+       (v2/deliver! gate 1)
+       (is (= :a-done (v a)))
+       (is (= [:child-finally] (ev w1 ctx "@log")) "the opener's own close still cancels at its exit"))
+     (v2/release-world! w1)
+     (v2/release-world! w2))))
+
+(deftest an-inherited-scope-closes-in-the-fork
+  ;; the same run in a fork that inherited the scope may close it there
+  (checked
+   (let [w (s/vworld)
+         [gate d] (binding [v2/*world* w] [(v2/deferred) (v2/deferred)])
+         p (s/interpreter {:bindings {'gate gate 'd d}})
+         registry (atom {w p})
+         _ (v2sci/set-resolver! p (fn [w _] (get @registry w)))
+         t (ev w p "(def log (atom []))
+                    (task (with-scope (task (try (await gate) (finally (swap! log conj :cancelled))))
+                                      (await d)
+                                      :closed))")
+         child (v2/fork! w)
+         c (sci/fork p)]
+     (swap! registry assoc child c)
+     (v2/deliver! (v2/in-world child d) 1)
+     (is (= :closed (v (v2/in-world child t))))
+     (is (s/wait-until #(= [:cancelled] (sci/eval-string* c "@log"))) "the fork's scope task was cancelled")
+     (is (= [] (sci/eval-string* p "@log")) "the parent's scope is still open")
+     (v2/deliver! d 1)
+     (is (= :closed (v t)))
+     (v2/release-world! child)
+     (v2/release-world! w))))

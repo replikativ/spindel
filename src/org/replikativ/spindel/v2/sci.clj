@@ -38,6 +38,7 @@
   (:require [clojure.java.io :as io]
             [is.simm.partial-cps.runtime :as pr]
             [org.replikativ.spindel.v2.core :as v2]
+            [org.replikativ.spindel.v2.rows :as rw]
             [sci.core :as sci]
             [sci.ctx-store :as store]))
 
@@ -168,7 +169,26 @@
 ;; ---------------------------------------------------------------------------
 ;; The functions the expansion calls (spliced as values)
 
-(deftype ^:private Opaque [x])
+(deftype ^:private Opaque [x run world])
+
+(defn- opened
+  "`x` (a scope or a saved path) for the active run in the processed world."
+  [x]
+  (Opaque. x (v2/active-run) (v2/cw)))
+
+(defn- own
+  "The value inside `o` when the active run opened it: the same run (by id)
+   in the world that opened it or in a world derived from it that inherited
+   `row` (a fork); else nil."
+  [o row-of-x]
+  (when (instance? Opaque o)
+    (let [^Opaque o o
+          r (v2/active-run) w (v2/cw) r0 (.-run o) w0 (.-world o)]
+      (when (and r w r0 w0
+                 (identical? (rw/g w rw/W-FAMILY) (rw/g w0 rw/W-FAMILY))
+                 (= (rw/g r rw/ID) (rw/g r0 rw/ID))
+                 (or (identical? w w0) (#'v2/inherited? w (or (row-of-x (.-x o)) r0))))
+        (.-x o)))))
 
 (defn- thunk-or-nil
   "What an effect returns to the body: a Thunk of its own code, else nothing."
@@ -230,10 +250,12 @@
                                (when (pos? (aget b 1))
                                  (v2/leave-finalizer!) (aset b 1 (dec (aget b 1)))))
                         nil)
-     :open-scope (fn [] (Opaque. (v2/open-scope!)))
-     :close-scope (fn [s] (when (instance? Opaque s) (v2/close-scope-fx! (.-x ^Opaque s))) nil)
-     :push-path (fn [p] (Opaque. (v2/push-path! p)))
-     :pop-path (fn [s] (when (instance? Opaque s) (v2/pop-path! (.-x ^Opaque s))) nil)}))
+     ;; a scope or saved path acts only in the run that opened it (refused,
+     ;; with no effect, in another run or an unrelated world)
+     :open-scope (fn [] (opened (v2/open-scope!)))
+     :close-scope (fn [s] (when-let [x (own s identity)] (v2/close-scope-fx! x)) nil)
+     :push-path (fn [p] (opened (v2/push-path! p)))
+     :pop-path (fn [s] (when-let [x (own s (constantly nil))] (v2/pop-path! x)) nil)}))
 
 ;; ---------------------------------------------------------------------------
 ;; Expansion (SCI's resolution; mirrors the host body macros of v2.core)
