@@ -394,6 +394,11 @@
   "The row functions (site keys) of callee p's sites in the shared proofs, for a part's :sites."
   [p]
   (vec (distinct (for [x (:nodes @tree) [k a b] (callees nil x) :when (and (= k :site) (= a p))] (site-key b)))))
+(defn row-sites
+  "A part's :sites entries {[p F] (entry F)} for the sites of p whose row function's head (a symbol)
+  satisfies pred: one rule for a family of row functions, as the copier's patches had."
+  [p pred entry]
+  (into {} (for [F (site-keys p) :when (pred (if (seq? F) (first F) F))] [[p F] (entry F)])))
 
 (defn variant?
   "Does part B prove node x by its own generic lemma pres-x@B? When x passes or takes B's facts, B
@@ -489,7 +494,9 @@
         pnames (vec (drop (count (bnames (site-params F))) (bnames bs)))
         unsuffix (zipmap (map #(symbol (str/replace (name %) #"_$" "")) pnames) pnames)]
     (if-let [t (get (pt B :sites) [p (site-key F)])]
-      (lam (walk/postwalk-replace unsuffix t))
+      ;; the entry names the site's binders; the row function inside it keeps the caller's names
+      (let [k (site-key F) ph (gensym "row")]
+        (lam (walk/postwalk-replace {ph k} (walk/postwalk-replace unsuffix (walk/postwalk-replace {k ph} t)))))
       (let [_ (when (facts B [p (site-key F)])
                 (throw (ex-info (str (:pred B) ": site " [p (site-key F)] " takes facts: give its :sites entry") {})))
             cell (or (get @(:renames B) p)

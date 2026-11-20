@@ -751,10 +751,6 @@
   (subst-forms (fn [y] (and (seq? y) (#{'inv-run-upd 'inv-comp-upd} (first y)) (= '_ (nth y 3 nil))))
                (fn [y] (let [v (vec y)] (apply list (assoc v 3 (f-of-hid (nth v 3) (nth v 4)))))) form))
 (defn- row-lemma [F suffix] (lemma-app F (symbol (str (name (fhead F)) suffix))))
-(defn- row-sites
-  "{[p F] (entry F)} for the sites of p in the generic tree whose row function's head is in fns."
-  [p fns entry]
-  (into {} (for [F (tree/site-keys p) :when (contains? fns (fhead F))] [[p F] (entry F)])))
 
 ;; ===========================================================================
 ;; Part C. g7 on the generic tree (spindel.v2.pres.tree): its table, its own proofs
@@ -786,9 +782,9 @@
   ;; ---- sites: the row functions that change g7's keys
   :sites (merge
           ;; a computation wakes, or keeps its idle state and clean shape: no-sleep and keeps-clean, by lemma
-          (row-sites 'inv-comp-upd comp-fns (fn [F] (list 'g7-comp-upd-m 'w 'x F 'hid 'hp (row-lemma F "-nsl") (row-lemma F "-kcl") 'h0)))
+          (tree/row-sites 'inv-comp-upd comp-fns (fn [F] (list 'g7-comp-upd-m 'w 'x F 'hid 'hp (row-lemma F "-nsl") (row-lemma F "-kcl") 'h0)))
           ;; a run ends or leaves its slice: run-down and sn-keep, by lemma
-          (row-sites 'inv-run-upd (set (keys run-fns))
+          (tree/row-sites 'inv-run-upd (set (keys run-fns))
                      (fn [F] (list 'g7-run-upd-m 'w 'x F 'hf (first (run-fns F)) (second (run-fns F)) 'h0)))
           '{[inv-run-upd run-wake]      (g7-run-upd w x run-wake hf run-wake-rk7 h0)        ; resume: keys kept, by lemma
             [inv-run-upd run-enter-row] (g7-run-upd-q w x run-enter-row hf h0 h1)          ; schedule, finalize: enter a slice
@@ -1238,7 +1234,7 @@
 ;; awo on the generic tree (spindel.v2.pres.tree): a computation edit by a waking row function keeps
 ;; awc awake by its no-sleep lemma; the rest are the cells
 (tree/part! AWO
-  :sites (row-sites 'inv-comp-upd awo-comp-fns
+  :sites (tree/row-sites 'inv-comp-upd awo-comp-fns
                     (fn [F] (list 'awo-comp-upd-m 'awc 'awr 'w 'x F 'hid 'hp (row-lemma F "-nsl") 'h0))))
 (tree/restate! AWO '[inv-cancel-pred inv-cut-suffix inv-consume-entry inv-react-add inv-await-step inv-await-pre
                      inv-await-wire inv-fast-fill inv-fin-if-final])
@@ -1594,7 +1590,7 @@
 ;; kdb on the generic tree: a run edit that ends a run or leaves its slice keeps the listed runs
 ;; by its down lemma; resume keeps the run keys (by lemma)
 (tree/part! KDB
-  :sites (assoc (row-sites 'inv-run-upd (set (keys run-fns))
+  :sites (assoc (tree/row-sites 'inv-run-upd (set (keys run-fns))
                            (fn [F] (list 'kdb-run-upd-m 'kc0 'kl0 'kd0 'w 'x F 'hf (first (run-fns F)) 'h0)))
                 '[inv-run-upd run-wake] '(kdb-run-upd kc0 kl0 kd0 w x run-wake hf run-wake-rk7 h0)))
 (tree/restate! KDB '[inv-job-apply])
