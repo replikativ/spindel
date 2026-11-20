@@ -326,6 +326,14 @@ prototypes are not acceptance evidence for this smaller operation API.
     from a body already cancels every run: tasks through the root scope,
     computations through their revoked demand; the refusal makes the rule
     explicit rather than a consequence.)
+  - Z#78 (H2, H3; found by the dvergr port, 5d): a throw from a queued host
+    item or a host callback belongs to that item's or callback's caller. The
+    thread that processes it (another caller's inline budget, or the drainer)
+    reports it and continues the turn; before, it escaped into that thread,
+    so e.g. `release-world!` could throw `::released` from a `send-world!`
+    item that wrote a source in the released world. Items run inline by
+    their own caller still throw to it. No transition changes (a throwing
+    item commits nothing it has not committed).
   - Z#77 (§1, §2, T4, T28, §5.2, I16, §8.1 F6, D3, S3/S8, §13; user decision
     2026-11-18, dvergr F9, `fork-local-design.md`): **fork-local tasks.**
     - A task started with `task-with {:fork-local true}` is fork-local, and
@@ -1021,9 +1029,17 @@ Each `track` *site* in a run (identified by `at`) has its own edge, with
     the queue is non-empty and no drainer is scheduled, it schedules one.
     Queued work is therefore never stranded.
   - No host thread ever blocks on a world.
+  - **Throws belong to their caller (Z#78).** An item that its own caller
+    processes inline throws to that caller. A queued item processed by
+    another thread (an inline caller's budget, or the drainer) is that
+    item's caller's: its throw is reported and the turn continues; it never
+    reaches the thread that drives the turn.
 - **H3 – results.** A host operation that has a result (`swap!`, host
   `deref`) returns a host promise. A blocking host read waits on that promise
-  outside the gate, never inside a slice.
+  outside the gate, never inside a slice. Host callbacks (`observe`,
+  `value-async`, and the like) run between items, each isolated: a throw is
+  reported, the other callbacks still run, and it never reaches the thread
+  that drives the turn (Z#78).
 - **H4 – cross-world delivery.** A continuation or callback belonging to
   another world is delivered as an ingress item of that world. This replaces
   `in-callers-world`, which ran caller-world code inline on another world's
