@@ -17,6 +17,7 @@
             [spindel.v2.inv.acyclic :as acy]
             [spindel.v2.inv.i1-scopes :as i1s]
             [spindel.v2.inv.i11 :as i11]
+            [spindel.v2.inv.base :as base]
             [spindel.v2.pres.tree :as tree]))
 
 (defn- declared? [s] (some? (.lookup ^ansatz.kernel.Env @a/ansatz-env (ansatz.kernel.Name/fromString (str s)))))
@@ -124,3 +125,15 @@
   (is (tree/variant? tomb/GY 'raw0-track-inv))
   (doseq [x '[t7-inv t6-inv]] (is (contains? (get-in @tree/parts ['gy :ctx]) x) (str x)))
   (doseq [p '[g1 gcy]] (is (contains? (get-in @tree/parts [p :ctx]) 'inv-add-run-scope) (str p))))
+
+(deftest base-parts-are-not-copied
+  (doseq [B [base/MDB base/ESB base/NA]]
+    (is (empty? @(:overrides B)) (str (:pred B)))
+    (is (empty? @(:patches B)) (str (:pred B))))
+  ;; an activation edit and a cleanup edit are sites per row function (na's and aha's extra argument
+  ;; is rfl only at a concrete row function; esb proves cleanup-drop by its own lemma)
+  (is (seq (tree/site-keys 'inv-act-upd)))
+  (is (some #(and (seq? %) (= 'cleanup-drop (first %))) (tree/site-keys 'inv-cleanup-upd)))
+  (is (contains? (get-in @tree/parts ['esb :sites]) ['inv-cleanup-upd (first (tree/site-keys 'inv-cleanup-upd))]))
+  ;; esb takes "the computation exists" at T5's start and T11's dispatch, "the run is a row" at T14
+  (doseq [x '[t5-inv t11-inv inv-job-apply]] (is (tree/variant? base/ESB x) (str x))))

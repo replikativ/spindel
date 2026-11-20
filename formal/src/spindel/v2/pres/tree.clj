@@ -75,7 +75,7 @@
 ;; bundle's `edge-new-ok` is rfl at a concrete edge (g7).
 (def dispatched '{inv-run-upd 2 inv-task-upd 2 inv-resource-upd 2 inv-source-upd 2 inv-scope-upd 2 inv-serve-or 3
                   inv-scope-ins-fresh 1 inv-comp-upd 2 inv-comp-ins-fresh 1 insert-edge-fresh-inv-sample 1
-                  inv-insert-edge-checked 1})
+                  inv-insert-edge-checked 1 inv-cleanup-upd 2 inv-act-upd 2})
 
 ;; A computation edit is one site per row function: its arguments are the site's parameters
 ;; (`site-gen`, named as the binders of the function's id lemma `<f>-comp-id` / `<f>-id`), so a part
