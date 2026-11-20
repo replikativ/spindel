@@ -58,4 +58,7 @@
   ;; the companion ga reaches the cascades from raw (raw -> raw0g -> raw0 -> the transitions)
   (doseq [x '[raw-inv raw0g-inv raw0-inv t15-full-inv inv-complete-raw inv-cancel-pred]]
     (is (tree/variant? i8/G8 x) (str x)))
-  (is (not (tree/variant? i8/G8 'inv-job-apply))))
+  (is (not (tree/variant? i8/G8 'inv-job-apply)))
+  ;; raw0, raw0g, T14, ... only forward ga: inferred, not declared
+  (is (not (contains? (:own (get @tree/parts 'g8)) 'raw0-inv)))
+  (is (= '[(= (ga w) true)] (vec (take-nth 2 (rest (get (tree/table-own i8/G8) 'raw0-inv)))))))
