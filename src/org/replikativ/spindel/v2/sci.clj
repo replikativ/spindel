@@ -1,0 +1,439 @@
+(ns org.replikativ.spindel.v2.sci
+  "Engine v2 bodies in SCI (dvergr port step 6a).
+
+   `install!` gives an SCI context the v2 body surface in the SCI namespace
+   `org.replikativ.spindel.v2.core`: the macros `spin`, `task`, `task-with`,
+   `aseq`, `with-scope` and `with-path`, and the effects `await`, `track`,
+   `await-all`, `await-any`, `take!`, `acquire!`, `offload`, `external`,
+   `await-op`, `sleep` and `savepoint`. `expose-effect!` adds effects the host
+   registered with `v2/register-effect!`.
+
+   **Expansion.** The macros are host functions run by SCI's macroexpander.
+   They take the body apart as the host macros do (`register-finally`, the
+   captured inputs, the creation site), with SCI's resolution, and invert it
+   with partial-cps's `ioc/invert`, interpreted in the context so that names
+   resolve against SCI's namespaces. Captured inputs are the locals in `&env`
+   that occur in the body's text.
+
+   **No engine internals in SCI.** The expansion calls host functions that
+   are spliced into the code as values; no SCI namespace names them. They are
+   still reachable as values (`macroexpand` shows them), so each is safe to
+   call with any arguments: it acts on the calling run only and returns no
+   row, world or scope (a scope is wrapped in an opaque value). A custom
+   effect is called through a function bound to its one exposed symbol.
+
+   **Resume adapter (H-body).** Every body and every continuation handed to
+   the engine is wrapped. At the start of a slice the wrapper selects the
+   interpreter for the world being processed (`(select world interpreter)`,
+   see `set-resolver!`; without a resolver, the interpreter the code was
+   captured in), copies the SCI continuation context captured at the effect
+   site (or at creation, for a body) onto it, and runs the code there with
+   the SCI bindings of that point; it forces the code's trampoline Thunks
+   inside. A continuation called synchronously within a slice its run
+   already runs in the adapter is called directly. So a body inherited by a
+   fork resumes against the heap the resolver names for the fork, and SCI
+   `binding`s that span an effect are restored on whichever thread resumes.
+   A resolver that returns nil refuses: the run fails without running SCI
+   code."
+  (:require [clojure.java.io :as io]
+            [is.simm.partial-cps.runtime :as pr]
+            [org.replikativ.spindel.v2.core :as v2]
+            [sci.core :as sci]
+            [sci.ctx-store :as store]))
+
+(set! *warn-on-reflection* true)
+
+(def ^:private core-ns 'org.replikativ.spindel.v2.core)
+(def ^:private cps-ns 'org.replikativ.spindel.v2.sci.cps)
+
+;; ---------------------------------------------------------------------------
+;; Interpreter selection
+
+(defn- lineage [ctx]
+  (or (:sci.impl/lineage ctx)
+      (throw (ex-info "v2.sci needs a forkable SCI context (:runtime-mode :forkable)"
+                      {:type ::not-forkable}))))
+
+(defn- config
+  "The configuration `install!` stored in `ctx` (forks share it)."
+  [ctx]
+  (or (::config @(:env ctx))
+      (throw (ex-info "v2.sci is not installed in this SCI context" {:type ::not-installed}))))
+
+(defn- capture
+  "[interpreter continuation-context] of the SCI code running now. The
+   interpreter is SCI's current context when it belongs to `home`'s lineage,
+   else `home` (a host thread calling an SCI function)."
+  [home]
+  (let [cur store/*ctx*
+        ctx (if (and cur (identical? (:sci.impl/lineage cur) (:sci.impl/lineage home))) cur home)]
+    [ctx (sci/capture-continuation-context ctx)]))
+
+(defn- select
+  "The interpreter to run captured code of `ctx` in, for the world being
+   processed."
+  [cfg ctx]
+  (if-let [f (:select @cfg)]
+    (or (f (v2/cw) ctx)
+        (throw (ex-info "no SCI interpreter for this world" {:type ::no-interpreter})))
+    ctx))
+
+(defn- force-all [x]
+  (loop [x x] (if (pr/thunk? x) (recur (pr/force-thunk x)) x)))
+
+(defn- unwrap
+  "The exception SCI code threw. On the thread that created the context,
+   outside an SCI `try`, SCI wraps an exception leaving interpreted code with
+   its location. Resumed code runs outside its lexical `try` (CPS: the
+   engine routes the throw to the suspension's handler), so the wrapper
+   would reach the body's `catch` on that thread only."
+  [t]
+  (let [d (ex-data t)]
+    (if (and (:sci.impl/callstack d) (isa? (:type d) :sci/error) (ex-cause t))
+      (ex-cause t)
+      t)))
+
+;; [world run] of the adapter running on this thread
+(def ^:private ^ThreadLocal adapting (ThreadLocal.))
+
+(defn- in-run
+  "Runs `(f)` as code of the active run: in the interpreter selected for the
+   processed world, with the SCI bindings of `cap`, forcing its Thunks."
+  [cfg [ctx cc] f]
+  (let [w (v2/cw)
+        r (v2/active-run)
+        ^objects prev (.get adapting)]
+    (if (and r prev (identical? w (aget prev 0)) (identical? r (aget prev 1)))
+      (f)
+      (let [target (select cfg ctx)
+            run (sci/continuation-context-fn (sci/retarget-continuation-context cc target)
+                                             (fn [] (force-all (f))))]
+        (.set adapting (doto (object-array 2) (aset 0 w) (aset 1 r)))
+        (try (run)
+             (catch Throwable t (throw (unwrap t)))
+             (finally (.set adapting prev)))))))
+
+(defn- in-interpreter
+  "`f` for a host thread outside the slice (offload, external, await-op): it
+   runs in the interpreter of `cap` with its SCI bindings."
+  [[ctx cc] f]
+  (fn [& args]
+    (try ((sci/continuation-context-fn (sci/retarget-continuation-context cc ctx)
+                                       (fn [] (apply f args))))
+         (catch Throwable t (throw (unwrap t))))))
+
+;; ---------------------------------------------------------------------------
+;; The functions the expansion calls (spliced as values)
+
+(deftype ^:private Opaque [x])
+
+(defn- thunk-or-nil
+  "What an effect returns to the body: a Thunk of its own code, else nothing."
+  [x]
+  (when (pr/thunk? x) x))
+
+(defn- inputs [v] (if (empty? v) v2/empty-inputs (object-array v)))
+
+(defn- abi
+  "The host functions spliced into expansions for the lineage of `home`."
+  [cfg home]
+  (let [k* (fn [cap k] (fn [v] (in-run cfg cap #(k v))))
+        body* (fn [cap body] (fn [ok err] (in-run cfg cap #(body ok err))))
+        fx (fn [native]
+             (fn [x k ek]
+               (let [cap (capture home)]
+                 (thunk-or-nil (native x (k* cap k) (k* cap ek))))))]
+    {:create-comp (fn [site ins body]
+                    (v2/create-comp! site (inputs ins) (body* (capture home) body)))
+     :spawn (fn
+              ([site ins body] (v2/spawn! site (inputs ins) (body* (capture home) body)))
+              ([site ins body opts] (v2/spawn! site (inputs ins) (body* (capture home) body) opts)))
+     :new-aseq (fn [site ins step init]
+                 (let [cap (capture home)]
+                   (v2/new-aseq-at site (inputs ins) (fn [s] (body* cap (step s))) init)))
+     :track (fx (fn [x k ek] (v2/track-effect! (v2/row-of x) k ek)))
+     :await (fx (fn [x k ek] (v2/await-effect! (v2/row-of x) k ek)))
+     :await-all (fx v2/await-all-effect!)
+     :await-any (fx v2/await-any-effect!)
+     :consume (fx (fn [x k ek] (v2/consume-effect! (v2/row-of x) k ek)))
+     :sleep (fx v2/sleep-effect!)
+     :offload (fn [f opts k ek]
+                (let [cap (capture home)]
+                  (thunk-or-nil (v2/offload-effect! (in-interpreter cap f) opts (k* cap k) (k* cap ek)))))
+     :external (fn [f k ek]
+                 (let [cap (capture home)
+                       f' (fn [complete!]
+                            (let [cancel ((in-interpreter cap f) complete!)]
+                              (if (fn? cancel) (in-interpreter cap cancel) cancel)))]
+                   (thunk-or-nil (v2/external-effect! f' (k* cap k) (k* cap ek)))))
+     :await-op (fn [op opts k ek]
+                 (let [cap (capture home)]
+                   (thunk-or-nil (v2/await-op-effect! (in-interpreter cap op) opts (k* cap k) (k* cap ek)))))
+     :savepoint (fn [site payload k ek]
+                  (let [cap (capture home)]
+                    (thunk-or-nil (v2/savepoint-effect! site payload (k* cap k) (k* cap ek)))))
+     :custom (fn [sym]
+               (fn [args site k ek]
+                 (let [cap (capture home)]
+                   (thunk-or-nil (v2/custom-effect! sym args site (k* cap k) (k* cap ek))))))
+     :enter-finally (fn [] (v2/enter-finally!) nil)
+     :exit-finally (fn [] (v2/exit-finally!) nil)
+     :leave-finalizer (fn [] (v2/leave-finalizer!) nil)
+     :open-scope (fn [] (Opaque. (v2/open-scope!)))
+     :close-scope (fn [s] (when (instance? Opaque s) (v2/close-scope-fx! (.-x ^Opaque s))) nil)
+     :push-path (fn [p] (Opaque. (v2/push-path! p)))
+     :pop-path (fn [s] (when (instance? Opaque s) (v2/pop-path! (.-x ^Opaque s))) nil)}))
+
+;; ---------------------------------------------------------------------------
+;; Expansion (SCI's resolution; mirrors the host body macros of v2.core)
+
+(def ^:private builtin-effects
+  "SCI name of each built-in effect -> its ABI key."
+  {'track :track 'await :await 'await-all :await-all 'await-any :await-any
+   'take! :consume 'acquire! :consume 'offload :offload 'external :external
+   'await-op :await-op 'sleep :sleep 'savepoint :savepoint})
+
+(def ^:private effect-arity
+  {:track 1 :await 1 :await-all 1 :await-any 1 :consume 1 :offload 2 :external 1
+   :await-op 2 :sleep 1 :savepoint 2})
+
+(def ^:private body-macros
+  (into #{} (map #(symbol (str core-ns) %)) ["spin" "task" "task-with" "aseq"]))
+
+(def ^:private region-macros
+  (into #{} (map #(symbol (str core-ns) %)) ["with-scope" "with-path"]))
+
+(defn- sci-var
+  "The SCI var `h` names in the namespace being compiled, unless `h` is a
+   local or a special form."
+  [env h]
+  (when (and (symbol? h) (not (contains? env h)) (not (special-symbol? h)))
+    (let [v (try (sci/resolve store/*ctx* h) (catch Exception _ nil))]
+      (when (instance? sci.lang.Var v) v))))
+
+(defn- var-sym [v]
+  (let [m (meta v)]
+    (when (and (:ns m) (:name m)) (symbol (str (:ns m)) (str (:name m))))))
+
+(defn- opaque-head? [env h]
+  (or (#{'quote 'fn 'fn* 'reify 'deftype 'proxy 'letfn 'letfn*} h)
+      (contains? body-macros (some-> (sci-var env h) var-sym))))
+
+(defn- has-finally? [env form]
+  (and (seq? form)
+       (or (and (= 'try (first form)) (some #(and (seq? %) (= 'finally (first %))) form))
+           (and (not (opaque-head? env (first form))) (some #(has-finally? env %) form)))))
+
+(defn- user-macro
+  "The SCI macro var a form calls, unless it is one of ours."
+  [env h]
+  (when-let [v (sci-var env h)]
+    (when (and (:macro (meta v)) (not (opaque-head? env h))
+               (not (contains? region-macros (var-sym v))))
+      v)))
+
+(defn- realize
+  "`form` with every seq a realized list: forkable SCI refuses host lazy
+   sequences (the code syntax-quote and `map` build here)."
+  [form]
+  (cond (seq? form) (with-meta (apply list (map realize form)) (meta form))
+        (record? form) form
+        (vector? form) (with-meta (mapv realize form) (meta form))
+        (map? form) (with-meta (into (empty form) (map (fn [[k v]] [(realize k) (realize v)])) form) (meta form))
+        (set? form) (with-meta (into (empty form) (map realize) form) (meta form))
+        :else form))
+
+(defn- catch-or-finally? [x] (and (seq? x) (#{'catch 'finally} (first x))))
+
+(defn- register-finally
+  "§7 B3: each `try` with a `finally` registers its region with the run; a
+   user macro whose expansion has one (`binding`, `with-open`, ...) is
+   expanded so its region registers too. Nested bodies and closures are left
+   alone."
+  [{:keys [env] :as a} form]
+  (let [rf #(register-finally a %)]
+    (cond
+      (seq? form)
+      (let [h (first form)
+            mv (user-macro env h)
+            expanded (when mv (apply @mv form env (rest form)))]
+        (cond
+          (opaque-head? env h) form
+          (and expanded (has-finally? env expanded)) (rf expanded)
+          (= 'try h)
+          (let [clauses (mapv rf (rest form))
+                [body cfs] (split-with (complement catch-or-finally?) clauses)]
+            (if (some #(= 'finally (first %)) cfs)
+              (with-meta
+                `(~'try (do (~(:enter-finally a)) ~@body)
+                        ~@(map (fn [c] (if (= 'finally (first c))
+                                         (list 'finally (list (:exit-finally a))
+                                               (list 'try (cons 'do (rest c)) (list 'finally (list (:leave-finalizer a)))))
+                                         c))
+                               cfs))
+                (meta form))
+              (with-meta (cons 'try clauses) (meta form))))
+          :else (with-meta (apply list (map rf form)) (meta form))))
+      (vector? form) (with-meta (mapv rf form) (meta form))
+      (map? form) (with-meta (into {} (map (fn [[k v]] [(rf k) (rf v)])) form) (meta form))
+      (set? form) (with-meta (into #{} (map rf) form) (meta form))
+      :else form)))
+
+(defn- captured
+  "The locals of `env` that occur in `body`, sorted: the captured inputs."
+  [env body]
+  (let [acc (volatile! #{})]
+    (letfn [(walk [x]
+              (cond (symbol? x) (when (contains? env x) (vswap! acc conj x))
+                    (map? x) (doseq [[k v] x] (walk k) (walk v))
+                    (coll? x) (run! walk x)))]
+      (walk body))
+    (vec (sort-by str @acc))))
+
+(defn- site-of [form]
+  (bit-and 0x3fffffff (hash [(str @sci/ns) (:line (meta form)) (:column (meta form))])))
+
+(defn- breakpoints [cfg]
+  (into {} (map (fn [s] [s (symbol (str cps-ns) "bp")]))
+        (concat (map #(symbol (str core-ns) (str %)) (keys builtin-effects))
+                (keys (:effects @cfg)))))
+
+(defn- body-fn-form [cfg a env body]
+  (let [r (gensym "r") e (gensym "e")
+        params {:r r :e e :env env :breakpoints (breakpoints cfg) :opaque-scopes body-macros}]
+    (realize `(fn [~r ~e] ~((:invert @cfg) params (realize (register-finally (assoc a :env env) (cons 'do body))))))))
+
+(defn- bp
+  "The breakpoint handler of every effect (one SCI var, see ioc/invert)."
+  [cfg a]
+  (fn [ictx r e]
+    (let [form (:form ictx)
+          sym (var-sym (sci-var (:env ictx) (first form)))]
+      (fn [args]
+        (realize
+         (if-let [k (builtin-effects (when (= (str core-ns) (namespace sym)) (symbol (name sym))))]
+          ;; as the host emitters destructure their arguments
+           `(~(a k) ~@(take (effect-arity k) (concat args (repeat nil))) ~r ~e)
+           (if-let [f (get (:effects @cfg) sym)]
+             `(~f [~@args] ~(site-of form) ~r ~e)
+             (throw (ex-info "not an exposed effect" {:effect sym})))))))))
+
+(defn- macros [cfg a]
+  (update-vals
+   {'spin (fn [form env & body]
+            (list (:create-comp a) (site-of form) (captured env body) (body-fn-form cfg a env body)))
+    'task (fn [form env & body]
+            (list (:spawn a) (site-of form) (captured env body) (body-fn-form cfg a env body)))
+    'task-with (fn [form env opts & body]
+                 (list (:spawn a) (site-of form) (captured env body) (body-fn-form cfg a env body) opts))
+    'aseq (fn [form env [s init] & body]
+            (let [env' (into env (map (fn [x] [x true])) (take-nth 2 (destructure [s nil])))]
+              (list (:new-aseq a) (site-of form) (captured env (list 'fn [s] (cons 'do body)))
+                    (list `fn [s] (body-fn-form cfg a env' body)) init)))
+    'with-scope (fn [_form _env & body]
+                  (let [s (gensym "scope")]
+                    `(let [~s (~(:open-scope a))]
+                       (~'try (do (~(:enter-finally a)) ~@body)
+                              (~'finally (~(:exit-finally a))
+                                         (~'try (~(:close-scope a) ~s) (~'finally (~(:leave-finalizer a)))))))))
+    'with-path (fn [_form _env p & body]
+                 (let [saved (gensym "path")]
+                   `(let [~saved (~(:push-path a) ~p)]
+                      (~'try (do (~(:enter-finally a)) ~@body)
+                             (~'finally (~(:exit-finally a))
+                                        (~'try (~(:pop-path a) ~saved) (~'finally (~(:leave-finalizer a)))))))))}
+   (fn [m] (fn [& args] (realize (apply m args))))))
+
+(defn- outside [n] (fn [& _] (throw (ex-info (str n " outside a body") {:type ::outside-body}))))
+
+;; ---------------------------------------------------------------------------
+;; Installation
+
+(declare expose-effect!)
+
+(defn install!
+  "Installs the v2 body surface into the forkable SCI context `ctx` (created
+   with `:runtime-mode :forkable`); forks made afterwards share it. Returns
+   `ctx`. Options:
+
+   - `:select` – the resolver, see `set-resolver!`.
+   - `:effects` – `{sci-sym registered-sym}`, see `expose-effect!`.
+   - `:old-names` – nil (default), `:task` or `:spin`: also install
+     `org.replikativ.spindel.spin.cps/spin` as v2 `task` (one-shot, started
+     at once) or as v2 `spin` (a cached, lazy computation), and
+     `org.replikativ.spindel.effects.await/await` as `await`.
+
+   Code then acts in the world the host binds (`v2/*world*`) or, inside a
+   body, in the world of the slice."
+  ([ctx] (install! ctx {}))
+  ([ctx {:keys [select effects] old :old-names}]
+   (lineage ctx)
+   (when (::config @(:env ctx))
+     (throw (ex-info "v2.sci is already installed in this SCI context" {:type ::installed})))
+   (when-not (contains? #{nil :task :spin} old)
+     (throw (ex-info ":old-names is nil, :task or :spin" {:type ::invalid-options})))
+   (let [cfg (atom {:select select :effects {}})
+         a (abi cfg ctx)
+         ms (macros cfg a)]
+     (swap! cfg assoc :abi a)
+     (swap! (:env ctx) assoc ::config cfg)
+     (doseq [[n c] {'java.lang.Throwable Throwable 'is.simm.partial-cps.ioc/Throwable Throwable}]
+       (sci/add-class! ctx n c))
+     ;; ioc's output calls these by name; nothing else of the runtime
+     (sci/add-namespace! ctx 'is.simm.partial-cps.runtime
+                         {'->thunk pr/->thunk 'thunk? pr/thunk? 'force-thunk pr/force-thunk
+                          'scope-continuation pr/scope-continuation})
+     (sci/eval-string* ctx (slurp (io/resource "is/simm/partial_cps/ioc.clj")))
+     (swap! cfg assoc :invert (sci/eval-string* ctx "is.simm.partial-cps.ioc/invert"))
+     (sci/add-namespace! ctx cps-ns
+                         {'bp (sci/new-var 'bp (bp cfg a) {:ns (sci/create-ns cps-ns)
+                                                           :is.simm.partial-cps.ioc/eager-arguments true})})
+     (let [n* (sci/create-ns core-ns)]
+       (sci/add-namespace! ctx core-ns
+                           (merge (into {} (map (fn [[n f]] [n (sci/new-macro-var n f {:ns n*})])) ms)
+                                  (into {} (map (fn [n] [n (sci/new-var n (outside n) {:ns n*})]))
+                                        (keys builtin-effects)))))
+     (when old
+       (let [resolve-core #(sci/eval-string* ctx (str "(var " core-ns "/" % ")"))]
+         (sci/add-namespace! ctx 'org.replikativ.spindel.spin.cps
+                             {'spin (resolve-core (if (= old :task) "task" "spin"))})
+         (sci/add-namespace! ctx 'org.replikativ.spindel.effects.await
+                             {'await (resolve-core "await")})))
+     (doseq [[s h] effects] (expose-effect! ctx s h))
+     ctx)))
+
+(defn expose-effect!
+  "Makes the effect the host registered as `registered-sym`
+   (`v2/register-effect!`, `v2/defeffect`) callable from SCI bodies as
+   `sci-sym` (qualified). Bodies compiled before do not see it (R3).
+   Effects are data: a library that registers effects (foerster) can export
+   the map `{sci-sym registered-sym}` for the host to pass to `install!`."
+  [ctx sci-sym registered-sym]
+  (when-not (and (qualified-symbol? sci-sym) (qualified-symbol? registered-sym)
+                 (not= (str core-ns) (namespace sci-sym)))
+    (throw (ex-info "effects are named by qualified symbols, outside v2.core"
+                    {:type ::invalid-options :effect sci-sym})))
+  (let [cfg (config ctx)
+        n (symbol (name sci-sym))
+        ns-sym (symbol (namespace sci-sym))]
+    (sci/add-namespace! ctx ns-sym {n (sci/new-var n (outside n) {:ns (sci/create-ns ns-sym)})})
+    (swap! cfg assoc-in [:effects sci-sym] ((:custom (:abi @cfg)) registered-sym))
+    nil))
+
+(defn set-resolver!
+  "Configures which interpreter SCI code of `ctx`'s lineage runs in when a
+   body starts or resumes: `(select world interpreter)` is called inside the
+   slice with the world being processed and the interpreter the code was
+   captured in, and returns an interpreter of the same lineage (`sci/fork`s
+   of one context), or nil to refuse (the run fails without running SCI
+   code). nil removes the resolver: code runs where it was captured."
+  [ctx select]
+  (swap! (config ctx) assoc :select select)
+  nil)
+
+(defn eval-string
+  "Evaluates `source` in `ctx` with `v2/*world*` bound to `world` (host:
+   top-level work, e.g. an offloaded evaluation)."
+  [world ctx source]
+  (binding [v2/*world* world]
+    (sci/eval-string* ctx source)))
