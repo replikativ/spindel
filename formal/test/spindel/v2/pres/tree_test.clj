@@ -127,7 +127,7 @@
   (doseq [p '[g1 gcy]] (is (contains? (get-in @tree/parts [p :ctx]) 'inv-add-run-scope) (str p))))
 
 (deftest base-parts-are-not-copied
-  (doseq [B [base/MDB base/ESB base/NA]]
+  (doseq [B [base/MDB base/ESB base/NA base/AHA base/SVB]]
     (is (empty? @(:overrides B)) (str (:pred B)))
     (is (empty? @(:patches B)) (str (:pred B))))
   ;; an activation edit and a cleanup edit are sites per row function (na's and aha's extra argument
@@ -136,4 +136,10 @@
   (is (some #(and (seq? %) (= 'cleanup-drop (first %))) (tree/site-keys 'inv-cleanup-upd)))
   (is (contains? (get-in @tree/parts ['esb :sites]) ['inv-cleanup-upd (first (tree/site-keys 'inv-cleanup-upd))]))
   ;; esb takes "the computation exists" at T5's start and T11's dispatch, "the run is a row" at T14
-  (doseq [x '[t5-inv t11-inv inv-job-apply]] (is (tree/variant? base/ESB x) (str x))))
+  (doseq [x '[t5-inv t11-inv inv-job-apply]] (is (tree/variant? base/ESB x) (str x)))
+  ;; aha takes ga from the step's input down to T12, and "the run is an alive row" at the parks; svb
+  ;; takes "the edge is the world's" (kx) where an edge fires; an edge edit is a site per row function
+  (doseq [x '[raw-inv raw0-complete-inv t12-inv t6-inv t-take-inv t17-inv inv-arm-park inv-retire-one]]
+    (is (tree/variant? base/AHA x) (str x)))
+  (doseq [x '[inv-fire-edge inv-fire-dep inv-settle-edge t8-full-inv]] (is (tree/variant? base/SVB x) (str x)))
+  (is (= 5 (count (tree/site-keys 'inv-edge-upd)))))

@@ -1677,6 +1677,60 @@ already, as a site.
   `esb` and `na` have no overrides or patches, the activation and cleanup sites, and where `esb`
   takes its facts).
 
+## 5n. Stage 4, group 3: `aha` and `svb` on the tree
+
+**Result.** The second half of `inv.base`: `aha` (every activation's run exists and is alive) and
+`svb` (an observe edge's seen is at most its debtor's version) go through the tree. `inv.base` has
+no copier override, patch or `lcopy!` left.
+
+| | before (copier): overrides / patches / `lcopy!` | after (tree) |
+|---|---|---|
+| `aha` | 12 / 5 (`aha-patch` over every source; `job-apply`, `raw0`, `raw`, `raw0g`) / 2 | 5 own proofs, 3 sites, `:ctx` 4, `:own` 5, `:pass` 7 callers; 12 part lemmas |
+| `svb` | 11 / 4 (`svb-patch` over every source; `react-add`, `take-park`, `settle-edge`) / 2 | 9 own proofs, sites by two rules and T8's observe edge, `:ctx` 4, `:pass` 3 callers; 4 part lemmas |
+
+**Overrides that were plumbing are rows now.** 9 of the 23 overrides were the base proof with a
+fact passed to one callee, and the tree generates them:
+
+- `aha`: T12 (`ga` gives "the token's run is free"), `retire-one`, T6 and `await-raw`, T-take, T17
+  and `arm-park` (the run is an alive row; the same pass terms as in `g8`'s table). `await-raw`
+  takes its facts by inference. The companion `ga` is an own fact from `raw` down to T12, where
+  the three `add-premise` patches were.
+- `svb`: `fire-edge` and `settle-edge` pass "the found edge is the world's" (`kx-of-mem`);
+  `fire-dep` takes it by inference.
+
+The 14 own proofs left are content: an activation goes with its run or names an alive one (`aha`);
+a new or rewritten edge has seen its debtor's version (`svb`).
+
+**T8's observe edge** (`svb-patch`'s third rule) is a site with a context: the site takes "the new
+edge has seen its debtor's version" and T8 passes `obs-sok`. The two patches that named an edge the
+base proof leaves to unification (`react-add`, `take-park`) were already `tree/sources`.
+
+**Tree changes.**
+- `inv-edge-upd` is dispatched per row function (`svb`'s extra argument, "the row function keeps
+  the edge's key", is `rfl` only at a concrete one).
+- A bug this exposed: a site's hypothesis is the primitive's statement with the row function
+  substituted, and a variable bound inside the primitive's binder types (`forall [e :- EdgeRow]`
+  in `inv-edge-upd`'s) captured the same name in the row function (`edge-rearm … (:debtor e)`).
+  `site-binders` renames such bound variables apart.
+- A row function's lemma in a site rule is written with `_` for its arguments (`hv-lemma`): the
+  site's world binder is renamed in the entry, so an argument that mentions the caller's world
+  (`stream-set-tail (:next-id w)`) must be left to unification.
+
+### Gate (group 3)
+
+- **Statements** (name-independent fingerprints, against group 2): 17,510 identical; 6 changed, all
+  shared generic lemmas of the tree (`pres-await-step`, `pres-consume-entry`, `pres-dep-consumed`,
+  `pres-edge-set-phase`, `pres-fire-observe`, `pres-track-raw`: an edge edit is now a site); none
+  missing; 114 new: 98 `raw0-<item>-<part>` (`aha`, `svb`) and 16 part lemmas (`pres-x@aha` 12,
+  `pres-x@svb` 4). Every `aha` and `svb` name keeps its statement, the 9 former plumbing overrides
+  among them. `inv-step`, `reach-inv`, `inv-empty`, `sys-reach-inv`, `l5-safety-total`,
+  `step-p3m`, `mv-refinement` unchanged.
+- **Load**, one JVM at a time, against group 2's measure: `inv.base` 21.5 → 15.2 s (27.0 s before
+  stage 4), `pres.tree` 11.9 → 10.7 s; untouched 411 → 435 s, whole model 444 → 461 s.
+- **Suite**: `clojure -M:test`, 300 tests, 208,468 assertions, 0 failures, 0 errors (oracle samples
+  1–62; the tree test also checks that `aha`
+  and `svb` have no overrides or patches, where they take their facts, and the five edge sites).
+
 ## 6. Key pieces to read: the whole proof in 14 stops, in reading order (current names)
 
 1. `inv`, `inv-step`, `Reach1`, `reach-inv` (`top.clj`): the headline and its four-line induction.
