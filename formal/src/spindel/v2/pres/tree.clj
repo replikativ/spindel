@@ -56,12 +56,14 @@
 ;; The tree's own declarations
 ;; ===========================================================================
 
-;; Callees dispatched per row function, with the row function's argument position.
-(def dispatched '{inv-run-upd 2 inv-task-upd 2 inv-resource-upd 2 inv-source-upd 2 inv-scope-upd 2 inv-serve-or 3})
+;; Callees dispatched per row function (or per inserted row), with that argument's position.
+(def dispatched '{inv-run-upd 2 inv-task-upd 2 inv-resource-upd 2 inv-source-upd 2 inv-scope-upd 2 inv-serve-or 3
+                  inv-scope-ins-fresh 1})
 
 ;; Sources: nodes whose generic proof is not their base proof: a row function the base proof leaves
-;; to unification is named. T-finally-enter's mentions a local of the proof (`site-gen`: the site is
-;; stated for every value of the finalizer it pushes).
+;; to unification is named. One that mentions a local of the proof is generalized (`site-gen`: the
+;; site is stated for every value of the parameter: T-open-scope's parent, T-finally-enter's
+;; finalizer).
 (defn- name-row-fn [x p F]
   (let [i (inc (dispatched p))]
     (walk/prewalk (fn [y] (if (and (seq? y) (= p (first y)) (= '_ (nth y i nil))) (apply list (assoc (vec y) i F)) y))
@@ -69,6 +71,11 @@
 
 (def sources
   {'inv-link-demand-raw (name-row-fn 'inv-link-demand-raw 'inv-source-upd '(link-set-rtask (:next-id w)))
+   't-open-scope-inv
+   (walk/postwalk-replace
+    {'(ScopeRow.mk s (cur-scope w r) scope-explicit true)
+     '(site-gen [p :- Nat] (ScopeRow.mk s p scope-explicit true) (cur-scope w r))}
+    (theorem-source 't-open-scope-inv))
    't-finally-enter-inv
    (walk/postwalk-replace
     {'(inv-run-upd w (:id r) _ (run-fin-push-id _) h)
@@ -316,6 +323,8 @@
     :site (site-term B a b)
     :node (let [l (or (get @(:renames B) a) (throw (ex-info (str (:pred B) ": no lemma for " a) {})))]
             (when-not (declared? l) (throw (ex-info (str (:pred B) ": " l " (its proof of " a ") is not defined yet") {})))
+            (when ((:extra-args B) a)
+              (throw (ex-info (str (:pred B) ": its cell for " a " takes an extra argument: dispatch " a " per row (`dispatched`)") {})))
             (papp B l))))
 
 (defn- check-passes!

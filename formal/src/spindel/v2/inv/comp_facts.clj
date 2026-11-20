@@ -743,7 +743,7 @@
               (:next-id w) 0 (task-scope-parent w owner) 0 ho
               (gd-task-ins-fresh w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc) (rfl) h)))))
 
-;; T6/take/arm: i8's overrides (the parked run is alive; KA through the await wiring), for gd
+;; T6/take/arm: i8's templates `park-overrides` (the parked run is alive; KA through the await wiring), for gd
 (defn- gd-from-g8 [form]
   (letfn [(strip [x] (cond (seq? x) (apply list (map strip (remove #{'x8s} x)))
                            (vector? x) (let [v (vec x) i (.indexOf v 'x8s)] (mapv strip (if (>= i 0) (into (subvec v 0 i) (subvec v (+ i 3))) v)))
@@ -755,7 +755,7 @@
                            :else x))]
     (strip form)))
 (doseq [o '[t-take-inv inv-arm-park t17-inv inv-await-post inv-await-raw t6-inv]]
-  (let [{:keys [deps form]} (get @(:overrides spindel.v2.inv.i8/G8) o)]
+  (let [{:keys [deps form]} (get spindel.v2.inv.i8/park-overrides o)]
     (override! GD o deps (gd-from-g8 form))))
 
 ;; ---- T5: the started run is at start-epoch, where the computation has no result (startable)

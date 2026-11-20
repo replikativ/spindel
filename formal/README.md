@@ -158,8 +158,8 @@ that emits the same copier calls:
   the part's own lemma for every callee. The part's table (`part!`) declares where its own proof
   replaces the generic one, and the facts it takes from the path (the run is a row, a guard, a
   companion) with the terms that pass them; the nodes on those paths get the part's own generic lemma
-  (`pres-<x>@<part>`). On the tree so far: `gl` (`inv.i10-task`), `g9` (`inv.i9-res`), `edb`, `gnf`,
-  `kc`, `kx`, `mdk`, `neb` (notes/proof-layout.md sections 5b–5e).
+  (`pres-<x>@<part>`). On the tree so far: `gl` (`inv.i10-task`), `g9` (`inv.i9-res`), `g8` (`inv.i8`),
+  `edb`, `gnf`, `kc`, `kx`, `mdk`, `neb` (notes/proof-layout.md sections 5b–5f).
 
 `gl` (`inv.i10-task`), `g9` (`inv.i9-res`), `g1` (`inv.i1-scopes`) and `g8` (`inv.i8`) carry a fixed comment block before
 their declaration: the part in words, its view, its exempt form, its cells, where it is deferred within
