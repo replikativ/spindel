@@ -74,8 +74,8 @@
   How: the bundle `mb mux mf mz mg w` = inv-sample w, mux < next-id, and every run row satisfies
   `slice-ok` and the tracking constraint `mu-at` on the rows with id mux (mode mg: 0 = such rows are
   done with mu-f <= mf and mu-z <= mz, 1 = there is no such row, otherwise off). Every composite
-  inv-sample lemma of `raw-inv` and `inv-normalize` is re-checked for the bundle by spindel.v2.inv.copier's
-  `lcopy!`; run edits by a row function that cannot raise the measure go through `mb-run-upd`
+  inv-sample lemma of `raw-inv` and `inv-normalize` is restated for the bundle by the generic step tree
+  (spindel.v2.pres.tree); run edits by a row function that cannot raise the measure go through `mb-run-upd`
   (with a per-function lemma `<f>-mb`), the ones that can (arm, finally-enter, park, take-park,
   schedule, finalize) only touch an alive run, or a cleanup-ready one (`mb-run-upd-ne`,
   `mb-run-upd-q`); their callers are overridden."
@@ -94,6 +94,7 @@
             [spindel.v2.progress.casc :refer :all]
             [spindel.v2.inv.acts :refer :all]
             [spindel.v2.inv :refer :all]
+            [spindel.v2.pres.tree :as tree]
             [spindel.v2.inv.copier :refer :all]
             [spindel.v2.inv.idle :refer :all]
             [spindel.v2.inv.base :refer :all]))
@@ -533,14 +534,12 @@
 (def MB (mk-bundle 'mb '[mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat] "mb-"
           {'inv-run-upd ['(fn [q :- RunRow, hq :- (= (mb-row mux mf mz mg q) true)] hq) 4]
            'inv-run-ins-fresh ['(Eq.refl true) 2]}))
-;; row-function lemmas (and the alias heads the patches emit) take the bundle parameters
+;; row functions that cannot raise the measure, with the lemma (it takes the bundle parameters)
 (def ^:private mb-fns '{run-wake run-wake-mb run-complete-row run-complete-row-mb run-cancel-row run-cancel-row-mb
                         run-unres run-unres-mb run-fin-pop run-fin-pop-mb run-fin-exit run-fin-exit-mb run-fin-pop-end run-fin-pop-end-mb
                         run-drop-fins run-drop-fins-mb})
 (swap! (:renames MB) merge
-       '{inv-parts mb-parts inv-run-upd mb-run-upd inv-run-ins-fresh mb-run-ins
-         mb-run-upd-m mb-run-upd mb-run-upd-ne-src mb-run-upd-ne}
-       (into {} (map (fn [l] [l l]) (vals mb-fns))))
+       '{inv-parts mb-parts inv-run-upd mb-run-upd inv-run-ins-fresh mb-run-ins})
 
 (defpart MB :reads '[next-id runs])
 (frames/frame-theorem! 'mb-rest-mark-edge 'mb-rest 'mark-edge-inv-sample)
@@ -554,134 +553,131 @@
 (prim! MB 'inv-run-del '(mb-rest-run-del mux mf mz mg w x R))
 (prim! MB 'inv-filter-world '(mb-rest-filter mux mf mz mg w K R))
 
-;; the generic source patch: a run edit by a row function of `mb-fns` uses that function's lemma
-(defn- mfhead [f] (if (seq? f) (first f) f))
-(defn- mlemma-app [f lem] (if (seq? f) (apply list lem (rest f)) lem))
-(defn mb-patch [form]
-  (->> (#'spindel.v2.inv.idle/fix-f form)
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-run-upd (first y)) (contains? mb-fns (mfhead (nth y 3 nil)))))
-                    (fn [[_ w x f hid & more]] (apply list 'mb-run-upd-m w x f hid (mlemma-app f (mb-fns (mfhead f))) more)))))
-(doseq [[n _] @@#'spindel.v2.inv.copier/source-theorems] (patch! MB n mb-patch))
-
-;; add a binder to a source theorem and an argument to one call in its proof
-(defn- add-hyp [binder call-head pos arg]
-  (fn [[hd nm binders & more]]
-    (mb-patch (apply list hd nm (into binders binder)
-                     (subst-forms (fn [y] (and (seq? y) (= call-head (first y))))
-                                  (fn [y] (let [v (vec y)] (apply list (concat (subvec v 0 (inc pos)) [arg] (subvec v (inc pos))))))
-                                  more)))))
+;; mb on the generic tree (spindel.v2.pres.tree): its table. Its own proofs follow.
+(defn- mb-lemma [F]   ; the row function's lemma, at the bundle's parameters
+  (concat (list (mb-fns (if (seq? F) (first F) F)) 'mux 'mf 'mz 'mg) (when (seq? F) (repeat (count (rest F)) '_))))
+(tree/part! MB
+  :over '{t-finally-enter-inv t-finally-enter-mb
+          inv-park-if         mb-park-if
+          t6-inv              t6-mb
+          t-take-inv          t-take-mb
+          inv-arm-park        mb-arm-park
+          t17-inv             t17-mb
+          sched-inv           sched-mb
+          t-finalize-inv      t-finalize-mb}
+  ;; ---- sites: a run edit by a row function that cannot raise the measure, by its lemma; the
+  ;; take's park is on an untracked run
+  :sites (merge (tree/row-sites 'inv-run-upd mb-fns (fn [F] (list 'mb-run-upd 'mux 'mf 'mz 'mg 'w 'x F 'hf (mb-lemma F) 'h0)))
+                '{[inv-run-upd run-tick-park] (mb-run-upd-ne mux mf mz mg w x run-tick-park hf h0 run-tick-park-sok h1)})
+  ;; ---- facts from the path: the parking run is not the tracked one
+  :ctx '{inv-park-if                   [(= (untracked mux mg rid) true)]
+         inv-arm-park                  [(= (untracked mux mg (:id r)) true)]
+         [inv-run-upd run-tick-park]   [(= (untracked mux mg x) true)]
+         t17-inv                       [(= (fin-shut w st) false)]}
+  :own '{inv-await-post [hne (= (untracked mux mg rid) true)]
+         inv-await-raw  [hne (= (untracked mux mg (:id r)) true)]
+         inv-take-park  [hne (= (untracked mux mg (:id r)) true)]}
+  :pass '{inv-await-post {inv-park-if [hne]}
+          inv-await-raw  {inv-await-post [hne]}
+          inv-take-park  {[inv-run-upd run-tick-park] [hne]}
+          raw0-arm-inv   {t17-inv [hc]}})                         ; T17's guard: the run's finally is not shut
 
 ;; finally-enter: a normal run
-(override! MB 't-finally-enter-inv '[]
-  '(a/theorem t-finally-enter-mb [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, st :- Nat]
-     (=> (= (mb mux mf mz mg w) true) (= (mb mux mf mz mg (:world (t-finally-enter w st))) true))
-     (intro h)
-     (cases ht (tok-run w st)) (case' [some r]) (case' [none])
-     (simp only [t-finally-enter ht refuse]) (exact h)
-     (cases hg (run-normal r))
-     (simp only [t-finally-enter ht hg refuse]) (exact h)
-     (simp only [t-finally-enter ht hg accept])
-     (exact (mb-run-upd-ne mux mf mz mg w (:id r) (run-fin-push (Finalizer.mk 0 (:effect-index r) (List.nil Nat))) (run-fin-push-id _)
-              (mb-un-alive mux mf mz mg w r (And.left (tok-facts w st r ht)) (normal-not-done r hg) h)
-              (run-fin-push-sok (Finalizer.mk 0 (:effect-index r) (List.nil Nat))) h))))
+(a/theorem t-finally-enter-mb [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, st :- Nat]
+  (=> (= (mb mux mf mz mg w) true) (= (mb mux mf mz mg (:world (t-finally-enter w st))) true))
+  (intro h)
+  (cases ht (tok-run w st)) (case' [some r]) (case' [none])
+  (simp only [t-finally-enter ht refuse]) (exact h)
+  (cases hg (run-normal r))
+  (simp only [t-finally-enter ht hg refuse]) (exact h)
+  (simp only [t-finally-enter ht hg accept])
+  (exact (mb-run-upd-ne mux mf mz mg w (:id r) (run-fin-push (Finalizer.mk 0 (:effect-index r) (List.nil Nat))) (run-fin-push-id _)
+           (mb-un-alive mux mf mz mg w r (And.left (tok-facts w st r ht)) (normal-not-done r hg) h)
+           (run-fin-push-sok (Finalizer.mk 0 (:effect-index r) (List.nil Nat))) h)))
 
 ;; T6 parks its (normal) token run; take parks it as well
-(override! MB 'inv-park-if '[]
-  '(a/theorem mb-park-if [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, a :- Nat, rid :- Nat,
-                          hne :- (= (untracked mux mg rid) true)]
-     (=> (= (mb mux mf mz mg w) true) (= (mb mux mf mz mg (park-if w a rid)) true))
-     (intro h)
-     (cases ha (act-has w a))
-     (simp only [park-if ha]) (exact h)
-     (simp only [park-if ha]) (exact (mb-run-upd-ne mux mf mz mg w rid run-park-row run-park-row-id hne run-park-row-sok h))))
-(patch! MB 'inv-await-post (add-hyp '[hne :- (= (untracked mux mg rid) true)] 'inv-park-if 3 'hne))
-(patch! MB 'inv-await-raw (add-hyp '[hne :- (= (untracked mux mg (:id r)) true)] 'inv-await-post 4 'hne))
-(override! MB 't6-inv '[inv-await-raw]
-  '(a/theorem t6-mb [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, st :- Nat, ds :- (List Nat), mode :- Nat, k :- Nat,
-                     fresh :- Nat, mine :- (List Nat)]
-     (=> (= (mb mux mf mz mg w) true) (= (mb mux mf mz mg (:world (t6-await w st ds mode k fresh mine))) true))
-     (intro h)
-     (cases ht (tok-run w st)) (case' [some r]) (case' [none])
-     (simp only [t6-await ht refuse]) (exact h)
-     (cases hg (Bool.and (await-ok w r ds mode fresh) (:ok (await-acc w r ds mode k mine))))
-     (simp only [t6-await ht hg refuse]) (exact h)
-     (simp only [t6-await ht hg accept])
-     (have hn (= (run-normal r) true)) (simp only [await-ok Bool.and_eq_true] at hg) (exact (And.left (And.right (And.left hg))))
-     (exact (mb-await-raw mux mf mz mg w r ds mode k mine
-              (mb-un-alive mux mf mz mg w r (And.left (tok-facts w st r ht)) (normal-not-done r hn) h) h))))
-(patch! MB 'inv-take-park
-  (fn [[hd nm binders & more]]
-    (apply list hd nm (into binders '[hne :- (= (untracked mux mg (:id r)) true)])
-           (subst-forms (fn [y] (and (seq? y) (= 'inv-run-upd (first y))))
-                        (fn [[_ w x f hid h]] (list 'mb-run-upd-ne-src w x f hid 'hne 'run-tick-park-sok h))
-                        more))))
-(override! MB 't-take-inv '[inv-take-park inv-take-now]
-  '(a/theorem t-take-mb [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, st :- Nat, x :- Nat, k :- Nat, fresh :- Nat]
-     (=> (= (mb mux mf mz mg w) true) (= (mb mux mf mz mg (:world (t-take w st x k fresh))) true))
-     (intro h)
-     (cases ht (tok-run w st)) (case' [some r]) (case' [none])
-     (simp only [t-take ht refuse]) (exact h)
-     (cases hs (source-find w x)) (case' [some s]) (case' [none])
-     (simp only [t-take ht hs refuse]) (exact h)
-     (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (Bool.and (run-normal r) (takeable s))))
-     (simp only [t-take ht hs hg refuse]) (exact h)
-     (cases hv (take-ready s))
-     (simp only [t-take ht hs hg hv accept])
-     (have hn (= (run-normal r) true)) (simp only [Bool.and_eq_true] at hg) (exact (And.left (And.right hg)))
-     (exact (mb-take-park mux mf mz mg w r x k (mb-un-alive mux mf mz mg w r (And.left (tok-facts w st r ht)) (normal-not-done r hn) h) h))
-     (simp only [t-take ht hs hg hv accept]) (exact (mb-take-now mux mf mz mg w r x h))))
+(a/theorem mb-park-if [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, a :- Nat, rid :- Nat,
+                       hne :- (= (untracked mux mg rid) true)]
+  (=> (= (mb mux mf mz mg w) true) (= (mb mux mf mz mg (park-if w a rid)) true))
+  (intro h)
+  (cases ha (act-has w a))
+  (simp only [park-if ha]) (exact h)
+  (simp only [park-if ha]) (exact (mb-run-upd-ne mux mf mz mg w rid run-park-row run-park-row-id hne run-park-row-sok h)))
+(tree/restate! MB '[inv-await-raw])
+(a/theorem t6-mb [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, st :- Nat, ds :- (List Nat), mode :- Nat, k :- Nat,
+                  fresh :- Nat, mine :- (List Nat)]
+  (=> (= (mb mux mf mz mg w) true) (= (mb mux mf mz mg (:world (t6-await w st ds mode k fresh mine))) true))
+  (intro h)
+  (cases ht (tok-run w st)) (case' [some r]) (case' [none])
+  (simp only [t6-await ht refuse]) (exact h)
+  (cases hg (Bool.and (await-ok w r ds mode fresh) (:ok (await-acc w r ds mode k mine))))
+  (simp only [t6-await ht hg refuse]) (exact h)
+  (simp only [t6-await ht hg accept])
+  (have hn (= (run-normal r) true)) (simp only [await-ok Bool.and_eq_true] at hg) (exact (And.left (And.right (And.left hg))))
+  (exact (mb-await-raw mux mf mz mg w r ds mode k mine
+           (mb-un-alive mux mf mz mg w r (And.left (tok-facts w st r ht)) (normal-not-done r hn) h) h)))
+(tree/restate! MB '[inv-take-park inv-take-now])
+(a/theorem t-take-mb [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, st :- Nat, x :- Nat, k :- Nat, fresh :- Nat]
+  (=> (= (mb mux mf mz mg w) true) (= (mb mux mf mz mg (:world (t-take w st x k fresh))) true))
+  (intro h)
+  (cases ht (tok-run w st)) (case' [some r]) (case' [none])
+  (simp only [t-take ht refuse]) (exact h)
+  (cases hs (source-find w x)) (case' [some s]) (case' [none])
+  (simp only [t-take ht hs refuse]) (exact h)
+  (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (Bool.and (run-normal r) (takeable s))))
+  (simp only [t-take ht hs hg refuse]) (exact h)
+  (cases hv (take-ready s))
+  (simp only [t-take ht hs hg hv accept])
+  (have hn (= (run-normal r) true)) (simp only [Bool.and_eq_true] at hg) (exact (And.left (And.right hg)))
+  (exact (mb-take-park mux mf mz mg w r x k (mb-un-alive mux mf mz mg w r (And.left (tok-facts w st r ht)) (normal-not-done r hn) h) h))
+  (simp only [t-take ht hs hg hv accept]) (exact (mb-take-now mux mf mz mg w r x h)))
 
 ;; T17 arm (Z#55): the resource on the (normal, untracked) token run, then its park (take-park)
-(patch! MB 'raw0-inv (fn [form] (mb-patch (subst-forms #(= % '(t17-inv w _ _ _ _ h)) (fn [_] '(t17-inv w _ _ _ _ hc h)) form))))
-(override! MB 'inv-arm-park '[inv-take-park inv-resource-ins-fresh]
-  '(a/theorem mb-arm-park [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, r :- RunRow, kind :- Nat, k :- Nat,
-                           hne :- (= (untracked mux mg (:id r)) true)]
-     (=> (= (mb mux mf mz mg w) true) (= (mb mux mf mz mg (arm-park w r kind k)) true))
-     (intro h)
-     (have h1 (= (mb mux mf mz mg (arm-raw w r kind)) true))
-     (simp only [arm-raw])
-     (exact (mb-run-upd-ne mux mf mz mg _ (:id r) (run-arm (:next-id w)) (run-arm-run-id _) hne (run-arm-sok (:next-id w))
-              (mb-resource-ins-fresh mux mf mz mg w (ResRow.mk (:next-id w) (:id r) kind (:effect-index r) rp-armed) (rfl) h)))
-     (simp only [arm-park])
-     (exact (mb-take-park mux mf mz mg _ (run-arm (:next-id w) r) (:next-id w) k hne h1))))
-(override! MB 't17-inv '[inv-arm-park]
-  '(a/theorem t17-mb [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, st :- Nat, kind :- Nat, k :- Nat, fresh :- Nat]
-     (=> (= (fin-shut w st) false) (= (mb mux mf mz mg w) true) (= (mb mux mf mz mg (:world (t17-arm w st kind k fresh))) true))
-     (intros hc h)
-     (cases ht (tok-run w st)) (case' [some r]) (case' [none])
-     (simp only [t17-arm ht refuse]) (exact h)
-     (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (Bool.and (run-normal r) (arm-kind-ok kind))))
-     (simp only [t17-arm ht hg refuse]) (exact h)
-     (have hn (= (run-normal r) true)) (simp only [Bool.and_eq_true] at hg) (exact (And.left (And.right hg)))
-     (simp only [t17-arm ht hg accept])
-     (exact (mb-arm-park mux mf mz mg w r kind k (mb-un-alive mux mf mz mg w r (And.left (tok-facts w st r ht)) (normal-not-done r hn) h) h))))
+(tree/restate! MB '[inv-take-park inv-resource-ins-fresh])
+(a/theorem mb-arm-park [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, r :- RunRow, kind :- Nat, k :- Nat,
+                        hne :- (= (untracked mux mg (:id r)) true)]
+  (=> (= (mb mux mf mz mg w) true) (= (mb mux mf mz mg (arm-park w r kind k)) true))
+  (intro h)
+  (have h1 (= (mb mux mf mz mg (arm-raw w r kind)) true))
+  (simp only [arm-raw])
+  (exact (mb-run-upd-ne mux mf mz mg _ (:id r) (run-arm (:next-id w)) (run-arm-run-id _) hne (run-arm-sok (:next-id w))
+           (mb-resource-ins-fresh mux mf mz mg w (ResRow.mk (:next-id w) (:id r) kind (:effect-index r) rp-armed) (rfl) h)))
+  (simp only [arm-park])
+  (exact (mb-take-park mux mf mz mg _ (run-arm (:next-id w) r) (:next-id w) k hne h1)))
+(a/theorem t17-mb [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, st :- Nat, kind :- Nat, k :- Nat, fresh :- Nat]
+  (=> (= (fin-shut w st) false) (= (mb mux mf mz mg w) true) (= (mb mux mf mz mg (:world (t17-arm w st kind k fresh))) true))
+  (intros hc h)
+  (cases ht (tok-run w st)) (case' [some r]) (case' [none])
+  (simp only [t17-arm ht refuse]) (exact h)
+  (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (Bool.and (run-normal r) (arm-kind-ok kind))))
+  (simp only [t17-arm ht hg refuse]) (exact h)
+  (have hn (= (run-normal r) true)) (simp only [Bool.and_eq_true] at hg) (exact (And.left (And.right hg)))
+  (simp only [t17-arm ht hg accept])
+  (exact (mb-arm-park mux mf mz mg w r kind k (mb-un-alive mux mf mz mg w r (And.left (tok-facts w st r ht)) (normal-not-done r hn) h) h)))
 
 ;; the scheduling choice (an alive run) and finalize (a cleanup-ready run) give the slice
-(override! MB 'sched-inv '[]
-  '(a/theorem sched-mb [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, rid :- Nat]
-     (=> (= (mb mux mf mz mg w) true) (= (mb mux mf mz mg (:world (t-schedule w rid))) true))
-     (intro h)
-     (cases hf (run-find w rid)) (case' [some r]) (case' [none])
-     (simp only [t-schedule hf refuse]) (exact h)
-     (cases hg (sched-ok w r))
-     (simp only [t-schedule hf hg refuse]) (exact h)
-     (simp only [t-schedule hf hg accept])
-     (exact (mb-run-upd-q mux mf mz mg w rid run-enter-row run-enter-row-id q-alive
-              (found-uniq w rid r q-alive (mb-sample mux mf mz mg w h) hf (sched-q w r hg)) (enter-alive-mb mux mf mz mg) h))))
-(override! MB 't-finalize-inv '[]
-  '(a/theorem t-finalize-mb [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, rid :- Nat]
-     (=> (= (mb mux mf mz mg w) true) (= (mb mux mf mz mg (:world (t-finalize w rid))) true))
-     (intro h)
-     (cases hf (run-find w rid)) (case' [some r]) (case' [none])
-     (simp only [t-finalize hf refuse]) (exact h)
-     (cases hg (cleanup-ready w r))
-     (simp only [t-finalize hf hg refuse]) (exact h)
-     (simp only [t-finalize hf hg accept])
-     (exact (mb-run-upd-q mux mf mz mg w rid run-enter-row run-enter-row-id q-cleanup
-              (found-uniq w rid r q-cleanup (mb-sample mux mf mz mg w h) hf (cleanup-q w r hg)) (enter-cleanup-mb mux mf mz mg) h))))
+(a/theorem sched-mb [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, rid :- Nat]
+  (=> (= (mb mux mf mz mg w) true) (= (mb mux mf mz mg (:world (t-schedule w rid))) true))
+  (intro h)
+  (cases hf (run-find w rid)) (case' [some r]) (case' [none])
+  (simp only [t-schedule hf refuse]) (exact h)
+  (cases hg (sched-ok w r))
+  (simp only [t-schedule hf hg refuse]) (exact h)
+  (simp only [t-schedule hf hg accept])
+  (exact (mb-run-upd-q mux mf mz mg w rid run-enter-row run-enter-row-id q-alive
+           (found-uniq w rid r q-alive (mb-sample mux mf mz mg w h) hf (sched-q w r hg)) (enter-alive-mb mux mf mz mg) h)))
+(a/theorem t-finalize-mb [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, rid :- Nat]
+  (=> (= (mb mux mf mz mg w) true) (= (mb mux mf mz mg (:world (t-finalize w rid))) true))
+  (intro h)
+  (cases hf (run-find w rid)) (case' [some r]) (case' [none])
+  (simp only [t-finalize hf refuse]) (exact h)
+  (cases hg (cleanup-ready w r))
+  (simp only [t-finalize hf hg refuse]) (exact h)
+  (simp only [t-finalize hf hg accept])
+  (exact (mb-run-upd-q mux mf mz mg w rid run-enter-row run-enter-row-id q-cleanup
+           (found-uniq w rid r q-cleanup (mb-sample mux mf mz mg w h) hf (cleanup-q w r hg)) (enter-cleanup-mb mux mf mz mg) h)))
 
-(lcopy! MB 'raw-inv)
-(lcopy! MB 'inv-normalize)
+(tree/restate! MB '[raw-inv inv-normalize])
 
 ;; ---- Rule R and the step
 

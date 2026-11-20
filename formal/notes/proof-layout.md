@@ -1876,6 +1876,44 @@ the naming pass.
   1–62; the tree test also checks that the
   four run parts have no overrides or patches and that `gr0`'s cells are `grx`'s at the empty list).
 
+## 5r. Stage 4, group 6: `gox`, `gos`, `vq`, `vr` and `mb` on the tree
+
+**Result.** The open-scopes parts (`completion.open-scopes`: `gox`, `gos`), I14's two parts
+(`inv.i14`: `vq`, `vr`) and the measure bundle (`progress.measures`: `mb`) go through the tree. None
+of the three namespaces has a copier override, patch or `lcopy!` left.
+
+| | before (copier): overrides / patches / `lcopy!` | after (tree) |
+|---|---|---|
+| `gox` | 0 / 0 / 2 | restated |
+| `gos` | 5 / 1 / 2 | 5 own proofs, `:ctx` 1, `:pass` 1 caller; 1 part lemma |
+| `vq` | 5 / 1 (`wake-patch` over every source) / 1 | 5 own proofs, sites by one rule (4 waking row functions) |
+| `vr` | 0 / 0 / 4 | restated |
+| `mb` | 8 / 5 (one over every source) / 2 | 8 own proofs; sites by one rule (8 row functions) and the take's park; `:ctx` 4, `:own` 3, `:pass` 4 callers; 4 part lemmas |
+
+- **`vq`'s `wake-patch` is a site rule**, as planned: a computation edit by a waking row function
+  goes through `vq-comp-wake` with the row function's lemma `<f>-dom14`.
+- **`mb`'s added binders are own facts.** Three patches added the hypothesis "the parking run is
+  not the tracked one" as a binder of `await-post`, `await-raw` and `take-park` and passed it down.
+  They are three `:own` rows; a trailing binder and a premise before the inv premise are the same
+  statement. The patch of `raw0` (pass T17's guard) is a `:pass` row at `raw0-arm-inv`.
+
+**Tree change.** `inv-run-ins-fresh` is dispatched per inserted row: `mb` takes an extra argument
+there that is `rfl` at a concrete row. One shared lemma changes (`pres-add-run-scope`).
+
+### Gate (group 6)
+
+- **Statements** (name-independent fingerprints, against group 5b): 17,850 identical; none
+  missing; 1 changed, the shared `pres-add-run-scope` (the inserted run row is a site); 152 new: 147
+  `raw0-<item>-<part>` (`gos`, `vq`, `mb`) and 5 part lemmas (`pres-x@mb` 4, `pres-job-apply@gos`).
+  Every `gox`, `gos`, `vq`, `vr` and `mb` name keeps its statement. `inv-step`, `reach-inv`,
+  `inv-empty`, `sys-reach-inv`, `l5-safety-total`, `step-p3m`, `mv-refinement` unchanged.
+- **Load**, one JVM at a time, against group 5b's measure: `completion.open-scopes` 9.0 → 3.8 s,
+  `inv.i14` 13.9 → 9.7 s, `progress.measures` 11.3 → 6.7 s, `pres.tree` 8.6 → 10.2 s. Untouched
+  namespaces read 297 → 350 s (host load; the figure moves by this much between runs).
+- **Suite**: `clojure -M:test`, 304 tests, 208,533 assertions, 0 failures, 0 errors (oracle samples
+  1–62; the tree test also checks that the
+  five parts have no overrides or patches and where `mb` takes its facts).
+
 ## 6. Key pieces to read: the whole proof in 14 stops, in reading order (current names)
 
 1. `inv`, `inv-step`, `Reach1`, `reach-inv` (`top.clj`): the headline and its four-line induction.
