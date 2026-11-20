@@ -1663,7 +1663,19 @@ already, as a site.
 
 ### Gate (group 2)
 
-GATE-G2
+- **Statements** (name-independent fingerprints, against group 1): 17,409 identical; 6 changed, all
+  generic lemmas of the tree (`pres-ack-raw`, `pres-await-post` and its `@g8` and `@gd`,
+  `pres-fill-slot` and its `@hmk`: activation and cleanup edits are now sites, so their hypotheses
+  are per row function); none missing; 101 new: 98 `raw0-<item>-<part>` (`mdb`, `esb`) and 3 part
+  lemmas (`pres-job-apply@esb`, `pres-t5@esb`, `pres-t11@esb`). `inv-step`, `reach-inv`,
+  `inv-empty`, `sys-reach-inv`, `l5-safety-total`, `step-p3m`, `mv-refinement` unchanged.
+- **Load**, one JVM at a time. The base measure is group 1's second one, taken under host load, so
+  the totals are not comparable: `inv.base` 49.4 → 21.5 s (27.0 s in group 1's first, quiet
+  measure), `pres.tree` 7.3 → 11.9 s (9.1 s there); untouched 488 → 411 s, whole model 545 → 444 s.
+- **Suite**: `clojure -M:test`, 300 tests, 208,451 assertions, 0 failures, 0 errors (oracle samples
+  1–62; the tree test also checks that `mdb`,
+  `esb` and `na` have no overrides or patches, the activation and cleanup sites, and where `esb`
+  takes its facts).
 
 ## 6. Key pieces to read: the whole proof in 14 stops, in reading order (current names)
 
