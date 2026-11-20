@@ -566,6 +566,13 @@
 ;; ---------------------------------------------------------------------------
 ;; Installation
 
+(defn- read-only
+  "Var metadata SCI refuses to redefine, `alter-var-root` or `alter-meta!`
+   (`:sci/built-in`): code in the interpreter cannot change how later bodies
+   compile."
+  [ns-obj]
+  {:ns ns-obj :sci/built-in true})
+
 (defn- guard-mappings!
   "SCI guards the root and metadata of `:sci/built-in` vars, not namespace
    mappings: `ns-unmap`, `intern` and `remove-ns` change them for every
@@ -597,13 +604,6 @@
                                                (refuse n')
                                                (remove-ns* n))))
                               (read-only core))})))
-
-(defn- read-only
-  "Var metadata SCI refuses to redefine, `alter-var-root` or `alter-meta!`
-   (`:sci/built-in`): code in the interpreter cannot change how later bodies
-   compile."
-  [ns-obj]
-  {:ns ns-obj :sci/built-in true})
 
 (def ^:private ioc-handler-lookup
   ["(let [handler (resolve (breakpoints (var-name env head)))"
