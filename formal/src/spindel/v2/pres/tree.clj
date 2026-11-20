@@ -11,7 +11,8 @@
     :over   x -> the part's own proof of x (content: a deferred violation, an argument over edits).
     :sites  an update primitive, or a composite taking a row function (`serve-or`), is one callee
             per row function; [p F] -> the part's proof there (default: its cell, with the bundle's
-            extra argument).
+            extra argument and the site's facts). A :ctx or :pass row keyed by p alone holds at
+            every site of p.
     :ctx    x or [p F] -> the facts from the path the part's own proof (or site entry) takes there.
     :own    x -> facts a node takes from above it and passes on, named: [h fact ...].
     :pass   caller -> callee or [p F] -> the terms the caller passes for those facts, over its locals.
@@ -77,7 +78,8 @@
 ;; bundle's `edge-new-ok` is rfl at a concrete edge (g7).
 (def dispatched '{inv-run-upd 2 inv-task-upd 2 inv-resource-upd 2 inv-source-upd 2 inv-scope-upd 2 inv-serve-or 3
                   inv-scope-ins-fresh 1 inv-comp-upd 2 inv-comp-ins-fresh 1 insert-edge-fresh-inv-sample 1
-                  inv-insert-edge-checked 1 inv-cleanup-upd 2 inv-act-upd 2 inv-edge-upd 2})
+                  inv-insert-edge-checked 1 inv-cleanup-upd 2 inv-act-upd 2 inv-edge-upd 2
+                  inv-source-ins-fresh 1 inv-task-ins-fresh 1 inv-edge-set-phase 2})
 
 ;; A computation edit is one site per row function: its arguments are the site's parameters
 ;; (`site-gen`, named as the binders of the function's id lemma `<f>-comp-id` / `<f>-id`), so a part
@@ -482,12 +484,31 @@
 ;; Parts
 ;; ===========================================================================
 
+;; A :ctx or :pass row keyed by a dispatched callee itself (not by one site [p F]) holds at every
+;; site of it: the facts are over the callee's binders, the row among them (g8: a new source's owner
+;; is not closed, whichever row is inserted).
+(defn- per-site [table]
+  (let [whole? (fn [k] (and (symbol? k) (dispatched k)))
+        ctx (:ctx table)]
+    (cond-> table
+      (some whole? (keys ctx))
+      (assoc :ctx (into {} (mapcat (fn [[k v]] (if (whole? k)
+                                                 (for [F (site-keys k) :when (not (contains? ctx [k F]))] [[k F] v])
+                                                 [[k v]]))
+                                   ctx)))
+      (some #(some whole? (keys %)) (vals (:pass table)))
+      (assoc :pass (into {} (for [[x m] (:pass table)]
+                              [x (into {} (mapcat (fn [[k v]] (if (whole? k)
+                                                                (for [[kk] (calls-in x) :when (and (vector? kk) (= k (first kk)) (not (contains? m kk)))] [kk v])
+                                                                [[k v]]))
+                                                  m))]))))))
+
 (defn part!
   "Declare B's table in the tree (keys: see the namespace docstring). The table may precede the
   lemmas it names: a lemma must exist when a node calling it is restated. The copier's name of an
   overridden node becomes an alias of B's lemma (`restate!`)."
   [B & {:as table}]
-  (swap! parts assoc (:pred B) table)
+  (swap! parts assoc (:pred B) (per-site table))
   (swap! effective dissoc (:pred B))
   (doseq [[x l] (:over table)] (swap! (:renames B) assoc x l))
   B)
@@ -516,9 +537,8 @@
       ;; the entry names the site's binders; the row function inside it keeps the caller's names
       (let [k (site-key F) ph (gensym "row")]
         (lam (walk/postwalk-replace {ph k} (walk/postwalk-replace unsuffix (walk/postwalk-replace {k ph} t)))))
-      (let [_ (when (facts B [p (site-key F)])
-                (throw (ex-info (str (:pred B) ": site " [p (site-key F)] " takes facts: give its :sites entry") {})))
-            cell (or (get @(:renames B) p)
+      ;; no entry: the part's cell, at the site's premises in order (its facts before the inv premise)
+      (let [cell (or (get @(:renames B) p)
                      (if (contains? (set (:nodes @tree)) p)
                        (throw (ex-info (str (:pred B) ": " p " (a site) is not restated yet") {}))
                        (do (c/prim! B p nil) (get @(:renames B) p))))
