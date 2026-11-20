@@ -1633,6 +1633,50 @@ demotion's tombstone, normalization) and stay as own proofs.
   1–62; the tree test also checks that the
   four parts have no overrides or patches and where `gy`, `g1` and `gcy` take their facts).
 
+## 5m. Stage 4, group 2: `mdb`, `esb` and the companion `na` on the tree
+
+**Result.** The first half of `inv.base`: `mdb` (marks sit on dep edges), `esb` (edge-separated
+ids: every stored reference is an existing non-edge row) and the companion `na nax` (no activation
+names run `nax`) go through the tree. The companions `mdk` and `kx` already did (§5b).
+
+| | before (copier): overrides / patches / `lcopy!` | after (tree) |
+|---|---|---|
+| `mdb` | 2 / 0 / 2 | 2 own proofs (T2's write and `mark-from`, both through `mdk`) |
+| `esb` | 12 / 4 (`esb-patch` over every source; `job-apply`, `t5`, `t11`) / 2 | 12 own proofs; sites by two rules (a run row, a cleanup row whose stored refs only shrink); `:ctx` 5, `:pass` 3 |
+| `na` | 0 / 0 / 2 | no table: every lemma is generated |
+
+- **`esb`'s three patches that passed a fact** are three `:pass` rows: `job-apply` passes "the run is
+  a row" to T14's local part, T5 and T11 pass "the computation exists" to the start and the
+  dispatch (the same facts as `gl`, §5c).
+- **`esb-patch`** (run and cleanup edits whose stored refs shrink) is two site rules.
+- **One of the 12 overrides was never checked**: `esb-cleanup-set-o`, a wrapper that the rename of
+  `inv-cleanup-set` to the hand lemma `esb-cleanup-set` made unreachable. The copier evaluates an
+  override only when a copy needs it, so the name never existed in the environment. It is deleted;
+  the hand lemma is the `:over` entry.
+
+**Tree extension.** `inv-act-upd` and `inv-cleanup-upd` are dispatched per row function, like the
+other update primitives. `na`'s (and `aha`'s) extra argument on an activation edit, "the row function
+keeps the activation's run", is `rfl` only at a concrete row function (`act-fill`,
+`act-set-members`); `esb` proves `cleanup-drop` by its own lemma. The plan listed the cleanup
+dispatch under group 7 (`inv-cleanup-upd`'s extra argument in the completion parts); `esb` needs it
+already, as a site.
+
+### Gate (group 2)
+
+- **Statements** (name-independent fingerprints, against group 1): 17,409 identical; 6 changed, all
+  generic lemmas of the tree (`pres-ack-raw`, `pres-await-post` and its `@g8` and `@gd`,
+  `pres-fill-slot` and its `@hmk`: activation and cleanup edits are now sites, so their hypotheses
+  are per row function); none missing; 101 new: 98 `raw0-<item>-<part>` (`mdb`, `esb`) and 3 part
+  lemmas (`pres-job-apply@esb`, `pres-t5@esb`, `pres-t11@esb`). `inv-step`, `reach-inv`,
+  `inv-empty`, `sys-reach-inv`, `l5-safety-total`, `step-p3m`, `mv-refinement` unchanged.
+- **Load**, one JVM at a time. The base measure is group 1's second one, taken under host load, so
+  the totals are not comparable: `inv.base` 49.4 → 21.5 s (27.0 s in group 1's first, quiet
+  measure), `pres.tree` 7.3 → 11.9 s (9.1 s there); untouched 488 → 411 s, whole model 545 → 444 s.
+- **Suite**: `clojure -M:test`, 300 tests, 208,451 assertions, 0 failures, 0 errors (oracle samples
+  1–62; the tree test also checks that `mdb`,
+  `esb` and `na` have no overrides or patches, the activation and cleanup sites, and where `esb`
+  takes its facts).
+
 ## 6. Key pieces to read: the whole proof in 14 stops, in reading order (current names)
 
 1. `inv`, `inv-step`, `Reach1`, `reach-inv` (`top.clj`): the headline and its four-line induction.

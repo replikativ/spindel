@@ -163,6 +163,9 @@
 (prim! MDB 'inv-drop-edges '(ep-filter marked-dep p (:edges w) R))
 (prim! MDB 'inv-filter-world '(tbl-all-keep-same EdgeRow K edge-id marked-dep (:edges w) R))
 (prim! MDB 'insert-edge-fresh-inv-sample '(all-cons EdgeRow marked-dep _ (:edges w) (md-unmark-new (:next-id w) e) R))
+;; mdb on the generic tree (spindel.v2.pres.tree): its two own proofs go through the companion mdk
+(tree/part! MDB :over '{inv-write-raw mdb-write-raw       ; T2: the marks of a write land on dep edges
+                        inv-mark-from mdb-mark-from})
 
 (def MDK (mk-bundle 'mdk '[mkm :- (List Nat)] "mdk-" {}))
 (swap! (:renames MDK) assoc 'inv-parts 'mdk-parts)
@@ -291,29 +294,27 @@
 (a/theorem all-self-mem [m :- (List Nat)] (= (tbl-all (fn [y :- Nat] (reach-mem y m)) m) true)
   (apply all-of-mem-r) (intros y hy) (exact hy))
 
-(override! MDB 'inv-write-raw '[]
-  '(a/theorem mdb-write-raw [w :- World, x :- Nat, v :- Nat]
-     (=> (= (mdb w) true) (= (mdb (write-raw w x v)) true))
-     (intro h)
-     (simp only [write-raw])
-     (have k0 := (mdk-start (dirty-set w x) w h))
-     (have k1 := (mdk-source-upd (mark-targets (dirty-set w x) (:edges w)) w x (source-write v) (source-write-source-id v) k0))
-     (have k2 := (nat-fold-mdk (mark-targets (dirty-set w x) (:edges w)) (fire-edge (RunResult.mk res-ok v))
-                   (mdk-fire-edge (mark-targets (dirty-set w x) (:edges w)) (RunResult.mk res-ok v)) (edges-onto x (:edges w)) _ k1))
-     (exact (mdb-of-mdk _ _ (mdk-mark-fold (mark-targets (dirty-set w x) (:edges w)) (mark-targets (dirty-set w x) (:edges w))
-                              (all-self-mem _) _ k2)))))
+(a/theorem mdb-write-raw [w :- World, x :- Nat, v :- Nat]
+  (=> (= (mdb w) true) (= (mdb (write-raw w x v)) true))
+  (intro h)
+  (simp only [write-raw])
+  (have k0 := (mdk-start (dirty-set w x) w h))
+  (have k1 := (mdk-source-upd (mark-targets (dirty-set w x) (:edges w)) w x (source-write v) (source-write-source-id v) k0))
+  (have k2 := (nat-fold-mdk (mark-targets (dirty-set w x) (:edges w)) (fire-edge (RunResult.mk res-ok v))
+                (mdk-fire-edge (mark-targets (dirty-set w x) (:edges w)) (RunResult.mk res-ok v)) (edges-onto x (:edges w)) _ k1))
+  (exact (mdb-of-mdk _ _ (mdk-mark-fold (mark-targets (dirty-set w x) (:edges w)) (mark-targets (dirty-set w x) (:edges w))
+                           (all-self-mem _) _ k2))))
 
-(override! MDB 'inv-mark-from '[]
-  '(a/theorem mdb-mark-from [w :- World, c :- Nat]
-     (=> (= (mdb w) true) (= (mdb (mark-from w c)) true))
-     (intro h)
-     (simp only [mark-from])
-     (exact (mdb-of-mdk _ _ (mdk-mark-fold (mark-targets (List.cons Nat c (cone-set w c)) (:edges w))
-                              (mark-targets (List.cons Nat c (cone-set w c)) (:edges w))
-                              (all-self-mem _) w (mdk-start (List.cons Nat c (cone-set w c)) w h))))))
+(a/theorem mdb-mark-from [w :- World, c :- Nat]
+  (=> (= (mdb w) true) (= (mdb (mark-from w c)) true))
+  (intro h)
+  (simp only [mark-from])
+  (exact (mdb-of-mdk _ _ (mdk-mark-fold (mark-targets (List.cons Nat c (cone-set w c)) (:edges w))
+                           (mark-targets (List.cons Nat c (cone-set w c)) (:edges w))
+                           (all-self-mem _) w (mdk-start (List.cons Nat c (cone-set w c)) w h)))))
 
-(lcopy! MDB 'raw-inv)
-(lcopy! MDB 'inv-normalize)
+(tree/restate! MDB '[raw-inv])
+(tree/restate! MDB '[inv-normalize])
 
 (a/theorem mdb-rule-r-round [w :- World]
   (=> (= (mdb w) true) (= (filter-safe (normalize w)) true) (= (mdb (rule-r-round w)) true))
@@ -938,21 +939,48 @@
 (prim! ESB 'inv-cleanup-del '(esb-rest-cleanup-del w x R))
 (prim! ESB 'inv-filter-world '(esb-rest-filter-world w K R))
 (prim! ESB 'inv-fork-del '(esb-rest-fork-del w x R))
-(override! ESB 't-own-inv '[]
-  '(a/theorem t-own-esb [w :- World, s :- Nat, m :- Nat]
-     (=> (= (esb w) true) (= (esb (:world (t-own w s m))) true))
-     (intro h)
-     (cases ho (own-ok w s))
-     (case [false] (simp only [t-own ho refuse]) (exact h))
-     (case [true]
-       (simp only [t-own ho accept])
-       (exact (esb-fork-ins-own w m s (scope-ref-ok w s (esb-sample w h) (And.right (And.right (own-ok-parts w s ho)))) h)))))
-(override! ESB 'inv-cleanup-set '[]
-  '(a/theorem esb-cleanup-set-o [w :- World, rid :- Nat, rows :- (List Nat)]
-     (=> (= (ref-ok-k (:edges w) (:next-id w) rid) true) (= (tbl-all (ref-ok-k (:edges w) (:next-id w)) rows) true)
-         (= (esb w) true) (= (esb (cleanup-set w rid rows)) true))
-     (intros h1 h2 h) (exact (esb-cleanup-set w rid rows h1 h2 h))))
-(swap! (:renames ESB) assoc 'inv-cleanup-set 'esb-cleanup-set)
+;; esb on the generic tree (spindel.v2.pres.tree): its table; its own proofs follow
+(def ^:private esb-run-fns   ; row functions under which a run's stored refs only shrink, with the lemma
+  '{run-fin-pop run-fin-pop-sub run-fin-exit run-fin-exit-sub run-fin-pop-end run-fin-pop-end-sub
+    run-unres run-unres-sub run-drop-fins run-drop-fins-sub})
+(defn- row-lemma [F lem] (if (seq? F) (apply list lem (rest F)) lem))
+(tree/part! ESB
+  ;; ---- the part's own proofs (content: the new references are existing non-edge rows)
+  :over '{t-own-inv            t-own-esb              ; own: the marker's scope exists
+          inv-cleanup-set      esb-cleanup-set        ; a cleanup entry whose refs exist
+          inv-cancel-run-local esb-cancel-run-local   ; T14: the entry's rows, read before the cancel
+          inv-retire-after     esb-retire-after       ; T13's entry: the retired run's rows
+          inv-spawn-rows       esb-spawn-rows         ; T4: the task and its scope parent exist
+          inv-start-raw        esb-start-raw          ; T5: the computation exists
+          inv-new-run-of       esb-new-run-of         ; T11: same
+          inv-dispatch-raw     esb-dispatch-raw       ; T11: carries "the computation exists" (ch)
+          t-finally-enter-inv  t-finally-enter-esb    ; a pushed region stores no refs
+          inv-arm-raw          esb-arm-raw            ; the armed run stores its new resource
+          t-detach-inv         t-detach-esb           ; the new parent is an open scope
+          t-open-scope-inv     t-open-scope-esb}      ; the parent is the current scope
+  ;; ---- sites: a run or cleanup row whose stored refs only shrink, by the row function's lemma
+  :sites (merge (tree/row-sites 'inv-run-upd esb-run-fns
+                  (fn [F] (list 'esb-run-upd-m 'w 'x F 'hf (row-lemma F (esb-run-fns (if (seq? F) (first F) F))) 'h0)))
+                (tree/row-sites 'inv-cleanup-upd '#{cleanup-drop}
+                  (fn [F] (list 'esb-cleanup-upd-m 'w 'x F '(fn [c :- CleanupRow] (Eq.refl (:run c))) (row-lemma F 'cleanup-drop-sub) 'h0))))
+  ;; ---- facts from the path: the cancelled run is a row; the started or dispatched computation
+  ;; exists; a cleanup entry's refs are existing non-edge rows
+  :ctx '{inv-cancel-run-local [(List.Mem r (:runs w))]
+         inv-start-raw        [(= (comp-has w (:id c)) true)]
+         inv-new-run-of       [(= (comp-has w (:id c)) true)]
+         inv-dispatch-raw     [(= (comp-has w (:id c)) true)]
+         inv-cleanup-set      [(= (ref-ok-k (:edges w) (:next-id w) rid) true) (= (tbl-all (ref-ok-k (:edges w) (:next-id w)) rows) true)]}
+  :pass '{inv-job-apply {inv-cancel-run-local [(tbl-find-mem RunRow run-id rid r (:runs w) hf)]}   ; run-find found it
+          t5-inv        {inv-start-raw [(find-comp-has w cid c hc)]}                                 ; comp-find found it
+          t11-inv       {inv-dispatch-raw [(find-comp-has w cid c hc)]}})
+(a/theorem t-own-esb [w :- World, s :- Nat, m :- Nat]
+  (=> (= (esb w) true) (= (esb (:world (t-own w s m))) true))
+  (intro h)
+  (cases ho (own-ok w s))
+  (case [false] (simp only [t-own ho refuse]) (exact h))
+  (case [true]
+    (simp only [t-own ho accept])
+    (exact (esb-fork-ins-own w m s (scope-ref-ok w s (esb-sample w h) (And.right (And.right (own-ok-parts w s ho)))) h))))
 
 ;; ---- T14's local part: the entry's rows are read from the world before the cancel
 
@@ -983,26 +1011,26 @@
     (have e2 (= (:next-id (res-cancel w hd)) (:next-id w))) (rfl)
     (exact (And.intro (Eq.trans (And.left p) e1) (Eq.trans (And.right p) e2)))))
 
-(override! ESB 'inv-cancel-run-local '[inv-cancel-debtor inv-cancel-res inv-cancel-acts]
-  '(a/theorem esb-cancel-run-local [w :- World, r :- RunRow, rep :- Bool]
-     (=> (List.Mem r (:runs w)) (= (esb w) true) (= (esb (cancel-run-local w r rep)) true))
-     (intros hm h)
-     (simp only [cancel-run-local])
-     (have cr := (crows-ok w r h hm))
-     (have e1 := (esb-cancel-res _ r (esb-cancel-acts _ (:id r) (esb-run-upd w (:id r) run-cancel-row run-cancel-row-id (fn [q :- RunRow] (Eq.refl (run-stored q))) h))))
-     (have d := (drop-fold-sub (:next-id w) (tbl-scan act-id (act-of-run (:id r)) (:acts (run-upd w (:id r) run-cancel-row))) (run-upd w (:id r) run-cancel-row)))
-     (have rc := (rc-fold-same (:resources r) (cancel-acts (run-upd w (:id r) run-cancel-row) (:id r))))
-     (have sub (edges-sub (:next-id w) (:edges w) (:edges (cancel-res (cancel-acts (run-upd w (:id r) run-cancel-row) (:id r)) r))))
-     (simp only [cancel-res (And.left rc)]) (exact (And.left d))
-     (have nx (= (:next-id (cancel-res (cancel-acts (run-upd w (:id r) run-cancel-row) (:id r)) r)) (:next-id w)))
-     (simp only [cancel-res (And.right rc)]) (exact (And.right d))
-     (have m (forall [y :- Nat] (=> (= (ref-ok-k (:edges w) (:next-id w) y) true)
-                                    (= (ref-ok-k (:edges (cancel-res (cancel-acts (run-upd w (:id r) run-cancel-row) (:id r)) r))
-                                                 (:next-id (cancel-res (cancel-acts (run-upd w (:id r) run-cancel-row) (:id r)) r)) y) true))))
-     (intros y hy) (rw [nx]) (exact (ref-ok-mono _ _ _ _ y sub (Nat.le_refl _) hy))
-     (exact (esb-cancel-debtor rep _ r
-              (esb-cleanup-set _ (:id r) (cleanup-rows-of w r) (m (:id r) (And.left cr))
-                (tbl-all-mono Nat _ _ m (cleanup-rows-of w r) (And.right cr)) e1)))))
+(tree/restate! ESB '[inv-cancel-debtor inv-cancel-res inv-cancel-acts])
+(a/theorem esb-cancel-run-local [w :- World, r :- RunRow, rep :- Bool]
+  (=> (List.Mem r (:runs w)) (= (esb w) true) (= (esb (cancel-run-local w r rep)) true))
+  (intros hm h)
+  (simp only [cancel-run-local])
+  (have cr := (crows-ok w r h hm))
+  (have e1 := (esb-cancel-res _ r (esb-cancel-acts _ (:id r) (esb-run-upd w (:id r) run-cancel-row run-cancel-row-id (fn [q :- RunRow] (Eq.refl (run-stored q))) h))))
+  (have d := (drop-fold-sub (:next-id w) (tbl-scan act-id (act-of-run (:id r)) (:acts (run-upd w (:id r) run-cancel-row))) (run-upd w (:id r) run-cancel-row)))
+  (have rc := (rc-fold-same (:resources r) (cancel-acts (run-upd w (:id r) run-cancel-row) (:id r))))
+  (have sub (edges-sub (:next-id w) (:edges w) (:edges (cancel-res (cancel-acts (run-upd w (:id r) run-cancel-row) (:id r)) r))))
+  (simp only [cancel-res (And.left rc)]) (exact (And.left d))
+  (have nx (= (:next-id (cancel-res (cancel-acts (run-upd w (:id r) run-cancel-row) (:id r)) r)) (:next-id w)))
+  (simp only [cancel-res (And.right rc)]) (exact (And.right d))
+  (have m (forall [y :- Nat] (=> (= (ref-ok-k (:edges w) (:next-id w) y) true)
+                                 (= (ref-ok-k (:edges (cancel-res (cancel-acts (run-upd w (:id r) run-cancel-row) (:id r)) r))
+                                              (:next-id (cancel-res (cancel-acts (run-upd w (:id r) run-cancel-row) (:id r)) r)) y) true))))
+  (intros y hy) (rw [nx]) (exact (ref-ok-mono _ _ _ _ y sub (Nat.le_refl _) hy))
+  (exact (esb-cancel-debtor rep _ r
+           (esb-cleanup-set _ (:id r) (cleanup-rows-of w r) (m (:id r) (And.left cr))
+             (tbl-all-mono Nat _ _ m (cleanup-rows-of w r) (And.right cr)) e1))))
 
 ;; ---- run rows: stored refs only shrink (pop, unres) or gain none (push a region with no refs)
 
@@ -1081,22 +1109,6 @@
 (a/theorem cleanup-drop-sub [z :- Nat, c :- CleanupRow, y :- Nat] (=> (= (reach-mem y (:rows (cleanup-drop z c))) true) (= (reach-mem y (:rows c)) true))
   (intro h) (simp only [cleanup-drop] at h) (exact (nat-del-sub z (:rows c) y h)))
 
-(defn- fhead* [f] (if (seq? f) (first f) f))
-(defn- lemma-app* [f lem] (if (seq? f) (apply list lem (rest f)) lem))
-(def ^:private esb-run-fns '{run-fin-pop run-fin-pop-sub run-fin-exit run-fin-exit-sub run-fin-pop-end run-fin-pop-end-sub run-unres run-unres-sub run-drop-fins run-drop-fins-sub})
-(defn esb-patch [form]
-  (->> form
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-run-upd (first y)) (contains? esb-run-fns (fhead* (nth y 3 nil)))))
-                    (fn [[_ w x f hid & more]]
-                      (apply list 'esb-run-upd-m w x f hid (lemma-app* f (esb-run-fns (fhead* f))) more)))
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-cleanup-upd (first y)) (seq? (nth y 3 nil)) (= 'cleanup-drop (first (nth y 3)))))
-                    (fn [[_ w x f & more]]
-                      (apply list 'esb-cleanup-upd-m w x f (list 'fn '[c :- CleanupRow] '(Eq.refl (:run c))) (list 'cleanup-drop-sub (second f)) more)))))
-(doseq [[n _] @@#'spindel.v2.inv.copier/source-theorems] (patch! ESB n esb-patch))
-(patch! ESB 'inv-job-apply
-  (fn [form] (esb-patch (subst-forms (app-of? 'inv-cancel-run-local)
-                                     (fn [[hd w r rep h]] (list hd w r rep '(tbl-find-mem RunRow run-id rid r (:runs w) hf) h)) form))))
-
 ;; ---- ESB overrides: the new references are existing non-edge rows
 
 (a/theorem tsp-ok [w :- World, owner :- Nat]
@@ -1109,77 +1121,66 @@
 (a/theorem has-ins-head [A :- Type, idf :- (=> A Nat), r :- A, xs :- (List A)] (= (tbl-has idf (idf r) (tbl-ins r xs)) true)
   (simp only [tbl-ins tbl-has Nat.beq_refl]))
 
-(override! ESB 'inv-spawn-rows '[]
-  '(a/theorem esb-spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat), loc :- Bool]
-     (=> (= (esb w) true) (= (esb (spawn-rows w owner inputs loc)) true))
-     (intro h)
-     (simp only [spawn-rows])
-     (have h1 := (esb-task-ins-fresh w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc) (rfl) h))
-     (have s1 := (esb-sample _ h1))
-     (have o1 := (task-ref-ok _ (:next-id w) s1 (has-ins-head TaskRow task-id (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc) (:tasks w))))
-     (have p0 := (tsp-ok w owner (esb-sample w h)))
-     (have p1 (= (ref-ok-k (:edges w) (+ (:next-id w) 1) (task-scope-parent w owner)) true)) (exact (ref-ok-up _ _ _ _ (Nat.le_succ _) p0))
-     (exact (esb-add-run-scope _ (:next-id w) 0 (task-scope-parent w owner) 0 o1 p1 h1))))
+(a/theorem esb-spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat), loc :- Bool]
+  (=> (= (esb w) true) (= (esb (spawn-rows w owner inputs loc)) true))
+  (intro h)
+  (simp only [spawn-rows])
+  (have h1 := (esb-task-ins-fresh w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc) (rfl) h))
+  (have s1 := (esb-sample _ h1))
+  (have o1 := (task-ref-ok _ (:next-id w) s1 (has-ins-head TaskRow task-id (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc) (:tasks w))))
+  (have p0 := (tsp-ok w owner (esb-sample w h)))
+  (have p1 (= (ref-ok-k (:edges w) (+ (:next-id w) 1) (task-scope-parent w owner)) true)) (exact (ref-ok-up _ _ _ _ (Nat.le_succ _) p0))
+  (exact (esb-add-run-scope _ (:next-id w) 0 (task-scope-parent w owner) 0 o1 p1 h1)))
 
-(override! ESB 'inv-start-raw '[]
-  '(a/theorem esb-start-raw [w :- World, c :- CompRow]
-     (=> (= (comp-has w (:id c)) true) (= (esb w) true) (= (esb (start-raw w c)) true))
-     (intros hc h)
-     (simp only [start-raw])
-     (exact (esb-comp-upd _ (:id c) (comp-start-row (:next-id w)) (comp-start-row-id (:next-id w)) (comp-start-row-pending (:next-id w))
-              (esb-add-run-scope w (:id c) (start-epoch c) 0 0 (comp-ref-ok w (:id c) (esb-sample w h) hc) (ref-ok-zero w (esb-sample w h)) h)))))
-(patch! ESB 't5-inv
-  (fn [form] (esb-patch (subst-forms #(= % '(inv-start-raw w c h)) (fn [_] '(inv-start-raw w c (find-comp-has w cid c hc) h)) form))))
+(a/theorem esb-start-raw [w :- World, c :- CompRow]
+  (=> (= (comp-has w (:id c)) true) (= (esb w) true) (= (esb (start-raw w c)) true))
+  (intros hc h)
+  (simp only [start-raw])
+  (exact (esb-comp-upd _ (:id c) (comp-start-row (:next-id w)) (comp-start-row-id (:next-id w)) (comp-start-row-pending (:next-id w))
+           (esb-add-run-scope w (:id c) (start-epoch c) 0 0 (comp-ref-ok w (:id c) (esb-sample w h) hc) (ref-ok-zero w (esb-sample w h)) h))))
+(a/theorem esb-new-run-of [w :- World, c :- CompRow, ei :- Nat]
+  (=> (= (comp-has w (:id c)) true) (= (esb w) true) (= (esb (new-run-of w c ei)) true))
+  (intros hc h)
+  (simp only [new-run-of])
+  (exact (esb-comp-upd _ (:id c) (comp-set-run (:next-id w)) (comp-set-run-id (:next-id w)) (comp-set-run-pending (:next-id w))
+           (esb-add-run-scope w (:id c) (:epoch c) 0 ei (comp-ref-ok w (:id c) (esb-sample w h) hc) (ref-ok-zero w (esb-sample w h)) h))))
 
-(override! ESB 'inv-new-run-of '[]
-  '(a/theorem esb-new-run-of [w :- World, c :- CompRow, ei :- Nat]
-     (=> (= (comp-has w (:id c)) true) (= (esb w) true) (= (esb (new-run-of w c ei)) true))
-     (intros hc h)
-     (simp only [new-run-of])
-     (exact (esb-comp-upd _ (:id c) (comp-set-run (:next-id w)) (comp-set-run-id (:next-id w)) (comp-set-run-pending (:next-id w))
-              (esb-add-run-scope w (:id c) (:epoch c) 0 ei (comp-ref-ok w (:id c) (esb-sample w h) hc) (ref-ok-zero w (esb-sample w h)) h)))))
+(tree/restate! ESB '[inv-cancel-pred inv-cut-suffix inv-consume-entry])
+(a/theorem esb-dispatch-raw [w :- World, c :- CompRow]
+  (=> (= (comp-has w (:id c)) true) (= (esb w) true) (= (esb (dispatch-raw w c)) true))
+  (intros hc h)
+  (have h1 := (esb-cancel-pred w c h))
+  (have k1 := (ch-cancel-pred (:id c) w c (ch-intro (:id c) w (esb-sample w h) hc)))
+  (cases he (entry-edge w (:id c))) (case' [some e]) (case' [none])
+  (simp only [dispatch-raw he])
+  (exact (esb-new-run-of _ c 0 (ch-rest-of (:id c) _ (ch-cut-suffix (:id c) _ (:id c) false 0 0 k1))
+           (esb-cut-suffix _ (:id c) false 0 0 h1)))
+  (simp only [dispatch-raw he])
+  (exact (esb-new-run-of _ c _
+           (ch-rest-of (:id c) _ (ch-consume-entry (:id c) _ e (ch-cut-suffix (:id c) _ (:id c) true (:at e) (:id e) k1)))
+           (esb-consume-entry _ e (esb-cut-suffix _ (:id c) true (:at e) (:id e) h1)))))
+(a/theorem esb-retire-after [w :- World, rid :- Nat]
+  (=> (= (esb w) true) (= (esb (retire-after w rid)) true))
+  (intro h)
+  (cases hr (run-find w rid)) (case' [some r]) (case' [none])
+  (simp only [retire-after hr]) (exact h)
+  (cases ht (retirable r))
+  (have p := (find-run-mem w rid r hr))
+  (have cr := (crows-ok w r h (And.left p)))
+  (rw [(And.right p)] at cr)
+  (simp only [retire-after hr ht]) (exact (esb-cleanup-set w rid _ (And.left cr) (And.right cr) h))
+  (simp only [retire-after hr ht]) (exact h))
 
-(override! ESB 'inv-dispatch-raw '[inv-new-run-of inv-cancel-pred inv-cut-suffix inv-consume-entry]
-  '(a/theorem esb-dispatch-raw [w :- World, c :- CompRow]
-     (=> (= (comp-has w (:id c)) true) (= (esb w) true) (= (esb (dispatch-raw w c)) true))
-     (intros hc h)
-     (have h1 := (esb-cancel-pred w c h))
-     (have k1 := (ch-cancel-pred (:id c) w c (ch-intro (:id c) w (esb-sample w h) hc)))
-     (cases he (entry-edge w (:id c))) (case' [some e]) (case' [none])
-     (simp only [dispatch-raw he])
-     (exact (esb-new-run-of _ c 0 (ch-rest-of (:id c) _ (ch-cut-suffix (:id c) _ (:id c) false 0 0 k1))
-              (esb-cut-suffix _ (:id c) false 0 0 h1)))
-     (simp only [dispatch-raw he])
-     (exact (esb-new-run-of _ c _
-              (ch-rest-of (:id c) _ (ch-consume-entry (:id c) _ e (ch-cut-suffix (:id c) _ (:id c) true (:at e) (:id e) k1)))
-              (esb-consume-entry _ e (esb-cut-suffix _ (:id c) true (:at e) (:id e) h1))))))
-(patch! ESB 't11-inv
-  (fn [form] (esb-patch (subst-forms #(= % '(inv-dispatch-raw w c h)) (fn [_] '(inv-dispatch-raw w c (find-comp-has w cid c hc) h)) form))))
-
-(override! ESB 'inv-retire-after '[]
-  '(a/theorem esb-retire-after [w :- World, rid :- Nat]
-     (=> (= (esb w) true) (= (esb (retire-after w rid)) true))
-     (intro h)
-     (cases hr (run-find w rid)) (case' [some r]) (case' [none])
-     (simp only [retire-after hr]) (exact h)
-     (cases ht (retirable r))
-     (have p := (find-run-mem w rid r hr))
-     (have cr := (crows-ok w r h (And.left p)))
-     (rw [(And.right p)] at cr)
-     (simp only [retire-after hr ht]) (exact (esb-cleanup-set w rid _ (And.left cr) (And.right cr) h))
-     (simp only [retire-after hr ht]) (exact h)))
-
-(override! ESB 't-finally-enter-inv '[]
-  '(a/theorem t-finally-enter-esb [w :- World, st :- Nat]
-     (=> (= (esb w) true) (= (esb (:world (t-finally-enter w st))) true))
-     (intro h)
-     (cases ht (tok-run w st)) (case' [some r]) (case' [none])
-     (simp only [t-finally-enter ht refuse]) (exact h)
-     (cases hg (run-normal r))
-     (simp only [t-finally-enter ht hg refuse]) (exact h)
-     (simp only [t-finally-enter ht hg accept])
-     (exact (esb-run-upd-m w (:id r) (run-fin-push (Finalizer.mk 0 (:effect-index r) (List.nil Nat))) (run-fin-push-id _)
-              (run-fin-push-sub 0 (:effect-index r)) h))))
+(a/theorem t-finally-enter-esb [w :- World, st :- Nat]
+  (=> (= (esb w) true) (= (esb (:world (t-finally-enter w st))) true))
+  (intro h)
+  (cases ht (tok-run w st)) (case' [some r]) (case' [none])
+  (simp only [t-finally-enter ht refuse]) (exact h)
+  (cases hg (run-normal r))
+  (simp only [t-finally-enter ht hg refuse]) (exact h)
+  (simp only [t-finally-enter ht hg accept])
+  (exact (esb-run-upd-m w (:id r) (run-fin-push (Finalizer.mk 0 (:effect-index r) (List.nil Nat))) (run-fin-push-id _)
+           (run-fin-push-sub 0 (:effect-index r)) h)))
 
 (a/theorem esb-run-upd-plus [w :- World, x :- Nat, f :- (=> RunRow RunRow), z :- Nat,
                              hf :- (forall [r :- RunRow] (= (run-id (f r)) (run-id r))),
@@ -1221,14 +1222,13 @@
         (case [inr h7] (exact (Or.inr (Or.inr (Or.inr (Or.inl h7)))))))
       (case [inr h8] (exact (Or.inr (Or.inr (Or.inr (Or.inr h8)))))))))
 
-(override! ESB 'inv-arm-raw '[]
-  '(a/theorem esb-arm-raw [w :- World, r :- RunRow, kind :- Nat]
-     (=> (= (esb w) true) (= (esb (arm-raw w r kind)) true))
-     (intro h)
-     (simp only [arm-raw])
-     (have h1 := (esb-resource-ins-fresh w (ResRow.mk (:next-id w) (:id r) kind (:effect-index r) rp-armed) (rfl) h))
-     (have z1 := (res-ref-ok _ (:next-id w) (esb-sample _ h1) (has-ins-head ResRow resource-id (ResRow.mk (:next-id w) (:id r) kind (:effect-index r) rp-armed) (:res w))))
-     (exact (esb-run-upd-plus _ (:id r) (run-arm (:next-id w)) (:next-id w) (run-arm-run-id _) (run-arm-plus (:next-id w)) z1 h1))))
+(a/theorem esb-arm-raw [w :- World, r :- RunRow, kind :- Nat]
+  (=> (= (esb w) true) (= (esb (arm-raw w r kind)) true))
+  (intro h)
+  (simp only [arm-raw])
+  (have h1 := (esb-resource-ins-fresh w (ResRow.mk (:next-id w) (:id r) kind (:effect-index r) rp-armed) (rfl) h))
+  (have z1 := (res-ref-ok _ (:next-id w) (esb-sample _ h1) (has-ins-head ResRow resource-id (ResRow.mk (:next-id w) (:id r) kind (:effect-index r) rp-armed) (:res w))))
+  (exact (esb-run-upd-plus _ (:id r) (run-arm (:next-id w)) (:next-id w) (run-arm-run-id _) (run-arm-plus (:next-id w)) z1 h1)))
 
 (a/theorem esb-scope-reparent [w :- World, x :- Nat, p :- Nat]
   (=> (= (ref-ok-k (:edges w) (:next-id w) p) true) (= (esb w) true) (= (esb (scope-upd w x (scope-set-parent p))) true))
@@ -1249,20 +1249,20 @@
   (case [none] (simp only [scope-open-at hf] at h) (cases h))
   (case [some sc] (exact (tbl-find-has ScopeRow scope-id s sc (:scopes w) hf))))
 
-(override! ESB 't-detach-inv '[inv-remove-if-empty]
-  '(a/theorem t-detach-esb [w :- World, k :- Nat, s :- Nat]
-     (=> (= (esb w) true) (= (esb (:world (t-detach w k s))) true))
-     (intro h)
-     (cases hf (task-find w k)) (case' [some t]) (case' [none])
-     (simp only [t-detach hf refuse]) (exact h)
-     (cases hg (detach-ok w t s))
-     (simp only [t-detach hf hg refuse]) (exact h)
-     (have hg2 := hg) (simp only [detach-ok Bool.and_eq_true] at hg2)
-     (have p1 := (scope-ref-ok w s (esb-sample w h) (open-has w s (And.left (And.right (And.right hg2))))))
-     (simp only [t-detach hf hg accept remove-empty-at detach-move])
-     (have h1 := (esb-task-upd w k (task-set-owner s) (task-set-owner-id s) h))
-     (have h2 := (esb-scope-reparent (task-upd w k (task-set-owner s)) (task-run-scope w t) s p1 h1))
-     (exact (esb-remove-if-empty _ _ h2))))
+(tree/restate! ESB '[inv-remove-if-empty])
+(a/theorem t-detach-esb [w :- World, k :- Nat, s :- Nat]
+  (=> (= (esb w) true) (= (esb (:world (t-detach w k s))) true))
+  (intro h)
+  (cases hf (task-find w k)) (case' [some t]) (case' [none])
+  (simp only [t-detach hf refuse]) (exact h)
+  (cases hg (detach-ok w t s))
+  (simp only [t-detach hf hg refuse]) (exact h)
+  (have hg2 := hg) (simp only [detach-ok Bool.and_eq_true] at hg2)
+  (have p1 := (scope-ref-ok w s (esb-sample w h) (open-has w s (And.left (And.right (And.right hg2))))))
+  (simp only [t-detach hf hg accept remove-empty-at detach-move])
+  (have h1 := (esb-task-upd w k (task-set-owner s) (task-set-owner-id s) h))
+  (have h2 := (esb-scope-reparent (task-upd w k (task-set-owner s)) (task-run-scope w t) s p1 h1))
+  (exact (esb-remove-if-empty _ _ h2)))
 
 ;; ---- open-scope: the parent is the current scope
 
@@ -1316,21 +1316,20 @@
              (esk-fparts _ _ _ _ _ _ (esb-rest-of w h)))))
   (exact (esb-intro _ (inv-scope-ins-fresh w sr hi (esb-sample w h)) r)))
 
-(override! ESB 't-open-scope-inv '[]
-  '(a/theorem t-open-scope-esb [w :- World, st :- Nat, s :- Nat]
-     (=> (= (esb w) true) (= (esb (:world (t-open-scope w st s))) true))
-     (intro h)
-     (cases ht (tok-run w st)) (case' [some r]) (case' [none])
-     (simp only [t-open-scope ht refuse]) (exact h)
-     (cases hg (Bool.and (Nat.beq s (:next-id w)) (open-ok w r)))
-     (simp only [t-open-scope ht hg refuse]) (exact h)
-     (have hs (= s (:next-id w))) (simp only [Bool.and_eq_true Nat.beq_eq] at hg) (exact (And.left hg))
-     (simp only [t-open-scope ht hg accept])
-     (exact (esb-scope-ins w (ScopeRow.mk s (cur-scope w r) scope-explicit true) hs
-              (cur-scope-ok w r h (tok-run-mem w st r ht)) h))))
+(a/theorem t-open-scope-esb [w :- World, st :- Nat, s :- Nat]
+  (=> (= (esb w) true) (= (esb (:world (t-open-scope w st s))) true))
+  (intro h)
+  (cases ht (tok-run w st)) (case' [some r]) (case' [none])
+  (simp only [t-open-scope ht refuse]) (exact h)
+  (cases hg (Bool.and (Nat.beq s (:next-id w)) (open-ok w r)))
+  (simp only [t-open-scope ht hg refuse]) (exact h)
+  (have hs (= s (:next-id w))) (simp only [Bool.and_eq_true Nat.beq_eq] at hg) (exact (And.left hg))
+  (simp only [t-open-scope ht hg accept])
+  (exact (esb-scope-ins w (ScopeRow.mk s (cur-scope w r) scope-explicit true) hs
+           (cur-scope-ok w r h (tok-run-mem w st r ht)) h)))
 
-(lcopy! ESB 'raw-inv)
-(lcopy! ESB 'inv-normalize)
+(tree/restate! ESB '[raw-inv])
+(tree/restate! ESB '[inv-normalize])
 
 (a/theorem esb-rule-r-round [w :- World]
   (=> (= (esb w) true) (= (filter-safe (normalize w)) true) (= (esb (rule-r-round w)) true))
@@ -1634,8 +1633,8 @@
 (prim! NA 'inv-remove-edge '(Eq.trans (na-rest-same nax w (remove-edge w x) (acts-remove-edge w x)) R))
 (prim! NA 'mark-edge-inv-sample '(Eq.trans (na-rest-same nax w (mark-edge w x) (acts-mark-edge w x)) R))
 (prim! NA 'unmark-edge-inv-sample '(Eq.trans (na-rest-same nax w (unmark-edge w x) (acts-unmark-edge w x)) R))
-(lcopy! NA 'inv-clear-comp-run)
-(lcopy! NA 'inv-close-local)
+(tree/restate! NA '[inv-clear-comp-run])
+(tree/restate! NA '[inv-close-local])
 
 ;; ---- the AHA bundle
 
@@ -2779,6 +2778,8 @@
 (prim! SVB 'inv-drop-act '(svb-rest-drop-act w a R))
 (prim! SVB 'inv-drop-edges '(svb-rest-drop-edges w p R))
 
+(defn- fhead* [f] (if (seq? f) (first f) f))
+(defn- lemma-app* [f lem] (if (seq? f) (apply list lem (rest f)) lem))
 (def ^:private svb-fns '{comp-result-row [svb-comp-upd comp-result-row-hv] source-write [svb-source-upd source-write-hv]
                          source-bump [svb-source-upd source-bump-hv] stream-set-tail [svb-source-upd stream-set-tail-hv] source-consume [svb-source-upd source-consume-hv]})
 (defn svb-patch [form]
