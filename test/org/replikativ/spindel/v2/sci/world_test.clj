@@ -220,3 +220,35 @@
      (v2/release-world! refused)
      (v2/release-world! child)
      (v2/release-world! w))))
+
+(deftest a-refused-resume-runs-no-sci-code-on-the-error-path
+  ;; the engine routes a throw from a resumed continuation to its error
+  ;; continuation; a refusal must not enter SCI there either, even when the
+  ;; resolver would answer by then: the body's catch must not see it, and the
+  ;; run fails (before: the catch ran and the body went on with its finally
+  ;; region dropped)
+  (checked
+   (let [w (s/vworld)
+         [d gate d3] (binding [v2/*world* w] [(v2/deferred) (v2/deferred) (v2/deferred)])
+         p (s/interpreter {:bindings {'d d 'gate gate 'd3 d3}})
+         refusals (atom 0)
+         _ (v2sci/set-resolver! p (fn [_ _] (if (pos? @refusals) (do (swap! refusals dec) nil) p)))
+         t (ev w p "(def cleaned (atom 0)) (def seen (atom nil))
+                    (task (try (reset! seen (try (await d) (catch Exception e [:caught (:type (ex-data e))])))
+                               (await gate)
+                               (finally (swap! cleaned inc))))")]
+     (reset! refusals 1)
+     (v2/deliver! d :x)
+     (is (= ::v2sci/no-interpreter (:type (second (outcome t)))) "the run failed")
+     (is (= 0 @refusals) "the resolver was asked once")
+     (is (nil? (sci/eval-string* p "@seen")) "the body's catch did not run")
+     (is (= 0 (sci/eval-string* p "@cleaned")) "its finalizer was dropped, consistently")
+     (testing "another run's refusal stays catchable by the run that awaits it"
+       (let [b (ev w p "(def a (task (await d3)))
+                        (task (try (await a) (catch Exception e [:caught (:type (ex-data e))])))")]
+         (reset! refusals 1)
+         (v2/deliver! d3 :x)
+         (is (= ::v2sci/no-interpreter (:type (second (outcome (ev w p "a"))))))
+         (is (= [:caught ::v2sci/no-interpreter] (v b)))))
+     (v2/release-world! w)
+     (is (not= ::timeout (v2/await-complete w 2000 ::timeout))))))

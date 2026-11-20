@@ -152,15 +152,30 @@
       cause
       t)))
 
+;; [world run refusal] of the last refusal on this thread
+(def ^:private ^ThreadLocal refusing (ThreadLocal.))
+
 (defn- refuse!
   "The run's SCI code cannot run here: its open regions are dropped (their
    finalizers are SCI code) and the slice fails, so the run fails and
-   retires without running SCI code."
+   retires without running SCI code. The engine routes a throw from a
+   resumed continuation to its error continuation; that one recognizes this
+   refusal (`refused-here?`) and passes it on without entering SCI."
   [b t]
   (close-regions! b)
-  (throw (if (#{::no-interpreter ::interpreter-busy} (:type (ex-data t)))
-           t
-           (ex-info "no SCI interpreter for this world" {:type ::no-interpreter} t))))
+  (let [e (if (#{::no-interpreter ::interpreter-busy} (:type (ex-data t)))
+            t
+            (ex-info "no SCI interpreter for this world" {:type ::no-interpreter} t))]
+    (.set refusing (doto (object-array 3) (aset 0 (v2/cw)) (aset 1 (v2/active-run)) (aset 2 e)))
+    (throw e)))
+
+(defn- refused-here?
+  "Whether `e` is the refusal of the run on this thread just thrown (not
+   another run's refusal this run awaited, which its code may catch)."
+  [e]
+  (let [^objects a (.get refusing)]
+    (and a (identical? e (aget a 2))
+         (identical? (aget a 0) (v2/cw)) (identical? (aget a 1) (v2/active-run)))))
 
 (defn- thunk-or-nil
   "What an effect returns to the body: a Thunk of its own code, else nothing."
@@ -322,7 +337,10 @@
 (defn- abi
   "The host functions spliced into expansions for the lineage of `home`."
   [cfg home]
-  (let [err* (fn [cap ek] (fn on-err [e] (in-run cfg cap #(ek e) on-err)))
+  (let [err* (fn [cap ek] (fn on-err [e]
+                            (if (refused-here? e)
+                              (do (.remove refusing) (throw e))   ; to the slice: the run fails
+                              (in-run cfg cap #(ek e) on-err))))
         k* (fn [cap k ek] (let [e (err* cap ek)] (fn [v] (in-run cfg cap #(k v) e))))
         body* (fn [cap body] (fn [ok err] (in-run cfg cap #(body (settled ok) (settled err)) err)))
         fx (fn [native]
