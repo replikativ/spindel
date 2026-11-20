@@ -36,6 +36,7 @@
             [spindel.v2.inv :refer :all]
             [spindel.v2.inv.copier :refer :all]
             [spindel.v2.inv.i10-task]
+            [spindel.v2.inv.i9-res]
             [spindel.v2.inv.idle :refer :all]
             [spindel.v2.inv.tomb :refer :all]))
 

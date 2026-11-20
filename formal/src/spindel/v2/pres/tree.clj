@@ -24,7 +24,12 @@
     contexts  facts the base proof checks on the path but does not pass, because inv-sample does not
               need them. `contexts` declares, per callee, the premises a part may use there; the tree
               passes them at every call site (`passes`, `sources`). For a part that does not need them
-              they are dropped (`ctx-<x>`, proved once).
+              they are dropped (`ctx-<x>`, proved once). A fact that is not in the caller's scope
+              but on the path above it is the caller's own context (`:own`): the caller takes it as
+              a premise and its callers pass it in turn. Own contexts are opt-in: a part takes one
+              only where a callee takes a context in that part (`takes?`); everywhere else the node
+              keeps its bare statement, proved from the base proof over Q (`pres-<x>-bare`), so a
+              context added for one part changes no other part's lemmas.
 
   Stage 2 used two total structures (Leaf, Over) instead. They cannot carry a part that breaks its
   invariant inside a transition (gl kills a run in T14 and repairs it in the same composite): every
@@ -66,8 +71,12 @@
 ;; ===========================================================================
 
 ;; Contexts: per callee, the premises a part may use there. Each is the difference between a part's
-;; override and the base lemma (N). `:own?`: the node's own proof uses them, so they are premises of
-;; its own statement too, and its source below passes them on.
+;; override and the base lemma (N). A context is passed at the call sites (`passes`), from facts in
+;; the caller's scope. `:own [names]`: the facts are not in the caller's scope but on the path above
+;; it, so the node takes them as premises of its own (named so in its proof, which passes them on),
+;; and its callers pass them in turn. A part takes a node's own context only when it needs it there
+;; (`takes?`); every other part has the node's bare statement, proved from the base proof over Q
+;; (`pres-<x>-bare`).
 (def contexts
   '{inv-cancel-run-local {:prems [(List.Mem r (:runs w))]}                        ; the cancelled run is a row (gl, g9)
     inv-retire-local     {:prems [(List.Mem r (:runs w)) (= (run-alive r) false)]} ; the retired run is a dead row (gl)
@@ -75,35 +84,33 @@
                                   (= (Nat.beq (:tag res) res-none) false)]}        ;   its result is not none (gl)
     inv-start-raw        {:prems [(= (comp-has w (:id c)) true)]}                  ; the new run's `of` is a computation (gl)
     inv-new-run-of       {:prems [(= (comp-has w (:id c)) true)]}                  ; same (gl)
-    t12-inv              {:prems [(= (res-tag-ok tag) true)] :own? true}           ; complete is not refused for its tag
-    inv-dispatch-raw     {:prems [(= (comp-has w (:id c)) true)] :own? true}})     ; T11's computation exists
+    inv-arm-park         {:prems [(List.Mem r (:runs w))                           ; the arming run is a row and
+                                  (= (run-unwinding r) false)]}                    ;   not unwinding (g9: Z#40)
+    t12-inv              {:prems [(= (res-tag-ok tag) true)] :own [hg]}            ; complete is not refused for its tag
+    t17-inv              {:prems [(= (fin-shut w st) false)] :own [hc]}            ; arm is not refused in a cleanup slice
+    inv-dispatch-raw     {:prems [(= (comp-has w (:id c)) true)] :own [hc]}})      ; T11's computation exists
 
 ;; Passes (H): at a call of `callee` in `caller`, the facts inserted before the inv-sample argument, in
-;; base vocabulary over the caller's locals at that call.
+;; base vocabulary over the caller's locals at that call (an own context's names included).
 (def passes
   '{inv-job-apply  {inv-cancel-run-local [(tbl-find-mem RunRow run-id rid r (:runs w) hf)]            ; run-find found it
                     inv-retire-local     [(tbl-find-mem RunRow run-id rid r (:runs w) hf)
                                           (retirable-dead r ha)]}                                     ; retirable: done
-    raw0-inv       {t12-inv              [(refused-tag-ok w st tag hc)]}                              ; the refusal guard
+    raw0-inv       {t12-inv              [(refused-tag-ok w st tag hc)]                               ; the refusal guards
+                    t17-inv              [hc]}
+    t12-inv        {inv-complete-raw     [(And.left (tok-facts w st r ht)) (tag-ok-res tag v hg)]}    ; the token's run; the guard
+    t17-inv        {inv-arm-park         [(And.left (tok-facts w st r ht))                            ; the token's run;
+                                          (cleanup-not-unw w st r (fin-shut-cleanup w st hc) ht)]}    ;   not in cleanup
     inv-retire-one {inv-complete-raw     [(retire-r1-mem w r r1 rid hf1) (task-final-res-tag _ _ v)]} ; found; err result
     t5-inv         {inv-start-raw        [(find-comp-has w cid c hc)]}                                ; comp-find found it
     t11-inv        {inv-dispatch-raw     [(find-comp-has w cid c hc)]}})                              ; same
 
-;; Sources (H): nodes whose tree proof is not the base proof, in base vocabulary (`base-of` is the
-;; inv-sample half of the world's proof). t12 and dispatch-raw use their contexts; T-finally-enter
-;; names its row function, which the base proof leaves to unification.
+;; Sources (H): nodes whose tree proof is not the base proof with its own context and passes, in base
+;; vocabulary (`base-of` is the inv-sample half of the world's proof). dispatch-raw carries its context
+;; through three edits; T-finally-enter names its row function, which the base proof leaves to
+;; unification.
 (def sources
-  {'t12-inv
-   '(a/theorem t12-inv [w :- World, st :- Nat, tag :- Nat, v :- Nat]
-      (=> (= (res-tag-ok tag) true) (= (inv-sample w) true) (= (inv-sample (:world (t12-complete w st tag v))) true))
-      (intros hg h)
-      (cases ht (tok-run w st)) (case' [some r]) (case' [none])
-      (simp only [t12-complete ht refuse]) (exact h)
-      (cases hn (run-normal r))
-      (simp only [t12-complete ht hn refuse]) (exact h)
-      (simp only [t12-complete ht hn accept])
-      (exact (inv-complete-raw w r (RunResult.mk tag v) (And.left (tok-facts w st r ht)) (tag-ok-none tag hg) h)))
-   ;; comp-has (:id c) survives cancel-pred, cut-suffix and consume-entry: they keep the computation
+  {;; comp-has (:id c) survives cancel-pred, cut-suffix and consume-entry: they keep the computation
    ;; ids (the bundle `ch` of spindel.v2.inv.copier: a frame of the comps table at column level)
    'inv-dispatch-raw
    '(a/theorem inv-dispatch-raw [w :- World, c :- CompRow]
@@ -148,19 +155,34 @@
                   form)
     form))
 
+(defn- prems [x] (get-in contexts [x :prems]))
+(defn- own [x] (get-in contexts [x :own]))
+
+(defn- with-own
+  "An own context in x's base proof: its premises join the statement before the inv-sample premise,
+  and the first intro names them."
+  [x [hd nm binders stmt & proof]]
+  (let [i (first (keep-indexed (fn [i p] (when (inv-premise? p) i)) (butlast (rest stmt))))
+        [pre [intro & post]] (split-with #(not (and (seq? %) ('#{intro intros} (first %)))) proof)
+        names (rest intro)]
+    (when-not (< i (count names)) (throw (ex-info (str x ": the first intro does not name the inv-sample premise") {})))
+    (apply list hd nm binders (insert-before-inv stmt (prems x))
+           (concat pre [(apply list 'intros (concat (take i names) (own x) (drop i names)))] post))))
+
 (defn tree-source
-  "x's proof in the tree (base vocabulary): its source override, or the base proof with the passes."
+  "x's proof in the tree (base vocabulary): its source override, or the base proof with its own
+  context and the passes."
   [x]
   (or (get sources x)
-      (let [[hd nm binders stmt & proof] (theorem-source x)]
+      (let [f (theorem-source x)
+            [hd nm binders stmt & proof] (if (own x) (with-own x f) f)]
         (apply list hd nm binders stmt (map #(with-passes x %) proof)))))
 
 (defn- node-stmt
   "x's binders and statement in the tree; with its context premises when `ctx?` (what callers see)."
   [x ctx?]
-  (let [[_ _ binders stmt] (or (get sources x) (theorem-source x))
-        ps (get-in contexts [x :prems])]
-    [binders (if (and ctx? ps (not (get sources x))) (insert-before-inv stmt ps) stmt)]))
+  (let [[_ _ binders stmt] (theorem-source x)]
+    [binders (if (and ctx? (prems x)) (insert-before-inv stmt (prems x)) stmt)]))
 
 (defn- gpify [Q form]
   (walk/postwalk (fn [y] (cond (and (seq? y) (= 'inv-sample (first y))) (list 'gp Q (second y))
@@ -193,10 +215,8 @@
 (defn- hyp-type [Q c] (let [[b s] (node-stmt c true)] (stated Q b s)))
 (defn- site-type [Q p F] (let [[b s] (site-binders p F)] (stated Q b s)))
 
-(defn callees
-  "The callees of x's tree proof: [:node c] for a lemma, [:site p F] for a dispatched primitive."
-  [x]
-  (let [[_ _ _ _ & proof] (tree-source x) out (atom [])]
+(defn- proof-callees [x proof]
+  (let [out (atom [])]
     (walk/prewalk (fn [y]
                     (cond (and (seq? y) (dispatched (first y))) (do (swap! out conj [:site (first y) (nth y (inc fpos))]) y)
                           (and (symbol? y) (@S y) (not= y x) (not (dispatched y)) (not= y 'inv-parts)) (do (swap! out conj [:node y]) y)
@@ -204,34 +224,43 @@
                   proof)
     (vec (distinct @out))))
 
+(defn callees
+  "The callees of x's tree proof (of its base proof, when `bare?`): [:node c] for a lemma, [:site p F]
+  for a dispatched primitive."
+  ([x] (callees x false))
+  ([x bare?] (proof-callees x (drop 4 (if bare? (theorem-source x) (tree-source x))))))
+
 (defn pres-name [x]
   (let [s (name x)]
     (symbol (str "pres-" (cond (str/starts-with? s "inv-") (subs s 4)
                                (str/ends-with? s "-inv-sample") (subs s 0 (- (count s) 11))
                                (str/ends-with? s "-inv") (subs s 0 (- (count s) 4))
                                :else s)))))
+(defn- bare-name [x] (symbol (str (name (pres-name x)) "-bare")))
 
 (defn pres-form
-  "The generic lemma of node x, as a theorem form."
-  [x]
-  (let [[_ _ binders _ & proof] (tree-source x)
-        [_ stmt] (node-stmt x (get-in contexts [x :own?]))
-        cs (callees x)
-        hyps (vec (mapcat (fn [[k a b]] (case k :node [(hyp-name a) :- (hyp-type 'Q a)]
-                                                  :site [(site-name a b) :- (site-type 'Q a b)]))
-                          cs))
-        sub (fn sub [y]
-              (cond (and (seq? y) (dispatched (first y)))
-                    (let [args (vec (rest y)) F (nth args fpos)]
-                      (when (= '_ F) (throw (ex-info (str x ": a site with an implicit row function (add a source)") {})))
-                      (apply list (site-name (first y) F)
-                             (map sub (concat (site-vals F) (subvec args 0 fpos) (subvec args (inc fpos))))))
-                    (seq? y) (apply list (map sub y))
-                    (vector? y) (mapv sub y)
-                    (and (symbol? y) (@S y) (not= y 'inv-parts) (not= y x)) (hyp-name y)
-                    :else y))]
-    (apply list 'a/theorem (pres-name x) (vec (concat '[Q :- (=> World Bool)] (gpify 'Q binders) hyps))
-           (gpify 'Q stmt) (map (comp #(gpify 'Q %) sub) proof))))
+  "The generic lemma of node x, as a theorem form. `bare?` (a node with an own context): x's bare
+  statement from its base proof, every callee bare (`pres-<x>-bare`)."
+  ([x] (pres-form x false))
+  ([x bare?]
+   (let [[_ _ binders _ & proof] (if bare? (theorem-source x) (tree-source x))
+         [_ stmt] (node-stmt x (and (own x) (not bare?)))
+         hyps (vec (mapcat (fn [[k a b]] (case k :node [(hyp-name a) :- (if bare? (let [[b s] (node-stmt a false)] (stated 'Q b s))
+                                                                             (hyp-type 'Q a))]
+                                                   :site [(site-name a b) :- (site-type 'Q a b)]))
+                           (callees x bare?)))
+         sub (fn sub [y]
+               (cond (and (seq? y) (dispatched (first y)))
+                     (let [args (vec (rest y)) F (nth args fpos)]
+                       (when (= '_ F) (throw (ex-info (str x ": a site with an implicit row function (add a source)") {})))
+                       (apply list (site-name (first y) F)
+                              (map sub (concat (site-vals F) (subvec args 0 fpos) (subvec args (inc fpos))))))
+                     (seq? y) (apply list (map sub y))
+                     (vector? y) (mapv sub y)
+                     (and (symbol? y) (@S y) (not= y 'inv-parts) (not= y x)) (hyp-name y)
+                     :else y))]
+     (apply list 'a/theorem (if bare? (bare-name x) (pres-name x)) (vec (concat '[Q :- (=> World Bool)] (gpify 'Q binders) hyps))
+            (gpify 'Q stmt) (map (comp #(gpify 'Q %) sub) proof)))))
 
 (defn- ctx-name [c] (symbol (str "ctx-" (subs (name (pres-name c)) 5))))
 
@@ -239,7 +268,7 @@
   "ctx-<c> : forall Q, (S c over Q) -> (S c over Q with its context premises): the context dropped."
   [c]
   (let [[binders stmt] (node-stmt c false)
-        ps (get-in contexts [c :prems])
+        ps (prems c)
         prem (butlast (rest stmt))
         hs (vec (map-indexed (fn [i _] (symbol (str "h" i))) prem))
         ks (vec (map-indexed (fn [i _] (symbol (str "k" i))) ps))
@@ -253,7 +282,8 @@
 
 (defn build!
   "Check the generic lemma of every lemma of the step's closure that calls others (including a
-  primitive proved through others, e.g. insert-edge-checked), and the context defaults."
+  primitive proved through others, e.g. insert-edge-checked), the bare one of a node with an own
+  context, and the context defaults."
   []
   (let [prims (set (keys @frames/footprints))
         probe (c/mk-bundle 'gpprobe '[] "gpprobe-" {})
@@ -262,8 +292,8 @@
         derived? (fn [p] (let [cs (callees p)] (and (seq cs) (not-any? #(= 'inv-intro (second %)) cs))))
         nodes (vec (filter #(and (closure %) (not ('#{inv-parts inv-intro} %)) (or (not (prims %)) (derived? %)))
                             (map first @@#'c/source-theorems)))]
-    (doseq [x nodes] (ev (pres-form x)))
-    (doseq [c (sort (keys contexts)) :when (not (get-in contexts [c :own?]))] (ctx-default! c))
+    (doseq [x nodes] (ev (pres-form x)) (when (own x) (ev (pres-form x true))))
+    (doseq [c (sort (keys contexts))] (ctx-default! c))
     (reset! tree {:nodes nodes :prims prims})))
 
 ;; ===========================================================================
@@ -280,6 +310,8 @@
             A site not listed takes B's cell with the bundle's extra argument.
     :over  {node lemma}  B's own proof of a composite, used instead of the generic one. For a node
             with a context the lemma takes the context premises, unless the node is in :bare.
+  B's lemma for a node it does not override has the node's bare statement, except for a node with an
+  own context that B needs (`takes?`).
   The table may precede the lemmas it names: a lemma must exist when a node calling it is restated.
   The copier's name of an overridden node becomes an alias of the lemma (`restate!`)."
   [B & {:keys [sites over bare]}]
@@ -314,27 +346,41 @@
             args (if-let [[e k] ((:extra-args B) p)] (vec (concat (take k args) [e] (drop k args))) args)]
         (lam (apply list (papp B cell) args))))))
 
-(defn- child-term [B [k a b]]
+(defn- over? [B x] (contains? (get-in @parts [(:pred B) :over]) x))
+
+(defn takes?
+  "Does B's lemma for x take x's context premises? For a node B overrides: unless it is in :bare.
+  Otherwise only for an own context, and only when B needs it: one of x's callees takes its context
+  in B (the facts the own context names are passed down to it)."
+  [B x]
+  (boolean (and (prems x)
+                (if (over? B x)
+                  (not (contains? (get-in @parts [(:pred B) :bare]) x))
+                  (and (own x) (some (fn [[k c]] (and (= k :node) (takes? B c))) (callees x)))))))
+
+(defn- child-term
+  "B's proof of callee [k a b] of a generic lemma: the context dropped (ctx-<a>) where the lemma has
+  it and B's does not; under a bare generic lemma, B's must be bare too."
+  [B bare? [k a b]]
   (case k
     :site (site-term B a b)
     :node (let [l (or (get @(:renames B) a) (throw (ex-info (str (:pred B) ": no lemma for " a) {})))
                 _ (when-not (declared? l) (throw (ex-info (str (:pred B) ": " l " (its proof of " a ") is not defined yet") {})))
-                t (papp B l)
-                over? (contains? (get-in @parts [(:pred B) :over]) a)
-                bare? (contains? (get-in @parts [(:pred B) :bare]) a)]
-            (if (and (get-in contexts [a :prems]) (not (get-in contexts [a :own?])) (or (not over?) bare?))
-              (list (ctx-name a) (qterm B) t)
-              t))))
+                t (papp B l)]
+            (cond (not (takes? B a)) (if (and (prems a) (not bare?)) (list (ctx-name a) (qterm B) t) t)
+                  bare? (throw (ex-info (str (:pred B) ": " l " takes " a "'s context, which its caller cannot pass") {}))
+                  :else t))))
 
 (defn- restate-one! [B x]
   (let [nm (copy-name B x)
-        [hd _ binders] (tree-source x)
-        [_ stmt] (node-stmt x (get-in contexts [x :own?]))
+        bare? (and (own x) (not (takes? B x)))
+        [hd _ binders] (theorem-source x)
+        [_ stmt] (node-stmt x (takes? B x))
         [_ _ binders stmt] (copy-form B (list hd x binders stmt) nm {})]
     (ev (list 'a/theorem nm binders stmt
-              (list 'exact (apply list (pres-name x) (qterm B)
+              (list 'exact (apply list (if bare? (bare-name x) (pres-name x)) (qterm B)
                                   (concat (drop (count (bnames (:params B))) (bnames binders))
-                                          (map #(child-term B %) (callees x)))))))
+                                          (map #(child-term B bare? %) (callees x bare?)))))))
     (swap! (:renames B) assoc x nm)
     (swap! (:copied B) conj nm)
     nm))
@@ -352,7 +398,8 @@
                (if-let [n (first todo)]
                  (if (or (seen n) (contains? @(:renames B) n))
                    (recur (subvec todo 1) seen)
-                   (recur (into (subvec todo 1) (when (node? n) (keep (fn [[k a]] (when (= k :node) a)) (callees n))))
+                   (recur (into (subvec todo 1) (when (node? n) (keep (fn [[k a]] (when (= k :node) a))
+                                                                      (concat (callees n) (when (own n) (callees n true))))))
                           (conj seen n)))
                  seen))]
     (count (doall (for [x (filter need (map first @@#'c/source-theorems))
