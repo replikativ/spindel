@@ -1820,7 +1820,20 @@ after the cascade's lemmas.
 
 ### Gate (group 5a)
 
-GATE-G5
+- **Statements** (name-independent fingerprints, against group 4): 17,669 identical; none missing;
+  19 changed, all generic lemmas of the tree whose proof calls a newly dispatched callee (11 shared
+  `pres-x`: `append-raw`, `consume-entry`, `create-link-cur`, `create-source-cur`, `fire-wait-act`,
+  `invalidate`, `link-next-raw`, `spawn-rows`, `stream-rows`, `t-create-link-top`, `t1-top`; 6
+  `pres-x@g8` and 2 `pres-x@hmk` among the same); 104 new: 98 `raw0-<item>-<part>` (`g5`, `gso`)
+  and 6 part lemmas (`pres-x@g5` 4, `pres-x@gso` 2). Every `g5`, `nzb` and `gso` name keeps its
+  statement. `inv-step`, `reach-inv`, `inv-empty`, `sys-reach-inv`, `l5-safety-total`, `step-p3m`,
+  `mv-refinement` unchanged.
+- **Load**, one JVM at a time, against group 4's measure: `inv.i5` 11.1 → 7.1 s, `inv.i1-owners`
+  9.4 → 4.7 s, `pres.tree` 10.2 → 11.2 s. The untouched namespaces read 392 → 453 s in this run:
+  the host was under load from another session, so the whole-model figure says nothing here.
+- **Suite**: `clojure -M:test`, 302 tests, 208,500 assertions, 0 failures, 0 errors (oracle samples
+  1–62; the tree test also checks that `g5`,
+  `nzb` and `gso` have no overrides or patches and where `g5` and `gso` pass their facts).
 
 ## 6. Key pieces to read: the whole proof in 14 stops, in reading order (current names)
 
