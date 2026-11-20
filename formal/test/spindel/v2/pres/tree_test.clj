@@ -25,6 +25,9 @@
             [spindel.v2.completion.open-scopes :as os]
             [spindel.v2.inv.i14 :as i14]
             [spindel.v2.progress.measures :as ms]
+            [spindel.v2.completion.quiet :as quiet]
+            [spindel.v2.completion.quiet-world :as qw]
+            [spindel.v2.completion.stable :as stable]
             [spindel.v2.pres.tree :as tree]))
 
 (defn- declared? [s] (some? (.lookup ^ansatz.kernel.Env @a/ansatz-env (ansatz.kernel.Name/fromString (str s)))))
@@ -197,3 +200,11 @@
   (doseq [x '[inv-await-raw inv-await-post inv-take-park raw0-arm-inv]] (is (tree/variant? ms/MB x) (str x)))
   (is (tree/variant? os/GOS 'inv-job-apply))
   (is (= 1 ('inv-run-ins-fresh tree/dispatched))))
+
+(deftest grel-gc-and-gst-are-not-copied
+  (doseq [B [quiet/GR qw/GC stable/GST]]
+    (is (empty? @(:overrides B)) (str (:pred B)))
+    (is (empty? @(:patches B)) (str (:pred B))))
+  ;; gst: T12 writes a result; the fact comes from raw0's complete arm
+  (is (tree/variant? stable/GST 'raw0-complete-inv))
+  (is (not-any? #(tree/variant? qw/GC %) '[raw-inv inv-normalize t14-inv])))
