@@ -68,7 +68,7 @@
   :pass '{inv-job-apply  {inv-cancel-run-local [(tbl-find-mem RunRow run-id rid r (:runs w) hf)]     ; run-find found it
                           inv-retire-local     [(tbl-find-mem RunRow run-id rid r (:runs w) hf)
                                                 (retirable-dead r ha)]}                              ; retirable: done
-          raw0-inv       {t12-inv [(refused-tag-ok w st tag hc)]}                                     ; complete not refused
+          raw0-complete-inv {t12-inv [(refused-tag-ok w st tag hc)]}                                  ; complete not refused
           t12-inv        {inv-complete-raw [(And.left (tok-facts w st r ht)) (tag-ok-res tag v hg)]}  ; the token's run
           inv-retire-one {inv-complete-raw [(retire-r1-mem w r r1 rid hf1) (task-final-res-tag _ _ v)]} ; found; err result
           t5-inv         {inv-start-raw [(find-comp-has w cid c hc)]}                                 ; comp-find found it

@@ -1,7 +1,7 @@
 (ns spindel.v2.pres.tree-test
   "The generic tree (spindel.v2.pres.tree): every lemma of the step's closure that calls others has
   its shared generic lemma; a part gets its own (pres-x@part) only on its context paths; a gate gives
-  a part's continuations its fact; the parts converted to the tree (gl, g9, g8) have no copier overrides
+  a part's continuations its fact; raw0 is cut by item; the parts converted to the tree (gl, g9, g8) have no copier overrides
   or patches left."
   (:require [clojure.test :refer [deftest is]]
             [ansatz.core :as a]
@@ -28,12 +28,25 @@
   (is (= 10 (count (filter #(and (tree/variant? (if (= 'gl (first %)) c/GL c/G9) (second %)))
                            (for [p '[gl g9] x (:nodes @tree/tree)] [p x]))))))
 
+(deftest raw0-is-cut-by-item
+  ;; one lemma per item, each checked for inv-sample; raw0-inv dispatches to them, and a part that
+  ;; passes into one transition gets that branch's lemma, not the dispatcher's
+  (is (= 49 (count (filter #(re-matches #"raw0-.+-inv" (name %)) (:nodes @tree/tree)))))
+  (is (declared? 'raw0-complete-inv))
+  (doseq [B [c/GL c/G9]] (is (not (tree/variant? B 'raw0-inv))))
+  (is (tree/variant? c/GL 'raw0-complete-inv))
+  (is (tree/variant? c/G9 'raw0-arm-inv))
+  (is (not (tree/variant? c/G9 'raw0-complete-inv))))
+
 (deftest a-gate-gives-the-continuation-its-fact
-  ;; a part taking C0's gate: raw0's continuations receive root-ok-if (checked for any Q)
+  ;; a part taking C0's gate: raw0's continuations receive root-ok-if (checked for any Q); only the
+  ;; branches of raw0 that call the gate get the part's lemma, not the dispatcher
   (let [B (c/mk-bundle 'tgate [] "tgate-" {})]
     (tree/part! B :gates '{c0-gate-inv hc0})
-    (is (tree/variant? B 'raw0-inv))
-    (doseq [x '[c0-gate-inv raw0-inv]]
+    (is (= '#{c0-gate-inv raw0-append-inv raw0-create-link-inv raw0-create-link-top-inv
+              raw0-create-source-inv raw0-create-source-top-inv raw0-link-realize-inv}
+           (set (filter #(tree/variant? B %) (:nodes @tree/tree)))))
+    (doseq [x '[c0-gate-inv raw0-create-source-inv]]
       (when-not (declared? (tree/pres-name B x)) (@#'tree/ev (tree/pres-form B x)))
       (is (declared? (tree/pres-name B x)) (str x)))
     (swap! tree/parts dissoc 'tgate)))

@@ -1423,6 +1423,43 @@ carried; the 10 nodes between are inferred.
 - **Suite**: `clojure -M:test`, 291 tests, 208,319 assertions, 0 failures, 0 errors (the tree test also
   checks that `raw0` forwards `ga` by inference, not by a declared row).
 
+## 5h. Stage 3: raw0 is cut by item
+
+**Result.** `raw0`, the item dispatcher, was the largest part lemma: a part that passed one guard into
+one transition (`gl`: T12's refusal guard; `g9`: T17's `fin-shut`; `g8`: the body-shut and C0 guards)
+got its own copy of the whole 49-way `cases`. The tree now cuts raw0's base proof by item
+(`tree/raw0-split`): one lemma per item, `raw0-<item>-inv`, whose proof is that item's branch (found by
+counting the goals its tactics open and close; `rename_i`'s names become the item's fields), each
+checked for `inv-sample`; `raw0-inv` is proved by dispatching to them (`tree/sources`). The base proof
+in the model is unchanged and still the one a reader reads; the branch lemmas are generated.
+
+A part's pass into a transition is now written at the branch (`raw0-complete-inv {t12-inv ...}`), and
+the part gets its own lemma for that branch only:
+
+| part | before | after |
+|---|---|---|
+| `gl` | `pres-raw0@gl` (49 branches) | `pres-raw0-complete@gl`; the dispatcher is shared |
+| `g9` | `pres-raw0@g9` | `pres-raw0-arm@g9`; the dispatcher is shared |
+| `g8` | `pres-raw0@g8` | `pres-raw0@g8` (it forwards `ga` to every branch, inferred) and 15 branch lemmas, the ones that call T1, T4, T-create-link, T-append, T-link-realize (the guards) or a cascade (`ga`) |
+
+### Gate (raw0 split)
+
+- **Statements** (name-independent fingerprints, against §5g): 16,741 identical; 2 changed, both
+  generic lemmas of the tree (`pres-raw0`, `pres-raw0@g8`: their premises are now the branch lemmas'
+  hypotheses, one per item, instead of the transitions'); 2 missing, `pres-raw0@gl` and `pres-raw0@g9`
+  (the dispatcher is shared now); 262 new: the 49 `raw0-<item>-inv`, their 49 generic lemmas
+  `pres-raw0-<item>`, 17 branch part lemmas (`g8` 15, `gl` 1, `g9` 1), and the copier's 147
+  restatements of the branches (`raw0-<item>-g8`, `-gl`, `-g9`). `inv-step`, `reach-inv`,
+  `inv-empty`, `sys-reach-inv`, `l5-safety-total`, `step-p3m`, `mv-refinement` unchanged.
+- **Load**, back to back (the first measure ran beside another gate's suite, so compare the parts
+  with §5g's second measure as well): `inv.i10-task` 13.5 → 1.2 s (§5g: 6.4 s) and `inv.i9-res` 9.2 →
+  0.9 s (§5g: 6.1 s), the cost of a whole dispatcher per part gone; `inv.i8` 16.5 → 11.4 s (§5g:
+  19.6 s); `pres.tree` 19.3 → 9.5 s (§5g: 10.4 s; the 49 branch checks take about 1 s). Touched 58.6 →
+  22.9 s; untouched 586 → 463 s (host load); whole model 645 → 486 s.
+- **Suite**: `clojure -M:test`, 292 tests, 208,375 assertions, 0 failures, 0 errors (the tree test also
+  checks the 49 branches, that `gl` and `g9` share the dispatcher, and that a gate-only part gets
+  exactly the 6 gated branches). Rebased on #318, with oracle samples 1–62: 295 tests, 208,383 assertions, 0 failures, 0 errors.
+
 ## 6. Key pieces to read: the whole proof in 14 stops, in reading order (current names)
 
 1. `inv`, `inv-step`, `Reach1`, `reach-inv` (`top.clj`): the headline and its four-line induction.
