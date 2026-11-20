@@ -11,7 +11,8 @@
     rof  C.run / K.run name a run of C / K; run `of` and run pointers are below the allocator,
          computation epochs are >= 1.
   The runs in gkz are exempt from E1/E2/rof (a run being retired: C.run is cleared before the
-  row goes). Every composite inv-sample lemma is re-checked by spindel.v2.inv.copier's `lcopy!`; overrides:
+  row goes). The bundle goes through the generic step tree (spindel.v2.pres.tree; its table is in
+  Part B); its own proofs:
     cascade  a cancel job needs `job-ok` (the run is no current run of a computation outside gxz),
              kept through every job (transport bundle nq, pair predicates over (id, of, epoch) x
              (id, epoch, idle) that an epoch step keeps) and met by every caller: task runs (T14 host,
@@ -31,6 +32,7 @@
   (no honest hypothesis)."
   (:require [ansatz.core :as a]
             [spindel.v2.pres.exempt :as exempt]
+            [spindel.v2.pres.tree :as tree]
             [clojure.string :as str]
             [spindel.v2.state :refer :all]
             [spindel.v2.edits :refer :all]
@@ -830,9 +832,7 @@
             'inv-task-upd ['(fn [t :- TaskRow] (Eq.refl (tk10 t))) 4]
             'inv-comp-ins-fresh ['(Eq.refl true) 2]}))
 (swap! (:renames G10) assoc 'inv-parts 'g10-parts 'inv-run-upd 'g10-run-upd 'inv-comp-upd 'g10-comp-upd
-       'inv-task-upd 'g10-task-upd 'inv-comp-ins-fresh 'g10-comp-ins-fresh
-       'up-react* 'g10-up-react 'up-inc-epoch* 'g10-up-inc-epoch 'up-replace* 'g10-up-replace 'up-demand* 'g10-up-demand
-       'run-up* 'g10-run-upd-up 'run-same* 'g10-run-upd 'task-same* 'g10-task-upd 'task-clr* 'g10-task-clear)
+       'inv-task-upd 'g10-task-upd 'inv-comp-ins-fresh 'g10-comp-ins-fresh)
 
 (defpart G10 :reads '[comps next-id runs tasks])
 (doseq [o '[inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-act-ins-fresh]]
@@ -850,34 +850,57 @@
 (prim! G10 'inv-filter-world '(g10-rest-filter gxz gkz w K R))
 (prim! G10 'insert-edge-fresh-inv-sample '(g10-rest-bump gxz gkz (insert-edge w (edge-set-id (:next-id w) e)) (Eq.trans (rfl) R)))
 
-;; the source patch: computation and run edits by row functions that change a key
-(def ^:private up-comp-fns '{comp-react-row up-react* comp-demand-row up-demand* comp-inc-epoch up-inc-epoch*
-                              comp-replace-row up-replace*})
-(defn- fhead [f] (if (seq? f) (first f) f))
-(defn- f-of-hid [f hid]
-  (if (not= '_ f) f
-      (let [h (fhead hid) n (name h)
-            base (some (fn [suf] (when (str/ends-with? n suf) (subs n 0 (- (count n) (count suf))))) ["-run-id" "-comp-id" "-id"])]
-        (if base (if (seq? hid) (apply list (symbol base) (rest hid)) (symbol base)) f))))
-(defn- fix-f [form]
-  (subst-forms (fn [y] (and (seq? y) (#{'inv-run-upd 'inv-comp-upd} (first y)) (= '_ (nth y 3 nil))))
-               (fn [y] (let [v (vec y)] (apply list (assoc v 3 (f-of-hid (nth v 3) (nth v 4)))))) form))
-(defn g10-patch [form]
-  (->> (fix-f form)
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-comp-upd (first y)) (contains? up-comp-fns (fhead (nth y 3 nil)))))
-                    (fn [[_ w x f hid hp & more]]
-                      (apply list (up-comp-fns (fhead f)) w x (concat (when (seq? f) (rest f)) more))))
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-run-upd (first y)) (= 'run-park-row (nth y 3 nil))))
-                    (fn [[_ w x f hid & more]] (apply list 'run-up* w x f hid 'run-park-rk10 more)))
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-run-upd (first y)) (= 'run-wake (nth y 3 nil))))
-                    (fn [[_ w x f hid & more]] (apply list 'run-same* w x f hid 'run-wake-rk10 more)))
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-run-upd (first y)) (= 'run-tick-park (nth y 3 nil))))
-                    (fn [[_ w x f hid & more]] (apply list 'run-up* w x f hid 'run-tick-park-rk10 more)))
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-task-upd (first y)) (= 'task-cancel-result (nth y 3 nil))))
-                    (fn [[_ w x f hid & more]] (apply list 'task-same* w x f hid 'tk10-cancel-result more)))
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-task-upd (first y)) (= 'task-clear-run (nth y 3 nil))))
-                    (fn [[_ w x f hid & more]] (apply list 'task-clr* w x more)))))
-(doseq [[n _] @@#'spindel.v2.inv.copier/source-theorems] (patch! G10 n g10-patch))
+;; g10 on the generic tree (spindel.v2.pres.tree): its table. Its own proofs are in Parts D to H.
+(def ^:private up-comp-fns   ; computation row functions that change a key, with g10's lemma
+  '{comp-react-row g10-up-react comp-demand-row g10-up-demand comp-inc-epoch g10-up-inc-epoch comp-replace-row g10-up-replace})
+(tree/part! G10
+  ;; ---- the part's own proofs (content)
+  :over '{inv-retire-with      g10-retire-with       ; T13: the retired run is exempt (gkz) until its row goes
+          inv-cancel-run-local g10-cancel-run-local  ; T14 local: the run is made done under the job condition
+          inv-job-apply        g10-job-apply         ; the cascade under the job condition (job-ok) ...
+          inv-cascade          g10-cascade           ;   ... which every job's successors keep (jl-step)
+          inv-run-cascade      g10-run-cascade
+          t14-inv              t14-g10               ; T14: the cancelled run is no current run of a kept computation
+          t-cancel-inv         t-cancel-g10          ; T-cancel: a task's run (found-task-ncw)
+          inv-cancel-losers    g10-cancel-losers     ; the losers of an accepted await
+          inv-cancel-pred      g10-cancel-pred       ; T11: the predecessor run
+          inv-dispatch-raw     g10-dispatch-raw      ; T11: C.run := the new run (nq and ch carry the keys)
+          inv-spawn-rows       g10-spawn-rows        ; T4: a task's run
+          inv-complete-raw     g10-complete-raw      ; T12: the run is done; a current run sets done-epoch
+          inv-demote           g10-demote            ; demotion: cid leaves the exempt list with no current run
+          inv-norm-round       g10-norm-round        ; a round: the stray computations are exempt until demoted
+          inv-norm-loop        g10-norm-loop
+          inv-normalize        g10-normalize}
+  ;; ---- sites: a computation, run or task edit by a row function that changes a key, by its lemma
+  :sites (merge (tree/row-sites 'inv-comp-upd up-comp-fns
+                  (fn [F] (concat (list (up-comp-fns (if (seq? F) (first F) F)) 'gxz 'gkz 'w 'x) (when (seq? F) (rest F)) '(h0))))
+                '{[inv-run-upd run-park-row]        (g10-run-upd-up gxz gkz w x run-park-row hf run-park-rk10 h0)
+                  [inv-run-upd run-tick-park]       (g10-run-upd-up gxz gkz w x run-tick-park hf run-tick-park-rk10 h0)
+                  [inv-run-upd run-wake]            (g10-run-upd gxz gkz w x run-wake hf run-wake-rk10 h0)
+                  [inv-task-upd task-cancel-result] (g10-task-upd gxz gkz w x task-cancel-result hf tk10-cancel-result h0)
+                  [inv-task-upd task-clear-run]     (g10-task-clear gxz gkz w x h0)})
+  ;; ---- facts from the path. The cascade's job condition names the exempt lists (the part's
+  ;; parameters): a cancel job's run is no current run of a kept computation (ncw).
+  :ctx '{inv-cancel-run-local [(= (ncw gxz gkz (:id r) w) true)]
+         inv-job-apply        [(= (job-ok gxz gkz w j) true)]
+         inv-run-cascade      [(= (tbl-all (job-ok gxz gkz w) js) true)]
+         t14-inv              [(= (ncw gxz gkz rid w) true)]
+         inv-cancel-pred      [(List.Mem c (:comps w)) (= (needs-run w c) true)]
+         inv-dispatch-raw     [(List.Mem c (:comps w)) (= (:idle c) false) (= (needs-run w c) true)]
+         inv-complete-raw     [(List.Mem r (:runs w))]
+         inv-norm-round       [(= (tbl-all (ta-one (:comps w)) (:runs w)) true)]
+         inv-normalize        [(= (acts-alive w) true) (= (gy 0 w) true)]}
+  :pass '{;; cascades of retire and close jobs: the job condition holds by computation
+          t16-inv             {inv-run-cascade [(Eq.refl true)]}
+          t15-full-inv        {inv-run-cascade [(Eq.refl true)]}
+          t-slice-exit-inv    {inv-run-cascade [(Eq.refl true)]}
+          t-release-world-inv {inv-run-cascade [(Eq.refl true)]}
+          inv-retire-one      {inv-run-cascade  [(Eq.refl true)]
+                               inv-complete-raw [(retire-r1-mem w r r1 rid hf1)]}                    ; run-find found it
+          t12-inv             {inv-complete-raw [(And.left (tok-facts w st r ht))]}                  ; the token's run
+          t11-inv             {inv-dispatch-raw [(tbl-find-mem CompRow comp-id cid c (:comps w) hc)  ; comp-find found it;
+                                                 (t11-g-idle fresh (:next-id w) w c hg)              ;   T11's guard
+                                                 (t11-g-nr fresh (:next-id w) w c hg)]}})
 
 ;; ===========================================================================
 ;; Part C. Transport: pair predicates over (id, of, epoch) of runs and (id, epoch, idle) of
@@ -1115,18 +1138,10 @@
            (tbl-all-upd CS10 cs10-id x cs-step nqc nqc (fn [c :- CS10, a1 :- (= (nqc c) true), a2 :- (= (Nat.beq (cs10-id c) x) true)] (nqcm c a1))
              (fn [c :- CS10, a1 :- (= (nqc c) true), a2 :- (= (Nat.beq (cs10-id c) x) false)] a1) _ (And.right hr))))
   (exact (nq-intro nqr nqc nqm nqcm _ hs hr2)))
-(swap! (:renames NQ) assoc 'nq-inc* 'nq-inc-epoch)
-(defn nq-patch [form]
-  (->> (fix-f form)
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-comp-upd (first y)) (= 'comp-inc-epoch (nth y 3 nil))))
-                    (fn [[_ w x f hid hp & more]] (apply list 'nq-inc* w x more)))))
-(doseq [[n _] @@#'spindel.v2.inv.copier/source-theorems] (patch! NQ n nq-patch))
+;; nq on the generic tree: one site, the epoch step (nqm and nqcm: both predicates survive cs-step)
+(tree/part! NQ :sites '{[inv-comp-upd comp-inc-epoch] (nq-inc-epoch nqr nqc nqm nqcm w x h0)})
 
-(lcopy! NQ 'inv-job-apply)
-(lcopy! NQ 'inv-run-cascade)
-(lcopy! NQ 'inv-cancel-pred)
-(lcopy! NQ 'inv-cut-suffix)
-(lcopy! NQ 'inv-consume-entry)
+(tree/restate! NQ '[inv-job-apply inv-run-cascade inv-cancel-pred inv-cut-suffix inv-consume-entry])
 
 ;; ---- key lists as maps
 
@@ -1525,7 +1540,7 @@
   (have hr2 (= (g10-rest gxz (List.cons Nat y gkz) w) true)) (simp only [g10-rest]) (exact (g10k-ks-cons gxz gkz y _ _ _ _ hr))
   (exact (g10-intro gxz _ w (g10-sample gxz gkz w h) hr2)))
 
-(lcopy! G10 'inv-clear-task-run)
+(tree/restate! G10 '[inv-clear-task-run])
 
 (a/theorem g10-clear-comp-run-x [gxz :- (List Nat), gkz :- (List Nat), w :- World, r :- RunRow]
   (=> (= (g10 gxz gkz w) true) (= (g10 gxz (List.cons Nat (:id r) gkz) (clear-comp-run w r)) true))
@@ -1561,90 +1576,73 @@
   (intro h)
   (exact (g10-intro gxz gkz _ (inv-run-del w x (g10-sample gxz _ w h)) (g10-rest-run-del-x gxz gkz w x (g10-rest-of gxz _ w h)))))
 
-(lcopy! G10 'inv-close-local)
-(lcopy! G10 'inv-cleanup-del)
-(lcopy! G10 'inv-remove-if-empty)
-(override! G10 'inv-retire-with '[]
-  '(a/theorem g10-retire-with [gxz :- (List Nat), gkz :- (List Nat), w :- World, r :- RunRow, sub :- (List Nat)]
-     (=> (= (g10 gxz gkz w) true) (= (g10 gxz gkz (retire-with w r sub)) true))
-     (intro h) (simp only [retire-with])
-     (exact (g10-remove-if-empty gxz gkz _ sub (g10-cleanup-del gxz gkz _ (:id r) (g10-run-del-x gxz gkz _ (:id r)
-              (g10-close-local gxz (List.cons Nat (:id r) gkz) _ sub (g10-clear-comp-run-x gxz gkz w r h))))))))
-(lcopy! G10 'inv-retire-local)
+(tree/restate! G10 '[inv-close-local inv-cleanup-del inv-remove-if-empty])
+(a/theorem g10-retire-with [gxz :- (List Nat), gkz :- (List Nat), w :- World, r :- RunRow, sub :- (List Nat)]
+  (=> (= (g10 gxz gkz w) true) (= (g10 gxz gkz (retire-with w r sub)) true))
+  (intro h) (simp only [retire-with])
+  (exact (g10-remove-if-empty gxz gkz _ sub (g10-cleanup-del gxz gkz _ (:id r) (g10-run-del-x gxz gkz _ (:id r)
+           (g10-close-local gxz (List.cons Nat (:id r) gkz) _ sub (g10-clear-comp-run-x gxz gkz w r h)))))))
+(tree/restate! G10 '[inv-retire-local])
 
 ;; ---- the cascade under the job condition
 
-(override! G10 'inv-cancel-run-local '[inv-cancel-debtor inv-cleanup-set inv-cancel-res inv-cancel-acts]
-  '(a/theorem g10-cancel-run-local [gxz :- (List Nat), gkz :- (List Nat), w :- World, r :- RunRow, rep :- Bool]
-     (=> (= (ncw gxz gkz (:id r) w) true) (= (g10 gxz gkz w) true) (= (g10 gxz gkz (cancel-run-local w r rep)) true))
-     (intros hn h) (simp only [cancel-run-local])
-     (exact (g10-cancel-debtor gxz gkz rep _ r (g10-cleanup-set gxz gkz _ (:id r) (cleanup-rows-of w r)
-              (g10-cancel-res gxz gkz _ r (g10-cancel-acts gxz gkz _ (:id r)
-                (g10-kill gxz gkz w (:id r) run-cancel-row run-cancel-row-id run-cancel-rk10 (dn2-of-ncw gxz gkz (:id r) w hn) h))))))))
+(tree/restate! G10 '[inv-cancel-debtor inv-cleanup-set inv-cancel-res inv-cancel-acts])
+(a/theorem g10-cancel-run-local [gxz :- (List Nat), gkz :- (List Nat), w :- World, r :- RunRow, rep :- Bool]
+  (=> (= (ncw gxz gkz (:id r) w) true) (= (g10 gxz gkz w) true) (= (g10 gxz gkz (cancel-run-local w r rep)) true))
+  (intros hn h) (simp only [cancel-run-local])
+  (exact (g10-cancel-debtor gxz gkz rep _ r (g10-cleanup-set gxz gkz _ (:id r) (cleanup-rows-of w r)
+           (g10-cancel-res gxz gkz _ r (g10-cancel-acts gxz gkz _ (:id r)
+             (g10-kill gxz gkz w (:id r) run-cancel-row run-cancel-row-id run-cancel-rk10 (dn2-of-ncw gxz gkz (:id r) w hn) h)))))))
 
-(override! G10 'inv-job-apply '[inv-cancel-run-local inv-retire-local inv-close-scope-local]
-  '(a/theorem g10-job-apply [gxz :- (List Nat), gkz :- (List Nat), w :- World, j :- Job]
-     (=> (= (job-ok gxz gkz w j) true) (= (g10 gxz gkz w) true) (= (g10 gxz gkz (job-apply w j)) true))
-     (intros hj h)
-     (cases j)
-     (case [jcancel rid rep]
-       (cases hf (run-find w rid))
-       (case [none] (simp only [job-apply hf]) (exact h))
-       (case [some r]
-         (cases ha (run-alive r))
-         (case [false] (simp only [job-apply hf ha]) (exact h))
-         (case [true]
-           (simp only [job-apply hf ha])
-           (have e (= (:id r) rid)) (exact (tbl-find-id RunRow run-id rid r (:runs w) hf))
-           (simp only [job-ok] at hj)
-           (rw [← e] at hj)
-           (exact (g10-cancel-run-local gxz gkz w r rep hj h)))))
-     (case [jretire rid]
-       (cases hf (run-find w rid))
-       (case [none] (simp only [job-apply hf]) (exact h))
-       (case [some r]
-         (cases ha (retirable r))
-         (case [false] (simp only [job-apply hf ha]) (exact h))
-         (case [true] (simp only [job-apply hf ha]) (exact (g10-retire-local gxz gkz w r h)))))
-     (case [jclose s]
-       (cases hs (scope-has w s))
-       (case [false] (simp only [job-apply hs]) (exact h))
-       (case [true] (simp only [job-apply hs]) (exact (g10-close-scope-local gxz gkz w s h))))))
+(tree/restate! G10 '[inv-close-scope-local])
+(a/theorem g10-job-apply [gxz :- (List Nat), gkz :- (List Nat), w :- World, j :- Job]
+  (=> (= (job-ok gxz gkz w j) true) (= (g10 gxz gkz w) true) (= (g10 gxz gkz (job-apply w j)) true))
+  (intros hj h)
+  (cases j)
+  (case [jcancel rid rep]
+    (cases hf (run-find w rid))
+    (case [none] (simp only [job-apply hf]) (exact h))
+    (case [some r]
+      (cases ha (run-alive r))
+      (case [false] (simp only [job-apply hf ha]) (exact h))
+      (case [true]
+        (simp only [job-apply hf ha])
+        (have e (= (:id r) rid)) (exact (tbl-find-id RunRow run-id rid r (:runs w) hf))
+        (simp only [job-ok] at hj)
+        (rw [← e] at hj)
+        (exact (g10-cancel-run-local gxz gkz w r rep hj h)))))
+  (case [jretire rid]
+    (cases hf (run-find w rid))
+    (case [none] (simp only [job-apply hf]) (exact h))
+    (case [some r]
+      (cases ha (retirable r))
+      (case [false] (simp only [job-apply hf ha]) (exact h))
+      (case [true] (simp only [job-apply hf ha]) (exact (g10-retire-local gxz gkz w r h)))))
+  (case [jclose s]
+    (cases hs (scope-has w s))
+    (case [false] (simp only [job-apply hs]) (exact h))
+    (case [true] (simp only [job-apply hs]) (exact (g10-close-scope-local gxz gkz w s h)))))
 
-(override! G10 'inv-cascade '[inv-job-apply]
-  '(a/theorem g10-cascade [gxz :- (List Nat), gkz :- (List Nat), fuel :- (List Nat)]
-     (forall [w :- World, js :- (List Job)]
-       (=> (= (tbl-all (job-ok gxz gkz w) js) true) (= (g10 gxz gkz w) true) (= (g10 gxz gkz (:world (cascade fuel w js))) true)))
-     (induction fuel)
-     (case [nil] (intros w js hj hw) (simp only [cascade]) (exact hw))
-     (case [cons h f ih]
-       (intros w js hj hw)
-       (cases js)
-       (case [nil] (simp only [cascade]) (exact hw))
-       (case [cons j t]
-         (simp only [cascade])
-         (have hj1 := hj) (simp only [tbl-all Bool.and_eq_true] at hj1)
-         (exact (ih (job-apply w j) (List.append Job t (job-next w j)) (jl-step gxz gkz w j t (g10-sample gxz gkz w hw) hj)
-                  (g10-job-apply gxz gkz w j (And.left hj1) hw)))))))
+(a/theorem g10-cascade [gxz :- (List Nat), gkz :- (List Nat), fuel :- (List Nat)]
+  (forall [w :- World, js :- (List Job)]
+    (=> (= (tbl-all (job-ok gxz gkz w) js) true) (= (g10 gxz gkz w) true) (= (g10 gxz gkz (:world (cascade fuel w js))) true)))
+  (induction fuel)
+  (case [nil] (intros w js hj hw) (simp only [cascade]) (exact hw))
+  (case [cons h f ih]
+    (intros w js hj hw)
+    (cases js)
+    (case [nil] (simp only [cascade]) (exact hw))
+    (case [cons j t]
+      (simp only [cascade])
+      (have hj1 := hj) (simp only [tbl-all Bool.and_eq_true] at hj1)
+      (exact (ih (job-apply w j) (List.append Job t (job-next w j)) (jl-step gxz gkz w j t (g10-sample gxz gkz w hw) hj)
+               (g10-job-apply gxz gkz w j (And.left hj1) hw))))))
 
-(override! G10 'inv-run-cascade '[inv-cascade]
-  '(a/theorem g10-run-cascade [gxz :- (List Nat), gkz :- (List Nat), w :- World, js :- (List Job)]
-     (=> (= (tbl-all (job-ok gxz gkz w) js) true) (= (g10 gxz gkz w) true) (= (g10 gxz gkz (run-cascade w js)) true))
-     (intros hj h) (exact (g10-cascade gxz gkz (casc-fuel w js) w js hj h))))
-(lcopy! G10 'inv-run-cascade)
+(a/theorem g10-run-cascade [gxz :- (List Nat), gkz :- (List Nat), w :- World, js :- (List Job)]
+  (=> (= (tbl-all (job-ok gxz gkz w) js) true) (= (g10 gxz gkz w) true) (= (g10 gxz gkz (run-cascade w js)) true))
+  (intros hj h) (exact (g10-cascade gxz gkz (casc-fuel w js) w js hj h)))
 
-;; cascades of retire / close jobs: the job condition holds by computation
-(defn- casc-patch [w js]
-  (fn [form] (subst-forms (app-of? 'inv-run-cascade)
-                          (fn [[hd _ _ h]] (list hd w js '(Eq.refl true) h)) form)))
-(patch! G10 't16-inv (casc-patch 'w '(List.cons Job (Job.jclose s) (List.nil Job))))
-(patch! G10 't15-full-inv (casc-patch '(ack-raw w z (:owner zr)) '(List.cons Job (Job.jretire (:owner zr)) (List.nil Job))))
-(patch! G10 't-slice-exit-inv (casc-patch '(run-upd w rid run-fin-pop-end) '(List.cons Job (Job.jretire rid) (List.nil Job))))
-(patch! G10 't-release-world-inv (casc-patch '(zero-handles (revoke-roots w)) '(List.cons Job (Job.jclose root-scope-id) (List.nil Job))))
-(lcopy! G10 't16-inv)
-(lcopy! G10 't15-full-inv)
-(lcopy! G10 't-slice-exit-inv)
-(lcopy! G10 't-release-world-inv)
+(tree/restate! G10 '[t16-inv t15-full-inv t-slice-exit-inv t-release-world-inv])
 
 ;; ===========================================================================
 ;; Part E. Run creation: T4 (a task's run), T5 and T11 (a computation's new run, C.run := R)
@@ -1853,20 +1851,19 @@
 
 ;; ---- T14 from the host (a task's run) and the T6 losers (tasks' runs): the job condition
 
-(override! G10 't14-inv '[inv-run-cascade]
-  '(a/theorem t14-g10 [gxz :- (List Nat), gkz :- (List Nat), w :- World, rid :- Nat, rep :- Bool]
-     (=> (= (ncw gxz gkz rid w) true) (= (g10 gxz gkz w) true) (= (g10 gxz gkz (:world (t14-cancel w rid rep))) true))
-     (intros hn h)
-     (cases hf (run-find w rid))
-     (case [none] (simp only [t14-cancel hf refuse]) (exact h))
-     (case [some r]
-       (cases ha (run-alive r))
-       (case [false] (simp only [t14-cancel hf ha refuse]) (exact h))
-       (case [true]
-         (simp only [t14-cancel hf ha accept])
-         (have hj (= (tbl-all (job-ok gxz gkz w) (List.cons Job (Job.jcancel rid rep) (List.nil Job))) true))
-         (simp only [tbl-all job-ok hn Bool.and_self])
-         (exact (g10-run-cascade gxz gkz w _ hj h))))))
+(a/theorem t14-g10 [gxz :- (List Nat), gkz :- (List Nat), w :- World, rid :- Nat, rep :- Bool]
+  (=> (= (ncw gxz gkz rid w) true) (= (g10 gxz gkz w) true) (= (g10 gxz gkz (:world (t14-cancel w rid rep))) true))
+  (intros hn h)
+  (cases hf (run-find w rid))
+  (case [none] (simp only [t14-cancel hf refuse]) (exact h))
+  (case [some r]
+    (cases ha (run-alive r))
+    (case [false] (simp only [t14-cancel hf ha refuse]) (exact h))
+    (case [true]
+      (simp only [t14-cancel hf ha accept])
+      (have hj (= (tbl-all (job-ok gxz gkz w) (List.cons Job (Job.jcancel rid rep) (List.nil Job))) true))
+      (simp only [tbl-all job-ok hn Bool.and_self])
+      (exact (g10-run-cascade gxz gkz w _ hj h)))))
 
 (a/theorem found-task-ncw [gxz :- (List Nat), gkz :- (List Nat), w :- World, rid :- Nat, r :- RunRow]
   (=> (= (inv-sample w) true) (= (run-find w rid) (Option.some RunRow r)) (= (task-has w (:of r)) true) (= (ncw gxz gkz rid w) true))
@@ -1877,27 +1874,26 @@
   (rw [e] at u)
   (exact (task-run-ncw gxz gkz rid w hs u)))
 
-(override! G10 't-cancel-inv '[t14-inv]
-  '(a/theorem t-cancel-g10 [gxz :- (List Nat), gkz :- (List Nat), w :- World, rid :- Nat]
-     (=> (= (g10 gxz gkz w) true) (= (g10 gxz gkz (:world (t-cancel w rid))) true))
-     (intro h)
-     (cases hf (run-find w rid))
-     (case [none] (simp only [t-cancel hf refuse]) (exact h))
-     (case [some r]
-       (cases hg (host-cancel-ok w r))
-       (case [false]
-         ;; C1: a done task run's cancel reaches its scope subtree (its owned task runs)
-         (cases hd (host-cancel-done w r))
-         (case [false] (simp only [t-cancel hf hg cancel-done hd refuse]) (exact h))
-         (case [true]
-           (have hj (= (tbl-all (job-ok gxz gkz w) (cancel-jobs (owned-runs w (scope-subtree w (:scope r))))) true))
-           (rw [jl-cancel-jobs]) (exact (owned-ncw gxz gkz w _ (g10-sample gxz gkz w h)))
-           (simp only [t-cancel hf hg cancel-done hd accept])
-           (exact (g10-run-cascade gxz gkz w _ hj h))))
-       (case [true]
-         (simp only [t-cancel hf hg])
-         (have hg2 := hg) (simp only [host-cancel-ok Bool.and_eq_true] at hg2)
-         (exact (t14-g10 gxz gkz w rid false (found-task-ncw gxz gkz w rid r (g10-sample gxz gkz w h) hf (And.right (And.right hg2))) h))))))
+(a/theorem t-cancel-g10 [gxz :- (List Nat), gkz :- (List Nat), w :- World, rid :- Nat]
+  (=> (= (g10 gxz gkz w) true) (= (g10 gxz gkz (:world (t-cancel w rid))) true))
+  (intro h)
+  (cases hf (run-find w rid))
+  (case [none] (simp only [t-cancel hf refuse]) (exact h))
+  (case [some r]
+    (cases hg (host-cancel-ok w r))
+    (case [false]
+      ;; C1: a done task run's cancel reaches its scope subtree (its owned task runs)
+      (cases hd (host-cancel-done w r))
+      (case [false] (simp only [t-cancel hf hg cancel-done hd refuse]) (exact h))
+      (case [true]
+        (have hj (= (tbl-all (job-ok gxz gkz w) (cancel-jobs (owned-runs w (scope-subtree w (:scope r))))) true))
+        (rw [jl-cancel-jobs]) (exact (owned-ncw gxz gkz w _ (g10-sample gxz gkz w h)))
+        (simp only [t-cancel hf hg cancel-done hd accept])
+        (exact (g10-run-cascade gxz gkz w _ hj h))))
+    (case [true]
+      (simp only [t-cancel hf hg])
+      (have hg2 := hg) (simp only [host-cancel-ok Bool.and_eq_true] at hg2)
+      (exact (t14-g10 gxz gkz w rid false (found-task-ncw gxz gkz w rid r (g10-sample gxz gkz w h) hf (And.right (And.right hg2))) h)))))
 
 (a/theorem g10-tof [gxz :- (List Nat), gkz :- (List Nat), w :- World, r :- RunRow, t :- TaskRow]
   (=> (= (g10 gxz gkz w) true) (List.Mem r (:runs w)) (List.Mem t (:tasks w)) (= (tof-pair (rk10 r) (tk10 t)) true))
@@ -1973,17 +1969,15 @@
   (intro h) (simp only [loser-runs])
   (exact (task-runs-ncw gxz gkz w (tbl-filter (loser-task w (run-scope-of w (:run a))) (:spawned a)) h)))
 
-(override! G10 'inv-cancel-losers '[inv-run-cascade]
-  '(a/theorem g10-cancel-losers [gxz :- (List Nat), gkz :- (List Nat), w0 :- World, w1 :- World]
-     (=> (= (g10 gxz gkz w1) true) (= (g10 gxz gkz (cancel-losers w0 w1)) true))
-     (intro h)
-     (simp only [cancel-losers])
-     (have hj (= (tbl-all (job-ok gxz gkz w1) (cancel-jobs (tbl-gather (any-resolved w1) (loser-runs w1) (:acts w0)))) true))
-     (rw [jl-cancel-jobs])
-     (exact (gather-all10 ActRow (any-resolved w1) (loser-runs w1) (fn [x :- Nat] (ncw gxz gkz x w1))
-              (fn [a :- ActRow] (loser-ncw gxz gkz w1 a h)) (:acts w0)))
-     (exact (g10-run-cascade gxz gkz w1 (cancel-jobs (tbl-gather (any-resolved w1) (loser-runs w1) (:acts w0))) hj h))))
-(lcopy! G10 'inv-cancel-losers)
+(a/theorem g10-cancel-losers [gxz :- (List Nat), gkz :- (List Nat), w0 :- World, w1 :- World]
+  (=> (= (g10 gxz gkz w1) true) (= (g10 gxz gkz (cancel-losers w0 w1)) true))
+  (intro h)
+  (simp only [cancel-losers])
+  (have hj (= (tbl-all (job-ok gxz gkz w1) (cancel-jobs (tbl-gather (any-resolved w1) (loser-runs w1) (:acts w0)))) true))
+  (rw [jl-cancel-jobs])
+  (exact (gather-all10 ActRow (any-resolved w1) (loser-runs w1) (fn [x :- Nat] (ncw gxz gkz x w1))
+           (fn [a :- ActRow] (loser-ncw gxz gkz w1 a h)) (:acts w0)))
+  (exact (g10-run-cascade gxz gkz w1 (cancel-jobs (tbl-gather (any-resolved w1) (loser-runs w1) (:acts w0))) hj h)))
 
 ;; ---- facts about rows of the world
 
@@ -2119,21 +2113,19 @@
                                (pred-pair gxz gkz w c r q k h mc hn hf mq mk))
            (fn [k :- CompRow, mk :- (List.Mem k (:comps w))] (Eq.refl true)))))
 
-(override! G10 'inv-cancel-pred '[inv-run-cascade]
-  '(a/theorem g10-cancel-pred [gxz :- (List Nat), gkz :- (List Nat), w :- World, c :- CompRow]
-     (=> (List.Mem c (:comps w)) (= (needs-run w c) true) (= (g10 gxz gkz w) true) (= (g10 gxz gkz (cancel-pred w c)) true))
-     (intros mc hn h)
-     (cases hr (run-find w (:run c)))
-     (case [none] (simp only [cancel-pred hr]) (exact h))
-     (case [some r]
-       (cases ha (run-alive r))
-       (case [false] (simp only [cancel-pred hr ha]) (exact h))
-       (case [true]
-         (simp only [cancel-pred hr ha])
-         (have hj (= (tbl-all (job-ok gxz gkz w) (List.cons Job (Job.jcancel (:id r) true) (List.nil Job))) true))
-         (simp only [tbl-all job-ok (pred-ncw gxz gkz w c r h mc hn hr) Bool.and_self])
-         (exact (g10-run-cascade gxz gkz w _ hj h))))))
-(lcopy! G10 'inv-cancel-pred)
+(a/theorem g10-cancel-pred [gxz :- (List Nat), gkz :- (List Nat), w :- World, c :- CompRow]
+  (=> (List.Mem c (:comps w)) (= (needs-run w c) true) (= (g10 gxz gkz w) true) (= (g10 gxz gkz (cancel-pred w c)) true))
+  (intros mc hn h)
+  (cases hr (run-find w (:run c)))
+  (case [none] (simp only [cancel-pred hr]) (exact h))
+  (case [some r]
+    (cases ha (run-alive r))
+    (case [false] (simp only [cancel-pred hr ha]) (exact h))
+    (case [true]
+      (simp only [cancel-pred hr ha])
+      (have hj (= (tbl-all (job-ok gxz gkz w) (List.cons Job (Job.jcancel (:id r) true) (List.nil Job))) true))
+      (simp only [tbl-all job-ok (pred-ncw gxz gkz w c r h mc hn hr) Bool.and_self])
+      (exact (g10-run-cascade gxz gkz w _ hj h)))))
 
 ;; ---- T11: computation C keeps its epoch (or a later one), stays awake, and has no run at its
 ;; epoch through the predecessor's cancel, the cut and the entry (transport bundle instance)
@@ -2309,33 +2301,31 @@
   (have hsn := (inv-new-run-of w c ei hs))
   (exact (g10-intro gxz gkz _ hsn (Eq.trans e k1))))
 
-(lcopy! G10 'inv-cut-suffix)
-(lcopy! G10 'inv-consume-entry)
+(tree/restate! G10 '[inv-cut-suffix inv-consume-entry])
 
-(override! G10 'inv-dispatch-raw '[inv-cancel-pred inv-cut-suffix inv-consume-entry]
-  '(a/theorem g10-dispatch-raw [gxz :- (List Nat), gkz :- (List Nat), w :- World, c :- CompRow]
-     (=> (List.Mem c (:comps w)) (= (:idle c) false) (= (needs-run w c) true) (= (g10 gxz gkz w) true)
-         (= (g10 gxz gkz (dispatch-raw w c)) true))
-     (intros mc hi hn h)
-     (have hs := (g10-sample gxz gkz w h))
-     (have k0 := (kc-init gxz gkz w c h mc hi hn))
-     (simp only [kcq] at k0)
-     (have c0 := (ch-intro (:id c) w hs (comp-mem-has w c mc)))
-     (have h1 := (g10-cancel-pred gxz gkz w c mc hn h))
-     (have k1 := (nq-cancel-pred _ _ _ _ w c k0))
-     (have c1 := (ch-cancel-pred (:id c) w c c0))
-     (cases he (entry-edge w (:id c)))
-     (case [none]
-       (simp only [dispatch-raw he])
-       (have k2 := (nq-cut-suffix _ _ _ _ _ (:id c) false 0 0 k1))
-       (have c2 := (ch-cut-suffix (:id c) _ (:id c) false 0 0 c1))
-       (exact (g10-new-run-of gxz gkz _ c 0 (g10-cut-suffix gxz gkz _ (:id c) false 0 0 h1) k2 (ch-rest-of (:id c) _ c2))))
-     (case [some e]
-       (simp only [dispatch-raw he])
-       (have k2 := (nq-consume-entry _ _ _ _ _ e (nq-cut-suffix _ _ _ _ _ (:id c) true (:at e) (:id e) k1)))
-       (have c2 := (ch-consume-entry (:id c) _ e (ch-cut-suffix (:id c) _ (:id c) true (:at e) (:id e) c1)))
-       (exact (g10-new-run-of gxz gkz _ c (entry-ei e)
-                (g10-consume-entry gxz gkz _ e (g10-cut-suffix gxz gkz _ (:id c) true (:at e) (:id e) h1)) k2 (ch-rest-of (:id c) _ c2))))))
+(a/theorem g10-dispatch-raw [gxz :- (List Nat), gkz :- (List Nat), w :- World, c :- CompRow]
+  (=> (List.Mem c (:comps w)) (= (:idle c) false) (= (needs-run w c) true) (= (g10 gxz gkz w) true)
+      (= (g10 gxz gkz (dispatch-raw w c)) true))
+  (intros mc hi hn h)
+  (have hs := (g10-sample gxz gkz w h))
+  (have k0 := (kc-init gxz gkz w c h mc hi hn))
+  (simp only [kcq] at k0)
+  (have c0 := (ch-intro (:id c) w hs (comp-mem-has w c mc)))
+  (have h1 := (g10-cancel-pred gxz gkz w c mc hn h))
+  (have k1 := (nq-cancel-pred _ _ _ _ w c k0))
+  (have c1 := (ch-cancel-pred (:id c) w c c0))
+  (cases he (entry-edge w (:id c)))
+  (case [none]
+    (simp only [dispatch-raw he])
+    (have k2 := (nq-cut-suffix _ _ _ _ _ (:id c) false 0 0 k1))
+    (have c2 := (ch-cut-suffix (:id c) _ (:id c) false 0 0 c1))
+    (exact (g10-new-run-of gxz gkz _ c 0 (g10-cut-suffix gxz gkz _ (:id c) false 0 0 h1) k2 (ch-rest-of (:id c) _ c2))))
+  (case [some e]
+    (simp only [dispatch-raw he])
+    (have k2 := (nq-consume-entry _ _ _ _ _ e (nq-cut-suffix _ _ _ _ _ (:id c) true (:at e) (:id e) k1)))
+    (have c2 := (ch-consume-entry (:id c) _ e (ch-cut-suffix (:id c) _ (:id c) true (:at e) (:id e) c1)))
+    (exact (g10-new-run-of gxz gkz _ c (entry-ei e)
+             (g10-consume-entry gxz gkz _ e (g10-cut-suffix gxz gkz _ (:id c) true (:at e) (:id e) h1)) k2 (ch-rest-of (:id c) _ c2)))))
 
 (a/theorem t11-g-idle [fresh :- Nat, n :- Nat, w :- World, c :- CompRow]
   (=> (= (Bool.and (Nat.beq fresh n) (Bool.and (Bool.not (:idle c)) (Bool.and (needs-run w c) (eligible w c)))) true) (= (:idle c) false))
@@ -2343,11 +2333,7 @@
 (a/theorem t11-g-nr [fresh :- Nat, n :- Nat, w :- World, c :- CompRow]
   (=> (= (Bool.and (Nat.beq fresh n) (Bool.and (Bool.not (:idle c)) (Bool.and (needs-run w c) (eligible w c)))) true) (= (needs-run w c) true))
   (intro h) (simp only [Bool.and_eq_true] at h) (exact (And.left (And.right (And.right h)))))
-(patch! G10 't11-inv
-  (fn [form] (subst-forms #(= % '(inv-dispatch-raw w c h))
-                          (fn [_] '(inv-dispatch-raw w c (tbl-find-mem CompRow comp-id cid c (:comps w) hc)
-                                     (t11-g-idle fresh (:next-id w) w c hg) (t11-g-nr fresh (:next-id w) w c hg) h)) form)))
-(lcopy! G10 't11-inv)
+(tree/restate! G10 '[t11-inv])
 
 ;; ---- T4: a new task n with its run n + 1 (no computation has id n)
 
@@ -2404,20 +2390,18 @@
   (have hT1 (= (t10 (+ n 3) (TK10.mk n (+ n 1))) true)) (have lt1 (< (+ n 1) (+ n 3))) (omega) (simp only [t10 below0 Nat.blt_eq Bool.or_eq_true]) (exact (Or.inr lt1))
   (simp only [g10k tbl-all hN hR hC hT hT1 Bool.and_self]))
 
-(override! G10 'inv-spawn-rows '[]
-  '(a/theorem g10-spawn-rows [gxz :- (List Nat), gkz :- (List Nat), w :- World, owner :- Nat, inputs :- (List Nat), loc :- Bool]
-     (=> (= (g10 gxz gkz w) true) (= (g10 gxz gkz (spawn-rows w owner inputs loc)) true))
-     (intro h)
-     (have hs := (g10-sample gxz gkz w h))
-     (have hr := (g10-rest-of gxz gkz w h)) (simp only [g10-rest] at hr)
-     (have k1 := (g10k-spawn gxz gkz _ _ _ _ hr (runs-below w hs) (comps-below w hs)))
-     (have e (= (g10-rest gxz gkz (spawn-rows w owner inputs loc))
-                (g10k gxz gkz (List.cons RK10 (RK10.mk (+ (:next-id w) 1) (:next-id w) 0 true) (rk10s (:runs w))) (ck10s (:comps w))
-                      (List.cons TK10 (TK10.mk (:next-id w) (+ (:next-id w) 1)) (tk10s (:tasks w))) (+ (:next-id w) 3))))
-     (rfl)
-     (exact (g10-intro gxz gkz _ (inv-spawn-rows w owner inputs loc hs) (Eq.trans e k1)))))
-(lcopy! G10 't4-inv)
-(lcopy! G10 't4-top-inv)
+(a/theorem g10-spawn-rows [gxz :- (List Nat), gkz :- (List Nat), w :- World, owner :- Nat, inputs :- (List Nat), loc :- Bool]
+  (=> (= (g10 gxz gkz w) true) (= (g10 gxz gkz (spawn-rows w owner inputs loc)) true))
+  (intro h)
+  (have hs := (g10-sample gxz gkz w h))
+  (have hr := (g10-rest-of gxz gkz w h)) (simp only [g10-rest] at hr)
+  (have k1 := (g10k-spawn gxz gkz _ _ _ _ hr (runs-below w hs) (comps-below w hs)))
+  (have e (= (g10-rest gxz gkz (spawn-rows w owner inputs loc))
+             (g10k gxz gkz (List.cons RK10 (RK10.mk (+ (:next-id w) 1) (:next-id w) 0 true) (rk10s (:runs w))) (ck10s (:comps w))
+                   (List.cons TK10 (TK10.mk (:next-id w) (+ (:next-id w) 1)) (tk10s (:tasks w))) (+ (:next-id w) 3))))
+  (rfl)
+  (exact (g10-intro gxz gkz _ (inv-spawn-rows w owner inputs loc hs) (Eq.trans e k1))))
+(tree/restate! G10 '[t4-inv t4-top-inv])
 
 ;; ===========================================================================
 ;; Part F. T12 complete: the run is done; a current computation run sets done-epoch := epoch
@@ -2610,14 +2594,8 @@
   (case [jretire x] (simp only [job-ok]))
   (case [jclose s] (simp only [job-ok])))
 
-(lcopy! NQ 'inv-complete-body)
-(lcopy! NQ 'inv-retire-after)
-(lcopy! G10 'inv-settle)
-(lcopy! G10 'inv-cancel-res)
-(lcopy! G10 'inv-fire-edge)
-(lcopy! G10 'nat-fold-inv)
-(lcopy! G10 'inv-retire-after)
-(lcopy! G10 'inv-fin-if-final)
+(tree/restate! NQ '[inv-complete-body inv-retire-after])
+(tree/restate! G10 '[inv-settle inv-cancel-res inv-fire-edge nat-fold-inv inv-retire-after inv-fin-if-final])
 
 (a/theorem rest-tr [gxz :- (List Nat), gkz :- (List Nat), w0 :- World, r :- RunRow, res :- RunResult, xs :- (List Nat)]
   (=> (= (inv-sample w0) true) (= (tbl-all (fn [x :- Nat] (ncw gxz gkz x w0)) xs) true)
@@ -2722,39 +2700,18 @@
   (simp only [er]) (exact hj2)
   (exact (complete-tail gxz gkz (complete-body (run-upd w (:id r) run-complete-row) r res) (:id r) (:of r) hw hj3)))
 
-(override! G10 'inv-complete-raw '[inv-fin-if-final inv-run-cascade inv-retire-after inv-settle inv-cancel-res inv-fire-edge nat-fold-inv]
-  '(a/theorem g10-complete-raw [gxz :- (List Nat), gkz :- (List Nat), w :- World, r :- RunRow, res :- RunResult]
-     (=> (List.Mem r (:runs w)) (= (g10 gxz gkz w) true) (= (g10 gxz gkz (complete-raw w r res)) true))
-     (intros mr h)
-     (simp only [complete-raw])
-     (cases hc (comp-find w (:of r)))
-     (case [none] (exact (cmp-none-task gxz gkz w r res mr h hc)))
-     (case [some c]
-       (cases he (Nat.beq (:epoch r) (:epoch c)))
-       (case [false] (exact (cmp-stale gxz gkz w r res c mr h hc he)))
-       (case [true] (exact (cmp-cur gxz gkz w r res c mr h hc he))))))
+(a/theorem g10-complete-raw [gxz :- (List Nat), gkz :- (List Nat), w :- World, r :- RunRow, res :- RunResult]
+  (=> (List.Mem r (:runs w)) (= (g10 gxz gkz w) true) (= (g10 gxz gkz (complete-raw w r res)) true))
+  (intros mr h)
+  (simp only [complete-raw])
+  (cases hc (comp-find w (:of r)))
+  (case [none] (exact (cmp-none-task gxz gkz w r res mr h hc)))
+  (case [some c]
+    (cases he (Nat.beq (:epoch r) (:epoch c)))
+    (case [false] (exact (cmp-stale gxz gkz w r res c mr h hc he)))
+    (case [true] (exact (cmp-cur gxz gkz w r res c mr h hc he)))))
 
-(override! G10 'inv-retire-one '[inv-retire-pre inv-complete-raw inv-run-cascade]
-  '(a/theorem g10-retire-one [gxz :- (List Nat), gkz :- (List Nat), v :- Nat, w :- World, rid :- Nat]
-     (=> (= (g10 gxz gkz w) true) (= (g10 gxz gkz (retire-one v w rid)) true))
-     (intro h)
-     (cases hf (run-find w rid))
-     (case [none] (simp only [retire-one hf]) (exact h))
-     (case [some r]
-       (have hp := (g10-retire-pre gxz gkz w r h))
-       (cases hf1 (run-find (retire-pre w r) rid))
-       (case [none] (simp only [retire-one hf hf1]) (exact hp))
-       (case [some r1]
-         (have hm1 := (retire-r1-mem w r r1 rid hf1))
-         (have hn1 := (retire-r1-noact w r r1 rid hf hf1))
-         (have ht1 := (task-final-res-tag (retire-pre w r) (:of r1) v))
-         (cases ha (Bool.and (run-alive r1) (run-of-local (retire-pre w r) r1)))
-         (case [true] (simp only [retire-one hf hf1 ha]) (exact (g10-complete-raw gxz gkz _ r1 _ hm1 hp)))
-         (case [false] (simp only [retire-one hf hf1 ha retire-full]) (exact (g10-run-cascade gxz gkz (retire-pre w r) (List.cons Job (Job.jretire rid) (List.nil Job)) (Eq.refl true) hp)))))))
-
-(patch! G10 't12-inv
-  (fn [form] (subst-forms #(= % '(inv-complete-raw w r _ h)) (fn [_] '(inv-complete-raw w r _ (And.left (tok-facts w st r ht)) h)) form)))
-(lcopy! G10 't12-inv)
+(tree/restate! G10 '[t12-inv])
 
 ;; ===========================================================================
 ;; Part G. T5 start (outside a normalization round: nothing exempt): the computation has no
@@ -2934,20 +2891,24 @@
   (let [S (set (map first @@#'spindel.v2.inv.copier/source-theorems))
         deps (fn [n] (let [[_ _ _ _ & p] (#'spindel.v2.inv.copier/theorem-source n)] (distinct (filter S (filter symbol? (flatten p))))))]
     (vec (remove '#{t5-inv raw0-inv raw0g-inv} (distinct (concat (deps 'raw0-inv) (deps 'raw-inv)))))))
-(doseq [n raw-deps] (lcopy! G10 n))
+(tree/restate! G10 raw-deps)
 (doseq [n raw-deps] (wrap-g10r! n))
 
 (a/theorem t5-g-st [fresh :- Nat, n :- Nat, w :- World, c :- CompRow]
   (=> (= (Bool.and (Nat.beq fresh n) (startable w c)) true) (= (startable w c) true))
   (intro h) (simp only [Bool.and_eq_true] at h) (exact (And.right h)))
-(override! G10R 'inv-start-raw '[]
-  '(a/theorem g10r-start-raw-o [w :- World, c :- CompRow]
-     (=> (List.Mem c (:comps w)) (= (startable w c) true) (= (g10r w) true) (= (g10r (start-raw w c)) true))
-     (intros mc hst h) (exact (g10r-start-raw w c mc hst h))))
-(patch! G10R 't5-inv
-  (fn [form] (subst-forms #(= % '(inv-start-raw w c h))
-                          (fn [_] '(inv-start-raw w c (tbl-find-mem CompRow comp-id cid c (:comps w) hc) (t5-g-st fresh (:next-id w) w c hg) h)) form)))
-(lcopy! G10R 'raw-inv)
+;; g10r's rest part, for the tree (Q := g10r-rest): g10's at empty exempt lists
+(a/defn g10r-rest [w :- World] Bool (g10-rest (List.nil Nat) (List.nil Nat) w))
+;; g10r on the generic tree: raw0's transitions are g10's at empty exempt lists (the wrappers above);
+;; T5's start takes "the computation is a startable row" from T5's guard
+(tree/part! G10R
+  :over '{inv-start-raw g10r-start-raw-o}
+  :ctx '{inv-start-raw [(List.Mem c (:comps w)) (= (startable w c) true)]}
+  :pass '{t5-inv {inv-start-raw [(tbl-find-mem CompRow comp-id cid c (:comps w) hc) (t5-g-st fresh (:next-id w) w c hg)]}})
+(a/theorem g10r-start-raw-o [w :- World, c :- CompRow]
+  (=> (List.Mem c (:comps w)) (= (startable w c) true) (= (g10r w) true) (= (g10r (start-raw w c)) true))
+  (intros mc hst h) (exact (g10r-start-raw w c mc hst h)))
+(tree/restate! G10R '[raw-inv])
 
 ;; ===========================================================================
 ;; Part H. Demotion: computation cid (exempt) ends with no current run (epoch step, or none
@@ -3292,8 +3253,8 @@
            (fn [k :- CK10, a1 :- (= true true), hx :- (= (Nat.beq (ck10-id k) cid) false)] (nc0-off gkz cid r k hx))
            _ (all-true-of CK10 (fn [k :- CK10] true) (fn [k :- CK10] (Eq.refl true)) _))))
 
-(lcopy! G10 'inv-end-basis)
-(lcopy! NQ 'inv-end-basis)
+(tree/restate! G10 '[inv-end-basis])
+(tree/restate! NQ '[inv-end-basis])
 
 (a/theorem demote-tail [gxz :- (List Nat), gkz :- (List Nat), w :- World, cid :- Nat]
   (=> (= (g10 (List.cons Nat cid gxz) gkz w) true) (= (ncq gkz cid w) true) (= (g10 gxz gkz (demote-edges w cid)) true))
@@ -3361,37 +3322,35 @@
              (fn [r :- RunRow, m :- (List.Mem r (:runs w)), p :- (= (run-of-tasks w (created-ids (:basis c)) r) true)]
                (demote-ncw2 (List.cons Nat (:id c) gxz) gkz w (created-ids (:basis c)) r hs m p))))))
 
-(override! G10 'inv-demote '[inv-run-cascade]
-  '(a/theorem g10-demote [gxz :- (List Nat), gkz :- (List Nat), w :- World, cid :- Nat]
-     (=> (= (g10 (List.cons Nat cid gxz) gkz w) true) (= (g10 gxz gkz (demote w cid)) true))
-     (intro h)
-     (have hs := (g10-sample _ gkz w h))
-     (cases hc (comp-find w cid))
-     (case [none] (simp only [demote hc]) (exact (g10-drop gxz gkz cid w h (ncq-none gkz w cid hs hc))))
-     (case [some c]
-       (have mc := (tbl-find-mem CompRow comp-id cid c (:comps w) hc))
-       (have ec (= (:id c) cid)) (exact (tbl-find-id CompRow comp-id cid c (:comps w) hc))
-       (cases hi (:idle c))
-       (case [true]
-         (simp only [demote hc hi])
-         (have n1 := (ncq-idle _ gkz w c h mc hi)) (rw [ec] at n1)
-         (exact (g10-drop gxz gkz cid w h n1)))
-       (case [false]
-         (simp only [demote hc hi])
-         (have hj := (demote-jl gxz gkz w c hs)) (rw [ec] at hj)
-         (have h1 := (g10-run-cascade (List.cons Nat cid gxz) gkz w _ hj h))
-         (cases hd (demote-cur w c))
-         (case [true]
-           (simp only [demote-epoch])
-           (exact (demote-tail gxz gkz _ cid (g10-up-inc-epoch (List.cons Nat cid gxz) gkz _ cid h1) (ncq-step (List.cons Nat cid gxz) gkz _ cid h1))))
-         (case [false]
-           (simp only [demote-epoch])
-           (have n0 := (ncq-notcur (List.cons Nat cid gxz) gkz w c h mc hd)) (rw [ec] at n0)
-           (simp only [ncq] at n0)
-           (have n1 := (nq-run-cascade (nc0s gkz cid) tt-c (nc0s-m gkz cid) tt-m w (cancel-jobs (demote-cancels w c)) n0))
-           (have n2 (= (ncq gkz cid (run-cascade w (cancel-jobs (demote-cancels w c)))) true)) (simp only [ncq]) (exact n1)
-           (exact (demote-tail gxz gkz _ cid h1 n2)))))))
-(lcopy! G10 'inv-demote)
+(a/theorem g10-demote [gxz :- (List Nat), gkz :- (List Nat), w :- World, cid :- Nat]
+  (=> (= (g10 (List.cons Nat cid gxz) gkz w) true) (= (g10 gxz gkz (demote w cid)) true))
+  (intro h)
+  (have hs := (g10-sample _ gkz w h))
+  (cases hc (comp-find w cid))
+  (case [none] (simp only [demote hc]) (exact (g10-drop gxz gkz cid w h (ncq-none gkz w cid hs hc))))
+  (case [some c]
+    (have mc := (tbl-find-mem CompRow comp-id cid c (:comps w) hc))
+    (have ec (= (:id c) cid)) (exact (tbl-find-id CompRow comp-id cid c (:comps w) hc))
+    (cases hi (:idle c))
+    (case [true]
+      (simp only [demote hc hi])
+      (have n1 := (ncq-idle _ gkz w c h mc hi)) (rw [ec] at n1)
+      (exact (g10-drop gxz gkz cid w h n1)))
+    (case [false]
+      (simp only [demote hc hi])
+      (have hj := (demote-jl gxz gkz w c hs)) (rw [ec] at hj)
+      (have h1 := (g10-run-cascade (List.cons Nat cid gxz) gkz w _ hj h))
+      (cases hd (demote-cur w c))
+      (case [true]
+        (simp only [demote-epoch])
+        (exact (demote-tail gxz gkz _ cid (g10-up-inc-epoch (List.cons Nat cid gxz) gkz _ cid h1) (ncq-step (List.cons Nat cid gxz) gkz _ cid h1))))
+      (case [false]
+        (simp only [demote-epoch])
+        (have n0 := (ncq-notcur (List.cons Nat cid gxz) gkz w c h mc hd)) (rw [ec] at n0)
+        (simp only [ncq] at n0)
+        (have n1 := (nq-run-cascade (nc0s gkz cid) tt-c (nc0s-m gkz cid) tt-m w (cancel-jobs (demote-cancels w c)) n0))
+        (have n2 (= (ncq gkz cid (run-cascade w (cancel-jobs (demote-cancels w c)))) true)) (simp only [ncq]) (exact n1)
+        (exact (demote-tail gxz gkz _ cid h1 n2))))))
 
 (a/theorem g10-gx-app [gkz :- (List Nat), ys :- (List Nat)]
   (forall [gxz :- (List Nat), w :- World] (=> (= (g10 gxz gkz w) true) (= (g10 (List.append Nat ys gxz) gkz w) true)))
@@ -3493,44 +3452,40 @@
            (fn [q :- RunRow, k :- CompRow, mq :- (List.Mem q (:runs w)), mk :- (List.Mem k (:comps w))] (stray-pair gxz gkz w r q k hta h mr hr mq mk))
            (fn [k :- CompRow, mk :- (List.Mem k (:comps w))] (Eq.refl true)))))
 
-(lcopy! G10 'inv-detach)
-(override! G10 'inv-norm-round '[inv-detach inv-demote]
-  '(a/theorem g10-norm-round [gxz :- (List Nat), gkz :- (List Nat), w :- World]
-     (=> (= (tbl-all (ta-one (:comps w)) (:runs w)) true) (= (g10 gxz gkz w) true) (= (g10 gxz gkz (norm-round w)) true))
-     (intros hta h)
-     (simp only [norm-round norm-round-lv])
-     (have h1 := (g10-gx-app gkz (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) gxz w h))
-     (have hj (= (tbl-all (job-ok (List.append Nat (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) gxz) gkz w)
-                          (cancel-jobs (tbl-scan run-id (run-stray (live-list w)) (:runs w)))) true))
-     (rw [jl-cancel-jobs])
-     (exact (scan-all RunRow run-id (run-stray (live-list w)) (fn [x :- Nat] (ncw (List.append Nat (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) gxz) gkz x w))
-              (:runs w) (fn [r :- RunRow, m :- (List.Mem r (:runs w)), p :- (= (run-stray (live-list w) r) true)] (stray-ncw gxz gkz w r hta h m p))))
-     (have h2 := (g10-run-cascade _ gkz w (cancel-jobs (tbl-scan run-id (run-stray (live-list w)) (:runs w))) hj h1))
-     (exact (g10-detach gxz gkz _ (g10-fold-demote gkz (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) gxz _ h2)))))
+(tree/restate! G10 '[inv-detach])
+(a/theorem g10-norm-round [gxz :- (List Nat), gkz :- (List Nat), w :- World]
+  (=> (= (tbl-all (ta-one (:comps w)) (:runs w)) true) (= (g10 gxz gkz w) true) (= (g10 gxz gkz (norm-round w)) true))
+  (intros hta h)
+  (simp only [norm-round norm-round-lv])
+  (have h1 := (g10-gx-app gkz (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) gxz w h))
+  (have hj (= (tbl-all (job-ok (List.append Nat (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) gxz) gkz w)
+                       (cancel-jobs (tbl-scan run-id (run-stray (live-list w)) (:runs w)))) true))
+  (rw [jl-cancel-jobs])
+  (exact (scan-all RunRow run-id (run-stray (live-list w)) (fn [x :- Nat] (ncw (List.append Nat (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) gxz) gkz x w))
+           (:runs w) (fn [r :- RunRow, m :- (List.Mem r (:runs w)), p :- (= (run-stray (live-list w) r) true)] (stray-ncw gxz gkz w r hta h m p))))
+  (have h2 := (g10-run-cascade _ gkz w (cancel-jobs (tbl-scan run-id (run-stray (live-list w)) (:runs w))) hj h1))
+  (exact (g10-detach gxz gkz _ (g10-fold-demote gkz (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) gxz _ h2))))
 
 ;; C1 Q6: a round's stray runs are no current runs of tombstones (gy 0: tombstones are dormant)
 (a/theorem gy-ta [w :- World] (=> (= (gy 0 w) true) (= (tbl-all (ta-one (:comps w)) (:runs w)) true))
   (intro h) (exact (And.left (gtk-parts _ _ _ (gy-gtk 0 w h)))))
-(override! G10 'inv-norm-loop '[inv-norm-round]
-  '(a/theorem g10-norm-loop [gxz :- (List Nat), gkz :- (List Nat), fuel :- (List Nat)]
-     (forall [w :- World] (=> (= (acts-alive w) true) (= (gy 0 w) true) (= (g10 gxz gkz w) true) (= (g10 gxz gkz (norm-loop fuel w)) true)))
-     (induction fuel)
-     (case' [cons h f ih])
-     (case' [nil])
-     (intros w ha hy hw) (simp only [norm-loop]) (exact hw)
-     (intros w ha hy hw)
-     (cases hn (normalized w))
-     (simp only [norm-loop hn])
-     (exact (ih (norm-round w) (And.right (bn-round w (g10-sample gxz gkz w hw) ha)) (gy-norm-round 0 w (rfl) ha hy)
-              (g10-norm-round gxz gkz w (gy-ta w hy) hw)))
-     (simp only [norm-loop hn]) (exact hw)))
-(override! G10 'inv-normalize '[inv-norm-loop inv-detach]
-  '(a/theorem g10-normalize [gxz :- (List Nat), gkz :- (List Nat), w :- World]
-     (=> (= (acts-alive w) true) (= (gy 0 w) true) (= (g10 gxz gkz w) true) (= (g10 gxz gkz (normalize w)) true))
-     (intros ha hy h)
-     (have b := (bn-detach (alive-cnt w) (act-cnt w) w (bn-intro (alive-cnt w) (act-cnt w) w (g10-sample gxz gkz w h) ha (Nat.le_refl _) (Nat.le_refl _))))
-     (exact (g10-norm-loop gxz gkz (norm-fuel (detach w)) (detach w) (And.left (And.right (bn-parts _ _ _ b))) (gy-detach 0 w hy) (g10-detach gxz gkz w h)))))
-(lcopy! G10 'inv-normalize)
+(a/theorem g10-norm-loop [gxz :- (List Nat), gkz :- (List Nat), fuel :- (List Nat)]
+  (forall [w :- World] (=> (= (acts-alive w) true) (= (gy 0 w) true) (= (g10 gxz gkz w) true) (= (g10 gxz gkz (norm-loop fuel w)) true)))
+  (induction fuel)
+  (case' [cons h f ih])
+  (case' [nil])
+  (intros w ha hy hw) (simp only [norm-loop]) (exact hw)
+  (intros w ha hy hw)
+  (cases hn (normalized w))
+  (simp only [norm-loop hn])
+  (exact (ih (norm-round w) (And.right (bn-round w (g10-sample gxz gkz w hw) ha)) (gy-norm-round 0 w (rfl) ha hy)
+           (g10-norm-round gxz gkz w (gy-ta w hy) hw)))
+  (simp only [norm-loop hn]) (exact hw))
+(a/theorem g10-normalize [gxz :- (List Nat), gkz :- (List Nat), w :- World]
+  (=> (= (acts-alive w) true) (= (gy 0 w) true) (= (g10 gxz gkz w) true) (= (g10 gxz gkz (normalize w)) true))
+  (intros ha hy h)
+  (have b := (bn-detach (alive-cnt w) (act-cnt w) w (bn-intro (alive-cnt w) (act-cnt w) w (g10-sample gxz gkz w h) ha (Nat.le_refl _) (Nat.le_refl _))))
+  (exact (g10-norm-loop gxz gkz (norm-fuel (detach w)) (detach w) (And.left (And.right (bn-parts _ _ _ b))) (gy-detach 0 w hy) (g10-detach gxz gkz w h))))
 
 ;; ===========================================================================
 ;; Part I. Rule R and the step; the literal I10 (one current run per computation)

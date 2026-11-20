@@ -1731,6 +1731,46 @@ base proof leaves to unification (`react-add`, `take-park`) were already `tree/s
   1–62; the tree test also checks that `aha`
   and `svb` have no overrides or patches, where they take their facts, and the five edge sites).
 
+## 5o. Stage 4, group 4: `g10`, `nq` and `g10r` on the tree; part lemmas take the part's parameters
+
+**Result.** I10's run part `g10 gxz gkz` (one current run per computation; exempt computations and
+runs), its transport companion `nq` (four parameters, two of them predicates) and `g10r` (`g10` at
+empty exempt lists) go through the tree. `inv.i10` has no copier override, patch or `lcopy!` left.
+
+| | before (copier): overrides / patches / `lcopy!` | after (tree) |
+|---|---|---|
+| `g10` | 17 / 7 (`g10-patch` over every source; the four one-job cascades, T11, T12) / 29 | 16 own proofs; sites by one rule (4 computation row functions) and 5 run and task rows; `:ctx` 9, `:pass` 7 callers; 7 part lemmas |
+| `nq` | 0 / 1 / 8 | 1 site (the epoch step) |
+| `g10r` | 1 / 1 / 1 | 1 own proof (T5's start), `:ctx` 1, `:pass` 1; 1 part lemma |
+
+`retire-one` was the base proof with two facts passed and is generated. The other 16 own proofs
+are content: the cascade under its job condition and every caller that establishes it, T4, T11,
+T12, demotion and the normalization round.
+
+**The job condition is a context.** `job-ok gxz gkz w j` (a cancel job's run is no current run of a
+kept computation) is what `g10` takes at `job-apply` and the cascade. The four cascades of one
+retire or close job (T16, T15, the slice exit, the world's release) and `retire-one` pass it by
+computation (`Eq.refl true`), where four `casc-patch` patches were.
+
+**Tree changes.**
+- **Part lemmas take the part's parameters.** `g10`'s facts name its parameters (the exempt
+  lists), and a part lemma `pres-x@<part>` was stated over Q only. The part lemmas of a
+  parameterised part now take the parameters as binders after Q, and `restate!` passes them; the
+  shared `pres-x` are untouched. This completes Q := (B p) of §5i: the part's facts are in the
+  part's vocabulary, parameters included.
+- **A cascade's job list is named** (`tree/sources`): the base proofs of the four one-job cascades
+  and of `retire-one` leave the job list (and sometimes the world) to unification, and
+  `Eq.refl true` does not elaborate against an unknown list. The same kind of source as a row
+  function left to unification.
+
+**`g10r`.** Its lemmas for `raw0`'s transitions stay the wrappers of `g10`'s at empty lists
+(`wrap-g10r!`, unchanged names `<x>-g10-r`). The tree needs a rest part to instantiate Q, so
+`g10r-rest` is new: `g10-rest` at empty lists, and `g10r w` unfolds to `gp g10r-rest w`.
+
+### Gate (group 4)
+
+GATE-G4
+
 ## 6. Key pieces to read: the whole proof in 14 stops, in reading order (current names)
 
 1. `inv`, `inv-step`, `Reach1`, `reach-inv` (`top.clj`): the headline and its four-line induction.
