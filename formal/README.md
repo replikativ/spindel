@@ -155,12 +155,14 @@ that emits the same copier calls:
   by open recursion: `pres-<x>` proves x for Q from one hypothesis per lemma x's proof calls. An update
   primitive is one hypothesis per row function (a *site*: `run-upd` at `run-wake` is not `run-upd` at
   `run-tick`). The tree also passes the facts the base proof checks but drops (`contexts`: the run is a
-  row, the computation exists, ...), at the call sites (`passes`, `sources`). `restate!` gives a part
-  its generated lemmas as applications of the generic ones, with the part's own lemma for every callee;
+  row, the computation exists, ...), at the call sites (`passes`, `sources`); a fact from further up the
+  path is a node's own context, which only the parts that need it take. `restate!` gives a part its
+  generated lemmas as applications of the generic ones, with the part's own lemma for every callee;
   `part!` declares where the part's own proof replaces the generic one. On the tree so far: `gl`
-  (`inv.i10-task`), `edb`, `gnf`, `kc`, `kx`, `mdk`, `neb` (notes/proof-layout.md sections 5b, 5c).
+  (`inv.i10-task`), `g9` (`inv.i9-res`), `edb`, `gnf`, `kc`, `kx`, `mdk`, `neb` (notes/proof-layout.md
+  sections 5b, 5c).
 
-`gl` (`inv.i10-task`), `g1` (`inv.i1-scopes`) and `g8` (`inv.i8`) carry a fixed comment block before
+`gl` (`inv.i10-task`), `g9` (`inv.i9-res`), `g1` (`inv.i1-scopes`) and `g8` (`inv.i8`) carry a fixed comment block before
 their declaration: the part in words, its view, its exempt form, its cells, where it is deferred within
 a step, and its companions.
 
@@ -212,7 +214,7 @@ a `-` is `_` in the file name). Kernel names are global: a theorem is `step-p3m`
 | Layer 2 | `layer2.sys`, `layer2.skip`, `layer2.top` | cells, publications and their operations; an id taken by a sibling world (`bump`); `sysinv`, `SysReach`, `sys-reach-inv` |
 | Physical | `layer2.mvcc` | the MVCC row representation (tokens, versions, copy maps), `mv-refinement` |
 | Utilities | `util` | function update at a Nat key (`fupd`) |
-| Proof layout | `pres.frames`, `pres.exempt`, `pres.tree` | footprints of the primitive edits and views of the parts (frames); the exemption forms and their uniform names; the generic step tree (`Leaf`, `Over`, `gq`) that six helper parts use instead of a copy (`restate!`) |
+| Proof layout | `pres.frames`, `pres.exempt`, `pres.tree` | footprints of the primitive edits and views of the parts (frames); the exemption forms and their uniform names; the generic step tree (`pres-<x>`, `part!`, `restate!`) that eight parts use instead of a copy |
 | Oracle (tests) | `test/spindel/v2/oracle.clj`, `oracle_test.clj`, `oracle/` | replays commit logs recorded from the engine through the model, compares every committed state |
 
 `inv.*`, in load order (each requires the ones before it that it uses):
@@ -220,10 +222,11 @@ a `-` is `_` in the file name). Kernel names are global: a theorem is `step-p3m`
 | Namespace | Contents |
 |-----------|----------|
 | `inv.acts` | `ga`: activations (each run's only one, its run parked); the first copier (`copy!`) |
-| `inv.copier` | the bundle copier used from here on (`mk-bundle`, `prim!`, `lcopy!`, `override!`, `patch!`, `inst`) and its declaration front end (`defpart`, `frame!`); bundles `gl` (I10 task part) and `g9` (I9 resources); P3's core `filter-safe-of-refs` |
+| `inv.copier` | the bundle copier used from here on (`mk-bundle`, `prim!`, `lcopy!`, `override!`, `patch!`, `inst`) and its declaration front end (`defpart`, `frame!`); the predicates, cells and lemmas of `gl` (I10 task part) and `g9` (I9 resources); P3's core `filter-safe-of-refs` |
 | `inv.rank`, `inv.rank-step` | I12: the raise loop establishes `ranks-ok`; `inv-rank` through every step (P5) |
 | `inv.idle` | I7: bundle `g7` (idle shape, no dep edge on an idle creditor) |
 | `inv.tomb` | C1 Q6: tombstones are dormant (`gy`) |
+| `inv.i10-task`, `inv.i9-res` | `gl` and `g9` on the generic tree (`pres.tree`): their tables and steps |
 | `inv.base` | P3's reference facts (`mdb`, `esb`, `aha`, the round invariant `ri`), the first link `p3b`, I5 observe (`svb`) |
 | `inv.i10` | I10, computation part (`g10r`), link `p3c` |
 | `inv.i11` | I11a (`gw`, `inv-i11a`), link `p3d` |

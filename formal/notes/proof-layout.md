@@ -1,6 +1,6 @@
 # Readable preservation proofs for the v2 model: options and the target layout
 
-Status: agreed design, 2026-11-19; stage 3 started (§5c). It is the plan for making the layer-1 preservation proofs (`inv-step`)
+Status: agreed design, 2026-11-19; stage 3 under way (§5c: `gl`; §5d: `g9`, and the per-part contexts `g8` needs). It is the plan for making the layer-1 preservation proofs (`inv-step`)
 readable; the staging is in section 5. Stage 0 is this note and the README section "How the step proof
 works". The numbers describe the model as of the restructure (PR #304, e04b1a9) and were measured
 without changing it: a static read of the sources with a small s-expression reader (the appendix says what
@@ -1060,7 +1060,7 @@ restated lemmas, as `ch` carries `comp-has` here.
 
 About 2½–3½ weeks with stage 4 folded in; the main risk is now carrying companions through the cascade
 (R4), not the shape of the leaves (R1, R2 are settled: no structures, and contexts are declared, not
-generated).
+generated). Revised in §5d: `g9` as estimated; `g8` needs contexts declared per part first.
 
 ### What the earlier sections got wrong
 
@@ -1077,6 +1077,148 @@ generated).
   needs facts about its row function. "Contextual leaves" are contextual callees, of either kind.
 - §5b's 24 sites: the "facts in scope" column counted case-split tokens; the elaborator shows 0–10
   hypotheses per site (above).
+
+## 5d. Stage 3, continued: `g9` on the tree, and why `g8` needs per-part contexts
+
+**Result.** `g9` goes through the tree (`spindel.v2.inv.i9-res`): its 4 overrides, 4 patches and the
+`lcopy!` of `step-inv` are gone; its table has 2 site entries and 3 own-proof entries, and all 187
+names the copier generated for it keep their statements (185 restated or aliased, 2 hand lemmas).
+`g8` was not converted: the tree's shared contexts cannot carry it (below), and the change it needs is a
+redesign of how contexts are declared, which this stage was told not to start.
+
+### `g9` before and after
+
+| | before (copier) | after (tree) |
+|---|---|---|
+| resource updates | patches of `inv-res-cancel` and `t18-inv` (`g9-res-upd-q` at the call) | 2 site entries: `resource-upd` at `res-cancel-row` and at `res-set-phase rp-fired` |
+| own proofs | overrides of `cancel-run-local`, `ack-raw`, `arm-park` | `:over` entries: `g9-cancel-run-local`, `g9-ack-raw-o` (the old name an alias), `g9-arm-park` |
+| plumbing | override of `t17-inv`; patches of `inv-job-apply`, `raw0-inv` | none in `g9`; in the tree: 1 context (`arm-park`), 1 own context (`t17`: raw0's guard `fin-shut`), 2 passes |
+| generated | 187 copies (`lcopy!` of `inv-cancel-debtor`, `step-inv`) | 184 restatements, 1 alias, 2 hand lemmas |
+
+The estimate of §5c held: 2 sites, 3 own proofs, 2 contexts, 1 pass (2 counting the pass into `arm-park`).
+`g9-cancel-run-local` and `g9-arm-park` are three-line adapters: the content is `g9-cancel-mid` and
+`g9-arm-o`, followed by the generic debtor side and the generic park.
+
+### The tree extension: own contexts are opt-in
+
+§5c's `:own?` contexts (`t12`, `dispatch-raw`) were global: every part restated those nodes with the
+context premise. `gl` needed that; `g9` did not, and its `t12-g9` and `g9-dispatch-raw` would have
+changed statement. The same held for the new `t17` context: `gl`'s `t17-gl` would have gained `g9`'s
+premise. So:
+
+- An own context names its facts (`:own [hc]`): the tree takes x's base proof, adds the premises to
+  its statement and the names to its first `intros`, and the passes do the rest. `t12`'s hand-written
+  source is gone this way (its pass uses a new one-line lemma `tag-ok-res`); `dispatch-raw` keeps its
+  source (it carries `comp-has` through three edits with `ch`).
+- A part takes x's own context only when it needs it: `takes?` is true when one of x's callees takes a
+  context in that part (an overridden callee that is not `:bare`, or an own context taken in turn).
+  `gl` takes `t12` and `dispatch-raw`, `g9` takes `t17`, neither takes the other's.
+- Every other part keeps x's bare statement, proved from `pres-<x>-bare`: x's base proof over Q, every
+  callee bare. Callers that pass the context get the part's bare lemma through `ctx-<x>` (dropped), now
+  generated for own contexts as well.
+
+Three own nodes give three `pres-<x>-bare` and three more `ctx-` lemmas. Every converted part
+(`edb`, `gnf`, `kc`, `kx`, `mdk`, `neb`, `gl`, `g9`) goes through with identical statements.
+
+### `g8`: what the shared contexts cannot carry
+
+`tree/contexts` holds one premise list per callee, in base vocabulary, and every part that overrides the
+callee takes all of it. Read against `g8`'s 51 overrides and the bundles still to come (`g7`, `gd`), that
+model breaks in two ways:
+
+1. **Parts need different facts at the same callee.** A part's own lemma must take exactly the shared
+   list, so the second part to need a different fact changes the first part's lemma:
+
+   | callee | `gl` | `g9` | `g8` | `g7` | `gd` |
+   |---|---|---|---|---|---|
+   | `complete-raw` | row, tag not none | | no activation of the run, `ga` | | `gd-cce`/`gd-u1` |
+   | `arm-park` | | row, not unwinding | row, alive | row, alive | |
+   | `dispatch-raw` (own) | `comp-has` | | `ga`, `comp-has` | `awake` | |
+   | `t12` (own) | `res-tag-ok` | | `ga` | | |
+   | `new-run-of` | `comp-has` | | owner not closed (`tclosed`) | | |
+
+   Taking the union does not help: `gl-complete-raw-o` would have to take `ga`, and the opt-in of own
+   contexts is per node, not per fact (`t12`: `gl` takes `res-tag-ok`, `g8` takes `ga`).
+2. **The facts are in the part's vocabulary.** `g8`'s owner facts are `sclosed`/`tclosed` over its key
+   lists, `gd`'s are `gd-cce`, the await revival needs `g8`'s helper bundle `ka`; all are defined after
+   the tree. Restating them in base vocabulary adds a predicate and a bridge lemma per fact, for a
+   statement only one part reads.
+
+Both point to the same change: **contexts belong to the part**, not to the callee. A part's table would
+declare its contexts (premises in its own vocabulary, at the nodes that need them), its own contexts
+(the guard or companion it takes at a transition), and its passes; the tree would generate, for that
+part only, the variant `pres-<x>@<part>` of each node on a path between a fact's source and its use,
+from the base proof and the part's passes, and use the shared `pres-<x>` everywhere else. That subsumes
+the opt-in above (a part declares what it takes) and keeps the shared lemmas bare. It is a narrower
+copier: per part, only the nodes on its context paths are regenerated, from a table instead of
+hand-written overrides and text patches.
+
+Three smaller extensions `g8` needs in any design:
+
+- **Gated continuations.** raw0 calls `c0-gate w b o h (t1-body-inv ...)`; `g8`'s T1/T-create-link/
+  T-append need the gate's fact `root-ok-if b w`, so the continuation becomes `fn [hc0] ...` and
+  `c0-gate`'s premise `inv (:world o)` becomes `root-ok-if b w -> inv (:world o)` (today `g8-ga-calls`
+  and the `c0-gate-inv` override). A pass that wraps an argument, not one that inserts one.
+- **Composite sites.** `serve-or` takes a row function `keep` and its key proof; `g8` needs `x8k (keep s)
+  = x8k s` (today an extra argument of the copier at `serve-or`). The tree would dispatch `serve-or`
+  per `keep` like an update primitive, and `source-upd`/`scope-upd` as well (the `g8-patch` rows:
+  consume, close, detach; `stream-set-tail (:next-id w)` needs `site-gen`).
+- **Contexts on sites.** The revival sites (`run-upd` at `run-tick-park` and `run-park-row`) need
+  "every row with this id is alive", passed from `take-park`/`park-if` through the edits before them
+  (as §5c planned).
+
+R4 (companions) was not reached, and is not what stops `g8`. Carrying `ga` would be an own context on
+the 17 nodes between raw and the cascade (`raw`, `raw0g`, `raw0`, `t14`, `t-cancel`, `t16`,
+`t-close-scope`, `t15-full`, `t-slice-exit`, `t-release-world`, `t12`, `t11`, `dispatch-raw`,
+`cancel-pred`, `complete-raw`, `retire-one`, `t-retire-local`), passed with `ga`'s own lemmas
+(`ga-ack-raw` at T15, `ga-run-upd-free` at T-slice-exit, `ga-retire-pre`, `raw0g-ga`, ...): the
+mechanism `g9`'s `t17` uses, with `t-retire-local` (both parts through one fold, `nat-fold-pres2`) and
+`t-slice-exit` (three steps to the run's freedom) as sources. Not tried: in the shared table it collides
+with `gl`'s own contexts at `t12` and `dispatch-raw` (1. above) before the first pass is checked.
+
+The I8 table under per-part contexts would show the model-only guard `cur-closed` (P10) as one row:
+
+```clojure
+:own '{t4-inv [hcc (= (cur-closed w st) false)] ...}   ; raw0's body-shut guard; P10: a run's current scope is open
+```
+
+### Revised plan
+
+| step | what | estimate |
+|---|---|---|
+| per-part contexts | contexts, own contexts and passes in `part!`; per-part path variants; `gl`'s and `g9`'s contexts move into their tables (no statement changes); gated continuations, composite sites, `source-upd`/`scope-upd` sites, site contexts | 3–4 days |
+| `g8` | about 12 contexts, 20 own-context rows (`ga` 17, `cur-closed`, `root-ok-if`, `ka`), 35 passes, 8 sites, 2–3 own proofs (the cascade with its ghost, `t-detach`), Rule R by hand as now | 3–4 days |
+| `hmk` | 13 "not a computation id" facts as contexts (base vocabulary: `comp-has` is false); companions `gd`, `g7`, `gy`, `g10r`, `v14` as own contexts | 3–4 days |
+| `g7`, `gd` | 29 and 22 overrides, mostly the same transitions as `g8` (parks, dispatch, await, T12) with their own facts; `gd`'s `cmono` frames as sites | 2 days each |
+
+About 2½–3 weeks, as §5c's total, with the redesign first instead of per-part workarounds.
+
+### Gate (`g9`)
+
+- **Statements** (name-independent fingerprints of every theorem, f87fb4f against this stage): 16,691
+  identical, none missing. 2 changed, both internals of the tree: `pres-raw0` (its call of `t17` now
+  passes raw0's guard) and `pres-t17` (it takes the guard and passes it to `arm-park`); nothing outside
+  the tree's restatements references a `pres-` lemma. 8 new: `pres-t12-bare`, `pres-t17-bare`,
+  `pres-dispatch-raw-bare`, `ctx-t12`, `ctx-t17`, `ctx-dispatch-raw`, `ctx-arm-park`, `tag-ok-res`.
+  Every old `g9` and `gl` name has its old statement (`t12-g9` and `g9-dispatch-raw` stay bare,
+  `t17-g9` keeps `fin-shut`). `inv-step`, `reach-inv`, `inv-empty`, `sys-reach-inv`, `l5-safety-total`,
+  `step-p3m`, `mv-refinement` unchanged; `inv` is a definition, its source untouched.
+- **Load**, two runs back to back (one JVM each, 1 GB): the namespaces this stage touches took 64.7 s
+  before and 64.7 s after: `inv.copier` 14.6 → 8.2 s (g9's copies gone), `pres.tree` 13.2 → 14.5 s
+  (3 bare lemmas, 4 context defaults), `inv.i9-res` 0.8 s, `inv.i10-task` 0.9 → 1.0 s, `inv.base`
+  36.1 → 40.1 s. The untouched namespaces went 392.5 → 572.5 s (host load); the whole model 457 → 637 s.
+- **Suite**: `clojure -M:test`, 290 tests, 208,315 assertions, 0 failures, 0 errors (the oracle on
+  samples 1–60 included; two new tree tests: own contexts are opt-in, g9 is not copied).
+
+### What the earlier sections got wrong
+
+- §5c: contexts as one shared list per callee. It held for `gl` and `g9` (they share `r ∈ runs` at
+  `cancel-run-local`), but not once two parts need different facts at the same callee, or facts in their
+  own vocabulary (above). Own contexts as global premises changed other parts' statements.
+- §4.6: "the creation overrides become two leaf entries whose path condition carries the guard": the
+  guards sit on transitions (own contexts at T1, T4, raw0's `c0-gate`), and reach the insert composites
+  through about ten passes; not two entries.
+- §5c, R4: the first obstacle for companions is where they are declared, before how they are carried.
 
 ## 6. Key pieces to read: the whole proof in 14 stops, in reading order (current names)
 

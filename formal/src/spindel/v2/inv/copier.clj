@@ -15,12 +15,13 @@
          generic tree (spindel.v2.pres.tree), with its table and step in spindel.v2.inv.i10-task.
     ch   T11 keeps C: computation cx exists through the predecessor's cancel and the cut.
     g9   I9, resources: every resource's owner is below the allocator and listed in its run's
-         `resources`, phases are valid, and `lit-i9-res`. Overrides: T14's cancel-res
-         (`g9-cancel-mid`), T17 arm (not in a cleanup slice, Z#40), T15 ack.
+         `resources`, phases are valid, and `lit-i9-res`. Its lemmas here: a resource row change
+         that keeps id and owner (`g9-res-upd-q`), T14's cancel-res (`g9-cancel-mid`), T17 arm
+         (`g9-arm-o`), T15 ack (`g9-ack-raw-o`). Not copied: it goes through the generic tree, with
+         its table and step in spindel.v2.inv.i9-res.
 
-  Theorems (step-gl and step-lit-i10-task, I10's task part, are in spindel.v2.inv.i10-task):
-    step-g9            g9 w, rule-r-safe raw -> g9 (world-step w it)
-    step-lit-i9-res    ... -> lit-i9-res (world-step w it)      (literal I9, resources)
+  Theorems (step-gl and step-lit-i10-task, I10's task part, are in spindel.v2.inv.i10-task;
+  step-g9 and step-lit-i9-res, I9's resource part, in spindel.v2.inv.i9-res):
     filter-safe-of-refs   P3 core: inv-sample, acts-alive, normalized and `p3-refs` (dep edges have
                        non-idle creditors, activations' runs exist, marked edges are dep edges, no
                        edge id is a cleanup row or storage ref) and `refs-untomb` (C1 Q6: no dep
@@ -1481,6 +1482,9 @@
   (case [true]
     (have e (= tag res-none)) (exact (Nat.eq_of_beq_eq_true hb))
     (simp [res-tag-ok e res-none res-ok res-err] at h)))
+;; the same, for the result T12 builds (the tree's pass at T12's call of complete-raw)
+(a/theorem tag-ok-res [tag :- Nat, v :- Nat] (=> (= (res-tag-ok tag) true) (= (Nat.beq (:tag (RunResult.mk tag v)) res-none) false))
+  (intro h) (exact (tag-ok-none tag h)))
 
 (a/theorem refused-tag-ok [w :- World, st :- Nat, tag :- Nat]
   (=> (= (complete-refused w st tag) false) (= (res-tag-ok tag) true))
@@ -2432,7 +2436,7 @@
   (exact (And.intro p1 (And.intro p2 p3)))
   (exact (g9-intro _ (inv-arm-raw-of w r kind hs) hr2)))
 
-;; ---- the G9 copy
+;; ---- the G9 cells (its table in the generic tree and its step: spindel.v2.inv.i9-res)
 
 (defpart G9 :reads '[next-id res runs])
 (frames/frame-theorem! 'g9-rest-mark-edge 'g9-rest 'mark-edge-inv-sample)
@@ -2449,72 +2453,11 @@
 (prim! G9 'inv-filter-world '(g9-filter w K R))
 (swap! (:renames G9) assoc 'inv-run-upd 'g9-run-upd)
 
-(patch! G9 'inv-res-cancel
-  (fn [form] (subst-forms (app-of? 'inv-resource-upd)
-                          (fn [_] '(g9-res-upd-q w z res-cancel-row res-cancel-row-id cancel-row-owner cancel-row-phase cancel-row-quiet h))
-                          form)))
-(patch! G9 't18-inv
-  (fn [form] (subst-forms (app-of? 'inv-resource-upd)
-                          (fn [_] '(g9-res-upd-q w z (res-set-phase rp-fired) (res-set-phase-resource-id rp-fired)
-                                     (fn [q :- ResRow] (Eq.refl (:owner q)))
-                                     (fn [q :- ResRow, hq :- (= (phase-ok q) true)] (Eq.refl true))
-                                     (fn [q :- ResRow, hq :- (= (res-quiet q) true)] (Eq.refl true)) h))
-                          form)))
-(patch! G9 'inv-job-apply
-  (fn [form] (subst-forms (app-of? 'inv-cancel-run-local)
-                          (fn [[hd w r rep h]] (list hd w r rep '(tbl-find-mem RunRow run-id rid r (:runs w) hf) h)) form)))
-(patch! G9 'raw0-inv
-  (fn [form] (subst-forms #(= % '(t17-inv w _ _ _ _ h)) (fn [_] '(t17-inv w _ _ _ _ hc h)) form)))
-
-(lcopy! G9 'inv-cancel-debtor)
-
-(override! G9 'inv-cancel-run-local '[inv-cancel-debtor]
-  '(a/theorem g9-cancel-run-local [w :- World, r :- RunRow, rep :- Bool]
-     (=> (List.Mem r (:runs w)) (= (g9 w) true) (= (g9 (cancel-run-local w r rep)) true))
-     (intros hm h)
-     (have e (= (cancel-run-local w r rep) (cancel-debtor rep (cancel-mid w r) r))) (rfl)
-     (rw [e])
-     (exact (g9-cancel-debtor rep _ r (g9-cancel-mid w r hm h)))))
-
-(override! G9 'inv-ack-raw '[]
-  '(a/theorem g9-ack-raw [w :- World, z :- Nat, owner :- Nat]
-     (=> (= (tbl-all (no-debtor z) (:edges w)) true) (= (g9 w) true) (= (g9 (ack-raw w z owner)) true))
-     (intros hu h) (exact (g9-ack-raw-o w z owner hu h))))
-
+;; a token outside a cleanup slice holds a run that is not unwinding (the tree's pass at T17's arm-park,
+;; from raw0's guard fin-shut)
 (a/theorem cleanup-not-unw [w :- World, st :- Nat, r :- RunRow]
   (=> (= (in-cleanup w st) false) (= (tok-run w st) (Option.some RunRow r)) (= (run-unwinding r) false))
   (intros hc ht) (simp only [in-cleanup ht opt-test] at hc) (exact hc))
-
-(override! G9 'inv-arm-park '[inv-take-park]
-  '(a/theorem g9-arm-park [w :- World, r :- RunRow, kind :- Nat, k :- Nat]
-     (=> (List.Mem r (:runs w)) (= (run-unwinding r) false) (= (g9 w) true) (= (g9 (arm-park w r kind k)) true))
-     (intros hm hu h)
-     (simp only [arm-park])
-     (exact (g9-take-park _ (run-arm (:next-id w) r) (:next-id w) k (g9-arm-o w r kind hm hu h)))))
-
-(override! G9 't17-inv '[inv-arm-park]
-  '(a/theorem t17-g9 [w :- World, st :- Nat, kind :- Nat, k :- Nat, fresh :- Nat]
-     (=> (= (fin-shut w st) false) (= (g9 w) true) (= (g9 (:world (t17-arm w st kind k fresh))) true))
-     (intros hc h)
-     (cases ht (tok-run w st)) (case' [some r]) (case' [none])
-     (simp only [t17-arm ht refuse]) (exact h)
-     (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (Bool.and (run-normal r) (arm-kind-ok kind))))
-     (simp only [t17-arm ht hg refuse]) (exact h)
-     (simp only [t17-arm ht hg accept])
-     (exact (g9-arm-park w r kind k (And.left (tok-facts w st r ht)) (cleanup-not-unw w st r (fin-shut-cleanup w st hc) ht) h))))
-
-(lcopy! G9 'step-inv)
-
-(a/theorem g9-empty [] (= (g9 empty-world) true) (rfl))
-
-;; Theorem: literal I9, resources (an unwinding run's resources are cancelling or fired),
-;; through every step
-(a/theorem step-lit-i9-res [w :- World, it :- Item]
-  (=> (= (g9 w) true) (= (rule-r-safe (:world (raw w it))) true) (= (lit-i9-res (:world (world-step w it))) true))
-  (intros h hs)
-  (have h2 := (g9-rest-of _ (step-g9 w it h hs)))
-  (simp only [g9-rest Bool.and_eq_true] at h2)
-  (exact (And.right (And.right h2))))
 
 ;; ===========================================================================
 ;; Part E. P3, the core: the Rule R filter is edge-safe in a normalized world with the
