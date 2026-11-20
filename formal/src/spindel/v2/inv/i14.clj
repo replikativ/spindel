@@ -32,6 +32,7 @@
             [spindel.v2.progress.casc :refer :all]
             [spindel.v2.inv.acts :refer :all]
             [spindel.v2.inv :refer :all]
+            [spindel.v2.pres.tree :as tree]
             [spindel.v2.inv.copier :refer :all]
             [spindel.v2.inv.idle :refer :all]
             [spindel.v2.inv.base :refer :all]
@@ -756,20 +757,19 @@
 (prim! VQ 'inv-comp-del-unref '(vq-rest-wd zq9 zw9 zs9 w (comp-del w x) (wdom-comp-del w x) R))
 (prim! VQ 'inv-filter-world '(vq-rest-wd zq9 zw9 zs9 w (filter-world K w) (wdom-filter-world w K) R))
 
-;; the source patch: an inv-comp-upd with a waking row goes through vq-comp-wake
+;; vq on the generic tree (spindel.v2.pres.tree): its table. Its own proofs are below.
 (def ^:private wake-rows '#{comp-start-row comp-replace-row comp-demand-row comp-react-row})
-(defn- fhead [f] (if (seq? f) (first f) f))
-(defn wake-patch [lemma params]
-  (fn [form]
-    (subst-forms (fn [y] (and (seq? y) (= 'inv-comp-upd (first y)) (>= (count y) 6) (contains? wake-rows (fhead (nth y 3)))))
-                 (fn [[_ w x f hid hp & more]]
-                   (apply list lemma (concat params [w x f hid hp
-                                                     (list 'fn '[c :- CompRow]
-                                                           (if (seq? f) (apply list (symbol (str (first f) "-dom14")) (concat (rest f) ['c]))
-                                                               (list (symbol (str f "-dom14")) 'c)))]
-                                             more)))
-                 form)))
-(doseq [[n _] @@#'spindel.v2.inv.copier/source-theorems] (patch! VQ n (wake-patch 'vq-comp-wake '[zq9 zw9 zs9])))
+(defn- dom14 [F]   ; the row function's lemma `<f>-dom14`: the new row's domain is the old row's
+  (let [l (symbol (str (if (seq? F) (first F) F) "-dom14"))]
+    (list 'fn '[q9 :- CompRow] (concat (list l) (when (seq? F) (repeat (count (rest F)) '_)) '(q9)))))
+(tree/part! VQ
+  :over '{inv-await-raw vq-await-raw
+          inv-track-raw vq-track-raw
+          t22-inv       t22-vq
+          t8-full-inv   t8-full-vq
+          inv-take-park vq-take-park}
+  ;; ---- sites: a computation edit by a waking row goes through vq-comp-wake
+  :sites (tree/row-sites 'inv-comp-upd wake-rows (fn [F] (list 'vq-comp-wake 'zq9 'zw9 'zs9 'w 'x F 'hid 'hp (dom14 F) 'h0))))
 
 ;; ===========================================================================
 ;; Part F. Rank changes in the strict window (the I12 raise of T6 and reactivation)
@@ -1294,98 +1294,97 @@
   (simp [edge-ok-in edge-ok cred-ok deb-ok host-wait-edge host-cred ek-wait ek-dep h]))
 
 ;; ---- the overrides (generic in the bundle parameters, as the copier calls them)
-(override! VQ 'inv-await-raw '[inv-await-post]
-  '(a/theorem vq-await-raw [zq9 :- (List Nat), zw9 :- (List Nat), zs9 :- Bool, w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
-     (=> (= (vq zq9 zw9 zs9 w) true) (= (vq zq9 zw9 zs9 (await-raw w r ds mode k mine)) true))
-     (intro h)
-     (have h1 := (vq-await-pre zq9 zw9 zs9 w r ds mode k mine h))
-     (have h2 := (vq-await-wire zq9 (List.append Nat (nat-distinct ds) zw9) r (:next-id w) mode k (nat-distinct ds)
-                   (AwAcc.mk (await-pre w r ds mode k mine) (List.nil DE) true) (rm-in-self (nat-distinct ds) zw9) h1))
-     (have h3 := (vq-await-post zq9 (List.append Nat (nat-distinct ds) zw9) true (:next-id w) (:id r) ds (await-acc w r ds mode k mine) h2))
-     (have h4 := (vq-weaken zq9 (List.append Nat (nat-distinct ds) zw9) true zq9 zw9 (await-post (:next-id w) (:id r) ds (await-acc w r ds mode k mine))
-                   (fn [y :- Nat, hy :- (= (reach-mem y zq9) true)] hy)
-                   (fn [y :- Nat, hy :- (= (reach-mem y zw9) true)] (Eq.trans (reach-mem-append y (nat-distinct ds) zw9) (Eq.trans (congrArg (fn [b :- Bool] (Bool.or (reach-mem y (nat-distinct ds)) b)) hy) (Bool.or_true _))))
-                   h3))
-     (simp only [await-raw])
-     (exact (vq-weaken-s zq9 zw9 zs9 _ h4))))
+(tree/restate! VQ '[inv-await-post])
+(a/theorem vq-await-raw [zq9 :- (List Nat), zw9 :- (List Nat), zs9 :- Bool, w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
+  (=> (= (vq zq9 zw9 zs9 w) true) (= (vq zq9 zw9 zs9 (await-raw w r ds mode k mine)) true))
+  (intro h)
+  (have h1 := (vq-await-pre zq9 zw9 zs9 w r ds mode k mine h))
+  (have h2 := (vq-await-wire zq9 (List.append Nat (nat-distinct ds) zw9) r (:next-id w) mode k (nat-distinct ds)
+                (AwAcc.mk (await-pre w r ds mode k mine) (List.nil DE) true) (rm-in-self (nat-distinct ds) zw9) h1))
+  (have h3 := (vq-await-post zq9 (List.append Nat (nat-distinct ds) zw9) true (:next-id w) (:id r) ds (await-acc w r ds mode k mine) h2))
+  (have h4 := (vq-weaken zq9 (List.append Nat (nat-distinct ds) zw9) true zq9 zw9 (await-post (:next-id w) (:id r) ds (await-acc w r ds mode k mine))
+                (fn [y :- Nat, hy :- (= (reach-mem y zq9) true)] hy)
+                (fn [y :- Nat, hy :- (= (reach-mem y zw9) true)] (Eq.trans (reach-mem-append y (nat-distinct ds) zw9) (Eq.trans (congrArg (fn [b :- Bool] (Bool.or (reach-mem y (nat-distinct ds)) b)) hy) (Bool.or_true _))))
+                h3))
+  (simp only [await-raw])
+  (exact (vq-weaken-s zq9 zw9 zs9 _ h4)))
 
-(override! VQ 'inv-track-raw '[inv-track-fin]
-  '(a/theorem vq-track-raw [zq9 :- (List Nat), zw9 :- (List Nat), zs9 :- Bool, w :- World, r :- RunRow, x :- Nat, s :- SourceRow, k :- Nat]
-     (=> (= (comp-has w (:of r)) true) (= (source-find w x) (Option.some SourceRow s))
-         (= (vq zq9 zw9 zs9 w) true) (= (vq zq9 zw9 zs9 (track-raw w r x s k)) true))
-     (intros hc hs h)
-     (have aw := (awake-src w x s (vq-sample zq9 zw9 zs9 w h) hs))
-     (have hn (= (dnaq14 zq9 (:comps w) (track-edge r x s k)) true))
-     (simp only [dnaq14 track-edge aw Bool.or_true])
-     (have h2 (= (vq zq9 zw9 zs9 (match (site-edge (:edges w) (:of r) (:effect-index r) x)
-                                  [none (track-new w r x s k)]
-                                  [(some e) (comp-upd (track-fin s (:id e) (edge-upd w (:id e) (edge-reread (track-cont r k) s)))
-                                                      (:of r) (comp-consume-adopt (:effect-index r) x))])) true))
-     (cases he (site-edge (:edges w) (:of r) (:effect-index r) x)) (case' [some e]) (case' [none])
-     (simp only [track-new])
-     (exact (vq-comp-upd zq9 zw9 zs9 _ (:of r) (comp-consume-adopt (:effect-index r) x)
-              (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _) (fn [c :- CompRow] (Eq.refl (ck14 c)))
-              (vq-track-fin zq9 zw9 zs9 s (:next-id w) _ (vq-insert-edge-fresh zq9 zw9 zs9 w (track-edge r x s k) (track-edge-ok w r x s k hc hs) h hn))))
-     (exact (vq-comp-upd zq9 zw9 zs9 _ (:of r) (comp-consume-adopt (:effect-index r) x)
-              (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _) (fn [c :- CompRow] (Eq.refl (ck14 c)))
-              (vq-track-fin zq9 zw9 zs9 s (:id e) _
-                (vq-edge-upd zq9 zw9 zs9 w (:id e) (edge-reread (track-cont r k) s) (edge-reread-edge-id _ _) (edge-reread-kind _ _)
-                  (edge-reread-creditor _ _) (edge-reread-debtor _ _) (edge-reread-marked _ _) h))))
-     (simp only [track-raw])
-     (exact (vq-run-upd zq9 zw9 zs9 _ (:id r) run-tick run-tick-run-id h2))))
+(tree/restate! VQ '[inv-track-fin])
+(a/theorem vq-track-raw [zq9 :- (List Nat), zw9 :- (List Nat), zs9 :- Bool, w :- World, r :- RunRow, x :- Nat, s :- SourceRow, k :- Nat]
+  (=> (= (comp-has w (:of r)) true) (= (source-find w x) (Option.some SourceRow s))
+      (= (vq zq9 zw9 zs9 w) true) (= (vq zq9 zw9 zs9 (track-raw w r x s k)) true))
+  (intros hc hs h)
+  (have aw := (awake-src w x s (vq-sample zq9 zw9 zs9 w h) hs))
+  (have hn (= (dnaq14 zq9 (:comps w) (track-edge r x s k)) true))
+  (simp only [dnaq14 track-edge aw Bool.or_true])
+  (have h2 (= (vq zq9 zw9 zs9 (match (site-edge (:edges w) (:of r) (:effect-index r) x)
+                               [none (track-new w r x s k)]
+                               [(some e) (comp-upd (track-fin s (:id e) (edge-upd w (:id e) (edge-reread (track-cont r k) s)))
+                                                   (:of r) (comp-consume-adopt (:effect-index r) x))])) true))
+  (cases he (site-edge (:edges w) (:of r) (:effect-index r) x)) (case' [some e]) (case' [none])
+  (simp only [track-new])
+  (exact (vq-comp-upd zq9 zw9 zs9 _ (:of r) (comp-consume-adopt (:effect-index r) x)
+           (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _) (fn [c :- CompRow] (Eq.refl (ck14 c)))
+           (vq-track-fin zq9 zw9 zs9 s (:next-id w) _ (vq-insert-edge-fresh zq9 zw9 zs9 w (track-edge r x s k) (track-edge-ok w r x s k hc hs) h hn))))
+  (exact (vq-comp-upd zq9 zw9 zs9 _ (:of r) (comp-consume-adopt (:effect-index r) x)
+           (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _) (fn [c :- CompRow] (Eq.refl (ck14 c)))
+           (vq-track-fin zq9 zw9 zs9 s (:id e) _
+             (vq-edge-upd zq9 zw9 zs9 w (:id e) (edge-reread (track-cont r k) s) (edge-reread-edge-id _ _) (edge-reread-kind _ _)
+               (edge-reread-creditor _ _) (edge-reread-debtor _ _) (edge-reread-marked _ _) h))))
+  (simp only [track-raw])
+  (exact (vq-run-upd zq9 zw9 zs9 _ (:id r) run-tick run-tick-run-id h2)))
 
-(override! VQ 't22-inv '[inv-fire-edge]
-  '(a/theorem t22-vq [zq9 :- (List Nat), zw9 :- (List Nat), zs9 :- Bool, w :- World, d :- Nat, fresh :- Nat]
-     (=> (= (vq zq9 zw9 zs9 w) true) (= (vq zq9 zw9 zs9 (:world (t22-host-await w d fresh))) true))
-     (intro h)
-     (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (deb-exists w d)))
-     (simp only [t22-host-await hg refuse]) (exact h)
-     (have hx (= (deb-exists w d) true)) (simp only [Bool.and_eq_true] at hg) (exact (And.right hg))
-     (have ok := (edge-ok-host-wait w d hx))
-     (have hn (= (dnaq14 zq9 (:comps w) (host-wait-edge d)) true)) (simp [dnaq14 host-wait-edge ek-wait ek-dep])
-     (have h0 := (vq-insert-edge-fresh-up zq9 zw9 zs9 w (host-wait-edge d) ok h hn))
-     (have e0 (= (insert-edge-checked w (host-wait-edge d)) (insert-edge-fresh w (host-wait-edge d)))) (simp only [insert-edge-checked ok])
-     (have h1 (= (vq zq9 (List.cons Nat d zw9) true (host-await-dem w d)) true))
-     (simp only [host-await-dem]) (rw [e0]) (exact (vq-demand zq9 zw9 _ d h0))
-     (have h2 (= (vq zq9 (List.cons Nat d zw9) true (host-await-raw w d)) true))
-     (cases hr (fast-ready (host-await-dem w d) d))
-     (simp only [host-await-raw hr]) (exact h1)
-     (simp only [host-await-raw hr]) (exact (vq-fire-edge zq9 (List.cons Nat d zw9) true _ _ (:next-id w) h1))
-     (simp only [t22-host-await hg accept])
-     (exact (vq-weaken-s zq9 zw9 zs9 _ (vq-weaken zq9 (List.cons Nat d zw9) true zq9 zw9 _ (fn [y :- Nat, hy :- (= (reach-mem y zq9) true)] hy)
-                                          (fn [y :- Nat, hy :- (= (reach-mem y zw9) true)] (rm-cons-r y d zw9 hy)) h2)))))
+(tree/restate! VQ '[inv-fire-edge])
+(a/theorem t22-vq [zq9 :- (List Nat), zw9 :- (List Nat), zs9 :- Bool, w :- World, d :- Nat, fresh :- Nat]
+  (=> (= (vq zq9 zw9 zs9 w) true) (= (vq zq9 zw9 zs9 (:world (t22-host-await w d fresh))) true))
+  (intro h)
+  (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (deb-exists w d)))
+  (simp only [t22-host-await hg refuse]) (exact h)
+  (have hx (= (deb-exists w d) true)) (simp only [Bool.and_eq_true] at hg) (exact (And.right hg))
+  (have ok := (edge-ok-host-wait w d hx))
+  (have hn (= (dnaq14 zq9 (:comps w) (host-wait-edge d)) true)) (simp [dnaq14 host-wait-edge ek-wait ek-dep])
+  (have h0 := (vq-insert-edge-fresh-up zq9 zw9 zs9 w (host-wait-edge d) ok h hn))
+  (have e0 (= (insert-edge-checked w (host-wait-edge d)) (insert-edge-fresh w (host-wait-edge d)))) (simp only [insert-edge-checked ok])
+  (have h1 (= (vq zq9 (List.cons Nat d zw9) true (host-await-dem w d)) true))
+  (simp only [host-await-dem]) (rw [e0]) (exact (vq-demand zq9 zw9 _ d h0))
+  (have h2 (= (vq zq9 (List.cons Nat d zw9) true (host-await-raw w d)) true))
+  (cases hr (fast-ready (host-await-dem w d) d))
+  (simp only [host-await-raw hr]) (exact h1)
+  (simp only [host-await-raw hr]) (exact (vq-fire-edge zq9 (List.cons Nat d zw9) true _ _ (:next-id w) h1))
+  (simp only [t22-host-await hg accept])
+  (exact (vq-weaken-s zq9 zw9 zs9 _ (vq-weaken zq9 (List.cons Nat d zw9) true zq9 zw9 _ (fn [y :- Nat, hy :- (= (reach-mem y zq9) true)] hy)
+                                       (fn [y :- Nat, hy :- (= (reach-mem y zw9) true)] (rm-cons-r y d zw9 hy)) h2))))
 
-(override! VQ 't8-full-inv '[inv-fire-edge]
-  '(a/theorem t8-full-vq [zq9 :- (List Nat), zw9 :- (List Nat), zs9 :- Bool, w :- World, d :- Nat, cb :- Nat, fresh :- Nat]
-     (=> (= (vq zq9 zw9 zs9 w) true) (= (vq zq9 zw9 zs9 (:world (t8-full w d cb fresh))) true))
-     (intro h)
-     (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (edge-ok-in w (observe-edge w d cb))))
-     (simp only [t8-full hg refuse]) (exact h)
-     (have he (= (edge-ok-in w (observe-edge w d cb)) true))
-     (simp only [Bool.and_eq_true] at hg) (exact (And.right hg))
-     (have hn (= (dnaq14 zq9 (:comps w) (observe-edge w d cb)) true)) (simp [dnaq14 observe-edge ek-observe ek-dep])
-     (have h1 := (vq-demand zq9 zw9 _ d (vq-insert-edge-fresh-up zq9 zw9 zs9 w (observe-edge w d cb) he h hn)))
-     (have h2 (= (vq zq9 (List.cons Nat d zw9) true (observe-raw w d cb)) true))
-     (simp only [observe-raw])
-     (cases hr (deb-ready (demand-reactive (insert-edge-fresh w (observe-edge w d cb)) d) d))
-     (simp only [hr]) (exact h1)
-     (simp only [hr]) (exact (vq-fire-edge zq9 (List.cons Nat d zw9) true _ _ (:next-id w) h1))
-     (simp only [t8-full hg accept])
-     (exact (vq-weaken-s zq9 zw9 zs9 _ (vq-weaken zq9 (List.cons Nat d zw9) true zq9 zw9 _ (fn [y :- Nat, hy :- (= (reach-mem y zq9) true)] hy)
-                                          (fn [y :- Nat, hy :- (= (reach-mem y zw9) true)] (rm-cons-r y d zw9 hy)) h2)))))
+(tree/restate! VQ '[inv-fire-edge])
+(a/theorem t8-full-vq [zq9 :- (List Nat), zw9 :- (List Nat), zs9 :- Bool, w :- World, d :- Nat, cb :- Nat, fresh :- Nat]
+  (=> (= (vq zq9 zw9 zs9 w) true) (= (vq zq9 zw9 zs9 (:world (t8-full w d cb fresh))) true))
+  (intro h)
+  (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (edge-ok-in w (observe-edge w d cb))))
+  (simp only [t8-full hg refuse]) (exact h)
+  (have he (= (edge-ok-in w (observe-edge w d cb)) true))
+  (simp only [Bool.and_eq_true] at hg) (exact (And.right hg))
+  (have hn (= (dnaq14 zq9 (:comps w) (observe-edge w d cb)) true)) (simp [dnaq14 observe-edge ek-observe ek-dep])
+  (have h1 := (vq-demand zq9 zw9 _ d (vq-insert-edge-fresh-up zq9 zw9 zs9 w (observe-edge w d cb) he h hn)))
+  (have h2 (= (vq zq9 (List.cons Nat d zw9) true (observe-raw w d cb)) true))
+  (simp only [observe-raw])
+  (cases hr (deb-ready (demand-reactive (insert-edge-fresh w (observe-edge w d cb)) d) d))
+  (simp only [hr]) (exact h1)
+  (simp only [hr]) (exact (vq-fire-edge zq9 (List.cons Nat d zw9) true _ _ (:next-id w) h1))
+  (simp only [t8-full hg accept])
+  (exact (vq-weaken-s zq9 zw9 zs9 _ (vq-weaken zq9 (List.cons Nat d zw9) true zq9 zw9 _ (fn [y :- Nat, hy :- (= (reach-mem y zq9) true)] hy)
+                                       (fn [y :- Nat, hy :- (= (reach-mem y zw9) true)] (rm-cons-r y d zw9 hy)) h2))))
 
-(override! VQ 'inv-take-park '[]
-  '(a/theorem vq-take-park [zq9 :- (List Nat), zw9 :- (List Nat), zs9 :- Bool, w :- World, r :- RunRow, x :- Nat, k :- Nat]
-     (=> (= (vq zq9 zw9 zs9 w) true) (= (vq zq9 zw9 zs9 (take-park w r x k)) true))
-     (intro h)
-     (have h1 := (vq-act-ins-fresh zq9 zw9 zs9 w (take-act w r k) (rfl) h))
-     (have hn (= (dnaq14 zq9 (:comps (bump (act-ins w (take-act w r k)))) (take-edge r (:next-id w) x)) true))
-     (simp [dnaq14 take-edge ek-wait ek-dep])
-     (have h2 := (vq-insert-edge-checked zq9 zw9 zs9 (bump (act-ins w (take-act w r k))) (take-edge r (:next-id w) x) h1 hn))
-     (simp only [take-park])
-     (exact (vq-run-upd zq9 zw9 zs9 _ (:id r) run-tick-park run-tick-park-id h2))))
+(a/theorem vq-take-park [zq9 :- (List Nat), zw9 :- (List Nat), zs9 :- Bool, w :- World, r :- RunRow, x :- Nat, k :- Nat]
+  (=> (= (vq zq9 zw9 zs9 w) true) (= (vq zq9 zw9 zs9 (take-park w r x k)) true))
+  (intro h)
+  (have h1 := (vq-act-ins-fresh zq9 zw9 zs9 w (take-act w r k) (rfl) h))
+  (have hn (= (dnaq14 zq9 (:comps (bump (act-ins w (take-act w r k)))) (take-edge r (:next-id w) x)) true))
+  (simp [dnaq14 take-edge ek-wait ek-dep])
+  (have h2 := (vq-insert-edge-checked zq9 zw9 zs9 (bump (act-ins w (take-act w r k))) (take-edge r (:next-id w) x) h1 hn))
+  (simp only [take-park])
+  (exact (vq-run-upd zq9 zw9 zs9 _ (:id r) run-tick-park run-tick-park-id h2)))
 
-(lcopy! VQ 'raw-inv)
+(tree/restate! VQ '[raw-inv])
 
 ;; ===========================================================================
 ;; Part H. The vr copy (Rule R: no allocation, the pass's demotions share the allocator)
@@ -1938,9 +1937,7 @@
     (case [false] (simp only [Bool.not_false Bool.true_or]))
     (case [true] (simp only [hy Bool.not_true Bool.false_or] at he) (simp only [Bool.not_true Bool.false_or]) (exact he))))
 
-(lcopy! VR 'inv-run-cascade)
-(lcopy! VR 'inv-demote-epoch)
-(lcopy! VR 'inv-detach)
+(tree/restate! VR '[inv-run-cascade inv-demote-epoch inv-detach])
 
 ;; the demotion's last part on the epoch-stepped world W2 (W3 = W2 without x's dep edges)
 ;; ---- C0: demote closes C's basis streams (`end-basis`) between dropping C's dep edges and
@@ -2047,7 +2044,7 @@
   (have e2 (= (:creditor k) (:creditor e))) (exact (congrArg (fn [q :- E14] (:cred q)) hk))
   (simp only [ncd14 e1 e2]) (simp only [ncd14] at he) (exact he))
 
-(lcopy! VR 'inv-end-basis)
+(tree/restate! VR '[inv-end-basis])
 
 (a/theorem vr-demote-tail [S :- (List Nat), R :- (List Nat), W2 :- World, x :- Nat]
   (=> (= (reach-mem x S) true) (= (vr S (List.cons Nat x R) W2) true) (= (inv-rank W2) true)

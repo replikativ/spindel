@@ -22,6 +22,9 @@
             [spindel.v2.inv.i5 :as i5]
             [spindel.v2.inv.i1-owners :as i1o]
             [spindel.v2.inv.i1-runs :as i1r]
+            [spindel.v2.completion.open-scopes :as os]
+            [spindel.v2.inv.i14 :as i14]
+            [spindel.v2.progress.measures :as ms]
             [spindel.v2.pres.tree :as tree]))
 
 (defn- declared? [s] (some? (.lookup ^ansatz.kernel.Env @a/ansatz-env (ansatz.kernel.Name/fromString (str s)))))
@@ -184,3 +187,13 @@
   ;; the companion ga goes from the step's input down to T12
   (doseq [x '[raw-inv raw0g-inv t12-inv t5-inv t11-inv t17-inv]] (is (tree/variant? i1r/GR0 x) (str x)))
   (is (tree/variant? i1r/GRX 'inv-job-apply)))
+
+(deftest open-scopes-i14-and-the-measure-are-not-copied
+  (doseq [B [os/GOX os/GOS i14/VQ i14/VR ms/MB]]
+    (is (empty? @(:overrides B)) (str (:pred B)))
+    (is (empty? @(:patches B)) (str (:pred B))))
+  ;; mb's hypothesis "the parking run is not the tracked one" goes from the await and the take
+  ;; down to the park, as an own fact
+  (doseq [x '[inv-await-raw inv-await-post inv-take-park raw0-arm-inv]] (is (tree/variant? ms/MB x) (str x)))
+  (is (tree/variant? os/GOS 'inv-job-apply))
+  (is (= 1 ('inv-run-ins-fresh tree/dispatched))))

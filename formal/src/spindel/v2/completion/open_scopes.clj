@@ -16,7 +16,7 @@
   converges: `sub-conv`, so the subtree holds every scope whose chain reaches the run scope); and Rule R's filter
   keeps every run (spindel.v2.inv.i1-runs `run-kept`: normalized, gr0).
 
-  The copy is spindel.v2.inv.copier's (`mk-bundle`, `prim!`, `lcopy!`). T13's run deletion needs, between the close of
+  Both bundles go through the generic step tree (spindel.v2.pres.tree). T13's run deletion needs, between the close of
   the subtree and the deletion, a witness other than the retiring run: the parametric bundle `gox x` (every scope
   row with os-need has a witness run whose id is not x) is copied over the source closes of `close-local`.
 
@@ -35,6 +35,7 @@
             [spindel.v2.progress.casc :refer :all]
             [spindel.v2.inv.acts :refer :all]
             [spindel.v2.inv :refer :all]
+            [spindel.v2.pres.tree :as tree]
             [spindel.v2.inv.copier :refer :all]
             [spindel.v2.inv.base :refer :all]
             [spindel.v2.inv.acyclic :refer [cy-par]]
@@ -920,8 +921,7 @@
 (prim! GOX 'mark-edge-inv-sample '(Eq.trans (gox-rest-mark-edge xr9 w x) R))
 (prim! GOX 'unmark-edge-inv-sample '(Eq.trans (gox-rest-unmark-edge xr9 w x) R))
 (prim! GOX 'inv-remove-edge '(Eq.trans (gox-rest-remove-edge xr9 w x) R))
-(lcopy! GOX 'nat-fold-inv)
-(lcopy! GOX 'inv-close-source)
+(tree/restate! GOX '[nat-fold-inv inv-close-source])
 
 ;; ===========================================================================
 ;; Part G. The copy of gos
@@ -939,141 +939,145 @@
 (prim! GOS 'inv-run-ins-fresh '(gos-rest-run-ins w r R))
 (prim! GOS 'inv-close-scope-id '(gos-rest-scope-upd w x scope-close scope-close-scope-id close-hk R))
 
-;; run creation: the run scope is the new run's
-(override! GOS 'inv-add-run-scope '[]
-  '(a/theorem gos-add-run-scope [w :- World, of :- Nat, epoch :- Nat, parent :- Nat, ei :- Nat]
-     (=> (= (gos w) true) (= (gos (add-run-scope w of epoch parent ei)) true))
-     (intro h)
-     (simp only [add-run-scope])
-     (have h1 (= (gos (bump (run-ins w (new-run-row (:next-id w) of epoch (+ (:next-id w) 1) ei)))) true))
-     (exact (gos-intro _ (inv-run-ins-fresh w (new-run-row (:next-id w) of epoch (+ (:next-id w) 1) ei) (rfl) (gos-sample w h))
-              (gos-rest-run-ins w _ (gos-rest-of w h))))
-     (apply (gos-scope-ins (bump (run-ins w (new-run-row (:next-id w) of epoch (+ (:next-id w) 1) ei))) (new-scope-row (+ (:next-id w) 1) parent) (rfl) _ h1))
-     (intro n)
-     (have mr (List.Mem (new-run-row (:next-id w) of epoch (+ (:next-id w) 1) ei)
-                        (List.cons RunRow (new-run-row (:next-id w) of epoch (+ (:next-id w) 1) ei) (:runs w))))
-     (exact (List.Mem.head _))
-     (exact (hw-intro (bump (scope-ins (bump (run-ins w (new-run-row (:next-id w) of epoch (+ (:next-id w) 1) ei))) (new-scope-row (+ (:next-id w) 1) parent))) (+ (:next-id w) 1) (new-run-row (:next-id w) of epoch (+ (:next-id w) 1) ei) mr (wi-self _ _)))))
-;; open-scope: under the run's current scope
-(override! GOS 't-open-scope-inv '[]
-  '(a/theorem t-open-scope-gos [w :- World, st :- Nat, s :- Nat]
-     (=> (= (gos w) true) (= (gos (:world (t-open-scope w st s))) true))
-     (intro h)
-     (cases ht (tok-run w st)) (case' [some r]) (case' [none])
-     (simp only [t-open-scope ht refuse]) (exact h)
-     (cases hg (Bool.and (Nat.beq s (:next-id w)) (open-ok w r)))
-     (simp only [t-open-scope ht hg refuse]) (exact h)
-     (have hs (= s (:next-id w))) (simp only [Bool.and_eq_true Nat.beq_eq] at hg) (exact (And.left hg))
-     (have hc (= (scope-has w (cur-scope w r)) true))
-     (simp only [open-ok Bool.and_eq_true] at hg) (exact (And.right (And.right hg)))
-     (simp only [t-open-scope ht hg accept])
-     (exact (gos-open w r s hs hc (And.left (tok-facts w st r ht)) h))))
-;; scope deletion (Z#18): the kept scopes' parents are kept (parent-outside)
-(override! GOS 'inv-remove-if-empty '[]
-  '(a/theorem gos-remove-if-empty [w :- World, sub :- (List Nat)]
-     (=> (= (gos w) true) (= (gos (remove-if-empty w sub)) true))
-     (intro h)
-     (have i := (inv-remove-if-empty w sub (gos-sample w h)))
-     (cases he (subtree-empty w sub))
-     (case [false] (simp only [remove-if-empty he]) (exact h))
-     (case [true]
-       (have po (= (tbl-all (parent-outside sub) (:scopes w)) true))
-       (simp only [subtree-empty Bool.and_eq_true] at he) (exact (And.left he))
-       (simp only [remove-if-empty he] at i)
-       (simp only [remove-if-empty he])
-       (apply (gos-intro _ i))
-       (apply (gos-rest-keep w (nat-fold scope-del w sub) (not-in sub) (scope-del-fold sub w) _ _ (gos-rest-of w h)))
-       (intros c m k p0)
-       (have pc := (tbl-all-mem ScopeRow (parent-outside sub) c (:scopes w) po m))
-       (simp only [parent-outside Bool.or_eq_true] at pc)
-       (cases pc)
-       (case [inl a1] (simp only [not-in a1 Bool.not_true] at k) (cases k))
-       (case [inr b1] (simp only [not-in]) (exact b1))
-       (intros q mq) (rw [(del-fold-runs sub w)]) (exact (rcov-mem _ q mq)))))
-;; detach: the run scope is its run's
-(override! GOS 't-detach-inv '[inv-remove-if-empty inv-task-upd]
-  '(a/theorem t-detach-gos [w :- World, k :- Nat, s :- Nat]
-     (=> (= (gos w) true) (= (gos (:world (t-detach w k s))) true))
-     (intro h)
-     (cases hf (task-find w k))
-     (case [none] (simp only [t-detach hf refuse]) (exact h))
-     (case [some t]
-       (cases hg (detach-ok w t s))
-       (case [false] (simp only [t-detach hf hg refuse]) (exact h))
-       (case [true]
-         (simp only [t-detach hf hg accept remove-empty-at detach-move])
-         (have h1 := (gos-task-upd w k (task-set-owner s) (task-set-owner-id s) h))
-         (exact (gos-remove-if-empty _ _ (gos-set-parent-tr w k s t h1)))))))
-;; T13: the run row goes after its run scope's subtree is closed (the witness gox)
-(override! GOS 'inv-retire-local '[inv-remove-if-empty inv-clear-comp-run inv-close-scope-id nat-fold-inv inv-cleanup-del]
-  '(a/theorem gos-retire-local [w :- World, r :- RunRow]
-     (=> (= (run-find w (:id r)) (Option.some RunRow r)) (= (gos w) true) (= (gos (retire-local w r)) true))
-     (intros hfr h)
-     (have hs := (gos-sample w h))
-     (have cc := (cc-tabs w r))
-     (have g1 := (gos-clear-comp-run w r h))
-     (have g1c := (nat-fold-gos close-scope-id gos-close-scope-id (scope-subtree w (:scope r)) (clear-comp-run w r) g1))
-     (have ox (= (gox (:id r) (nat-fold close-scope-id (clear-comp-run w r) (scope-subtree w (:scope r)))) true))
-     (apply (gox-intro _ _ (gos-sample _ g1c)))
-     (simp only [gox-rest])
-     (apply (all-of-mem ScopeRow _ _))
-     (intros c m)
-     (cases hn (os-need c))
-     (case [false] (simp only [ox-ok hn Bool.not_false Bool.true_or]))
-     (case [true]
-       (simp only [ox-ok hn Bool.not_true Bool.false_or])
-       (have nin := (csf-open (scope-subtree w (:scope r)) (clear-comp-run w r) c m hn))
-       (have hw1 := (gos-rest-mem _ c (gos-rest-of _ g1c) m hn))
-       (apply (hw-elim _ (:id c) _ hw1))
-       (intros q mq eq)
-       (cases hq (Nat.beq (:id q) (:id r)))
-       (case [false]
-         (apply (any-elim-of RunRow _ q _ mq))
-         (simp only [run-within-ne hq Bool.not_false Bool.true_and]) (exact eq))
-       (case [true]
-         (have mq0 (List.Mem q (:runs w)))
-         (rw [(csf-runs (scope-subtree w (:scope r)) (clear-comp-run w r)) (And.right cc)] at mq) (exact mq)
-         (have ef (= (tbl-find run-id (run-id q) (:runs w)) (Option.some RunRow r)))
-         (have e (= (run-id q) (:id r))) (exact (Nat.eq_of_beq_eq_true hq))
-         (rw [e]) (exact hfr)
-         (have qr := (find-uniq RunRow run-id (:runs w) q r (os-runs-nodup w hs) mq0 ef))
-         (have ew (= (scope-within w (:id c) (:scope r)) true))
-         (rw [← qr])
-         (apply (wi-mono _ w (:id c) (:scope q) _ eq))
-         (intros z b hb)
-         (rw [(csf-up (scope-subtree w (:scope r)) (clear-comp-run w r) z)] at hb)
-         (have e3 := (cy-up w z)) (rw [(cy-up _ z) (And.left cc) ← e3] at hb)
-         (exact hb)
-         (have cp (= (Nat.beq (:id c) 0) false))
-         (apply (scope-pos _ (:id c) (gos-sample _ g1c)))
-         (simp only [scope-has]) (rw [← (nat-mem-ids ScopeRow scope-id (:id c) _)]) (exact (mem-ids-has ScopeRow scope-id c _ m))
-         (have ins := (sub-within w (:scope r) (:id c) cp ew))
-         (rw [ins] at nin) (cases nin)))
-     (have ox2 := (nat-fold-gox (:id r) close-source (gox-close-source (:id r))
-                    (tbl-scan source-id (source-owned-in (scope-subtree w (:scope r))) (:sources (clear-comp-run w r))) _ ox))
-     (simp only [retire-local retire-with close-local])
-     (have g3 (= (gos (run-del (nat-fold close-source (nat-fold close-scope-id (clear-comp-run w r) (scope-subtree w (:scope r)))
-                                  (tbl-scan source-id (source-owned-in (scope-subtree w (:scope r))) (:sources (clear-comp-run w r))))
-                                (:id r))) true))
-     (apply (gos-intro _ (inv-run-del _ (:id r) (gox-sample _ _ ox2))))
-     (apply (gos-rest-tr _))
-     (intros c m n)
-     (have hx (= (hwx (nat-fold close-source (nat-fold close-scope-id (clear-comp-run w r) (scope-subtree w (:scope r)))
-                        (tbl-scan source-id (source-owned-in (scope-subtree w (:scope r))) (:sources (clear-comp-run w r)))) (:id c) (:id r)) true))
-     (have o := (tbl-all-mem ScopeRow _ c _ (gox-rest-of _ _ ox2) m))
-     (simp only [ox-ok n Bool.not_true Bool.false_or] at o) (exact o)
-     (simp only [hwx] at hx)
-     (apply (any-elim RunRow _ _ _ hx))
-     (intros q mq e)
-     (simp only [run-within-ne Bool.and_eq_true] at e)
-     (apply (hw-intro (run-del (nat-fold close-source (nat-fold close-scope-id (clear-comp-run w r) (scope-subtree w (:scope r))) (tbl-scan source-id (source-owned-in (scope-subtree w (:scope r))) (:sources (clear-comp-run w r)))) (:id r)) (:id c) q (del-mem RunRow run-id (:id r) q _ mq (cy-not-true _ (And.left e)))))
-     (exact (And.right e))
-     (exact (gos-remove-if-empty _ (scope-subtree w (:scope r)) (gos-cleanup-del _ (:id r) g3)))))
-(patch! GOS 'inv-job-apply
-  (fn [form] (subst-forms #(= % '(inv-retire-local w r h)) (fn [_] '(inv-retire-local w r (rf-self w rid r hf) h)) form)))
+;; gos on the generic tree (spindel.v2.pres.tree): its table. Its own proofs follow.
+(tree/part! GOS
+  :over '{inv-add-run-scope   gos-add-run-scope
+          t-open-scope-inv    t-open-scope-gos
+          inv-remove-if-empty gos-remove-if-empty
+          t-detach-inv        t-detach-gos
+          inv-retire-local    gos-retire-local}
+  ;; ---- T13's retired run is the row run-find finds at its own id
+  :ctx '{inv-retire-local [(= (run-find w (:id r)) (Option.some RunRow r))]}
+  :pass '{inv-job-apply {inv-retire-local [(rf-self w rid r hf)]}})
 
-(lcopy! GOS 'raw-inv)
-(lcopy! GOS 'inv-normalize)
+;; run creation: the run scope is the new run's
+(a/theorem gos-add-run-scope [w :- World, of :- Nat, epoch :- Nat, parent :- Nat, ei :- Nat]
+  (=> (= (gos w) true) (= (gos (add-run-scope w of epoch parent ei)) true))
+  (intro h)
+  (simp only [add-run-scope])
+  (have h1 (= (gos (bump (run-ins w (new-run-row (:next-id w) of epoch (+ (:next-id w) 1) ei)))) true))
+  (exact (gos-intro _ (inv-run-ins-fresh w (new-run-row (:next-id w) of epoch (+ (:next-id w) 1) ei) (rfl) (gos-sample w h))
+           (gos-rest-run-ins w _ (gos-rest-of w h))))
+  (apply (gos-scope-ins (bump (run-ins w (new-run-row (:next-id w) of epoch (+ (:next-id w) 1) ei))) (new-scope-row (+ (:next-id w) 1) parent) (rfl) _ h1))
+  (intro n)
+  (have mr (List.Mem (new-run-row (:next-id w) of epoch (+ (:next-id w) 1) ei)
+                     (List.cons RunRow (new-run-row (:next-id w) of epoch (+ (:next-id w) 1) ei) (:runs w))))
+  (exact (List.Mem.head _))
+  (exact (hw-intro (bump (scope-ins (bump (run-ins w (new-run-row (:next-id w) of epoch (+ (:next-id w) 1) ei))) (new-scope-row (+ (:next-id w) 1) parent))) (+ (:next-id w) 1) (new-run-row (:next-id w) of epoch (+ (:next-id w) 1) ei) mr (wi-self _ _))))
+;; open-scope: under the run's current scope
+(a/theorem t-open-scope-gos [w :- World, st :- Nat, s :- Nat]
+  (=> (= (gos w) true) (= (gos (:world (t-open-scope w st s))) true))
+  (intro h)
+  (cases ht (tok-run w st)) (case' [some r]) (case' [none])
+  (simp only [t-open-scope ht refuse]) (exact h)
+  (cases hg (Bool.and (Nat.beq s (:next-id w)) (open-ok w r)))
+  (simp only [t-open-scope ht hg refuse]) (exact h)
+  (have hs (= s (:next-id w))) (simp only [Bool.and_eq_true Nat.beq_eq] at hg) (exact (And.left hg))
+  (have hc (= (scope-has w (cur-scope w r)) true))
+  (simp only [open-ok Bool.and_eq_true] at hg) (exact (And.right (And.right hg)))
+  (simp only [t-open-scope ht hg accept])
+  (exact (gos-open w r s hs hc (And.left (tok-facts w st r ht)) h)))
+;; scope deletion (Z#18): the kept scopes' parents are kept (parent-outside)
+(a/theorem gos-remove-if-empty [w :- World, sub :- (List Nat)]
+  (=> (= (gos w) true) (= (gos (remove-if-empty w sub)) true))
+  (intro h)
+  (have i := (inv-remove-if-empty w sub (gos-sample w h)))
+  (cases he (subtree-empty w sub))
+  (case [false] (simp only [remove-if-empty he]) (exact h))
+  (case [true]
+    (have po (= (tbl-all (parent-outside sub) (:scopes w)) true))
+    (simp only [subtree-empty Bool.and_eq_true] at he) (exact (And.left he))
+    (simp only [remove-if-empty he] at i)
+    (simp only [remove-if-empty he])
+    (apply (gos-intro _ i))
+    (apply (gos-rest-keep w (nat-fold scope-del w sub) (not-in sub) (scope-del-fold sub w) _ _ (gos-rest-of w h)))
+    (intros c m k p0)
+    (have pc := (tbl-all-mem ScopeRow (parent-outside sub) c (:scopes w) po m))
+    (simp only [parent-outside Bool.or_eq_true] at pc)
+    (cases pc)
+    (case [inl a1] (simp only [not-in a1 Bool.not_true] at k) (cases k))
+    (case [inr b1] (simp only [not-in]) (exact b1))
+    (intros q mq) (rw [(del-fold-runs sub w)]) (exact (rcov-mem _ q mq))))
+;; detach: the run scope is its run's
+(tree/restate! GOS '[inv-task-upd])
+(a/theorem t-detach-gos [w :- World, k :- Nat, s :- Nat]
+  (=> (= (gos w) true) (= (gos (:world (t-detach w k s))) true))
+  (intro h)
+  (cases hf (task-find w k))
+  (case [none] (simp only [t-detach hf refuse]) (exact h))
+  (case [some t]
+    (cases hg (detach-ok w t s))
+    (case [false] (simp only [t-detach hf hg refuse]) (exact h))
+    (case [true]
+      (simp only [t-detach hf hg accept remove-empty-at detach-move])
+      (have h1 := (gos-task-upd w k (task-set-owner s) (task-set-owner-id s) h))
+      (exact (gos-remove-if-empty _ _ (gos-set-parent-tr w k s t h1))))))
+;; T13: the run row goes after its run scope's subtree is closed (the witness gox)
+(tree/restate! GOS '[inv-clear-comp-run inv-close-scope-id nat-fold-inv inv-cleanup-del])
+(a/theorem gos-retire-local [w :- World, r :- RunRow]
+  (=> (= (run-find w (:id r)) (Option.some RunRow r)) (= (gos w) true) (= (gos (retire-local w r)) true))
+  (intros hfr h)
+  (have hs := (gos-sample w h))
+  (have cc := (cc-tabs w r))
+  (have g1 := (gos-clear-comp-run w r h))
+  (have g1c := (nat-fold-gos close-scope-id gos-close-scope-id (scope-subtree w (:scope r)) (clear-comp-run w r) g1))
+  (have ox (= (gox (:id r) (nat-fold close-scope-id (clear-comp-run w r) (scope-subtree w (:scope r)))) true))
+  (apply (gox-intro _ _ (gos-sample _ g1c)))
+  (simp only [gox-rest])
+  (apply (all-of-mem ScopeRow _ _))
+  (intros c m)
+  (cases hn (os-need c))
+  (case [false] (simp only [ox-ok hn Bool.not_false Bool.true_or]))
+  (case [true]
+    (simp only [ox-ok hn Bool.not_true Bool.false_or])
+    (have nin := (csf-open (scope-subtree w (:scope r)) (clear-comp-run w r) c m hn))
+    (have hw1 := (gos-rest-mem _ c (gos-rest-of _ g1c) m hn))
+    (apply (hw-elim _ (:id c) _ hw1))
+    (intros q mq eq)
+    (cases hq (Nat.beq (:id q) (:id r)))
+    (case [false]
+      (apply (any-elim-of RunRow _ q _ mq))
+      (simp only [run-within-ne hq Bool.not_false Bool.true_and]) (exact eq))
+    (case [true]
+      (have mq0 (List.Mem q (:runs w)))
+      (rw [(csf-runs (scope-subtree w (:scope r)) (clear-comp-run w r)) (And.right cc)] at mq) (exact mq)
+      (have ef (= (tbl-find run-id (run-id q) (:runs w)) (Option.some RunRow r)))
+      (have e (= (run-id q) (:id r))) (exact (Nat.eq_of_beq_eq_true hq))
+      (rw [e]) (exact hfr)
+      (have qr := (find-uniq RunRow run-id (:runs w) q r (os-runs-nodup w hs) mq0 ef))
+      (have ew (= (scope-within w (:id c) (:scope r)) true))
+      (rw [← qr])
+      (apply (wi-mono _ w (:id c) (:scope q) _ eq))
+      (intros z b hb)
+      (rw [(csf-up (scope-subtree w (:scope r)) (clear-comp-run w r) z)] at hb)
+      (have e3 := (cy-up w z)) (rw [(cy-up _ z) (And.left cc) ← e3] at hb)
+      (exact hb)
+      (have cp (= (Nat.beq (:id c) 0) false))
+      (apply (scope-pos _ (:id c) (gos-sample _ g1c)))
+      (simp only [scope-has]) (rw [← (nat-mem-ids ScopeRow scope-id (:id c) _)]) (exact (mem-ids-has ScopeRow scope-id c _ m))
+      (have ins := (sub-within w (:scope r) (:id c) cp ew))
+      (rw [ins] at nin) (cases nin)))
+  (have ox2 := (nat-fold-gox (:id r) close-source (gox-close-source (:id r))
+                 (tbl-scan source-id (source-owned-in (scope-subtree w (:scope r))) (:sources (clear-comp-run w r))) _ ox))
+  (simp only [retire-local retire-with close-local])
+  (have g3 (= (gos (run-del (nat-fold close-source (nat-fold close-scope-id (clear-comp-run w r) (scope-subtree w (:scope r)))
+                               (tbl-scan source-id (source-owned-in (scope-subtree w (:scope r))) (:sources (clear-comp-run w r))))
+                             (:id r))) true))
+  (apply (gos-intro _ (inv-run-del _ (:id r) (gox-sample _ _ ox2))))
+  (apply (gos-rest-tr _))
+  (intros c m n)
+  (have hx (= (hwx (nat-fold close-source (nat-fold close-scope-id (clear-comp-run w r) (scope-subtree w (:scope r)))
+                     (tbl-scan source-id (source-owned-in (scope-subtree w (:scope r))) (:sources (clear-comp-run w r)))) (:id c) (:id r)) true))
+  (have o := (tbl-all-mem ScopeRow _ c _ (gox-rest-of _ _ ox2) m))
+  (simp only [ox-ok n Bool.not_true Bool.false_or] at o) (exact o)
+  (simp only [hwx] at hx)
+  (apply (any-elim RunRow _ _ _ hx))
+  (intros q mq e)
+  (simp only [run-within-ne Bool.and_eq_true] at e)
+  (apply (hw-intro (run-del (nat-fold close-source (nat-fold close-scope-id (clear-comp-run w r) (scope-subtree w (:scope r))) (tbl-scan source-id (source-owned-in (scope-subtree w (:scope r))) (:sources (clear-comp-run w r)))) (:id r)) (:id c) q (del-mem RunRow run-id (:id r) q _ mq (cy-not-true _ (And.left e)))))
+  (exact (And.right e))
+  (exact (gos-remove-if-empty _ (scope-subtree w (:scope r)) (gos-cleanup-del _ (:id r) g3))))
+(tree/restate! GOS '[raw-inv inv-normalize])
 
 ;; ===========================================================================
 ;; Part H. Rule R and the step: the filter keeps every run (gr0, normalized) and every kept scope's parent
