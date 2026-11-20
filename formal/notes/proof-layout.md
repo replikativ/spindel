@@ -1865,7 +1865,16 @@ the naming pass.
 
 ### Gate (group 5b)
 
-GATE-G5B
+- **Statements** (name-independent fingerprints, against group 5a): all 17,792 identical; none
+  changed, none missing; 59 new: 49 `raw0-<item>-gr0` and 10 part lemmas (`pres-x@gr0` 9,
+  `pres-job-apply@grx`). `inv-step`, `reach-inv`, `inv-empty`, `sys-reach-inv`, `l5-safety-total`,
+  `step-p3m`, `mv-refinement` unchanged.
+- **Load**, one JVM at a time, against group 5a's measure: `inv.i1-runs` 11.2 → 6.7 s, `pres.tree`
+  11.2 → 8.6 s. The whole model read 476 → 340 s: group 5a's measure was taken under host load, so
+  the untouched figure (454 → 324 s) is the host's, not the change's.
+- **Suite**: `clojure -M:test`, 303 tests, 208,517 assertions, 0 failures, 0 errors (oracle samples
+  1–62; the tree test also checks that the
+  four run parts have no overrides or patches and that `gr0`'s cells are `grx`'s at the empty list).
 
 ## 6. Key pieces to read: the whole proof in 14 stops, in reading order (current names)
 
