@@ -16,7 +16,7 @@
                 (by `rfl`: the kernel checks that the rest predicate does not look at f).
 
   `frame-term` composes the two into a proof of `rest (edit w ...) = rest w` for an edit whose
-  footprint misses the view: `writes-<edit>`, then one frame lemma per written field. spindel.v2.inv.copier
+  footprint misses the view: `writes-<edit>`, then one frame lemma per written field. spindel.v2.pres.part
   uses it for the frame cells of a part declared with a view (`frame!`, `defpart`), instead of a
   hand-written `nil` cell or a hand-written frame lemma.
 

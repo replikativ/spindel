@@ -42,7 +42,7 @@
             [spindel.v2.state :refer :all]
             [spindel.v2.edits :refer :all]
             [spindel.v2.engine :refer :all]
-            [spindel.v2.inv.copier :as c]
+            [spindel.v2.pres.part :as c]
             [spindel.v2.pres.frames :as frames]
             [spindel.v2.pres.exempt :as exempt]))
 

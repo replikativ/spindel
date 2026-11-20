@@ -34,6 +34,7 @@
             [spindel.v2.inv.acts :refer :all]
             [spindel.v2.inv :refer :all]
             [spindel.v2.pres.tree :as tree]
+            [spindel.v2.pres.part :refer :all]
             [spindel.v2.inv.copier :refer :all]
             [spindel.v2.inv.idle :refer :all]
             [spindel.v2.inv.base :refer :all]

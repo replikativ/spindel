@@ -40,6 +40,7 @@
             [spindel.v2.progress.casc :refer :all]
             [spindel.v2.inv.acts :refer :all]
             [spindel.v2.inv :refer :all]
+            [spindel.v2.pres.part :refer :all]
             [spindel.v2.inv.copier :refer :all]
             [spindel.v2.inv.idle :refer :all]
             [spindel.v2.inv.base :refer :all]
@@ -1540,7 +1541,7 @@
 (defn ka-patch [form]
   (subst-forms (fn [y] (and (seq? y) (= 'inv-run-upd (first y)) (= 'run-wake (nth y 3 nil))))
                (fn [[_ w x f hid & more]] (apply list 'ka-run-upd 'k8a w x f hid 'run-wake-alive more)) form))
-(doseq [[n _] @@#'spindel.v2.inv.copier/source-theorems] (patch! KA n ka-patch))
+(doseq [[n _] @@#'spindel.v2.pres.part/source-theorems] (patch! KA n ka-patch))
 (lcopy! KA 'inv-await-pre)
 (lcopy! KA 'inv-await-wire)
 (lcopy! KA 'inv-fast-fill)

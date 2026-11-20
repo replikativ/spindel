@@ -6,6 +6,7 @@
   (:require [clojure.test :refer [deftest is]]
             [ansatz.core :as a]
             [spindel.v2.inv.copier :as c]
+            [spindel.v2.pres.part :as part]
             [spindel.v2.inv.i10-task]
             [spindel.v2.inv.i9-res]
             [spindel.v2.inv.i8 :as i8]
@@ -60,7 +61,7 @@
 (deftest a-gate-gives-the-continuation-its-fact
   ;; a part taking C0's gate: raw0's continuations receive root-ok-if (checked for any Q); only the
   ;; branches of raw0 that call the gate get the part's lemma, not the dispatcher
-  (let [B (c/mk-bundle 'tgate [] "tgate-" {})]
+  (let [B (part/mk-bundle 'tgate [] "tgate-" {})]
     (tree/part! B :gates '{c0-gate-inv hc0})
     (is (= '#{c0-gate-inv raw0-append-inv raw0-create-link-inv raw0-create-link-top-inv
               raw0-create-source-inv raw0-create-source-top-inv raw0-link-realize-inv}

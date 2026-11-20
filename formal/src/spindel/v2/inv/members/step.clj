@@ -13,6 +13,7 @@
             [spindel.v2.progress.casc :refer :all]
             [spindel.v2.inv.acts :refer :all]
             [spindel.v2.inv :refer :all]
+            [spindel.v2.pres.part :refer :all]
             [spindel.v2.inv.copier :refer :all]
             [spindel.v2.inv.idle :refer :all]
             [spindel.v2.inv.base :refer :all]
@@ -253,7 +254,7 @@
        (subst-forms (fn [y] (and (seq? y) (= 'inv-act-upd (first y)) (>= (count y) 5) (seq? (nth y 3)) (= 'act-fill (first (nth y 3)))))
                     (fn [[_ w x f hid & more]]
                       (apply list 'fb-act-upd-m 'zl 'zf 'zd 'zs w x f hid (apply list 'fm-act-fill w x (rest f)) more)))))
-(doseq [[n _] @@#'spindel.v2.inv.copier/source-theorems] (patch! FB n fb-patch))
+(doseq [[n _] @@#'spindel.v2.pres.part/source-theorems] (patch! FB n fb-patch))
 (lcopy! FB 'inv-demote)
 
 ;; ===========================================================================

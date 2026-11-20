@@ -27,6 +27,7 @@
             [spindel.v2.progress.casc :refer :all]
             [spindel.v2.inv.acts :refer :all]
             [spindel.v2.inv :refer :all]
+            [spindel.v2.pres.part :refer :all]
             [spindel.v2.inv.copier :refer :all]
             [spindel.v2.inv.idle :refer :all]
             [spindel.v2.inv.base :refer :all]
@@ -379,7 +380,7 @@
                     (fn [[_ w x f hid & more]] (apply list 'ar-run-upd-m w x f hid (ar-lapp f (ar-run-fns (ar-fhead f))) more)))
        (subst-forms (fn [y] (and (seq? y) (= 'inv-run-upd (first y)) (= 'run-wake (nth y 3 nil))))
                     (fn [[_ w x f hid & more]] (apply list 'ar-run-upd-a w x f hid 'run-wake-arrk more)))))
-(doseq [[n _] @@#'spindel.v2.inv.copier/source-theorems] (patch! AR n ar-patch))
+(doseq [[n _] @@#'spindel.v2.pres.part/source-theorems] (patch! AR n ar-patch))
 
 ;; ===========================================================================
 ;; Part D. Overrides
@@ -880,7 +881,7 @@
 ;; g7's own proofs of normalization (inv.idle, its table's :over), renamed
 (defn- idle-theorem [nm]
   (first (filter #(and (seq? %) (= 'a/theorem (first %)) (= nm (second %)))
-                 (@#'spindel.v2.inv.copier/ns-source-forms 'spindel.v2.inv.idle))))
+                 (@#'spindel.v2.pres.part/ns-source-forms 'spindel.v2.inv.idle))))
 (doseq [[o nm deps] '[[inv-norm-round g7-norm-round [inv-run-cascade inv-detach inv-demote]]
                       [inv-norm-loop g7-norm-loop [inv-norm-round]]
                       [inv-normalize g7-normalize [inv-norm-loop inv-detach]]]]
