@@ -46,6 +46,22 @@
             [spindel.v2.pres.frames :as frames]
             [spindel.v2.pres.exempt :as exempt]))
 
+;; Reading map
+;;
+;;   gp Q                  an abstract part: `well-formed` and a rest predicate Q
+;;   pres-<x>              the base lemma well-formed-<x>, proved once for gp Q from one hypothesis
+;;                         per lemma its proof calls
+;;   pres-<x>@<part>       the same with the part's own facts passed along the path
+;;   part!                 a part's table: where its own proof replaces the generic one, and the
+;;                         facts it takes from the path
+;;   restate!              gives the part its lemmas `<part>-<x>`: pres-<x> applied to the part's
+;;                         lemma for every callee
+;;   well-formed-transition-<item>
+;;                         the branches of `transition`, derived one per item so that each is a node
+;;
+;; The name of a part's lemma is the base lemma's name with the part's name in place of
+;; `well-formed` (pres/part.clj, copy-name).
+
 (def ^:private base-theorem-source @#'c/theorem-source)
 ;; lemmas the tree derives from a base proof (raw0's branches, below), by name
 (defonce ^:private derived (atom {}))

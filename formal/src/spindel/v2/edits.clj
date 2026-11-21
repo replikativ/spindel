@@ -20,6 +20,22 @@
   (:require [ansatz.core :as a]
             [spindel.v2.state :refer :all]))
 
+;; Reading map
+;;
+;;   well-formed w          the base invariant: pending-exact, edges-ref-ok and ids-ok
+;;   <row>-upd, -ins, -del  the primitive edits of one table (run-upd, edge-ins, act-del, ...)
+;;   mark-edge, unmark-edge, remove-edge, insert-edge
+;;                          the four edge edits; they adjust the creditor's pending count
+;;   pending-exact-<edit>, edges-ref-ok-<edit>, <edit>-ids-ok
+;;                          the edit keeps one conjunct
+;;   well-formed-<edit>     the edit keeps all three, under the premise it needs (an id kept, a fresh
+;;                          id, no edge naming the deleted row)
+;;   drop-cred-edges, nat-fold
+;;                          composite edits: every edge of one creditor; an edit folded over ids
+;;
+;; Every later proof is built on the well-formed-<edit> lemmas: a part of the top invariant has one
+;; lemma `<part>-<edit>` per lemma here (pres/part.clj).
+
 ;; ---------------------------------------------------------------------------
 ;; Row updates
 

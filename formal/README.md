@@ -303,6 +303,86 @@ messages and messages from that time use the old names. Kernel names did not cha
 Unchanged: `state`, `edits`, `reach`, `retain`, `step`, `rule`, `engine`, `ledger`, `owned`, `inv`,
 `local`, `top`. Test namespaces follow (`spindel.v2.hm13-test` is `spindel.v2.inv.members.await-raw-test`).
 
+## Names
+
+A name says what the thing is about, in the spec's words. The grammar:
+
+| shape | reads as |
+|---|---|
+| `well-formed` | the base invariant of a world: ids fresh and unique, references resolve, pending counts exact |
+| `well-formed-<x>` | edit or transition `<x>` keeps `well-formed` |
+| `<part>` | one part of the top invariant, named after the spec item it states (`i10-task`, `i8-closed`, `i1-runs`) or after its content (`acts-parked`, `marks-waiting`, `current-members`) |
+| `<part>-<x>` | `<x>` keeps the part. It is the copy of `well-formed-<x>` for the part, or the part's own proof under that name |
+| `<part>-rest`, `<part>-intro`, `<part>-well-formed` | what the part adds to the base; the part from the base and its rest; the part implies the base |
+| `<part>-exempt` | the part with some ids waived, for a violation that is opened and closed within one step |
+| `<part>-exempt-<role>[-<site>]` | the lemmas that open and close it: `break`, `repair`, `mono`, `loop`, `exit`, `transport` |
+| `<part>-view`, `<part>-keys-ok`, `<part>-<row>-key` | the fields the part reads, as a structure; the part over that view |
+| `<x>-hand` | the part's hand proof of a composite, where the tree's generic one does not apply |
+| `pres-<x>`, `pres-<x>@<part>` | the generic proof of `<x>` over an abstract part; the part's own instance of it |
+| `chain-start`, `chain-to-<part>`, `chain` | the nested conjunctions of parts, up to and including `<part>`; `chain` is the last |
+| `tN-<verb>` | transition N of the spec (§8); `t-<verb>` is a transition without a number |
+| `<x>-basic` | step.clj's first form of a transition whose full form is in engine.clj |
+| `<item>-refused` | the guard that refuses the item |
+| `transition` | the table: one branch per item |
+| `host-guarded-transition` | `transition` behind `host-item-refused` |
+| `then-cancel-losers`, `then-rule-r` | what follows an accepted transition |
+| `<x>-in-run`, `<x>-top` | `<x>` called from a run, or by the host at top level |
+| `<x>-local` | the local part of a transition, without its cascade: `cancel-run-local` (T14), and `retire-run` is T13's local part (the item of T28 keeps its own name) |
+| `<x>-total` | the statement for every item, accepted or refused |
+| `lit-<item>` | the literal reading of a spec invariant, proved from the part of that name |
+| `world-released` | the world's `released` flag |
+
+`i1-runs`: its R3 clause is I4's cleanup-entry clause.
+
+The full old → new map is `notes/renames.edn`.
+
+## Old kernel names
+
+The naming pass (2026-11) renamed about 3,200 hand-written and 9,700 generated constants. By pattern:
+
+| old | new |
+|---|---|
+| `inv-sample` | `well-formed` |
+| `inv-<x>`, `<x>-inv`, `<x>-inv-sample` (base lemmas) | `well-formed-<x>` |
+| `step-inv` | `step-well-formed` |
+| `raw0`, `raw0-<item>-inv` | `transition`, `well-formed-transition-<item>` |
+| `raw0g`, `raw0g-of` | `host-guarded-transition`, `host-guarded-transition-non-host` |
+| `post`, `finish` | `then-cancel-losers`, `then-rule-r` |
+| `root-shut`, `host-shut` | `world-released`, `host-item-refused` |
+| `<item>-bad`, `body-shut`, `cc-shut`, `fin-shut` | `<item>-refused`, `create-in-scope-refused`, `create-refused`, `arm-refused` |
+| `c0-gate` | `require-root-open` |
+| `t1-body`, `t1-full`, `t1-stream`, `t1-top-full` | `t1-create-source`, `t1-create-nonstream`, `t1-create-stream`, `t1-create-source-top` |
+| `t8-obs`, `t8-full` | `t8-observe`, `t8-observe-any-kind` |
+| `t15-full`, `retire-full`, `t-cancel` | `t15-resource-ack`, `t13-retire`, `t14-host-cancel` |
+| step.clj's `t1-create-source`, `t8-observe`, `t15-resource-ack` | the same with `-basic` |
+| `t2-…`, `t6-…`, `t12-…` (lemma stems) | `t2-write-…`, `t6-await-…`, `t12-complete-…` |
+| `rr-loop`, `rr-fuel`, `rule-r-pre` | `rule-r-loop`, `rule-r-fuel`, `rule-r-last-input` |
+| `norm-…`, `casc-…`, `fin-…` (Rule R) | `normalize-…`, `cascade-…`, `finalize-…` |
+| `retire-local` (the definition) | `retire-run` |
+| `p3b`, `p3c` … `p3la`, `p3m` | `chain-start`, `chain-to-<part>`, `chain` |
+| `Reach1` | `WorldReach` |
+| `ga`, `gx` | `acts-parked`, `acts-parked-exempt` |
+| `gl`, `glx` | `i10-task`, `i10-task-exempt` |
+| `g9`, `g7`, `g1`, `g5`, `g8` | `i9-res`, `i7-idle`, `i1-scopes`, `i5-dep-final`, `i8-closed` |
+| `g10r`, `g10`, `nq` | `i10-current`, `i10-current-exempt`, `i10-current-transport` |
+| `gso`, `gr0`, `grx` | `i1-detached-closed`, `i1-runs`, `i1-runs-exempt` |
+| `gw`, `gd`, `hmk`, `ar`, `ekb` | `root-scope-reserved`, `comp-facts`, `marks-waiting`, `alive-run-latest`, `edge-kinds` |
+| `h3`, `hm3-`, `h9-` … `h18-` | `current-members` |
+| `svb`, `mdb`, `esb`, `aha`, `gy` | `i5-seen`, `marks-on-dep`, `refs-not-edges`, `act-runs-alive`, `tombs-dormant` |
+| `vq`, `vr`, `v14` | `i14-validity-raw`, `i14-validity-rule-r`, `i14-ordered` |
+| `ri`, `inv-rank`, `sok`, `qinv` | `round-facts`, `i12-ranks`, `slice-holder-ok`, `quiet-world-inv` |
+| `mb`, `bc`, `bn` | `l2-measure`, `cascade-bound`, `round-bound` |
+| `grel`, `gk`, `gc`, `gst`, `gos`, `gox`, `gnf`, `gcy` | `stays-released`, `host-roots-revoked`, `cleanup-runs-exist`, `task-unheld-scope-absent`, `open-scopes-have-runs`, `open-scopes-have-runs-exempt`, `markers-gone`, `scope-parents-acyclic` |
+| `ch`, `na`, `kx`, `kc`, `mdk`, `ka` | `comp-exists`, `no-act-of-run`, `edge-debtor-kept`, `edge-kind-kept`, `mark-targets-dep`, `awaiting-run-alive` |
+| `krb`, `neb`, `hkw`, `hsw`, `awo` | `run-retirable`, `run-gone`, `dispatch-epoch-kept`, `done-epoch-below`, `comp-awake-owns-run` |
+| `kdb`, `edb`, `fb`, `nzb` | `alive-runs-listed`, `no-dep-edges-of`, `members-round-frame`, `owner-count-at-most` |
+| `<prefix><x>`, `<x>-<pred>` (a part's copy of a base lemma) | `<part>-<x>` |
+| `<pred>-sample`, `<pred>-kw`, `<x>-o` | `<part>-well-formed`, `<part>-frame`, `<x>-hand` |
+| `rk-<x>`, `<x>-rk`; `bc-<x>`, `<x>-bc` | `i12-ranks-<x>`; `cascade-bound-<x>` |
+| `KW`, `KW8`, `KW10`, `RKey`, `TKey` | `I10TaskView`, `I8ClosedView`, `I10CurrentView`, `RunKey`, `TaskKey` |
+| `<x>-cur`, `<x>-h1`, `<x>-h0`, `<x>-h0-at` | `<x>-in-run`, `<x>-first-handle`, `<x>-no-handles`, `<x>-zero-handles` |
+| `i1-own`, `i1-runs` (literal readings) | `lit-i1-own`, `lit-i1-runs` |
+
 ## The invariant: bundles and the chain
 
 `well-formed w` (`edits`) is the base of every proof: exact pending counts, every edge's creditor and
@@ -336,9 +416,9 @@ The bundles form one chain, one link per proof campaign. Each link is `(Bool.and
 `i5-seen` I5 observe (`inv.base`), `inv-i9` I9 activations and `inv-i10-slice` D0 (`inv`), `i3` I3
 (`completion.quiet-world`).
 
-The link and bundle names (`chain-start`..`chain`, `acts-parked`, `i10-task`, `i9-res`, `comp-facts`, `i14-ordered`, ...) record the history of the
-proof (`p3` was obligation P3). They are kernel names, reused as prefixes of thousands of generated
-theorem names, so they are kept; read `inv` and this table instead.
+The links are named after the part they reach: `chain-to-<part>` is the conjunction of the parts up to
+and including `<part>`. Until the naming pass they were named after obligation P3 and a campaign
+letter, and the parts had two- and three-letter names; "Old kernel names" above has the table.
 
 ## Invariant table
 

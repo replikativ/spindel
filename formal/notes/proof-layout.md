@@ -1,5 +1,13 @@
 # Readable preservation proofs for the v2 model: options and the target layout
 
+> **Names (2026-11).** The naming pass replaced the kernel names used throughout this note
+> (README.md, "Old kernel names"; the full map is `notes/renames.edn`). The names below were
+> substituted mechanically, so they are current. What the sections say ABOUT names is historical
+> where it describes the old scheme: the copier's name rule (`inv-<x>` to a prefix, `<x>-inv` to a
+> suffix), bundle prefixes that differ from the predicate, `-o` overrides, and counts of lemmas by
+> old prefix. Read those passages as a record of the stage they describe. The last section,
+> "The naming pass", describes the current scheme.
+
 Status: done through stage 4 (§5l–§5y: every part is on the generic tree and the copier is deleted; totals in §5y). Earlier status line: agreed design, 2026-11-19; stage 3 under way (§5c: `i10-task`; §5d: `i9-res`; §5e: contexts declared per part; §5f: `i8-closed`; §5g: forwarding inferred). It is the plan for making the layer-1 preservation proofs (`inv-step`)
 readable; the staging is in section 5. Stage 0 is this note and the README section "How the step proof
 works". The numbers describe the model as of the restructure (PR #304, e04b1a9) and were measured
@@ -2332,3 +2340,29 @@ R6 lists the kernel-checked version of the frame count.
   hand (the grouping of `i8-closed`'s 51 in section 2.5).
 - **E10, call sites.** 154 primitive call sites in 103 composites; 58 distinct (update primitive, row
   function) pairs.
+
+## The naming pass
+
+One pass renamed the hand-written definitions and theorems and, through the lines that build
+names, the generated ones. It changed no statement: every constant has the same name-independent
+fingerprint before and after (`dev/naming/fingerprint.clj`, `compare.clj`).
+
+- The map is data: `dev/naming/rules.edn` (the decisions) and `dev/naming/generator-edits.edn`
+  (the lines that build names from strings). `bb dev/naming/renames.clj` computes
+  `notes/renames.edn` from them and a load of the model, checks it (no two names merge, every new
+  name is free, prefix nesting) and, with `--apply`, writes the substitution. `dev/naming/NOTES.md`
+  says how to rerun it.
+- One copy rule. Every base lemma is `well-formed-<x>`; a part's lemma is that name with the
+  part's name in place of `well-formed` (`pres.part/copy-name`). A bundle's prefix is its
+  predicate's name. The private copiers of `inv.rank-step` and `progress.casc` follow the same
+  rule with `i12-ranks` and `cascade-bound`.
+- The substitution is by whole symbol and reads scope: a hypothesis or binder that has the
+  short name a part used to have, and an Item constructor in a pattern that shares its name with a
+  definition, are left alone
+  (`dev/naming/scope.clj`).
+- step.clj's `dispatch` and its transitions stay: `step_test` and `rule_test` drive the compiled
+  function. Its T1, T8 and T15 are `<name>-basic`; the full forms in engine.clj and rule.clj have
+  the plain names.
+- Not renamed: internal helper families whose names are abbreviations of a proof step (`hk-`,
+  `fm-`, `qk-`, `wdom-`, `oc-`, `z59-`, `sl-`, `s9-`). They keep their suffix words and take only
+  the part's name where it was a prefix.

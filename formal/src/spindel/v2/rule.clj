@@ -116,6 +116,22 @@
             [spindel.v2.retain :refer :all]
             [spindel.v2.step :refer :all]))
 
+;; Reading map
+;;
+;;   Parts A-C  edits, row updates and queries the cancel family uses
+;;   Part D     the local parts, without the cascade: cancel-run-local (T14), retire-run (T13),
+;;              close-scope-local (T16)
+;;   Part E     the cascade: run-cascade over a worklist of jobs (cascade-fuel, cascade-done)
+;;   Part F     the transitions: t14-cancel, t16-close-scope, t13-retire, t15-resource-ack
+;;   Part G     normalization: demote, detach, normalize-round; `normalize` loops until `normalized`
+;;   Part I     the filter (rule-r-filter) removes what no live row reaches; it keeps well-formed
+;;              when it is edge-safe (filter-safe-for). Rule R: rule-r-round = normalize, then the
+;;              filter; `rule-r` repeats rounds until no row is orphaned (no-orphans).
+;;              rule-r-last-input is the world the last round starts from.
+;;   Part J     theorems: well-formed-rule-r, the normalized flag, I3 and I4 after Rule R
+;;
+;; `well-formed-<x>`: x keeps the base invariant `well-formed` (edits.clj).
+
 
 ;; ===========================================================================
 ;; Part A. Generic edits: an edge filter that keeps pending exact

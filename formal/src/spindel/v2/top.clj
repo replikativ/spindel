@@ -1,5 +1,9 @@
 (ns spindel.v2.top
-  "Headline statements of the model, in one place (correctness stage 1; the namespace's final home
+  "Reading map: `inv` below is the top invariant; `chain` is the last of the nested conjunctions
+  chain-start ⊂ … ⊂ chain, each adding one part (README.md, \"The invariant: bundles and the chain\");
+  a part `<part>` has its step lemma `step-<part>` in its own namespace under inv/.
+
+  Headline statements of the model, in one place (correctness stage 1; the namespace's final home
   is decided by the restructure). Layer 1:
 
     inv w := chain w && i5-seen w && inv-i9 w && inv-i10-slice w && i3 w        (the single top invariant)

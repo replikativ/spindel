@@ -197,6 +197,36 @@
             [spindel.v2.step :refer :all]
             [spindel.v2.rule :refer :all]))
 
+;; Reading map
+;;
+;; A step of the world is
+;;
+;;   world-step w it                = then-rule-r (raw w it)
+;;   raw w it                       = then-cancel-losers w (host-guarded-transition w it)
+;;   host-guarded-transition w it   = refuse when (host-item-refused w it), else (transition w it)
+;;
+;;   transition          the table: one branch per Item constructor, each `tN-<verb>` behind its
+;;                       guard (`<item>-refused`, `require-root-open`)
+;;   then-cancel-losers  after an accepted transition the `any` losers are cancelled
+;;   then-rule-r         Rule R (rule.clj): rounds of normalize-then-filter until no row is
+;;                       orphaned; normalize loops until `normalized`
+;;
+;; Names
+;;   well-formed            the base invariant (edits.clj); `well-formed-<x>` says edit or
+;;                          transition x keeps it
+;;   <part>-<x>             the same for a part of the top invariant (i10-task-<x>, i8-closed-<x>);
+;;                          these lemmas are in inv/ and are built by pres/
+;;   tN-<verb>              transition N of the spec (§8); `t-<verb>` is a transition without a number
+;;   <x>-basic              step.clj's first form of the transition (t1-create-source-basic)
+;;   <item>-refused         the guard that refuses the item
+;;   world-released         the world's `released` flag
+;;   <x>-in-run, <x>-top    x called from a run, or by the host at top level
+;;   <x>-total              the statement for every item, accepted or refused
+;;
+;; Part A fresh rows. B row constructors, validation. C T4, T5, T3. D T11 dispatch.
+;; E settle, T12. F T6, T22, T8. G the step: the table and the pipeline above.
+;; README.md has the full legend ("Names") and the old names ("Old kernel names").
+
 ;; ===========================================================================
 ;; Part A. Inserting fresh rows: monotone edges-ref-ok, well-formed per table
 ;; ===========================================================================
