@@ -45,13 +45,10 @@
    code; its open finally regions are dropped (their finalizers are SCI
    code), so it retires.
 
-   **No waiting in a slice (B7).** The interpreter's gate (SCI forks and
-   retirement take it exclusively) is taken with `tryLock`, which passes a
-   queued fork. While a fork or retirement holds it, or the resolver returns
-   a pending interpreter, the run parks and the slice is retried; a run that
-   is unwinding a cancellation cannot park, so its finalizers are dropped.
-   This reads SCI's internal gate field; SCI has no public non-blocking
-   entry."
+   **No waiting in a slice (B7).** SCI evaluation holds no lock that a fork
+   or retirement waits for (replikativ SCI >= 0.15.59-replikativ.9), so a
+   slice enters the interpreter directly, and a resolver may `sci/fork`
+   lazily inside the slice."
   (:require [clojure.java.io :as io]
             [is.simm.partial-cps.runtime :as pr]
             [org.replikativ.spindel.v2.core :as v2]
@@ -111,27 +108,12 @@
 
 (defn- select
   "The interpreter to run captured code of `ctx` in, for the world being
-   processed, or a pending value (the resolver prepares it off the slice)."
+   processed."
   [cfg ctx]
   (if-let [f (:select @cfg)]
-    (let [x (f (v2/cw) ctx)]
-      (cond (nil? x) (throw (ex-info "no SCI interpreter for this world" {:type ::no-interpreter}))
-            (and (instance? clojure.lang.IPending x) (realized? x)) @x
-            :else x))
+    (or (f (v2/cw) ctx)
+        (throw (ex-info "no SCI interpreter for this world" {:type ::no-interpreter})))
     ctx))
-
-(defn- pending? [x] (and (instance? clojure.lang.IPending x) (instance? clojure.lang.IDeref x)))
-
-(defn- read-gate
-  "The read side of the gate SCI's forks and retirement take exclusively."
-  ^java.util.concurrent.locks.Lock [ctx]
-  (.readLock ^java.util.concurrent.locks.ReentrantReadWriteLock
-   (.-gate ^sci.impl.world.DenseWorld (:sci.impl/world ctx))))
-
-(defn- off-slice
-  "Runs `f` on a new virtual thread: host work that may wait."
-  [f]
-  (Thread/startVirtualThread ^Runnable (fn [] (f))))
 
 (defn- force-all [x]
   (loop [x x] (if (pr/thunk? x) (recur (pr/force-thunk x)) x)))
@@ -165,7 +147,7 @@
    refusal (`refused-here?`) and passes it on without entering SCI."
   [b t]
   (close-regions! b)
-  (let [e (if (#{::no-interpreter ::interpreter-busy} (:type (ex-data t)))
+  (let [e (if (= ::no-interpreter (:type (ex-data t)))
             t
             (ex-info "no SCI interpreter for this world" {:type ::no-interpreter} t))]
     (.set refusing (doto (object-array 3) (aset 0 (v2/cw)) (aset 1 (v2/active-run)) (aset 2 e)))
@@ -184,62 +166,28 @@
   [x]
   (when (pr/thunk? x) x))
 
-(declare in-run)
-
-(defn- park!
-  "The interpreter is not available without waiting (its gate is held
-   exclusively, or the resolver is still preparing it). A slice never waits
-   (B7): the run parks on an external resource that a virtual thread
-   completes once `(wait)` returns, then the slice is tried again. A run that
-   cannot park (it is unwinding a cancellation) is refused: its finalizers
-   cannot run without waiting, so they are dropped."
-  [cfg cap f on-error b wait]
-  (let [refused (volatile! nil)
-        parking (volatile! true)
-        res (v2/external-effect!
-             (fn [complete!]
-               (off-slice #(do (try (wait) (catch Throwable _)) (complete! nil)))
-               (fn [] :joined))
-             (fn [_] (in-run cfg cap f on-error))
-             (fn [e] (if @parking (vreset! refused e) (on-error e))))]
-    (vreset! parking false)
-    (if-let [e @refused]
-      (refuse! b (ex-info "the SCI interpreter is held exclusively and the run cannot wait"
-                          {:type ::interpreter-busy} e))
-      (thunk-or-nil res))))
-
 (defn- in-run
   "Runs `(f)` as code of the active run: in the interpreter selected for the
    processed world, with the SCI bindings and region counts of `cap`,
-   forcing its Thunks. It never waits: see `park!`. `on-error` resumes the
-   run's error path when a park ends in an error (cancellation)."
-  [cfg [ctx cc fins infins :as cap] f on-error]
+   forcing its Thunks. Entering the interpreter waits for nothing: SCI
+   evaluation holds no lock a fork or retirement waits for."
+  [cfg [ctx cc fins infins] f]
   (let [w (v2/cw)
         r (v2/active-run)
         ^objects prev (.get adapting)]
     (if (and r prev (identical? w (aget prev 0)) (identical? r (aget prev 1)))
       (f)
       (let [b (doto (long-array 2) (aset 0 (long fins)) (aset 1 (long infins)))
-            target (try (select cfg ctx) (catch Throwable t (refuse! b t)))]
-        (if (pending? target)
-          (park! cfg cap f on-error b #(deref target))
-          (let [^java.util.concurrent.locks.Lock gate (try (read-gate target) (catch Throwable t (refuse! b t)))]
-            ;; tryLock barges past a queued fork (it waits for the evaluations
-            ;; holding the gate, one of which may wait for this run); it fails
-            ;; only while a fork or retirement holds the gate
-            (if-not (.tryLock gate)
-              (park! cfg cap f on-error b #(do (.lock gate) (.unlock gate)))
-              (let [entered (volatile! false)]
-                (.set adapting (doto (object-array 3) (aset 0 w) (aset 1 r) (aset 2 b)))
-                (try
-                  (let [run (sci/continuation-context-fn (sci/retarget-continuation-context cc target)
-                                                         (fn [] (vreset! entered true) (force-all (f))))]
-                    (run))
-                  (catch Throwable t
-                    (if @entered (throw (unwrap t)) (refuse! b t)))
-                  (finally
-                    (.set adapting prev)
-                    (.unlock gate)))))))))))
+            entered (volatile! false)]
+        (.set adapting (doto (object-array 3) (aset 0 w) (aset 1 r) (aset 2 b)))
+        (try
+          (let [target (select cfg ctx)
+                run (sci/continuation-context-fn (sci/retarget-continuation-context cc target)
+                                                 (fn [] (vreset! entered true) (force-all (f))))]
+            (run))
+          (catch Throwable t
+            (if @entered (throw (unwrap t)) (refuse! b t)))
+          (finally (.set adapting prev)))))))
 
 (defn- settled
   "The engine continuation `k` (a body's ok or err): regions SCI code left
@@ -249,66 +197,15 @@
     (when-let [b (regions)] (close-regions! b))
     (k v)))
 
-(defn- run-in
-  "`(f)` in the interpreter of `cap` with its SCI bindings; waits for the
-   gate (host threads only)."
+(defn- in-interpreter
+  "`f` for a host thread outside the slice (offload's f, external's f and
+   cancel fn, await-op's op): it runs in the interpreter of `cap` with its
+   SCI bindings."
   [[ctx cc] f]
-  (try ((sci/continuation-context-fn (sci/retarget-continuation-context cc ctx) f))
-       (catch Throwable t (throw (unwrap t)))))
-
-(defn- try-run-in
-  "[`(f)`] as `run-in`, or nil without waiting when the gate is held."
-  [[ctx :as cap] f]
-  (let [gate (read-gate ctx)]
-    (when (.tryLock gate)
-      (try [(run-in cap f)] (finally (.unlock gate))))))
-
-(defn- offload-fn
-  "offload's `f`: on the world's executor, outside every world (may wait)."
-  [cap f]
-  (fn [] (run-in cap f)))
-
-(defn- op-fn
-  "await-op's op `(op ok err)`: started now, or off the executor's thread
-   when the gate is held."
-  [cap op]
-  (fn [ok err]
-    (when-not (try-run-in cap #(op ok err))
-      (off-slice #(try (run-in cap (fn [] (op ok err))) (catch Throwable t (err t)))))
-    nil))
-
-(defn- cancel-fn
-  "external's cancel fn `c`, called under the world gate: run now, or off
-   the gate when the interpreter's gate is held (then the resource waits for
-   the operation's completion; a deferred `:joined` completes it)."
-  [cap c complete!]
-  (fn []
-    (if-let [[res] (try-run-in cap c)]
-      res
-      (do (off-slice #(when (= :joined (try (run-in cap c) (catch Throwable _ nil)))
-                        (complete! (ex-info "cancelled" {:spindel/cancelled true}) true)))
-          nil))))
-
-(defn- external-fn
-  "external's `(f complete!)`, called under the world gate: run now, or off
-   the gate when the interpreter's gate is held."
-  [cap f]
-  (fn [complete!]
-    (if-let [[c] (try-run-in cap #(f complete!))]
-      (if (fn? c) (cancel-fn cap c complete!) c)
-      (let [state (atom :pending)]        ; :pending | :cancelled | [:started c]
-        (off-slice
-         (fn []
-           (when (= :pending @state)
-             (let [c (try (run-in cap #(f complete!)) (catch Throwable t (complete! t true) nil))
-                   [old] (swap-vals! state #(if (= :pending %) [:started c] %))]
-               (when (and (= :cancelled old) (fn? c))
-                 (try (run-in cap c) (catch Throwable _ nil)))))))
-        (fn []
-          (let [[old] (swap-vals! state #(if (= :pending %) :cancelled %))]
-            (if (vector? old)
-              (let [c (second old)] (if (fn? c) ((cancel-fn cap c complete!)) nil))
-              :joined)))))))
+  (fn [& args]
+    (try ((sci/continuation-context-fn (sci/retarget-continuation-context cc ctx)
+                                       (fn [] (apply f args))))
+         (catch Throwable t (throw (unwrap t))))))
 
 ;; ---------------------------------------------------------------------------
 ;; The functions the expansion calls (spliced as values)
@@ -339,16 +236,16 @@
 (defn- abi
   "The host functions spliced into expansions for the lineage of `home`."
   [cfg home]
-  (let [err* (fn [cap ek] (fn on-err [e]
-                            (if (refused-here? e)
-                              (do (.remove refusing) (throw e))   ; to the slice: the run fails
-                              (in-run cfg cap #(ek e) on-err))))
-        k* (fn [cap k ek] (let [e (err* cap ek)] (fn [v] (in-run cfg cap #(k v) e))))
-        body* (fn [cap body] (fn [ok err] (in-run cfg cap #(body (settled ok) (settled err)) err)))
+  (let [err* (fn [cap ek] (fn [e]
+                                (if (refused-here? e)
+                                  (do (.remove refusing) (throw e))   ; to the slice: the run fails
+                                  (in-run cfg cap #(ek e)))))
+        k* (fn [cap k] (fn [v] (in-run cfg cap #(k v))))
+        body* (fn [cap body] (fn [ok err] (in-run cfg cap #(body (settled ok) (settled err)))))
         fx (fn [native]
              (fn [x k ek]
                (let [cap (capture home false)]
-                 (thunk-or-nil (native x (k* cap k ek) (err* cap ek))))))]
+                 (thunk-or-nil (native x (k* cap k) (err* cap ek))))))]
     {:create-comp (fn [site ins body]
                     (v2/create-comp! site (inputs ins) (body* (capture home true) body)))
      :spawn (fn
@@ -367,20 +264,23 @@
      :sleep (fx v2/sleep-effect!)
      :offload (fn [f opts k ek]
                 (let [cap (capture home false)]
-                  (thunk-or-nil (v2/offload-effect! (offload-fn cap f) opts (k* cap k ek) (err* cap ek)))))
+                  (thunk-or-nil (v2/offload-effect! (in-interpreter cap f) opts (k* cap k) (err* cap ek)))))
      :external (fn [f k ek]
                  (let [cap (capture home false)]
-                   (thunk-or-nil (v2/external-effect! (external-fn cap f) (k* cap k ek) (err* cap ek)))))
+                   (thunk-or-nil (v2/external-effect! (fn [complete!]
+                                                         (let [c ((in-interpreter cap f) complete!)]
+                                                           (if (fn? c) (in-interpreter cap c) c)))
+                                                       (k* cap k) (err* cap ek)))))
      :await-op (fn [op opts k ek]
                  (let [cap (capture home false)]
-                   (thunk-or-nil (v2/await-op-effect! (op-fn cap op) opts (k* cap k ek) (err* cap ek)))))
+                   (thunk-or-nil (v2/await-op-effect! (in-interpreter cap op) opts (k* cap k) (err* cap ek)))))
      :savepoint (fn [site payload k ek]
                   (let [cap (capture home false)]
-                    (thunk-or-nil (v2/savepoint-effect! site payload (k* cap k ek) (err* cap ek)))))
+                    (thunk-or-nil (v2/savepoint-effect! site payload (k* cap k) (err* cap ek)))))
      :custom (fn [sym]
                (fn [args site k ek]
                  (let [cap (capture home false)]
-                   (thunk-or-nil (v2/custom-effect! sym args site (k* cap k ek) (err* cap ek))))))
+                   (thunk-or-nil (v2/custom-effect! sym args site (k* cap k) (err* cap ek))))))
      ;; balanced only: a region opens in a run the adapter runs and closes
      ;; only when one is open (B3; unbalanced calls change nothing)
      :enter-finally (fn [] (when-let [b (regions)] (v2/enter-finally!) (aset b 0 (inc (aget b 0)))) nil)
@@ -708,12 +608,12 @@
    body starts or resumes: `(select world interpreter)` is called inside the
    slice with the world being processed and the interpreter the code was
    captured in, and returns an interpreter of the same lineage (`sci/fork`s
-   of one context); nil to refuse (the run fails without running SCI code
-   and its finalizers are dropped); or a pending value (promise, future) of
-   an interpreter it prepares off the slice, e.g. a lazy `sci/fork`: the run
-   parks until it is realized and asks again. It runs under the world's gate
-   and must not wait (B7): no `sci/fork` inside it. nil removes the
-   resolver: code runs where it was captured."
+   of one context), or nil to refuse (the run fails without running SCI
+   code and its finalizers are dropped). It runs under the world's gate and
+   must not wait (B7); `sci/fork` does not wait (SCI >= 0.15.59-replikativ.9),
+   so it may fork an interpreter lazily, also while an evaluation of the
+   source is running. nil removes the resolver: code runs where it was
+   captured."
   [ctx select]
   (swap! (config ctx) assoc :select select)
   nil)
