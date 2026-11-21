@@ -1,6 +1,6 @@
 (ns spindel.v2.inv.members.fires
   "h-mem2 through `world-step` (P11, second half), continued from spindel.v2.inv.members.bundle (the bundle `h3 xm`, its
-  transfer machinery and the copier bundle `H3`), kernel-checked (Init only): the fires.
+  transfer machinery and the bundle `H3`), kernel-checked (Init only): the fires.
 
   Part A. Free members after a fill: the first activation with member x is the only one that can be
   obliged to x (`h3-freeb-of`: every other holder is not obliging), a fill removes x from it

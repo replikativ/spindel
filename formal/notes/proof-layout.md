@@ -1,6 +1,6 @@
 # Readable preservation proofs for the v2 model: options and the target layout
 
-Status: agreed design, 2026-11-19; stage 3 under way (§5c: `gl`; §5d: `g9`; §5e: contexts declared per part; §5f: `g8`; §5g: forwarding inferred). It is the plan for making the layer-1 preservation proofs (`inv-step`)
+Status: done through stage 4 (§5l–§5y: every part is on the generic tree and the copier is deleted; totals in §5y). Earlier status line: agreed design, 2026-11-19; stage 3 under way (§5c: `gl`; §5d: `g9`; §5e: contexts declared per part; §5f: `g8`; §5g: forwarding inferred). It is the plan for making the layer-1 preservation proofs (`inv-step`)
 readable; the staging is in section 5. Stage 0 is this note and the README section "How the step proof
 works". The numbers describe the model as of the restructure (PR #304, e04b1a9) and were measured
 without changing it: a static read of the sources with a small s-expression reader (the appendix says what
@@ -2202,6 +2202,76 @@ No tree change.
   1–62; the tree test also checks that `h3`, `ekb` and `fb` have no overrides, patches or part
   lemmas).
 - Copier call forms left in `formal/src`: none.
+
+## 5y. Stage 4, last PR: the copier is deleted; the programme's totals
+
+**Result.** `pres.part` no longer contains the copier: `lcopy!`, `lcopy-try!`, `override!`,
+`patch!`, `closure`, `copy-one-form`, `source-of`, `subst-forms` and `app-of?` are deleted, and
+the bundle record loses its `:overrides` and `:patches` maps (264 → 216 lines). What stays is what
+the tree uses: the base proof as data (`source-theorems`), the bundle record (`mk-bundle`), the
+cells (`prim!`, `defpart`, `frame!`), `copy-name` and `copy-form` (a base lemma's name and
+statement for a part) and `inst`. Three users changed: the tree computes the closure of
+`step-inv` itself instead of through a probe bundle; `inv.i1-runs` reads a base lemma's source
+directly; `inv.idle`'s `fix-f` (the copier's reading of an implicit row function, which the tree
+does in `fill-rows`) is deleted. The README's "How the code expresses it" describes the tree.
+
+**Totals of the programme** (before stage 1: the model at e04b1a9, PR #304; after: this PR).
+
+| | before stage 1 | after stage 4 |
+|---|---|---|
+| `override!` forms | 337 | 0 |
+| `patch!` forms | 94 | 0 |
+| `lcopy!` forms | 209 | 0 |
+| part tables (`tree/part!`) / restatement calls (`tree/restate!`) | 0 / 0 | 41 / 240 |
+| kernel theorems | 16,119 | 18,415 |
+| source lines of `formal/src` | 77,485 | 77,302 |
+| whole-model load, one JVM | about 473 s | 335 s (§5w's measure) to 360 s (this PR's), on a host other sessions also use |
+
+- **The theorem count went up, not down.** 1,907 of the 18,415 are the tree's own: 486 generic
+  lemmas (239 shared `pres-x`, 247 part lemmas `pres-x@part`), the 49 `raw0-<item>-inv`, and 1,372
+  `raw0-<item>-<part>` (49 for each of the 28 parts that restate the raw step; the copier had one
+  `raw0-<part>` each). The model also grew in the meantime (oracle samples 61 and 62 and their
+  transitions). What changed is what a generated theorem is: a restatement is one application of
+  a generic lemma, not a re-check of the base proof's text, so the count no longer measures work.
+  The plan's estimate that "about 10,000 of the 16,119 theorems are copies" that would disappear
+  was wrong in that sense: the names and statements were kept on purpose (every later proof uses
+  them), so the copies became restatements.
+- **Source lines are about the same.** The copier's overrides were proofs; about a third became
+  table rows, the rest are the parts' own proofs, now plain theorems. The tree and its tables
+  (617 + the tables) replace the copier's machinery and patches.
+- **Load time** is host-bound; the per-PR gates give the touched namespaces against the untouched
+  ones. The whole-model figure moved between 335 s and 508 s
+  across stage 4's gates with other sessions' JVMs on the host (the same sources: untouched
+  namespaces ×1.5), so the 113 to 138 s below the baseline is an estimate, not a quiet-host measurement.
+
+**Not done, and why.**
+- *The tree rule for a forall-wrapped statement* (§5t; it would remove `gk-await-wire` and
+  `gk-await-raw`, two plumbing proofs). It is not cheap: a fact would have to be inserted under the
+  quantifier in the statement, and named by the `intros` inside each induction case of the proof,
+  not by the first `intro`. That is a second code path in `insert-before-inv` and `with-own` for
+  two proofs of about 15 lines.
+- *`g10r`'s wrappers through the first-position parameter* (§5q). `g10r` is `g10 [] []`: two
+  parameters, and the mechanism instantiates one (`child-term`), so the tree needs a small
+  extension first. The 49 wrapper theorems (`<x>-g10-r`) would then go; no source names them
+  (they are reached through `g10r`'s lemma map only), so that is safe, but it is a tree change,
+  a rewrite of `inv.i10`'s last part and a gate of its own. Left as the next small PR.
+- *`inv.marks-step`'s renaming of 17 `progress.l5` proofs* (§5x).
+- *`h3`'s own proofs as `:over` rows* (§5x): for the naming pass.
+
+**What the plan got wrong.** Nothing in this PR; the deletion was mechanical once no caller was
+left.
+
+### Gate (last PR)
+
+- **Statements** (name-independent fingerprints, against §5x): all 18,415 identical; none changed,
+  none missing, none new. `inv-step`, `reach-inv`, `inv-empty`, `sys-reach-inv`,
+  `l5-safety-total`, `step-p3m`, `mv-refinement` unchanged.
+- **Load**, one JVM at a time, against §5x's measure (which ran on a loaded host): `pres.tree`
+  16.3 → 10.5 s, `inv.i1-runs` 10.3 → 7.5 s, `inv.idle` 8.0 → 8.2 s; untouched 473 → 334 s, whole
+  model 508 → 360 s. Against §5w's measure, the last on a comparable host: 335 → 360 s.
+- **Suite**: `clojure -M:test`, 310 tests, 208,521 assertions, 0 failures, 0 errors (oracle samples
+  1–62). 84 assertions fewer than §5x: the per-part checks "no overrides, no patches" are replaced
+  by one test that the copier's functions and the two maps do not exist.
 
 ## 6. Key pieces to read: the whole proof in 14 stops, in reading order (current names)
 

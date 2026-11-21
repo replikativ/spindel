@@ -1,6 +1,6 @@
 (ns spindel.v2.pres.part
   "Part definitions: what a part of the invariant is made of, for the generic step tree
-  (spindel.v2.pres.tree) and for the copier that it replaces.
+  (spindel.v2.pres.tree).
 
     source-theorems   the base proof as data: every theorem of the step's namespaces
                       (`lit-source-nss`), read from the source files (`theorem-source`).
@@ -14,10 +14,10 @@
                       generated frame cell (spindel.v2.pres.frames).
     copy-name, copy-form   a base lemma's name and statement for a part.
     inst              a hand-written proof generic in the bundle (`$name`, `%G`).
-    lcopy!, override!, patch!   the copier: re-check every composite lemma of a root for the bundle,
-                      from the base proof's text with the part's names substituted, an override
-                      (hand proof) or a patch (source rewrite) where that is not a proof. The parts
-                      not yet on the tree use it.
+
+  Until stage 4 of the proof layout (formal/notes/proof-layout.md §5l-§5y) this namespace also held
+  the copier (`lcopy!`, `override!`, `patch!`), which re-checked the base proof's text for every
+  part. Every part's composite lemmas now come from the tree.
 
   Generated theorems are evaluated in this namespace. It holds no theorem of its own."
   (:require [ansatz.core :as a]
@@ -81,10 +81,10 @@
          (throw (ex-info (str "lit: theorem " (second form) " failed: " (ex-message t)) {:form form} t)))))
 
 ;; a bundle: :pred, :params [sym type ...], :prefix, :extra-args {lemma [form position]},
-;; :renames/:overrides/:patches/:copied atoms
+;; :renames (base lemma -> the part's lemma) and :copied (the generated names) atoms
 (defn mk-bundle [pred params prefix extra]
   {:pred pred :params params :prefix prefix :extra-args extra
-   :renames (atom {}) :overrides (atom {}) :patches (atom {}) :copied (atom [])})
+   :renames (atom {}) :copied (atom [])})
 
 (defn- pargs [B] (binder-names (:params B)))
 (defn- papp [B head & args] (apply list head (concat (pargs B) args)))
@@ -159,54 +159,6 @@
 (defn- statement-mentions-inv? [form]
   (let [[_ _ binders stmt] form] (boolean (some #{'inv-sample} (flatten (list (seq binders) stmt))))))
 
-(defn- source-of [B n]
-  (let [f (theorem-source n)] (if-let [p (get @(:patches B) n)] (p f) f)))
-
-(defn- closure [B root]
-  (let [thms @source-theorems
-        S (set (keep (fn [[n g]] (when (statement-mentions-inv? g) n)) thms))
-        deps (fn [n]
-               (cond (contains? @(:renames B) n) []
-                     (contains? @(:overrides B) n) (:deps (get @(:overrides B) n))
-                     :else (let [[_ _ _ _ & proof] (source-of B n)]
-                             (filter S (filter symbol? (flatten proof))))))]
-    (loop [todo [root] seen #{}]
-      (if-let [n (first todo)]
-        (if (seen n) (recur (rest todo) seen) (recur (concat (rest todo) (deps n)) (conj seen n)))
-        (filterv seen (map first thms))))))
-
-(defn- copy-one-form [B n]
-  (if-let [o (get @(:overrides B) n)]
-    (:form o)
-    (copy-form B (source-of B n) (copy-name B n) @(:renames B))))
-
-(defn lcopy!
-  "Check the bundle version of every inv-sample lemma `root` depends on, in load order."
-  [B root]
-  (doseq [n (closure B root) :when (not (contains? @(:renames B) n))]
-    (let [form (copy-one-form B n)]
-      (eval-theorem! form)
-      (swap! (:renames B) assoc n (second form))
-      (swap! (:copied B) conj (second form)))))
-
-(defn lcopy-try!
-  "REPL exploration: like lcopy!, but go on after a failure; returns the failed originals (a
-  failure makes its dependents fail as well)."
-  [B root]
-  (vec (for [n (closure B root) :when (not (contains? @(:renames B) n))
-             :let [form (copy-one-form B n)
-                   err (try (eval-theorem! form) nil (catch Throwable t (ex-message (or (ex-cause t) t))))]
-             :when (or err (do (swap! (:renames B) assoc n (second form)) (swap! (:copied B) conj (second form)) false))]
-         [n (subs err 0 (min 300 (count err)))])))
-
-(defn override! [B orig deps form] (swap! (:overrides B) assoc orig {:deps deps :form form}))
-(defn patch! [B orig f] (swap! (:patches B) assoc orig f))
-
-;; replace every subform for which (pred form) holds by (f form)
-(defn subst-forms [pred f x]
-  (walk/prewalk (fn [y] (if (pred y) (f y) y)) x))
-(defn app-of? [head] (fn [y] (and (seq? y) (= head (first y)))))
-
 ;; a hand-written bundle proof: `$name` is the bundle's lemma <prefix>name applied to the
 ;; bundle's parameters, `(%G w)` the bundle predicate of w
 (defn inst [B form]
@@ -228,8 +180,8 @@
 ;;
 ;; A part declares what its rest predicate reads (its view) and only the primitive cells that need an
 ;; argument. Every other primitive is a frame of the view, and its cell is generated from the
-;; primitive's footprint and the view (spindel.v2.pres.frames). `defpart` emits the same copier calls
-;; as before (prim!, renames), so the generated theorems keep their names and statements.
+;; primitive's footprint and the view (spindel.v2.pres.frames). `defpart` emits the cells (prim!,
+;; renames) under the names and statements they always had.
 
 ;; pred -> {:reads #{fields}, :cells [base lemmas given by hand], :frames [base lemmas generated]}
 (defonce parts (atom {}))
@@ -239,7 +191,7 @@
   [B orig] (prim! B orig :frame))
 
 (defn defpart
-  "Declare a part's view and its primitive cells, and emit the copier calls:
+  "Declare a part's view and its primitive cells, and emit the cells:
     :reads  the World fields the rest predicate reads (`spindel.v2.pres.frames/defview` states and
             checks `<pred>-rest-frame-<f>` for every other field f).
     :cells  {base-lemma cell} for the primitives whose footprint meets the view. A cell is a symbol

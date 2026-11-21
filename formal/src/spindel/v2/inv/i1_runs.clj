@@ -780,7 +780,7 @@
 
 ;; GR0 wrappers for GRX lemmas used as values (a bare function argument cannot take the [] parameter)
 (defn- gr0-wrap-form [n]
-  (let [f (@#'spindel.v2.pres.part/copy-form GRX (@#'spindel.v2.pres.part/source-of GRX n) 'x @(:renames GRX))
+  (let [f (@#'spindel.v2.pres.part/copy-form GRX (@#'spindel.v2.pres.part/theorem-source n) 'x @(:renames GRX))
         [_ _ binders stmt] f
         bs (vec (drop 3 binders))
         stmt2 (clojure.walk/postwalk (fn [y] (if (and (seq? y) (= 'grx (first y)) (= 'x1r (second y))) (list 'gr0 (nth y 2)) y)) stmt)
