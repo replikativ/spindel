@@ -4,17 +4,17 @@
   (a re-awaited site edge is held by no current activation).
 
   Bundle `ar` = inv-sample && for every alive run R: R.of < next-id and every computation row C with id
-  R.of has C.run = R.id. Every composite inv-sample lemma is re-checked by lit's copier (`AR`, prefix ar-).
-  Primitives: a computation edit that keeps (id, run), a run edit that keeps the id and never revives a
-  run nor changes an alive run's `of` (idle's `run-down`), deletions and filters, fresh rows (a fresh
-  computation id is no alive run's `of`). Overrides: parks (the parked run is alive), new runs (a task's
-  run: no computation has the task's id; T5/T11: C has no alive run, then C.run := the new run), T13's
-  clear (the retired run is dead, so C has no alive run), demote (its cascade kills every alive run of C:
-  idle's `demote-dead`), T11's predecessor cancel (idle's KDB: the predecessor is C's only alive run).
+  R.of has C.run = R.id. `ar` is a part of the generic step tree (spindel.v2.pres.tree; table in
+  Part C). Primitives: a computation edit that keeps (id, run), a run edit that keeps the id and never
+  revives a run nor changes an alive run's `of` (idle's `run-down`), deletions and filters, fresh rows
+  (a fresh computation id is no alive run's `of`). Own proofs: new runs (a task's run: no computation
+  has the task's id; T5/T11: C has no alive run, then C.run := the new run), T13's clear (the retired
+  run is dead, so C has no alive run), demote (its cascade kills every alive run of C: idle's
+  `demote-dead`), T11's predecessor cancel (idle's KDB: the predecessor is C's only alive run),
+  normalization. Facts from the path: a parked run was alive; g7 at T5 and ga at T11, from the step's
+  input.
   Theorems: step-ar, ar-empty, ar-i10-comp (ar w -> inv-i10-comp w)."
   (:require [ansatz.core :as a]
-            [clojure.string :as str]
-            [clojure.walk :as walk]
             [spindel.v2.state :refer :all]
             [spindel.v2.edits :refer :all]
             [spindel.v2.reach :refer :all]
@@ -28,6 +28,7 @@
             [spindel.v2.inv.acts :refer :all]
             [spindel.v2.inv :refer :all]
             [spindel.v2.pres.part :refer :all]
+            [spindel.v2.pres.tree :as tree]
             [spindel.v2.inv.copier :refer :all]
             [spindel.v2.inv.idle :refer :all]
             [spindel.v2.inv.base :refer :all]
@@ -345,13 +346,13 @@
   (exact (ar-intro _ (inv-comp-ins-fresh w r h1 h2 (ar-sample w h)) (arr-comp-ins w r h1 (ar-rest-of w h)))))
 
 ;; ===========================================================================
-;; Part C. The bundle copy
+;; Part C. ar on the generic tree (spindel.v2.pres.tree): the bundle, its cells, its table
 ;; ===========================================================================
 
 (def AR (mk-bundle 'ar [] "ar-" {'inv-run-upd ['(fn [r :- RunRow] (Eq.refl (arrk r))) 4]
                                  'inv-comp-upd ['(fn [c :- CompRow] (Eq.refl (ark c))) 5]}))
 (swap! (:renames AR) assoc 'inv-parts 'ar-parts 'inv-run-upd 'ar-run-upd-a 'inv-comp-upd 'ar-comp-upd
-       'inv-comp-ins-fresh 'ar-comp-ins-fresh 'inv-run-ins-fresh 'ar-run-ins-NONE)
+       'inv-comp-ins-fresh 'ar-comp-ins-fresh)
 (defpart AR :reads '[comps next-id runs])
 (doseq [[o t] '[[inv-source-ins-fresh source-ins] [inv-fork-ins-fresh fork-ins] [inv-resource-ins-fresh resource-ins] [inv-scope-ins-fresh scope-ins]
                 [inv-act-ins-fresh act-ins] [inv-task-ins-fresh task-ins]]]
@@ -369,21 +370,71 @@
 (prim! AR 'inv-run-del '(arr-run-del w x R))
 (prim! AR 'inv-filter-world '(arr-filter-world w K R))
 
-;; the source patch: run edits by a row function that ends a run go through ar-run-upd-m, a wake through arrk
+;; a run edit by a row function that ends a run goes through ar-run-upd-m (idle's down lemmas)
 (def ^:private ar-run-fns '{run-cancel-row run-cancel-row-dwn run-complete-row run-complete-row-dwn
                             run-fin-pop-end run-fin-pop-end-dwn run-drop-fins run-drop-fins-dwn})
-(defn- ar-fhead [f] (if (seq? f) (first f) f))
-(defn- ar-lapp [f lem] (if (seq? f) (apply list lem (rest f)) lem))
-(defn ar-patch [form]
-  (->> (@#'spindel.v2.inv.idle/fix-f form)
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-run-upd (first y)) (contains? ar-run-fns (ar-fhead (nth y 3 nil)))))
-                    (fn [[_ w x f hid & more]] (apply list 'ar-run-upd-m w x f hid (ar-lapp f (ar-run-fns (ar-fhead f))) more)))
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-run-upd (first y)) (= 'run-wake (nth y 3 nil))))
-                    (fn [[_ w x f hid & more]] (apply list 'ar-run-upd-a w x f hid 'run-wake-arrk more)))))
-(doseq [[n _] @@#'spindel.v2.pres.part/source-theorems] (patch! AR n ar-patch))
+
+(tree/part! AR
+  ;; ---- the part's own proofs (content)
+  :over '{inv-clear-comp-run ar-clear-comp-run   ; T13's clear: the retired run is dead, so C has no alive run
+          inv-add-run-scope  ar-add-run-scope    ; a new run of a task: no computation has the task's id
+          inv-spawn-rows     ar-spawn-rows       ; T4: the new task's id is fresh
+          inv-start-raw      ar-start-raw        ; T5: a startable computation has no alive run (g7)
+          inv-dispatch-raw   ar-dispatch-raw     ; T11: the predecessor's cancel kills C's only alive run (kdb)
+          inv-demote-finish  ar-demote-finish    ; demote: C.run := 0 once no run of C is alive
+          inv-demote         ar-demote           ;   which its cascade ensures (idle's demote-dead)
+          inv-norm-round     ar-norm-round       ; normalization with acts-alive (demote's cascade)
+          inv-norm-loop      ar-norm-loop
+          inv-normalize      ar-normalize}
+  ;; ---- sites: the run edits that change (id, of, alive)
+  :sites (merge
+          (tree/row-sites 'inv-run-upd (set (keys ar-run-fns))                                  ; a run ends
+                          (fn [F] (list 'ar-run-upd-m 'w 'x F 'hf (ar-run-fns F) 'h0)))
+          '{[inv-run-upd run-wake]      (ar-run-upd-a w x run-wake hf run-wake-arrk h0)          ; resume: key kept, by lemma
+            [inv-run-upd run-park-row]  (ar-run-upd-on w x run-park-row hf (fn [q :- RunRow] (Eq.refl (:of q))) h0 h1)    ; await: made
+            [inv-run-upd run-tick-park] (ar-run-upd-on w x run-tick-park hf (fn [q :- RunRow] (Eq.refl (:of q))) h0 h1)}) ; parked; take
+  ;; ---- facts from the path: what ar's own proofs and sites take ...
+  :ctx '{[inv-run-upd run-park-row]  [(= (tbl-all (run-ok-for x) (:runs w)) true)]              ; every row of the run is alive
+         [inv-run-upd run-tick-park] [(= (tbl-all (run-ok-for x) (:runs w)) true)]
+         inv-clear-comp-run [(List.Mem r (:runs w)) (= (run-alive r) false)]                    ; retire-with and retire-local forward it: inferred
+         inv-add-run-scope  [(= (tbl-has comp-id of (:comps w)) false) (< of (:next-id w))]
+         inv-start-raw      [(= (g7 w) true) (List.Mem c (:comps w)) (= (startable w c) true)]
+         inv-dispatch-raw   [(= (acts-alive w) true) (List.Mem c (:comps w))]
+         inv-demote-finish  [(= (tbl-all (not-alive-of cid) (:runs w)) true)]
+         inv-demote         [(= (acts-alive w) true)]
+         inv-norm-round     [(= (acts-alive w) true)]
+         inv-norm-loop      [(= (acts-alive w) true)]
+         inv-normalize      [(= (acts-alive w) true)]}
+  ;; ---- ... and the facts nodes take from above them and pass on
+  :own '{;; g7 (T5: a startable computation has no alive run) and ga (T11's cascade), from the step's input;
+         ;; raw0 passes each to its transition's branch (inferred)
+         raw-inv        [hg7 (= (g7 w) true) hga (= (ga w) true)]
+         raw0g-inv      [hg7 (= (g7 w) true) hga (= (ga w) true)]
+         raw0-inv       [hg7 (= (g7 w) true) hga (= (ga w) true)]
+         t5-inv         [hg7 (= (g7 w) true)]
+         t11-inv        [hga (= (ga w) true)]
+         inv-take-park  [hm (List.Mem r (:runs w)) hal (= (run-alive r) true)]                 ; the parked run was alive
+         inv-arm-park   [hm (List.Mem r (:runs w)) hal (= (run-alive r) true)]
+         inv-await-raw  [hm (List.Mem r (:runs w)) hal (= (run-alive r) true)]
+         inv-await-post [hk (= (ka rid (:world acc)) true)]}                                 ;   carried by i8's ka
+  :pass '{t5-inv         {inv-start-raw [hg7 (tbl-find-mem CompRow comp-id cid c (:comps w) hc) (bool-and-right _ _ hg)]}
+          t11-inv        {inv-dispatch-raw [(ga-acts-alive w hga) (tbl-find-mem CompRow comp-id cid c (:comps w) hc)]}
+          inv-job-apply  {inv-retire-local [(And.left (find-run-mem w rid r hf)) (retirable-dead r ha)]}   ; a retirable run is dead
+          inv-take-park  {[inv-run-upd run-tick-park] [(take-park-ok w r x k (run-ok-of-mem w r (base-of w h) hm hal))]}
+          inv-arm-park   {inv-take-park [(arm-raw-mem w r kind hm) hal]}
+          t-take-inv     {inv-take-park [(And.left (tok-facts w st r ht)) (normal-alive r (bool-and-left _ _ (bool-and-right _ _ hg)))]}
+          t17-inv        {inv-arm-park [(And.left (tok-facts w st r ht)) (normal-alive r (bool-and-left _ _ (bool-and-right _ _ hg)))]}
+          t6-inv         {inv-await-raw [(And.left (tok-facts w st r ht)) (normal-alive r (await-ok-normal w r ds mode fresh _ hg))]}
+          inv-await-raw  {inv-await-post [(ka-await-wire (:id r) r (:next-id w) mode k (nat-distinct ds)
+                                            (AwAcc.mk (await-pre w r ds mode k mine) (List.nil DE) true)
+                                            (ka-await-pre (:id r) w r ds mode k mine
+                                              (ka-intro (:id r) w (base-of w h) (run-ok-of-mem w r (base-of w h) hm hal))))]}
+          inv-await-post {inv-park-if [(ka-rest-of rid _ (nat-fold-ka rid (fast-fill (:pairs acc)) (ka-fast-fill rid (:pairs acc)) (nat-distinct ds) _
+                                         (ka-act-upd rid (:world acc) a (act-set-members (mk-members (:pairs acc) 0 ds))
+                                           (act-set-members-id (mk-members (:pairs acc) 0 ds)) hk)))]}})
 
 ;; ===========================================================================
-;; Part D. Overrides
+;; Part D. ar's own proofs (the table's :over)
 ;; ===========================================================================
 
 ;; ---- T13's clear: the retired run is dead, so its computation has no alive run (AR + unique ids)
@@ -439,59 +490,27 @@
       (have d := (ar-dead-id w r q hs mr hd mq (Eq.trans (Eq.symm e1) ec)))
       (rw [ha] at d) (cases d))))
 
-(override! AR 'inv-clear-comp-run '[inv-clear-task-run]
-  '(a/theorem ar-clear-comp-run [w :- World, r :- RunRow]
-     (=> (List.Mem r (:runs w)) (= (run-alive r) false) (= (ar w) true) (= (ar (clear-comp-run w r)) true))
-     (intros mr hd h)
-     (have hs := (ar-sample w h))
-     (cases hc (comp-find w (:of r))) (case' [some c]) (case' [none])
-     (simp only [clear-comp-run hc]) (exact (ar-clear-task-run w r h))
-     (cases hr (Nat.beq (:run c) (:id r)))
-     (simp only [clear-comp-run hc hr]) (exact h)
-     (simp only [clear-comp-run hc hr])
-     (have mc := (tbl-find-mem CompRow comp-id (:of r) c (:comps w) hc))
-     (have ic (= (:id c) (:of r))) (exact (tbl-find-id CompRow comp-id (:of r) c (:comps w) hc))
-     (have hn := (ar-none-of-dead w r c h mr hd mc (Nat.eq_of_beq_eq_true hr)))
-     (rw [ic] at hn)
-     (have r0 := (ar-rest-of w h)) (simp only [ar-rest] at r0)
-     (have r1 (= (ar-rest (comp-upd w (:of r) comp-clear-run)) true))
-     (simp only [ar-rest comp-upd set-comps])
-     (exact (ar-k-clear _ (:of r) comp-clear-run comp-clear-run-id _ _ hn r0))
-     (exact (ar-intro _ (inv-comp-upd w (:of r) comp-clear-run comp-clear-run-id comp-clear-run-pending hs) r1))))
-(override! AR 'inv-retire-with '[inv-remove-if-empty inv-cleanup-del inv-run-del inv-close-local inv-clear-comp-run]
-  '(a/theorem ar-retire-with [w :- World, r :- RunRow, sub :- (List Nat)]
-     (=> (List.Mem r (:runs w)) (= (run-alive r) false) (= (ar w) true) (= (ar (retire-with w r sub)) true))
-     (intros mr hd h)
-     (simp only [retire-with])
-     (exact (ar-remove-if-empty _ sub
-              (ar-cleanup-del _ (:id r) (ar-run-del _ (:id r) (ar-close-local _ sub (ar-clear-comp-run w r mr hd h))))))))
-(override! AR 'inv-retire-local '[inv-retire-with]
-  '(a/theorem ar-retire-local [w :- World, r :- RunRow]
-     (=> (List.Mem r (:runs w)) (= (run-alive r) false) (= (ar w) true) (= (ar (retire-local w r)) true))
-     (intros mr hd h) (exact (ar-retire-with w r (scope-subtree w (:scope r)) mr hd h))))
-(override! AR 'inv-job-apply '[inv-cancel-run-local inv-retire-local inv-close-scope-local]
-  '(a/theorem ar-job-apply [w :- World, j :- Job]
-     (=> (= (ar w) true) (= (ar (job-apply w j)) true))
-     (intro h)
-     (cases j)
-     (rename_i rid rep)
-     (cases hf (run-find w rid)) (case' [some r]) (case' [none])
-     (simp only [job-apply hf]) (exact h)
-     (cases ha (run-alive r))
-     (simp only [job-apply hf ha]) (exact h)
-     (simp only [job-apply hf ha]) (exact (ar-cancel-run-local w r rep h))
-     (rename_i rid)
-     (cases hf (run-find w rid)) (case' [some r]) (case' [none])
-     (simp only [job-apply hf]) (exact h)
-     (cases ha (retirable r))
-     (simp only [job-apply hf ha]) (exact h)
-     (simp only [job-apply hf ha]) (exact (ar-retire-local w r (And.left (find-run-mem w rid r hf)) (retirable-dead r ha) h))
-     (rename_i s)
-     (cases hs (scope-has w s))
-     (simp only [job-apply hs]) (exact h)
-     (simp only [job-apply hs]) (exact (ar-close-scope-local w s h))))
+(tree/restate! AR '[inv-clear-task-run])
+(a/theorem ar-clear-comp-run [w :- World, r :- RunRow]
+  (=> (List.Mem r (:runs w)) (= (run-alive r) false) (= (ar w) true) (= (ar (clear-comp-run w r)) true))
+  (intros mr hd h)
+  (have hs := (ar-sample w h))
+  (cases hc (comp-find w (:of r))) (case' [some c]) (case' [none])
+  (simp only [clear-comp-run hc]) (exact (ar-clear-task-run w r h))
+  (cases hr (Nat.beq (:run c) (:id r)))
+  (simp only [clear-comp-run hc hr]) (exact h)
+  (simp only [clear-comp-run hc hr])
+  (have mc := (tbl-find-mem CompRow comp-id (:of r) c (:comps w) hc))
+  (have ic (= (:id c) (:of r))) (exact (tbl-find-id CompRow comp-id (:of r) c (:comps w) hc))
+  (have hn := (ar-none-of-dead w r c h mr hd mc (Nat.eq_of_beq_eq_true hr)))
+  (rw [ic] at hn)
+  (have r0 := (ar-rest-of w h)) (simp only [ar-rest] at r0)
+  (have r1 (= (ar-rest (comp-upd w (:of r) comp-clear-run)) true))
+  (simp only [ar-rest comp-upd set-comps])
+  (exact (ar-k-clear _ (:of r) comp-clear-run comp-clear-run-id _ _ hn r0))
+  (exact (ar-intro _ (inv-comp-upd w (:of r) comp-clear-run comp-clear-run-id comp-clear-run-pending hs) r1)))
 
-;; ---- parks: the parked run was alive
+;; ---- parks: the parked run was alive (the cell of the table's two park sites)
 (a/theorem ar-k-run-on [n :- Nat, cs :- (List CompRow), x :- Nat, f :- (=> RunRow RunRow),
                         hid :- (forall [r :- RunRow] (= (run-id (f r)) (run-id r))),
                         hof :- (forall [r :- RunRow] (= (:of (f r)) (:of r))), rs :- (List RunRow)]
@@ -527,37 +546,6 @@
   (exact (ar-k-run-on _ _ x f hid hof _ ho r0))
   (exact (ar-intro _ (inv-run-upd w x f hid (ar-sample w h)) r1)))
 
-(override! AR 'inv-park-if '[]
-  '(a/theorem ar-park-if [w :- World, a :- Nat, rid :- Nat]
-     (=> (= (tbl-all (run-ok-for rid) (:runs w)) true) (= (ar w) true) (= (ar (park-if w a rid)) true))
-     (intros hk h)
-     (cases ha (act-has w a))
-     (simp only [park-if ha]) (exact h)
-     (simp only [park-if ha]) (exact (ar-run-upd-on w rid run-park-row run-park-row-id (fn [q :- RunRow] (Eq.refl (:of q))) hk h))))
-(override! AR 'inv-take-park '[inv-insert-edge-checked]
-  '(a/theorem ar-take-park [w :- World, r :- RunRow, x :- Nat, k :- Nat]
-     (=> (List.Mem r (:runs w)) (= (run-alive r) true) (= (ar w) true) (= (ar (take-park w r x k)) true))
-     (intros hm hal h)
-     (have o := (run-ok-of-mem w r (ar-sample w h) hm hal))
-     (have h1 := (ar-insert-edge-checked _ (take-edge r (:next-id w) x) (ar-act-ins-fresh w (take-act w r k) (rfl) h)))
-     (have o2 (= (tbl-all (run-ok-for (:id r)) (:runs (insert-edge-checked (bump (act-ins w (take-act w r k))) (take-edge r (:next-id w) x)))) true))
-     (rw [runs-iec]) (exact o)
-     (simp only [take-park])
-     (exact (ar-run-upd-on _ (:id r) run-tick-park run-tick-park-id (fn [q :- RunRow] (Eq.refl (:of q))) o2 h1))))
-;; T6/take/arm: i8's templates `park-overrides` (the parked run is alive; KA through the await wiring), for ar
-(defn- ar-from-g8 [form]
-  (letfn [(strip [x] (cond (seq? x) (apply list (map strip (remove #{'x8s} x)))
-                           (vector? x) (let [v (vec x) i (.indexOf v 'x8s)] (mapv strip (if (>= i 0) (into (subvec v 0 i) (subvec v (+ i 3))) v)))
-                           (symbol? x) (let [n (name x)]
-                                         (cond (= n "g8") 'ar
-                                               (str/starts-with? n "g8-") (symbol (str "ar-" (subs n 3)))
-                                               (str/ends-with? n "-g8") (symbol (str (subs n 0 (- (count n) 3)) "-ar"))
-                                               :else x))
-                           :else x))]
-    (strip form)))
-(doseq [o '[t-take-inv inv-arm-park t17-inv inv-await-post inv-await-raw t6-inv]]
-  (let [{:keys [deps form]} (get spindel.v2.inv.i8/park-overrides o)]
-    (override! AR o deps (ar-from-g8 form))))
 
 ;; ---- new runs of a task: no computation has the task's id
 (a/theorem ar-k-newrun-free [n :- Nat, n2 :- Nat, cs :- (List CompRow), rs :- (List RunRow), q :- RunRow]
@@ -572,32 +560,30 @@
   (have b (= (Nat.blt (:of q) n2) true)) (exact (gd-blt-of _ _ hl))
   (have o (= (ar-one n2 cs q) true)) (simp only [ar-one b t Bool.and_self Bool.or_true])
   (simp only [ar-k tbl-all o h2 Bool.and_self]))
-(override! AR 'inv-add-run-scope '[]
-  '(a/theorem ar-add-run-scope [w :- World, of :- Nat, ep :- Nat, parent :- Nat, ei :- Nat]
-     (=> (= (tbl-has comp-id of (:comps w)) false) (< of (:next-id w)) (= (ar w) true) (= (ar (add-run-scope w of ep parent ei)) true))
-     (intros hc hl h)
-     (have r0 := (ar-rest-of w h)) (simp only [ar-rest] at r0)
-     (have l2 (< of (+ (+ (:next-id w) 1) 1))) (omega)
-     (have l3 (<= (:next-id w) (+ (+ (:next-id w) 1) 1))) (omega)
-     (have rr (= (ar-rest (add-run-scope w of ep parent ei)) true))
-     (show (= (ar-k (+ (+ (:next-id w) 1) 1) (:comps w) (List.cons RunRow (new-run-row (:next-id w) of ep (+ (:next-id w) 1) ei) (:runs w))) true))
-     (exact (ar-k-newrun-free _ _ _ _ (new-run-row (:next-id w) of ep (+ (:next-id w) 1) ei) hc l2 l3 r0))
-     (exact (ar-intro _ (inv-add-run-scope w of ep parent ei (ar-sample w h)) rr))))
+(a/theorem ar-add-run-scope [w :- World, of :- Nat, ep :- Nat, parent :- Nat, ei :- Nat]
+  (=> (= (tbl-has comp-id of (:comps w)) false) (< of (:next-id w)) (= (ar w) true) (= (ar (add-run-scope w of ep parent ei)) true))
+  (intros hc hl h)
+  (have r0 := (ar-rest-of w h)) (simp only [ar-rest] at r0)
+  (have l2 (< of (+ (+ (:next-id w) 1) 1))) (omega)
+  (have l3 (<= (:next-id w) (+ (+ (:next-id w) 1) 1))) (omega)
+  (have rr (= (ar-rest (add-run-scope w of ep parent ei)) true))
+  (show (= (ar-k (+ (+ (:next-id w) 1) 1) (:comps w) (List.cons RunRow (new-run-row (:next-id w) of ep (+ (:next-id w) 1) ei) (:runs w))) true))
+  (exact (ar-k-newrun-free _ _ _ _ (new-run-row (:next-id w) of ep (+ (:next-id w) 1) ei) hc l2 l3 r0))
+  (exact (ar-intro _ (inv-add-run-scope w of ep parent ei (ar-sample w h)) rr)))
 (a/theorem ar-has-next [w :- World] (=> (= (inv-sample w) true) (= (tbl-has comp-id (:next-id w) (:comps w)) false))
   (intro hs)
   (cases hb (tbl-has comp-id (:next-id w) (:comps w)))
   (case [false] (rfl))
   (case [true] (have z := (comp-below w (:next-id w) hs hb)) (omega)))
-(override! AR 'inv-spawn-rows '[inv-add-run-scope]
-  '(a/theorem ar-spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat), loc :- Bool]
-     (=> (= (ar w) true) (= (ar (spawn-rows w owner inputs loc)) true))
-     (intro h)
-     (have hc := (ar-has-next w (ar-sample w h)))
-     (have hl (< (:next-id w) (:next-id (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc)))))) (show (< (:next-id w) (+ (:next-id w) 1))) (omega)
-     (simp only [spawn-rows])
-     (exact (ar-add-run-scope (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc)))
-              (:next-id w) 0 (task-scope-parent w owner) 0 hc hl
-              (ar-task-ins-fresh w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc) (rfl) h)))))
+(a/theorem ar-spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat), loc :- Bool]
+  (=> (= (ar w) true) (= (ar (spawn-rows w owner inputs loc)) true))
+  (intro h)
+  (have hc := (ar-has-next w (ar-sample w h)))
+  (have hl (< (:next-id w) (:next-id (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc)))))) (show (< (:next-id w) (+ (:next-id w) 1))) (omega)
+  (simp only [spawn-rows])
+  (exact (ar-add-run-scope (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc)))
+           (:next-id w) 0 (task-scope-parent w owner) 0 hc hl
+           (ar-task-ins-fresh w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc) (rfl) h))))
 
 ;; ---- T5/T11: C has no alive run; the new run becomes C.run
 (a/theorem ar-cs-own [cid :- Nat, rid :- Nat, f :- (=> CompRow CompRow), hid :- (forall [c :- CompRow] (= (comp-id (f c)) (comp-id c))),
@@ -710,20 +696,9 @@
           (have zq := (run-id-pos w q hs mq))
           (have e2 (= (:id q) 0)) (exact (Eq.trans (Eq.symm e1) z))
           (rw [e2] at zq) (cases zq))))))
-(override! AR 'inv-start-raw '[]
-  '(a/theorem ar-start-raw [w :- World, c :- CompRow]
-     (=> (= (g7 w) true) (List.Mem c (:comps w)) (= (startable w c) true) (= (ar w) true) (= (ar (start-raw w c)) true))
-     (intros hg mc hst h) (exact (ar-start-raw-x w c mc (ar-startable-none w c hg h mc hst) h))))
-(override! AR 't5-inv '[inv-start-raw]
-  '(a/theorem t5-ar [w :- World, cid :- Nat, fresh :- Nat]
-     (=> (= (g7 w) true) (= (ar w) true) (= (ar (:world (t5-start w cid fresh))) true))
-     (intros hg h)
-     (cases hc (comp-find w cid)) (case' [some c]) (case' [none])
-     (simp only [t5-start hc refuse]) (exact h)
-     (cases hg2 (Bool.and (Nat.beq fresh (:next-id w)) (startable w c)))
-     (simp only [t5-start hc hg2 refuse]) (exact h)
-     (have hst (= (startable w c) true)) (simp only [Bool.and_eq_true] at hg2) (exact (And.right hg2))
-     (simp only [t5-start hc hg2 accept]) (exact (ar-start-raw w c hg (tbl-find-mem CompRow comp-id cid c (:comps w) hc) hst h))))
+(a/theorem ar-start-raw [w :- World, c :- CompRow]
+  (=> (= (g7 w) true) (List.Mem c (:comps w)) (= (startable w c) true) (= (ar w) true) (= (ar (start-raw w c)) true))
+  (intros hg mc hst h) (exact (ar-start-raw-x w c mc (ar-startable-none w c hg h mc hst) h)))
 
 ;; T11: the predecessor cancel kills C's only alive run (idle's KDB), the cut and the entry keep the runs
 (a/theorem ar-none-find-none [w :- World, c :- CompRow]
@@ -784,85 +759,62 @@
   (cases hf (deb-final w (:debtor e)))
   (case [true] (simp only [consume-entry hf]) (exact (runs-remove-edge w (:id e))))
   (case [false] (cases hc (Nat.beq (:cont e) cont-restart)) (all_goals (simp only [consume-entry hf hc edge-upd set-edges]))))
-(override! AR 'inv-dispatch-raw '[inv-cancel-pred inv-cut-suffix inv-consume-entry]
-  '(a/theorem ar-dispatch-raw [w :- World, c :- CompRow]
-     (=> (= (acts-alive w) true) (List.Mem c (:comps w)) (= (ar w) true) (= (ar (dispatch-raw w c)) true))
-     (intros haa mc h)
-     (have hs := (ar-sample w h))
-     (have h1 := (ar-cancel-pred w c h))
-     (have n1 := (ar-cancel-pred-none w c haa h mc))
-     (have c1 := (ch-cancel-pred (:id c) w c (ch-intro (:id c) w hs (comp-mem-has w c mc))))
-     (cases he (entry-edge w (:id c)))
-     (case [none]
-       (simp only [dispatch-raw he])
-       (have c2 := (ch-cut-suffix (:id c) _ (:id c) false 0 0 c1))
-       (have n2 (= (tbl-all (not-alive-of (:id c)) (:runs (cut-suffix (cancel-pred w c) (:id c) false 0 0))) true)) (rw [ar-runs-cut]) (exact n1)
-       (exact (ar-new-run-of-x _ c 0 (ch-rest-of (:id c) _ c2) n2 (ar-cut-suffix _ (:id c) false 0 0 h1))))
-     (case [some e]
-       (simp only [dispatch-raw he])
-       (have c2 := (ch-consume-entry (:id c) _ e (ch-cut-suffix (:id c) _ (:id c) true (:at e) (:id e) c1)))
-       (have n2 (= (tbl-all (not-alive-of (:id c)) (:runs (consume-entry (cut-suffix (cancel-pred w c) (:id c) true (:at e) (:id e)) e))) true))
-       (rw [ar-runs-consume ar-runs-cut]) (exact n1)
-       (exact (ar-new-run-of-x _ c (entry-ei e) (ch-rest-of (:id c) _ c2) n2
-                (ar-consume-entry _ e (ar-cut-suffix _ (:id c) true (:at e) (:id e) h1)))))))
-(override! AR 't11-inv '[inv-dispatch-raw]
-  '(a/theorem t11-ar [w :- World, cid :- Nat, fresh :- Nat]
-     (=> (= (ga w) true) (= (ar w) true) (= (ar (:world (t11-dispatch w cid fresh))) true))
-     (intros hga h)
-     (cases hc (comp-find w cid)) (case' [some c]) (case' [none])
-     (simp only [t11-dispatch hc refuse]) (exact h)
-     (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (Bool.and (Bool.not (:idle c)) (Bool.and (needs-run w c) (eligible w c)))))
-     (simp only [t11-dispatch hc hg refuse]) (exact h)
-     (simp only [t11-dispatch hc hg accept])
-     (exact (ar-dispatch-raw w c (ga-acts-alive w hga) (tbl-find-mem CompRow comp-id cid c (:comps w) hc) h))))
+(tree/restate! AR '[inv-cancel-pred inv-cut-suffix inv-consume-entry])
+(a/theorem ar-dispatch-raw [w :- World, c :- CompRow]
+  (=> (= (acts-alive w) true) (List.Mem c (:comps w)) (= (ar w) true) (= (ar (dispatch-raw w c)) true))
+  (intros haa mc h)
+  (have hs := (ar-sample w h))
+  (have h1 := (ar-cancel-pred w c h))
+  (have n1 := (ar-cancel-pred-none w c haa h mc))
+  (have c1 := (ch-cancel-pred (:id c) w c (ch-intro (:id c) w hs (comp-mem-has w c mc))))
+  (cases he (entry-edge w (:id c)))
+  (case [none]
+    (simp only [dispatch-raw he])
+    (have c2 := (ch-cut-suffix (:id c) _ (:id c) false 0 0 c1))
+    (have n2 (= (tbl-all (not-alive-of (:id c)) (:runs (cut-suffix (cancel-pred w c) (:id c) false 0 0))) true)) (rw [ar-runs-cut]) (exact n1)
+    (exact (ar-new-run-of-x _ c 0 (ch-rest-of (:id c) _ c2) n2 (ar-cut-suffix _ (:id c) false 0 0 h1))))
+  (case [some e]
+    (simp only [dispatch-raw he])
+    (have c2 := (ch-consume-entry (:id c) _ e (ch-cut-suffix (:id c) _ (:id c) true (:at e) (:id e) c1)))
+    (have n2 (= (tbl-all (not-alive-of (:id c)) (:runs (consume-entry (cut-suffix (cancel-pred w c) (:id c) true (:at e) (:id e)) e))) true))
+    (rw [ar-runs-consume ar-runs-cut]) (exact n1)
+    (exact (ar-new-run-of-x _ c (entry-ei e) (ch-rest-of (:id c) _ c2) n2
+             (ar-consume-entry _ e (ar-cut-suffix _ (:id c) true (:at e) (:id e) h1))))))
 
-;; ---- raw0 / raw0g / raw: g7 (T5) and ga (T11's cascade) threaded from the step's input
-(def ^:private ar-calls '{(t5-inv w _ _ h) (t5-inv w _ _ hg7 h)
-                          (t11-inv w _ _ h) (t11-inv w _ _ hga h)})
-(defn- ar-add-hyps [form calls]
-  (let [[hd nm binders stmt & proof] form
-        stmt2 (apply list '=> '(= (g7 w) true) '(= (ga w) true) (rest stmt))
-        proof2 (map (fn [t] (if (= t '(intro h)) '(intros hg7 hga h) t)) proof)]
-    (subst-forms #(contains? calls %) calls (apply list hd nm binders stmt2 proof2))))
-(patch! AR 'raw0-inv (fn [form] (ar-add-hyps (ar-patch form) ar-calls)))
-(patch! AR 'raw0g-inv (fn [form] (ar-add-hyps (ar-patch form) '{(raw0-inv w it h) (raw0-inv w it hg7 hga h)})))
-(patch! AR 'raw-inv (fn [form] (ar-add-hyps (ar-patch form) '{(raw0g-inv w it h) (raw0g-inv w it hg7 hga h)})))
 
 ;; ---- demote: its cascade kills every alive run of C (idle's demote-dead), then C.run := 0
-(override! AR 'inv-demote-finish '[inv-drop-edges inv-comp-del-unref]
-  '(a/theorem ar-demote-finish [w :- World, cid :- Nat, vs :- (List Valid)]
-     (=> (= (tbl-all (not-alive-of cid) (:runs w)) true) (= (ar w) true) (= (ar (demote-finish w cid vs)) true))
-     (intros hna h)
-     (cases hf (comp-find w cid)) (case' [some c]) (case' [none])
-     (simp only [demote-finish hf]) (exact h)
-     (cases hk (demote-keep w c))
-     (simp only [demote-finish hf hk])
-     (exact (ar-comp-del-unref _ cid (drop-edges-avoids w cid) (ar-drop-edges w (edge-avoids cid) h)))
-     (simp only [demote-finish hf hk])
-     (have r0 := (ar-rest-of w h)) (simp only [ar-rest] at r0)
-     (have r1 (= (ar-rest (comp-upd w cid (comp-demote-row vs))) true))
-     (simp only [ar-rest comp-upd set-comps])
-     (exact (ar-k-clear _ cid (comp-demote-row vs) (comp-demote-row-id vs) _ _ hna r0))
-     (exact (ar-intro _ (inv-comp-upd w cid (comp-demote-row vs) (comp-demote-row-id vs) (comp-demote-row-pending vs) (ar-sample w h)) r1))))
-(override! AR 'inv-demote '[inv-run-cascade inv-demote-epoch inv-drop-edges inv-end-basis inv-demote-finish]
-  '(a/theorem ar-demote [w :- World, cid :- Nat]
-     (=> (= (acts-alive w) true) (= (ar w) true) (= (ar (demote w cid)) true))
-     (intros ha h)
-     (cases hf (comp-find w cid)) (case' [some c]) (case' [none])
-     (simp only [demote hf]) (exact h)
-     (cases hi (:idle c))
-     (simp only [demote hf hi demote-edges])
-     (have e (= (:id c) cid)) (exact (tbl-find-id CompRow comp-id cid c (:comps w) hf))
-     (have na := (demote-dead w c (ar-sample w h) ha))
-     (rw [e] at na)
-     (have g1 := (ar-run-cascade w (cancel-jobs (demote-cancels w c)) h))
-     (have g2 := (ar-demote-epoch _ cid (demote-cur w c) g1))
-     (have g3 := (ar-drop-edges _ (not-dep-of cid) g2))
-     (have na3 (= (tbl-all (not-alive-of cid) (:runs (drop-edges (demote-epoch (run-cascade w (cancel-jobs (demote-cancels w c))) cid (demote-cur w c)) (not-dep-of cid)))) true))
-     (simp only [drop-edges set-comps set-edges runs-demote-epoch]) (exact na)
-     (exact (ar-demote-finish _ cid _ (end-basis-dead _ cid cid (ar-sample _ g3) na3) (ar-end-basis _ cid g3)))
-     (simp only [demote hf hi]) (exact h)))
-(lcopy! AR 'inv-demote)
+(a/theorem ar-demote-finish [w :- World, cid :- Nat, vs :- (List Valid)]
+  (=> (= (tbl-all (not-alive-of cid) (:runs w)) true) (= (ar w) true) (= (ar (demote-finish w cid vs)) true))
+  (intros hna h)
+  (cases hf (comp-find w cid)) (case' [some c]) (case' [none])
+  (simp only [demote-finish hf]) (exact h)
+  (cases hk (demote-keep w c))
+  (simp only [demote-finish hf hk])
+  (exact (ar-comp-del-unref _ cid (drop-edges-avoids w cid) (ar-drop-edges w (edge-avoids cid) h)))
+  (simp only [demote-finish hf hk])
+  (have r0 := (ar-rest-of w h)) (simp only [ar-rest] at r0)
+  (have r1 (= (ar-rest (comp-upd w cid (comp-demote-row vs))) true))
+  (simp only [ar-rest comp-upd set-comps])
+  (exact (ar-k-clear _ cid (comp-demote-row vs) (comp-demote-row-id vs) _ _ hna r0))
+  (exact (ar-intro _ (inv-comp-upd w cid (comp-demote-row vs) (comp-demote-row-id vs) (comp-demote-row-pending vs) (ar-sample w h)) r1)))
+(tree/restate! AR '[inv-run-cascade inv-demote-epoch inv-drop-edges inv-end-basis])
+(a/theorem ar-demote [w :- World, cid :- Nat]
+  (=> (= (acts-alive w) true) (= (ar w) true) (= (ar (demote w cid)) true))
+  (intros ha h)
+  (cases hf (comp-find w cid)) (case' [some c]) (case' [none])
+  (simp only [demote hf]) (exact h)
+  (cases hi (:idle c))
+  (simp only [demote hf hi demote-edges])
+  (have e (= (:id c) cid)) (exact (tbl-find-id CompRow comp-id cid c (:comps w) hf))
+  (have na := (demote-dead w c (ar-sample w h) ha))
+  (rw [e] at na)
+  (have g1 := (ar-run-cascade w (cancel-jobs (demote-cancels w c)) h))
+  (have g2 := (ar-demote-epoch _ cid (demote-cur w c) g1))
+  (have g3 := (ar-drop-edges _ (not-dep-of cid) g2))
+  (have na3 (= (tbl-all (not-alive-of cid) (:runs (drop-edges (demote-epoch (run-cascade w (cancel-jobs (demote-cancels w c))) cid (demote-cur w c)) (not-dep-of cid)))) true))
+  (simp only [drop-edges set-comps set-edges runs-demote-epoch]) (exact na)
+  (exact (ar-demote-finish _ cid _ (end-basis-dead _ cid cid (ar-sample _ g3) na3) (ar-end-basis _ cid g3)))
+  (simp only [demote hf hi]) (exact h))
 (a/theorem ar-demote-fold [a :- Nat, k :- Nat, xs :- (List Nat)]
   (forall [w :- World] (=> (= (bn a k w) true) (= (ar w) true) (= (ar (nat-fold demote w xs)) true)))
   (induction xs)
@@ -870,29 +822,37 @@
   (case [cons hd t ih]
     (intros w hb h) (simp only [nat-fold])
     (exact (ih (demote w hd) (bn-demote a k w hd hb) (ar-demote w hd (And.left (And.right (bn-parts a k w hb))) h)))))
-(defn- ar-from-g7 [form]
-  (walk/postwalk (fn [x] (if (symbol? x)
-                           (let [n (name x)]
-                             (cond (= n "g7") 'ar
-                                   (str/starts-with? n "g7-") (symbol (str "ar-" (subs n 3)))
-                                   :else x))
-                           x))
-                 form))
-;; g7's own proofs of normalization (inv.idle, its table's :over), renamed
-(defn- idle-theorem [nm]
-  (first (filter #(and (seq? %) (= 'a/theorem (first %)) (= nm (second %)))
-                 (@#'spindel.v2.pres.part/ns-source-forms 'spindel.v2.inv.idle))))
-(doseq [[o nm deps] '[[inv-norm-round g7-norm-round [inv-run-cascade inv-detach inv-demote]]
-                      [inv-norm-loop g7-norm-loop [inv-norm-round]]
-                      [inv-normalize g7-normalize [inv-norm-loop inv-detach]]]]
-  (override! AR o deps (ar-from-g7 (idle-theorem nm))))
+;; normalization: demote takes acts-alive, which the round's cascade and the demotions keep (idle's bn)
+(tree/restate! AR '[inv-run-cascade inv-detach])
+(a/theorem ar-norm-round [w :- World]
+  (=> (= (acts-alive w) true) (= (ar w) true) (= (ar (norm-round w)) true))
+  (intros ha h)
+  (simp only [norm-round norm-round-lv])
+  (have b0 := (bn-intro (alive-cnt w) (act-cnt w) w (ar-sample w h) ha (Nat.le_refl _) (Nat.le_refl _)))
+  (exact (ar-detach _ (ar-demote-fold (alive-cnt w) (act-cnt w) _ _
+           (bn-run-cascade _ _ w _ b0) (ar-run-cascade w _ h)))))
+(a/theorem ar-norm-loop [fuel :- (List Nat)]
+  (forall [w :- World] (=> (= (acts-alive w) true) (= (ar w) true) (= (ar (norm-loop fuel w)) true)))
+  (induction fuel)
+  (case' [cons h f ih])
+  (case' [nil])
+  (intros w ha hw) (simp only [norm-loop]) (exact hw)
+  (intros w ha hw)
+  (cases hn (normalized w))
+  (simp only [norm-loop hn])
+  (exact (ih (norm-round w) (And.right (bn-round w (ar-sample w hw) ha)) (ar-norm-round w ha hw)))
+  (simp only [norm-loop hn]) (exact hw))
+(a/theorem ar-normalize [w :- World]
+  (=> (= (acts-alive w) true) (= (ar w) true) (= (ar (normalize w)) true))
+  (intros ha h)
+  (have b := (bn-detach (alive-cnt w) (act-cnt w) w (bn-intro (alive-cnt w) (act-cnt w) w (ar-sample w h) ha (Nat.le_refl _) (Nat.le_refl _))))
+  (exact (ar-norm-loop (norm-fuel (detach w)) (detach w) (And.left (And.right (bn-parts _ _ _ b))) (ar-detach w h))))
 
 ;; ===========================================================================
-;; Part E. The copy, Rule R, the step, the literal I10 computation part
+;; Part E. The raw step, Rule R, the step, the literal I10 computation part
 ;; ===========================================================================
 
-(lcopy! AR 'raw-inv)
-(lcopy! AR 'inv-normalize)
+(tree/restate! AR '[raw-inv])
 
 (a/theorem ar-rule-r-round [w :- World]
   (=> (= (acts-alive w) true) (= (ar w) true) (= (filter-safe (normalize w)) true) (= (ar (rule-r-round w)) true))
