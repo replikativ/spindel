@@ -13,7 +13,7 @@
             [spindel.v2.step :refer :all]
             [spindel.v2.rule :refer :all]
             [spindel.v2.engine :refer :all]
-            [spindel.v2.inv.copier :refer [mk-bundle prim!]]
+            [spindel.v2.pres.part :refer [mk-bundle prim!]]
             [spindel.v2.inv.base]
             [spindel.v2.inv.acts]
             [spindel.v2.inv.marks-step :refer [p3l]]

@@ -15,6 +15,7 @@
             [spindel.v2.rule :refer :all]
             [spindel.v2.engine :refer :all]
             [spindel.v2.inv :refer :all]
+            [spindel.v2.pres.part :refer :all]
             [spindel.v2.inv.copier :refer :all]
             [spindel.v2.pres.tree :as tree]))
 

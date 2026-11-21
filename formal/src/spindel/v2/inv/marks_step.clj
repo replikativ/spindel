@@ -156,7 +156,7 @@
                               (and (seq? y) (= 'ekeep (first y))) (list 'hk-kk (list (nth y 1) (nth y 2)) (nth y 2))
                               (symbol? y) (get ek-ren y y)
                               :else y)) f))
-(let [l5-forms (@#'spindel.v2.inv.copier/ns-source-forms 'spindel.v2.progress.l5)]
+(let [l5-forms (@#'spindel.v2.pres.part/ns-source-forms 'spindel.v2.progress.l5)]
   (doseq [n ek-names]
     (eval (ek-tr (first (filter #(and (seq? %) (= 'a/theorem (first %)) (= n (second %))) l5-forms))))))
 

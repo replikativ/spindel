@@ -40,6 +40,7 @@
             [spindel.v2.progress.casc :refer :all]
             [spindel.v2.inv.acts :refer :all]
             [spindel.v2.inv :refer :all]
+            [spindel.v2.pres.part :refer :all]
             [spindel.v2.inv.copier :refer :all]
             [spindel.v2.inv.idle :refer :all]
             [spindel.v2.inv.base :refer :all]
@@ -1710,7 +1711,7 @@
                              '(fn [e :- EdgeRow] (Eq.refl (:debtor e))) '(fn [e :- EdgeRow] (Eq.refl (:marked e)))
                              '(fn [e :- EdgeRow, q :- (= (Nat.beq (:phase e) ph-armed) true)] (Nat.beq_refl ph-armed))
                              more)))))
-(doseq [[n _] @@#'spindel.v2.inv.copier/source-theorems] (patch! H3 n h3-patch2))
+(doseq [[n _] @@#'spindel.v2.pres.part/source-theorems] (patch! H3 n h3-patch2))
 
 ;; ===========================================================================
 ;; Part D. The fires

@@ -115,7 +115,7 @@ comes from `p3b` by `step-rule-r-safe`):
 ### How the code expresses it today
 
 The proofs are not written part by part and edit by edit. A bundle's step theorem is obtained by
-re-checking the base proof once per bundle (`spindel.v2.inv.copier`):
+re-checking the base proof once per bundle (`spindel.v2.pres.part`):
 
 - `mk-bundle` declares a bundle and its parameters (an exemption set such as `g8`'s escape list `x8s`, or
   a fixed id that a helper bundle talks about).
@@ -144,7 +144,7 @@ that emits the same copier calls:
 - `spindel.v2.pres.frames` states what every primitive edit writes (`writes-<edit>`: the edited world is
   the input world with only those fields replaced) and, through `defview`, what a part reads
   (`<rest>-frame-<field>`: replacing a field outside the view leaves the part unchanged, by `rfl`).
-- `defpart` (`inv.copier`) declares a part's view and the cells that need an argument; every other
+- `defpart` (`pres.part`) declares a part's view and the cells that need an argument; every other
   primitive's cell is generated from the two lemmas above (`frame!`). So a part's declaration lists only
   the edits that write what it reads, e.g. `(defpart G1 :reads '[scopes] :cells {...})`.
 - `spindel.v2.pres.exempt` records each exemption form (`defexempt`): its exempt ids and its empty
@@ -190,7 +190,7 @@ Kernel names are global; find a name with `grep -rn "(a/theorem NAME \["` (or `a
 9. `gl-rest`, `l10k`, `kw`, `gl-rest-kw` (`inv.copier`): a part, its view (what it reads) and its frame.
 10. `glx`, `glx-kill`, `gl-task-done-x` (`inv.copier`), `gl-cancel-run-local-o` (`inv.i10-task`): a
     violation deferred within a step: its break and its repair.
-11. `mk-bundle`, `prim-form`, `copy-subst`, `lcopy!` (`inv.copier`): how most parts reuse the base proof
+11. `mk-bundle`, `prim-form`, `copy-subst`, `lcopy!` (`pres.part`): how most parts reuse the base proof
     today; `pres-form`, `restate!`, `part!` (`pres.tree`): how `gl` does, from the generic tree.
 12. `g8-close-local`, `g8-cascade`, `g8-cascade-done` (`inv.i8`), `casc-done-ga` (`inv.acts`): an
     exemption set as ghost state in a loop, emptied by P4.
@@ -218,7 +218,7 @@ a `-` is `_` in the file name). Kernel names are global: a theorem is `step-p3m`
 | Layer 2 | `layer2.sys`, `layer2.skip`, `layer2.top` | cells, publications and their operations; an id taken by a sibling world (`bump`); `sysinv`, `SysReach`, `sys-reach-inv` |
 | Physical | `layer2.mvcc` | the MVCC row representation (tokens, versions, copy maps), `mv-refinement` |
 | Utilities | `util` | function update at a Nat key (`fupd`) |
-| Proof layout | `pres.frames`, `pres.exempt`, `pres.tree` | footprints of the primitive edits and views of the parts (frames); the exemption forms and their uniform names; the generic step tree (`pres-<x>`, `part!`, `restate!`) that eight parts use instead of a copy |
+| Proof layout | `pres.part`, `pres.frames`, `pres.exempt`, `pres.tree` | part definitions: the base proof as data, the bundle record, the primitive cells, `defpart`, and the copier `lcopy!` for the parts not yet on the tree (part); footprints of the primitive edits and views of the parts (frames); the exemption forms and their uniform names; the generic step tree (`pres-<x>`, `part!`, `restate!`) that eight parts use instead of a copy |
 | Oracle (tests) | `test/spindel/v2/oracle.clj`, `oracle_test.clj`, `oracle/` | replays commit logs recorded from the engine through the model, compares every committed state |
 
 `inv.*`, in load order (each requires the ones before it that it uses):
@@ -226,7 +226,7 @@ a `-` is `_` in the file name). Kernel names are global: a theorem is `step-p3m`
 | Namespace | Contents |
 |-----------|----------|
 | `inv.acts` | `ga`: activations (each run's only one, its run parked); the first copier (`copy!`) |
-| `inv.copier` | the bundle copier used from here on (`mk-bundle`, `prim!`, `lcopy!`, `override!`, `patch!`, `inst`) and its declaration front end (`defpart`, `frame!`); the predicates, cells and lemmas of `gl` (I10 task part) and `g9` (I9 resources); P3's core `filter-safe-of-refs` |
+| `inv.copier` | the predicates, cells and lemmas of `gl` (I10 task part) and `g9` (I9 resources); P3's core `filter-safe-of-refs` |
 | `inv.rank`, `inv.rank-step` | I12: the raise loop establishes `ranks-ok`; `inv-rank` through every step (P5) |
 | `inv.idle` | I7: bundle `g7` (idle shape, no dep edge on an idle creditor) |
 | `inv.tomb` | C1 Q6: tombstones are dormant (`gy`) |
@@ -308,7 +308,7 @@ Unchanged: `state`, `edits`, `reach`, `retain`, `step`, `rule`, `engine`, `ledge
 debtor exist and have the right kind, ids are unique and below the allocator. A *bundle* is
 `inv-sample w && rest w`. Its step theorem is built from one lemma per primitive table edit (the rest
 part under that edit) and then carried over every composite lemma of `step-inv` by a source-level lemma
-copier (`inv.copier`: `mk-bundle`, `prim!`, `lcopy!`; `override!` supplies a hand proof for a
+copier (`pres.part`: `mk-bundle`, `prim!`, `lcopy!`; `override!` supplies a hand proof for a
 transition whose rest part is not compositional, `patch!` adds a premise to a source proof). Every copy
 is kernel-checked.
 

@@ -41,6 +41,7 @@
             [spindel.v2.progress.casc :refer :all]
             [spindel.v2.inv.acts :refer :all]
             [spindel.v2.inv :refer :all]
+            [spindel.v2.pres.part :refer :all]
             [spindel.v2.inv.copier :refer :all]
             [spindel.v2.inv.idle :refer :all]
             [spindel.v2.inv.base :refer :all]
@@ -779,11 +780,11 @@
 
 ;; GR0 wrappers for GRX lemmas used as values (a bare function argument cannot take the [] parameter)
 (defn- gr0-wrap-form [n]
-  (let [f (@#'spindel.v2.inv.copier/copy-form GRX (@#'spindel.v2.inv.copier/source-of GRX n) 'x @(:renames GRX))
+  (let [f (@#'spindel.v2.pres.part/copy-form GRX (@#'spindel.v2.pres.part/source-of GRX n) 'x @(:renames GRX))
         [_ _ binders stmt] f
         bs (vec (drop 3 binders))
         stmt2 (clojure.walk/postwalk (fn [y] (if (and (seq? y) (= 'grx (first y)) (= 'x1r (second y))) (list 'gr0 (nth y 2)) y)) stmt)
-        nm (@#'spindel.v2.inv.copier/copy-name GR0 n)
+        nm (@#'spindel.v2.pres.part/copy-name GR0 n)
         gx (get @(:renames GRX) n)]
     (list 'a/theorem nm bs stmt2 (list 'exact (apply list gx '(List.nil Nat) (take-nth 3 bs))))))
 (def gr0-wrapped '[mark-edge-inv-sample inv-drop-act inv-fin-if-final inv-invalidate-id inv-res-cancel inv-close-source

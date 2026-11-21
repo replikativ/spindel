@@ -45,6 +45,7 @@
             [spindel.v2.progress.casc :refer :all]
             [spindel.v2.inv.acts :refer :all]
             [spindel.v2.inv :refer :all]
+            [spindel.v2.pres.part :refer :all]
             [spindel.v2.inv.copier :refer :all]
             [spindel.v2.inv.idle :refer :all]
             [spindel.v2.inv.base :refer :all]
@@ -2875,7 +2876,7 @@
 (swap! (:renames G10R) assoc 'inv-parts 'g10r-parts)
 
 (defn- wrap-g10r! [n]
-  (let [[_ _ binders stmt] (#'spindel.v2.inv.copier/theorem-source n)
+  (let [[_ _ binders stmt] (#'spindel.v2.pres.part/theorem-source n)
         L (get @(:renames G10) n)
         _ (assert L (str "no G10 lemma for " n))
         prems (butlast (rest stmt))
@@ -2884,12 +2885,12 @@
         nm (symbol (str (name L) "-r"))
         form (list 'a/theorem nm binders stmt' (cons 'intros hs)
                    (list 'exact (concat (list L '(List.nil Nat) '(List.nil Nat)) (take-nth 3 binders) hs)))]
-    (#'spindel.v2.inv.copier/eval-theorem! form)
+    (#'spindel.v2.pres.part/eval-theorem! form)
     (swap! (:renames G10R) assoc n nm)))
 
 (def ^:private raw-deps
-  (let [S (set (map first @@#'spindel.v2.inv.copier/source-theorems))
-        deps (fn [n] (let [[_ _ _ _ & p] (#'spindel.v2.inv.copier/theorem-source n)] (distinct (filter S (filter symbol? (flatten p))))))]
+  (let [S (set (map first @@#'spindel.v2.pres.part/source-theorems))
+        deps (fn [n] (let [[_ _ _ _ & p] (#'spindel.v2.pres.part/theorem-source n)] (distinct (filter S (filter symbol? (flatten p))))))]
     (vec (remove '#{t5-inv raw0-inv raw0g-inv} (distinct (concat (deps 'raw0-inv) (deps 'raw-inv)))))))
 (tree/restate! G10 raw-deps)
 (doseq [n raw-deps] (wrap-g10r! n))
