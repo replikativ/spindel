@@ -1994,11 +1994,48 @@ No tree change.
   `sys-reach-inv`, `l5-safety-total`, `step-p3m`, `mv-refinement` unchanged.
 - **Load**, one JVM at a time, against group 7a's measure. The host was loaded during this measure:
   untouched namespaces read 365 → 525 s (×1.44), `completion.quiet` 7.3 → 13.1 s (×1.8); alone in a
-  REPL `completion.quiet` loads in 8.4 s. So `gk` on the tree is not faster than the copy: 50 part
-  lemmas and 49 raw0 branches replace 138 copied proofs.
+  REPL `completion.quiet` loads in 8.4 s, and in the next measure (§5u, a quieter host) in 7.4 s.
+  So `gk` on the tree loads as fast as the copy did, not faster: 50 part lemmas and 49 raw0
+  branches replace 138 copied proofs.
 - **Suite**: `clojure -M:test`, 306 tests, 208,554 assertions, 0 failures, 0 errors (oracle samples
   1–62; the tree test also checks that `gk` has no overrides or patches, that the guard goes from
   raw0's arm to the row, and that it stops at raw0).
+
+## 5u. Stage 4: the part definitions move to `pres.part` (before group 8)
+
+**Why.** The three parts that are left before the members (`ga` and `gx` in `inv.acts`, `ch` in
+`inv.copier`) are defined in namespaces that load before the tree, because the tree required
+`inv.copier`. It required it only for the machinery in its Part B: the base proof as data
+(`source-theorems`), the bundle record (`mk-bundle`), the primitive cells (`prim!`), the names and
+statements of a part's lemmas (`copy-name`, `copy-form`), the front end (`defpart`, `frame!`) and
+the copier (`lcopy!`, `override!`, `patch!`). The tree uses no theorem of `inv.copier` or
+`inv.acts`.
+
+**What.** That machinery is now `spindel.v2.pres.part` (264 lines, moved unchanged;
+`inv.copier` 2813 → 2584 lines). The tree requires `pres.part`. No theorem, bundle or function is
+renamed; nothing else moves. The namespaces that call the machinery get one more require line
+(36 files); twelve references to a private var, in seven files, change their namespace.
+
+The plan's alternative was to move the lemmas instead: `ga`/`gx`'s copied lemmas and everything
+after them out of `inv.acts` (about 1000 of its 1356 lines), and the same for `ch` in
+`inv.copier`. Moving the machinery is the smaller change, and stage 4's last step asks for this
+namespace anyway. With it, `inv.acts` and `inv.copier` can load after the tree, so group 8
+converts `ga`, `gx` and `ch` where they are.
+
+Generated theorems are now evaluated in `pres.part` instead of `inv.copier`. `pres.part` refers the
+same model namespaces except `inv.acts` and `inv.copier`'s own content; no generated form needed
+them.
+
+### Gate (the move)
+
+- **Statements** (name-independent fingerprints, against group 7b): all 18,250 identical; none
+  changed, none missing, none new. `inv-step`, `reach-inv`, `inv-empty`, `sys-reach-inv`,
+  `l5-safety-total`, `step-p3m`, `mv-refinement` unchanged.
+- **Load**, one JVM at a time, against group 7b's measure (which ran on a loaded host): `inv.copier`
+  8.9 → 9.9 s, `pres.tree` 13.7 → 12.3 s, `pres.part` 0.1 s; untouched 516 → 393 s, whole model
+  538 → 415 s. The move changes no load time beyond the noise.
+- **Suite**: `clojure -M:test`, 306 tests, 208,554 assertions, 0 failures, 0 errors (oracle samples
+  1–62), the same counts as group 7b.
 
 ## 6. Key pieces to read: the whole proof in 14 stops, in reading order (current names)
 
