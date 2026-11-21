@@ -1538,13 +1538,10 @@
 (prim! KA 'mark-edge-inv-sample '(Eq.trans (ka-rest-same k8a w (mark-edge w x) (runs-mark-edge w x)) R))
 (prim! KA 'unmark-edge-inv-sample '(Eq.trans (ka-rest-same k8a w (unmark-edge w x) (runs-unmark-edge w x)) R))
 (prim! KA 'inv-run-del '(all-sub-del RunRow (run-ok-for k8a) run-id x (:runs w) R))
-(defn ka-patch [form]
-  (subst-forms (fn [y] (and (seq? y) (= 'inv-run-upd (first y)) (= 'run-wake (nth y 3 nil))))
-               (fn [[_ w x f hid & more]] (apply list 'ka-run-upd 'k8a w x f hid 'run-wake-alive more)) form))
-(doseq [[n _] @@#'spindel.v2.pres.part/source-theorems] (patch! KA n ka-patch))
-(lcopy! KA 'inv-await-pre)
-(lcopy! KA 'inv-await-wire)
-(lcopy! KA 'inv-fast-fill)
+;; ka on the generic tree: waking the run keeps it alive (a site); the three lemmas the await needs
+(tree/part! KA
+  :sites '{[inv-run-upd run-wake] (ka-run-upd k8a w x run-wake hf run-wake-alive h0)})
+(tree/restate! KA '[inv-await-pre inv-await-wire inv-fast-fill])
 
 ;; ===========================================================================
 ;; C0: a link owned by the root scope (a stream's first tail, a pull link in a run, the next pull link

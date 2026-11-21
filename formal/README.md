@@ -225,7 +225,7 @@ a `-` is `_` in the file name). Kernel names are global: a theorem is `step-p3m`
 
 | Namespace | Contents |
 |-----------|----------|
-| `inv.acts` | `ga`: activations (each run's only one, its run parked); the first copier (`copy!`) |
+| `inv.acts` | `ga`: activations (each run's only one, its run parked), with `gx` (the invariant inside T6 and take); both on the generic tree |
 | `inv.copier` | the predicates, cells and lemmas of `gl` (I10 task part) and `g9` (I9 resources); P3's core `filter-safe-of-refs` |
 | `inv.rank`, `inv.rank-step` | I12: the raise loop establishes `ranks-ok`; `inv-rank` through every step (P5) |
 | `inv.idle` | I7: bundle `g7` (idle shape, no dep edge on an idle creditor) |

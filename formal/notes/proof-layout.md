@@ -2037,6 +2037,49 @@ them.
 - **Suite**: `clojure -M:test`, 306 tests, 208,554 assertions, 0 failures, 0 errors (oracle samples
   1–62), the same counts as group 7b.
 
+## 5v. Stage 4, group 8a: `ga`, `gx`, `ch` and `ka` on the tree
+
+**Result.** With the part definitions in `pres.part` (§5u), `inv.acts` and `inv.copier` load after
+the tree, and their parts are converted where they are: `ga` and `gx` (`inv.acts`), `ch`
+(`inv.copier`) and `ka` (`inv.i8`, `g8`'s companion). `inv.acts`' private copier, the first one
+written and a duplicate of the shared machinery, is deleted (1356 → 1233 lines). `ar`
+(`inv.alive-runs`), the last part of the plan's group 8, follows as 8b.
+
+| | before (copier) | after (tree) |
+|---|---|---|
+| `ga` | 21 overrides (4 of them written once for `ga` and `gx`: `override-both!`), 3 `copy!` roots | 21 own proofs, no `:ctx`, `:own` or `:pass` |
+| `gx` | the same 4 overrides, 6 `copy!` roots | 4 own proofs, restated |
+| `ch` | 3 `lcopy!` | restated |
+| `ka` | 1 patch over every source (`ka-patch`), 3 `lcopy!` | 1 site (`[inv-run-upd run-wake]`), restated |
+
+- **`ga` needs no fact from the path.** Seven of its own proofs take a hypothesis (the resumed
+  activation is its run's only one; the completing run has no activation; the parking run is in
+  the table and holds the slice). Each is called only by other own proofs, which prove it on
+  the spot, so the table has no `:ctx`, `:own` or `:pass` row and `ga` has no part lemma.
+- **The four proofs shared by `ga` and `gx`** stay written once, as templates (`$name`, `%G`:
+  `pres.part/inst`), and are checked for both parts (`both!`).
+- **Three copier calls in `inv.members.await-wire`** asked `inv.acts`' copier for lemmas `gx`
+  already had. They did nothing and are deleted.
+
+**What the plan got wrong.** The plan expected `ga`/`gx` to need their lemmas moved to a later
+namespace, and their "own private mini-copier" to need replacing by tree features. Neither: after
+§5u the conversion is the standard recipe, and the load of `inv.acts` goes from 11.4 s to 2.7 s because the 138 copies for `ga` become restatements.
+
+No tree change.
+
+### Gate (group 8a)
+
+- **Statements** (name-independent fingerprints, against §5u): all 18,250 identical; none changed,
+  none missing; 49 new, the `raw0-<item>-ga`. No part lemma: `ga`, `gx`, `ch` and `ka` use the
+  shared `pres-x` only. `inv-step`, `reach-inv`, `inv-empty`, `sys-reach-inv`, `l5-safety-total`,
+  `step-p3m`, `mv-refinement` unchanged.
+- **Load**, one JVM at a time, against §5u's measure: `inv.acts` 11.4 → 2.7 s, `inv.copier`
+  9.9 → 4.7 s, `inv.i8` 12.3 → 16.2 s, `inv.members.await-wire` 4.7 → 6.2 s; untouched 377 → 351 s,
+  whole model 415 → 381 s.
+- **Suite**: `clojure -M:test`, 307 tests, 208,587 assertions, 0 failures, 0 errors (oracle samples
+  1–62; the tree test also checks that the four parts have no overrides or patches and that `ga`
+  has no part lemma).
+
 ## 6. Key pieces to read: the whole proof in 14 stops, in reading order (current names)
 
 1. `inv`, `inv-step`, `Reach1`, `reach-inv` (`top.clj`): the headline and its four-line induction.
