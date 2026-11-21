@@ -79,3 +79,71 @@
        (is (= [:a :b] (v t))))
      (is (= 5 (v (ev w ctx "(task (savepoint :site 5))"))) "a savepoint without a handler is the identity")
      (v2/release-world! w))))
+
+(defn- held-executor
+  "An executor that runs nothing until `run-held!`."
+  []
+  (let [held (atom [])]
+    [(reify java.util.concurrent.Executor (execute [_ r] (swap! held conj r)))
+     (fn [] (let [[rs] (reset-vals! held [])] (run! #(.run ^Runnable %) rs)))]))
+
+(deftest a-host-callback-runs-where-the-resolver-says-when-it-runs
+  ;; offload's f and external's cancel fn resolve their interpreter when they
+  ;; are called, as bodies and continuations do: after a staged replacement
+  ;; they act on the staged heap, also when the replaced one is retired
+  ;; (before, a retired one made the cancel fn throw: the resource never
+  ;; joined and the world never completed)
+  (doseq [retire? [false true]]
+    (testing (str "replaced interpreter retired: " retire?)
+      (checked
+       (let [w (s/vworld)
+             [ex run-held!] (held-executor)
+             p (s/interpreter {:bindings {'ex ex}})
+             registry (atom {w p})
+             _ (v2sci/set-resolver! p (fn [world _] (get @registry world)))
+             off (ev w p "(def n (atom 0)) (task (offload (fn [] (swap! n inc)) {:pool ex}))")
+             ext (ev w p "(def cancelled (atom false))
+                          (task (try (external (fn [_] (fn [] (reset! cancelled true) :joined)))
+                                     (finally :cleanup)))")
+             staged (sci/fork p)]
+         (swap! registry assoc w staged)
+         (when retire? (sci/retire! p))
+         (run-held!)
+         (is (= 1 (v off)) "offload's f ran on the staged heap")
+         (is (= 1 (sci/eval-string* staged "@n")))
+         (v2/cancel-task! ext)
+         (is (v2/cancelled? (try (v2/value ext 2000 ::timeout) (catch Exception e e))))
+         (is (true? (sci/eval-string* staged "@cancelled")) "the cancel fn ran on the staged heap")
+         (when-not retire?
+           (is (= [0 false] (sci/eval-string* p "[@n @cancelled]")) "the replaced heap is untouched"))
+         (v2/release-world! w)
+         (is (not= ::timeout (v2/await-complete w 2000 ::timeout)) "the cancelled run retired"))))))
+
+(deftest a-refused-host-callback-runs-no-sci-code
+  (testing "offload's f and await-op's op fail their effect with ::no-interpreter"
+    (checked
+     (let [w (s/vworld)
+           p (s/interpreter)]
+       ;; refuses calls outside a slice (executor threads), answers slices
+       (v2sci/set-resolver! p (fn [_ ctx] (when (v2/active-run) ctx)))
+       (ev w p "(def ran (atom 0))")
+       (is (= [:caught ::v2sci/no-interpreter]
+              (v (ev w p "(task (try (offload (fn [] (swap! ran inc))) (catch Exception e [:caught (:type (ex-data e))])))"))))
+       (is (= [:caught ::v2sci/no-interpreter]
+              (v (ev w p "(task (try (await-op (fn [ok _] (swap! ran inc) (ok 1))) (catch Exception e [:caught (:type (ex-data e))])))"))))
+       (is (= 0 (sci/eval-string* p "@ran")) "neither ran SCI code")
+       (v2/release-world! w))))
+  (testing "a refused cancel fn counts as joined"
+    (checked
+     (let [w (s/vworld)
+           p (s/interpreter)
+           refuse? (atom false)
+           _ (v2sci/set-resolver! p (fn [_ ctx] (when-not @refuse? ctx)))
+           t (ev w p "(def cancelled (atom false))
+                      (task (external (fn [_] (fn [] (reset! cancelled true) nil))))")]
+       (reset! refuse? true)
+       (v2/cancel-task! t)
+       (is (some? (try (v2/value t 2000 ::timeout) (catch Exception e e))))
+       (is (false? (sci/eval-string* p "@cancelled")) "the cancel fn did not run")
+       (v2/release-world! w)
+       (is (not= ::timeout (v2/await-complete w 2000 ::timeout)) "the resource joined; the world completed")))))

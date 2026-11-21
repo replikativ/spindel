@@ -107,11 +107,10 @@
     [ctx (sci/capture-continuation-context ctx) (if b (aget b 0) 0) (if b (aget b 1) 0)]))
 
 (defn- select
-  "The interpreter to run captured code of `ctx` in, for the world being
-   processed."
-  [cfg ctx]
+  "The interpreter to run captured code of `ctx` in, for world `w`."
+  [cfg w ctx]
   (if-let [f (:select @cfg)]
-    (or (f (v2/cw) ctx)
+    (or (f w ctx)
         (throw (ex-info "no SCI interpreter for this world" {:type ::no-interpreter})))
     ctx))
 
@@ -181,7 +180,7 @@
             entered (volatile! false)]
         (.set adapting (doto (object-array 3) (aset 0 w) (aset 1 r) (aset 2 b)))
         (try
-          (let [target (select cfg ctx)
+          (let [target (select cfg w ctx)
                 run (sci/continuation-context-fn (sci/retarget-continuation-context cc target)
                                                  (fn [] (vreset! entered true) (force-all (f))))]
             (run))
@@ -198,14 +197,36 @@
     (k v)))
 
 (defn- in-interpreter
-  "`f` for a host thread outside the slice (offload's f, external's f and
-   cancel fn, await-op's op): it runs in the interpreter of `cap` with its
-   SCI bindings."
-  [[ctx cc] f]
+  "`f` for a host call outside the slice (offload's f, external's f and
+   cancel fn, await-op's op). When it is called, the resolver selects the
+   interpreter, as for a slice, for the world being processed then, else the
+   world of the effect (`w`, an executor thread processes none); `f` runs
+   there with the SCI bindings of `cap`. When the interpreter is refused
+   (resolver nil, or it cannot be entered: another lineage, retired) no SCI
+   code runs and the call returns `(refused e)`."
+  [cfg w [ctx cc] f refused]
   (fn [& args]
-    (try ((sci/continuation-context-fn (sci/retarget-continuation-context cc ctx)
-                                       (fn [] (apply f args))))
-         (catch Throwable t (throw (unwrap t))))))
+    (let [entered (volatile! false)]
+      (try (let [target (select cfg (or (v2/cw) w) ctx)]
+             ((sci/continuation-context-fn (sci/retarget-continuation-context cc target)
+                                           (fn [] (vreset! entered true) (apply f args)))))
+           (catch Throwable t
+             (if @entered
+               (throw (unwrap t))
+               (refused (if (= ::no-interpreter (:type (ex-data t)))
+                          t
+                          (ex-info "no SCI interpreter for this world" {:type ::no-interpreter} t)))))))))
+
+(defn- fail-refused
+  "A refused offload f, external f or await-op op fails its effect."
+  [e]
+  (throw e))
+
+(defn- join-refused
+  "A refused external cancel fn counts as joined: none of the operation's
+   SCI code can run any more (its host-side work may continue)."
+  [_]
+  :joined)
 
 ;; ---------------------------------------------------------------------------
 ;; The functions the expansion calls (spliced as values)
@@ -264,16 +285,19 @@
      :sleep (fx v2/sleep-effect!)
      :offload (fn [f opts k ek]
                 (let [cap (capture home false)]
-                  (thunk-or-nil (v2/offload-effect! (in-interpreter cap f) opts (k* cap k) (err* cap ek)))))
+                  (thunk-or-nil (v2/offload-effect! (in-interpreter cfg (v2/cw) cap f fail-refused) opts
+                                                    (k* cap k) (err* cap ek)))))
      :external (fn [f k ek]
-                 (let [cap (capture home false)]
+                 (let [cap (capture home false)
+                       w (v2/cw)]
                    (thunk-or-nil (v2/external-effect! (fn [complete!]
-                                                        (let [c ((in-interpreter cap f) complete!)]
-                                                          (if (fn? c) (in-interpreter cap c) c)))
+                                                        (let [c ((in-interpreter cfg w cap f fail-refused) complete!)]
+                                                          (if (fn? c) (in-interpreter cfg w cap c join-refused) c)))
                                                       (k* cap k) (err* cap ek)))))
      :await-op (fn [op opts k ek]
                  (let [cap (capture home false)]
-                   (thunk-or-nil (v2/await-op-effect! (in-interpreter cap op) opts (k* cap k) (err* cap ek)))))
+                   (thunk-or-nil (v2/await-op-effect! (in-interpreter cfg (v2/cw) cap op fail-refused) opts
+                                                      (k* cap k) (err* cap ek)))))
      :savepoint (fn [site payload k ek]
                   (let [cap (capture home false)]
                     (thunk-or-nil (v2/savepoint-effect! site payload (k* cap k) (err* cap ek)))))
