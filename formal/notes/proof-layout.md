@@ -1946,6 +1946,60 @@ Nine of the ten overrides are content. The tenth, `gc`'s `gc-cleanup-set-x`, was
   1–62; the tree test also checks that
   `grel`, `gc` and `gst` have no overrides or patches).
 
+## 5t. Stage 4, group 7b: `gk` on the tree
+
+**Result.** `gk` (`completion.quiet`), the last completion part, goes through the tree.
+`completion.quiet` has no copier override, patch or `lcopy!` left (876 → 860 lines).
+
+| | before (copier) | after (tree) |
+|---|---|---|
+| overrides | 4 | 6 own proofs (the same 4; `gk-await-wire` and `gk-await-raw`, see below) |
+| patches | 14 `gk-patch!` calls and 2 rules over every source (the premise `root-shut w = false` in front of 27 nodes; `hz-patch` at the row edits) | sites: 11 row functions by one rule, the three creations; `:ctx` 9; `:own` 5; `:pass` 23 callers (15 of them raw0 arms) |
+| bundle extra arguments | 34 (4 cells, 3 creations and 27 threaded nodes taking the local name `hr0`) | 4 (the cells) |
+| `lcopy!` | 2 | restated |
+
+- **The threaded premise is inferred.** The copier listed the 27 theorems between a raw0 arm and a
+  creation (`gk-threaded`) and added the premise to each. The table states the fact once, at the
+  three creations and at handle-new's three row edits (`:ctx`), and where it comes from (15 `:pass`
+  rows at raw0's arms). The tree's forwarding finds the nodes in between: 28 of the 33 own-fact
+  nodes are inferred, and they are the copier's 27 plus the T8 and T22 chain.
+- **The inserted edges are one fact.** Six patches each rewrote one call to pass "this edge is no
+  host root" in a different form. In the table the two edge insertions take the fact
+  `host-free w e` at every site (`:ctx`), and the six callers pass it (`:pass`).
+- **`hz-patch` is a site rule**: a row edit by one of 11 functions goes to the cell with the
+  function's proof that a zero count stays zero (or to the `-open` cell with the guard).
+
+**What the plan got wrong.**
+- *The premise order was not a problem.* The copier put the added premise first, the tree puts a
+  fact just before the inv premise. No threaded node has another premise, so every statement is the
+  same.
+- *`inv-await-wire` cannot take an own fact.* Its statement is `forall acc, inv ... -> ...`, with no
+  inv premise at the top, and the tree inserts a fact before the inv premise. `gk` therefore keeps
+  `gk-await-wire` (the base induction with the fact in front, as the copier generated it) and its
+  one caller `gk-await-raw` as own proofs: 12 lines that are the base proofs again. A tree rule "a
+  statement with no top-level inv premise takes its facts in front" (in `insert-before-inv`,
+  `with-own` and the position of a pass) would remove both; it is not done here.
+- *Two nodes pass the guard by computation.* `inv-stream-rows` and `inv-append-raw` insert a row
+  into an already edited world, so the fact at the creation is about that world and forwarding
+  does not apply (the argument is not a binder). They take the guard of the world before as an own
+  fact and pass it as it is; `root-shut` of the edited world reduces to it.
+
+No tree change.
+
+### Gate (group 7b)
+
+- **Statements** (name-independent fingerprints, against group 7a): all 18,151 identical; none
+  changed, none missing; 99 new: 49 `raw0-<item>-gk` and 50 part lemmas `pres-x@gk` (the nodes that
+  take or pass the guard, and the six that pass `host-free`). `inv-step`, `reach-inv`, `inv-empty`,
+  `sys-reach-inv`, `l5-safety-total`, `step-p3m`, `mv-refinement` unchanged.
+- **Load**, one JVM at a time, against group 7a's measure. The host was loaded during this measure:
+  untouched namespaces read 365 → 525 s (×1.44), `completion.quiet` 7.3 → 13.1 s (×1.8); alone in a
+  REPL `completion.quiet` loads in 8.4 s. So `gk` on the tree is not faster than the copy: 50 part
+  lemmas and 49 raw0 branches replace 138 copied proofs.
+- **Suite**: `clojure -M:test`, 306 tests, 208,554 assertions, 0 failures, 0 errors (oracle samples
+  1–62; the tree test also checks that `gk` has no overrides or patches, that the guard goes from
+  raw0's arm to the row, and that it stops at raw0).
+
 ## 6. Key pieces to read: the whole proof in 14 stops, in reading order (current names)
 
 1. `inv`, `inv-step`, `Reach1`, `reach-inv` (`top.clj`): the headline and its four-line induction.
