@@ -2135,6 +2135,74 @@ No tree change.
   reach exactly raw0's T5 and T11 branches).
 - Copier call forms left in `formal/src`: `lcopy!` 50, `override!` 6, `patch!` 2.
 
+## 5x. Stage 4, group 9: the member parts `h3`, `ekb` and `fb` on the tree; no copier call is left
+
+**Result.** The last three copier bundles, all in `inv.members`, are parts of the tree: `h3 xm`
+(h-mem2, `inv.members.bundle`), `ekb` (edge kinds, `inv.members.cascade`) and `fb` (the frame
+bundle of the normalization pass, `inv.members.step`). After this no namespace calls `lcopy!`,
+`override!` or `patch!`.
+
+| | before (copier) | after (tree) |
+|---|---|---|
+| `h3` | 1 patch over every source (`h3-patch2`, six rules), 3 overrides, 30 `lcopy!` forms (58 roots) | sites: the same six rules as rows of the table; 3 own proofs; 12 `restate!` |
+| `ekb` | 3 overrides, 2 `lcopy!` | 1 site; restated |
+| `fb` | 1 patch over every source (`fb-patch`, three rules), 1 `lcopy!` | sites: three rules; restated |
+| parts already on the tree (`g7`, `aha`, `gd`, `ar`, `hmk`, `gl`, `awo`, `ka`, and `ekb` after its own namespace) | 16 `lcopy!` forms in the await namespaces, `react` and `raw` (45 calls) | deleted: each added nothing |
+
+- **`ekb`'s three overrides were one fact.** They re-proved react-add, await-step and take-park
+  only to hand the inserted edge's kind to the insertion. For a constructor term that is `rfl` (the
+  bundle's extra argument, which the tree applies at every insertion site by default); the await's
+  edge depends on the dep test and needs the lemma `ekb-await-edge`: one site.
+- **`h3` and `fb` keep nothing in general.** Their cells for an arbitrary row edit do not exist
+  (the `-NONE` names); a row function that keeps what the part reads goes through the part's `-m`
+  form. That was a source patch with one rule per table; it is `tree/row-sites` with the same
+  rule. A site without a rule still has no cell, and is reached only from the part's own proofs.
+- **`h3`'s own proofs stay registered where they are proved** (`swap!` on the bundle's lemma
+  map, in `fires`, `track-take` and `cascade`): 23 composite lemmas over three namespaces,
+  most with `hmk`, `g10` and `ekb` of the input as extra hypotheses, all called only from other
+  own proofs. The three former overrides are registered the same way. They are not `:over` rows:
+  an `:over` row is known from the table on, and its copier name becomes an alias when the lemma
+  has another name (§5k). Here the names differ for all of them (`h3-x`, not `hm3-x`), so `:over`
+  would add 26 alias theorems, and the lemmas restated before a proof exists would have to be
+  re-ordered. The naming pass can fold them into the table.
+- **The "materialize the closure" calls are gone.** The await namespaces asked nine bundles for
+  lemmas at load, before use, because the copier generated lazily and a later namespace must not
+  depend on a REPL's earlier calls. Measured (every `restate!` call logged with the number of
+  lemmas it adds): 45 of those calls add nothing, since each part restates its whole closure in
+  its own namespace, and so do 7 of `h3`'s. They are deleted; the 12 calls that remain (all
+  `h3`'s, which has no whole closure) each add at least one lemma.
+- `inv.marks-step` still reads the source of `progress.l5` to re-prove 17 `es-nm` lemmas for
+  `hk-ek` by renaming (`ek-tr`). That is not the copier (no bundle, no closure, no override); it
+  uses only the source reader, which stays. Removing it means either writing the 17 proofs out a
+  second time (about 130 lines) or stating the l5 lemmas once over an abstract relation with the
+  five closure properties both relations have. The second is the right fix and is a change to
+  `progress.l5`'s statements, so it is left for a separate PR.
+
+**What the plan got wrong.** It expected `h3` to need hand renames turned into table rows, as
+`hmk` did, and two PRs. The renames are the bundle record, which stays; the rest is the standard
+recipe and one PR. It listed `kc` as a part to convert: `kc` was restated from the tree already.
+It did not expect most `lcopy!` calls in the members to be dead.
+
+**One pitfall again** (§5n): a row rule's lemma applied to the row function's arguments must
+leave them to unification (`_`) when a caller's variable has the name of one of the site's
+binders (`fm-act-fill w x _ _` at `(act-fill x v)`).
+
+No tree change.
+
+### Gate (group 9)
+
+- **Statements** (name-independent fingerprints, against §5w): all 18,366 identical; none changed,
+  none missing; 49 new, the `raw0-<item>-ekb` (`ekb` now restates raw by item). No part lemma:
+  `h3`, `ekb` and `fb` have sites only. `inv-step`, `reach-inv`, `inv-empty`, `sys-reach-inv`,
+  `l5-safety-total`, `step-p3m`, `mv-refinement` unchanged.
+- **Load**, one JVM at a time, against §5w's measure, on a loaded host (another session's JVMs:
+  untouched namespaces 278 → 422 s, a factor 1.52): the twelve touched member namespaces
+  57 → 85 s, a factor 1.50. No measurable change; in the REPL the members load as before.
+- **Suite**: `clojure -M:test`, 309 tests, 208,605 assertions, 0 failures, 0 errors (oracle samples
+  1–62; the tree test also checks that `h3`, `ekb` and `fb` have no overrides, patches or part
+  lemmas).
+- Copier call forms left in `formal/src`: none.
+
 ## 6. Key pieces to read: the whole proof in 14 stops, in reading order (current names)
 
 1. `inv`, `inv-step`, `Reach1`, `reach-inv` (`top.clj`): the headline and its four-line induction.
