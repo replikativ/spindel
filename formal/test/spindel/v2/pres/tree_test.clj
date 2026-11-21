@@ -5,6 +5,7 @@
   or patches left."
   (:require [clojure.test :refer [deftest is]]
             [ansatz.core :as a]
+            [spindel.v2.inv.acts :as acts]
             [spindel.v2.inv.copier :as c]
             [spindel.v2.pres.part :as part]
             [spindel.v2.inv.i10-task]
@@ -218,3 +219,13 @@
   (is (= '[(= (root-shut w) false)] (vec (take-nth 2 (rest (get (tree/table-own quiet/GK) 't3-inv))))))
   ;; it stops at raw0: the dispatcher and the step are the shared lemmas
   (is (not-any? #(tree/variant? quiet/GK %) '[raw0-inv raw0g-inv raw-inv inv-normalize])))
+
+(deftest ga-gx-ch-and-ka-are-not-copied
+  (doseq [B [acts/GA acts/GX c/CH i8/KA]]
+    (is (empty? @(:overrides B)) (str (:pred B)))
+    (is (empty? @(:patches B)) (str (:pred B))))
+  ;; ga's own proofs take their facts from their own callers, which are own proofs too: no node
+  ;; takes or passes a fact
+  (is (not-any? #(tree/variant? acts/GA %) (:nodes @tree/tree)))
+  (is (= 21 (count (:over (get @tree/parts 'ga)))))
+  (is (= 4 (count (:over (get @tree/parts 'gx))))))

@@ -103,9 +103,6 @@
 (doseq [B [G7 AHA GD AR HMK EKB GL AWO KA]]
   (lcopy! B 'inv-await-pre)
   (lcopy! B 'inv-await-wire))
-(spindel.v2.inv.acts/copy! GX 'nat-fold-inv)
-(spindel.v2.inv.acts/copy! GX 'inv-demand-reactive)
-(spindel.v2.inv.acts/copy! GX 'inv-await-wire)
 
 (a/theorem h3-await-step [xm :- (List Nat), r :- RunRow, a :- Nat, mode :- Nat, k :- Nat, acc :- AwAcc, d :- Nat]
   (=> (= (h3 xm (:world acc)) true) (= (h3 xm (:world (await-step r a mode k acc d))) true))

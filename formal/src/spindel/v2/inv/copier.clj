@@ -46,6 +46,7 @@
             [spindel.v2.inv.acts :refer :all]
             [spindel.v2.inv :refer :all]
             [spindel.v2.pres.part :refer :all]
+            [spindel.v2.pres.tree :as tree]
             [spindel.v2.pres.frames :as frames]
             [spindel.v2.pres.exempt :as exempt]))
 
@@ -1389,9 +1390,7 @@
 (prim! CH 'inv-remove-edge '(Eq.trans (ch-eq-remove-edge w x cx) R))
 (prim! CH 'inv-comp-ins-fresh '(ch-comp-ins w r cx R))
 
-(lcopy! CH 'inv-cancel-pred)
-(lcopy! CH 'inv-cut-suffix)
-(lcopy! CH 'inv-consume-entry)
+(tree/restate! CH '[inv-cancel-pred inv-cut-suffix inv-consume-entry])   ; ch on the generic tree: no own proof
 ;; ---- Rule R: the filter keeps every run that is not done (normalized: they are live)
 
 (a/defn alive-kept [K :- (=> Nat Bool), k :- RKey] Bool (Bool.or (Bool.not (:alive k)) (K (:id k))))

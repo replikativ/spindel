@@ -15,11 +15,12 @@
   How: `gr P w` is the invariant generic in the per-activation run predicate; `ga` uses
   `act-rows-good`, `gx ex` (inside T6/take, between the new activation and the park) exempts
   the activations of run (:x ex), which all have id (:a ex). Primitive edits (Part B, `prims!`);
-  every composite inv-sample lemma of `step-inv` re-checked for the bundle by `copy!` (138 for
-  ga, 21 for gx). Overrides (Part D): resume and its callers (the resumed activation is its
-  run's only one), T14's local part (the run's activations go with it), T12, the scheduling
-  choice, finalize and finally regions (the run is not parked or holds the slice, so no
-  activation names it: `no-act-bad`), T6 and take (`gx-act-ins` ... `gx-park`/`gx-restore`)."
+  every composite inv-sample lemma of `step-inv` is restated for the bundle from the generic step
+  tree (spindel.v2.pres.tree; for gx the 21 that T6 and take use). Own proofs (Part D, the tables'
+  `:over`): resume and its callers (the resumed activation is its run's only one), T14's local
+  part (the run's activations go with it), T12, the scheduling choice, finalize and finally regions
+  (the run is not parked or holds the slice, so no activation names it: `no-act-bad`), T6 and take
+  (`gx-act-ins` ... `gx-park`/`gx-restore`)."
   (:require [ansatz.core :as a]
             [clojure.java.io :as io]
             [clojure.string :as str]
@@ -31,7 +32,9 @@
             [spindel.v2.step :refer :all]
             [spindel.v2.rule :refer :all]
             [spindel.v2.engine :refer :all]
-            [spindel.v2.progress.casc :refer :all]))
+            [spindel.v2.progress.casc :refer :all]
+            [spindel.v2.pres.part :refer [mk-bundle prim! inst]]
+            [spindel.v2.pres.tree :as tree]))
 
 ;; ===========================================================================
 ;; Part A. The invariant
@@ -334,148 +337,11 @@
   (simp only [act-rows-good-x act-rows-good (hr c) (hid c)]))
 
 ;; ===========================================================================
-;; Part C. The copy of the inv-sample lemmas (as spindel.v2.progress.casc's bc-copy!, here generic in
-;; the bundle: `ga` = the invariant, `gx e` = the invariant inside T6 with run (:x e) exempt)
+;; Part C. The two parts (`ga` = the invariant, `gx e` = the invariant inside T6 with run (:x e)
+;; exempt), their cells and their tables in the generic tree
 ;; ===========================================================================
 
-(def ^:private acts-ns *ns*)
-
-(defn- ns-source-forms [ns-sym]
-  (let [path (str (-> (name ns-sym) (str/replace "." "/") (str/replace "-" "_")) ".clj")]
-    (binding [*ns* (the-ns ns-sym)]
-      (with-open [r (java.io.PushbackReader. (io/reader (io/resource path)))]
-        (loop [acc []]
-          (let [f (read {:eof ::eof} r)]
-            (if (= f ::eof) acc (recur (conj acc f)))))))))
-
-(defn- theorem-form? [f] (and (seq? f) (contains? #{'a/theorem 'ansatz.core/theorem} (first f))))
-
-(defn- expand-top [ns-sym f]
-  (cond
-    (and (seq? f) (= 'do (first f))) (mapcat #(expand-top ns-sym %) (rest f))
-    (and (seq? f) (symbol? (first f)) (not (theorem-form? f)))
-    (let [v (binding [*ns* (the-ns ns-sym)] (resolve (first f)))]
-      (if (and (var? v) (:macro (meta v)) (= (the-ns ns-sym) (:ns (meta v))))
-        (expand-top ns-sym (binding [*ns* (the-ns ns-sym)] (macroexpand-1 f)))
-        [f]))
-    :else [f]))
-
-(def copy-source-nss '[spindel.v2.edits spindel.v2.step spindel.v2.rule spindel.v2.engine])
-
-(def ^:private source-theorems
-  (delay (vec (for [nsym copy-source-nss, f (ns-source-forms nsym), g (expand-top nsym f) :when (theorem-form? g)]
-                [(second g) g]))))
-
-(defn- theorem-source [nm]
-  (or (some (fn [[n g]] (when (= n nm) g)) @source-theorems)
-      (throw (ex-info (str "no source for theorem " nm) {:name nm}))))
-
-(defn- binder-names [binders] (vec (take-nth 3 binders)))
-(defn- inv-premise? [p] (and (seq? p) (= '= (first p)) (seq? (second p)) (= 'inv-sample (first (second p)))))
-
-;; REPL iteration only: skip a generated theorem whose name is already in the env
-(defonce ^:dynamic *acts-dev-skip* false)
-(defn- declared? [s] (some? (.lookup ^ansatz.kernel.Env @a/ansatz-env (ansatz.kernel.Name/fromString (str s)))))
-
-(defn- eval-theorem! [form]
-  (try (when-not (and *acts-dev-skip* (declared? (second form))) (binding [*ns* acts-ns] (eval form)))
-       (catch Throwable t
-         (throw (ex-info (str "acts: theorem " (second form) " failed: " (ex-message t)) {:form form} t)))))
-
-;; a bundle: :pred (applied to the params, then the world), :params [sym type ...], :prefix,
-;; :renames/:overrides/:copied atoms, :extra-args {lemma [form position]}
-(defn- mk-bundle [pred params prefix extra]
-  {:pred pred :params params :prefix prefix :extra-args extra
-   :renames (atom {}) :overrides (atom {}) :copied (atom [])})
-
-(defn- pargs [B] (binder-names (:params B)))
-(defn- papp [B head & args] (apply list head (concat (pargs B) args)))
 (defn- bsym [B suffix] (symbol (str (name (:pred B)) suffix)))
-
-(defn- pred-subst [B x]
-  (walk/postwalk (fn [y] (if (and (seq? y) (= 'inv-sample (first y))) (papp B (:pred B) (second y)) y)) x))
-
-;; a primitive: the inv-sample lemma plus a proof of the bundle's rest part; `rest-f` is a form
-;; over the binder names, premise names h0..hn and R = the rest part of the input world; nil = frame
-(defn- prim-form [B orig nm rest-f]
-  (let [[_ _ binders stmt] (theorem-source orig)
-        prems (butlast (rest stmt))
-        concl (last stmt)
-        hs (vec (map-indexed (fn [i _] (symbol (str "h" i))) prems))
-        i (first (keep-indexed (fn [i p] (when (inv-premise? p) i)) prems))
-        w (second (second (nth prems i)))
-        w2 (second (second concl))
-        hi (nth hs i)
-        args (concat (binder-names binders) (assoc hs i (papp B (bsym B "-sample") w hi)))
-        R (papp B (bsym B "-rest-of") w hi)
-        rest-term (if rest-f (walk/postwalk-replace {'R R} rest-f) (list 'Eq.trans 'e-frame R))]
-    (concat
-     (list 'a/theorem nm (into (vec (:params B)) binders) (pred-subst B stmt) (cons 'intros hs))
-     (when-not rest-f [(list 'have 'e-frame (list '= (papp B (bsym B "-rest") w2) (papp B (bsym B "-rest") w))) '(rfl)])
-     [(list 'exact (papp B (bsym B "-intro") w2 (cons orig args) rest-term))])))
-
-(defn- prim! [B orig nm rest-f]
-  (eval-theorem! (apply list (prim-form B orig nm rest-f)))
-  (swap! (:renames B) assoc orig nm))
-
-(defn- copy-name [B sym]
-  (let [s (name sym) p (:prefix B)]
-    (symbol (cond (str/starts-with? s "inv-") (str p (subs s 4))
-                  (str/ends-with? s "-inv-sample") (str (subs s 0 (- (count s) 11)) "-" (name (:pred B)))
-                  (str/ends-with? s "-inv") (str (subs s 0 (- (count s) 4)) "-" (name (:pred B)))
-                  :else (str s "-" (name (:pred B)))))))
-
-(defn- copy-subst [B x rn]
-  (cond
-    (and (seq? x) (= 'inv-sample (first x))) (papp B (:pred B) (copy-subst B (second x) rn))
-    (and (seq? x) (symbol? (first x)) (contains? rn (first x)))
-    (let [h (first x)
-          args (map #(copy-subst B % rn) (rest x))
-          args (if-let [[e k] ((:extra-args B) h)]
-                 (do (assert (>= (count args) k) (str h " applied to too few arguments: " (pr-str x)))
-                     (concat (take k args) [e] (drop k args)))
-                 args)]
-      (apply papp B (rn h) args))
-    (seq? x) (apply list (map #(copy-subst B % rn) x))
-    (vector? x) (mapv #(copy-subst B % rn) x)
-    (symbol? x) (cond (contains? (:extra-args B) x) (throw (ex-info (str x " used as a value") {}))
-                      (contains? rn x) (papp B (rn x))
-                      :else x)
-    :else x))
-
-(defn- copy-form [B form nm rn]
-  (let [[head _ binders stmt & proof] form]
-    (apply list head nm (into (vec (:params B)) (copy-subst B binders rn)) (copy-subst B stmt rn)
-           (map #(copy-subst B % rn) proof))))
-
-(defn- statement-mentions-inv? [form]
-  (let [[_ _ binders stmt] form] (boolean (some #{'inv-sample} (flatten (list (seq binders) stmt))))))
-
-(defn- closure [B root]
-  (let [thms @source-theorems
-        S (set (keep (fn [[n g]] (when (statement-mentions-inv? g) n)) thms))
-        deps (fn [n]
-               (cond (contains? @(:renames B) n) []
-                     (contains? @(:overrides B) n) (:deps (get @(:overrides B) n))
-                     :else (let [[_ _ _ _ & proof] (theorem-source n)]
-                             (filter S (filter symbol? (flatten proof))))))]
-    (loop [todo [root] seen #{}]
-      (if-let [n (first todo)]
-        (if (seen n) (recur (rest todo) seen) (recur (concat (rest todo) (deps n)) (conj seen n)))
-        (filterv seen (map first thms))))))
-
-(defn copy!
-  "Check the bundle version of every inv-sample lemma `root` depends on, in load order."
-  [B root]
-  (doseq [n (closure B root) :when (not (contains? @(:renames B) n))]
-    (let [form (if-let [o (get @(:overrides B) n)]
-                 (:form o)
-                 (copy-form B (theorem-source n) (copy-name B n) @(:renames B)))]
-      (eval-theorem! form)
-      (swap! (:renames B) assoc n (second form))
-      (swap! (:copied B) conj (second form)))))
-
-(defn- override! [B orig deps form] (swap! (:overrides B) assoc orig {:deps deps :form form}))
 
 (def GA (mk-bundle 'ga [] "ga-"
           {'inv-run-upd ['(fn [r :- RunRow] (Eq.refl (good-row r))) 4]
@@ -537,26 +403,55 @@
   (doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-task-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del
               inv-set-pins inv-resource-del inv-scope-del inv-cleanup-ins
               inv-edge-upd inv-drop-cred inv-drop-edges inv-comp-del-unref inv-comp-upd inv-fork-del]]
-    (prim! B o (copy-name B o) nil))
+    (prim! B o nil))
   (doseq [o '[inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-task-ins-fresh inv-comp-ins-fresh]]
-    (prim! B o (copy-name B o) (list 'gr-bump P (list (symbol (str/replace (subs (name o) 4) "-fresh" "")) 'w 'r)
+    (prim! B o (list 'gr-bump P (list (symbol (str/replace (subs (name o) 4) "-fresh" "")) 'w 'r)
                                      (list 'Eq.trans '(rfl) 'R))))
-  (prim! B 'inv-bump (copy-name B 'inv-bump) (list 'gr-bump P 'w 'R))
-  (prim! B 'mark-edge-inv-sample (copy-name B 'mark-edge-inv-sample) (list 'Eq.trans (list 'gr-mark-edge P 'w 'x) 'R))
-  (prim! B 'unmark-edge-inv-sample (copy-name B 'unmark-edge-inv-sample) (list 'Eq.trans (list 'gr-unmark-edge P 'w 'x) 'R))
-  (prim! B 'inv-remove-edge (copy-name B 'inv-remove-edge) (list 'Eq.trans (list 'gr-remove-edge P 'w 'x) 'R))
-  (prim! B 'insert-edge-fresh-inv-sample (copy-name B 'insert-edge-fresh-inv-sample)
+  (prim! B 'inv-bump (list 'gr-bump P 'w 'R))
+  (prim! B 'mark-edge-inv-sample (list 'Eq.trans (list 'gr-mark-edge P 'w 'x) 'R))
+  (prim! B 'unmark-edge-inv-sample (list 'Eq.trans (list 'gr-unmark-edge P 'w 'x) 'R))
+  (prim! B 'inv-remove-edge (list 'Eq.trans (list 'gr-remove-edge P 'w 'x) 'R))
+  (prim! B 'insert-edge-fresh-inv-sample
          (list 'gr-bump P '(insert-edge w (edge-set-id (:next-id w) e)) (list 'Eq.trans '(rfl) 'R)))
-  (prim! B 'inv-run-del (copy-name B 'inv-run-del) (list 'gr-run-del P 'w 'x del-f 'R))
-  (prim! B 'inv-run-ins-fresh (copy-name B 'inv-run-ins-fresh) (list 'gr-run-ins P 'w 'r ins-f 'h0 'R))
-  (prim! B 'inv-drop-act (copy-name B 'inv-drop-act) (list 'gr-act-del P '(drop-cred-edges w a) 'a (list 'Eq.trans '(rfl) 'R)))
-  (prim! B 'inv-filter-world (copy-name B 'inv-filter-world) (list 'gr-filter P 'w 'K keep-f 'R)))
+  (prim! B 'inv-run-del (list 'gr-run-del P 'w 'x del-f 'R))
+  (prim! B 'inv-run-ins-fresh (list 'gr-run-ins P 'w 'r ins-f 'h0 'R))
+  (prim! B 'inv-drop-act (list 'gr-act-del P '(drop-cred-edges w a) 'a (list 'Eq.trans '(rfl) 'R)))
+  (prim! B 'inv-filter-world (list 'gr-filter P 'w 'K keep-f 'R)))
 
 (prims! GA 'act-rows-good '(arg-del x) '(arg-keep K) '(arg-ins r))
 (prims! GX '(act-rows-good-x ex) '(argx-del ex x) '(argx-keep ex K) '(argx-ins ex r))
 
+;; ga and gx on the generic tree (spindel.v2.pres.tree): their own proofs are Part D
+(tree/part! GA
+  :over '{inv-resume ga-resume
+          inv-fill-slot ga-fill-slot
+          inv-fire-dep ga-fire-dep
+          inv-fire-wait-act ga-fire-wait-act
+          inv-cancel-run-local ga-cancel-run-local
+          inv-complete-raw ga-complete-raw
+          t12-inv t12-ga
+          inv-retire-pre ga-retire-pre
+          inv-retire-one ga-retire-one
+          sched-inv sched-ga
+          t-finalize-inv t-finalize-ga
+          t-finally-enter-inv t-finally-enter-ga
+          t-finally-exit-inv t-finally-exit-ga
+          t-finally-leave-inv t-finally-leave-ga
+          t-slice-exit-inv t-slice-exit-ga
+          inv-await-raw ga-await-raw
+          t6-inv t6-ga
+          inv-take-park ga-take-park
+          t-take-inv t-take-ga
+          inv-arm-park ga-arm-park
+          t17-inv t17-ga})
+(tree/part! GX
+  :over '{inv-resume gx-resume
+          inv-fill-slot gx-fill-slot
+          inv-fire-dep gx-fire-dep
+          inv-fire-wait-act gx-fire-wait-act})
+
 ;; ===========================================================================
-;; Part D. The overrides: where an edit changes a run row that has an activation
+;; Part D. The own proofs: where an edit changes a run row that has an activation
 ;; ===========================================================================
 
 ;; ---- a run row nobody's activation names may change freely
@@ -665,32 +560,19 @@
                (argx-upd-free e (:run a) run-wake run-wake-run-id rs c hc))
              hn (gx-rest-of e _ h1)))))
 
-;; a hand-written bundle proof, generic in the bundle: `$name` is the bundle's lemma
-;; <prefix>name applied to the bundle's parameters (in head position or as a value), `(%G w)` is
-;; the bundle predicate of w; the theorem gets the parameters as its first binders
-(defn- inst [B form]
-  (letfn [(dsym? [x] (and (symbol? x) (str/starts-with? (name x) "$")))
-          (dname [x] (symbol (str (:prefix B) (subs (name x) 1))))
-          (walk [x]
-            (cond
-              (and (seq? x) (= '%G (first x))) (papp B (:pred B) (walk (second x)))
-              (and (seq? x) (dsym? (first x))) (apply papp B (dname (first x)) (map walk (rest x)))
-              (seq? x) (apply list (map walk x))
-              (vector? x) (mapv walk x)
-              (dsym? x) (papp B (dname x))
-              :else x))]
-    (let [[head nm binders & more] form]
-      (apply list head (if (dsym? nm) (dname nm) nm) (into (vec (:params B)) (walk binders)) (map walk more)))))
+;; a hand-written proof generic in the bundle (spindel.v2.pres.part/inst: `$name` is the bundle's
+;; lemma <prefix>name applied to the bundle's parameters, `(%G w)` the bundle predicate of w),
+;; checked for ga and for gx
+(defn- both! [form] (doseq [B [GA GX]] (eval (inst B form))))
 
-(defn- override-both! [orig deps form]
-  (doseq [B [GA GX]] (override! B orig deps (inst B form))))
-
-(override-both! 'inv-resume '[inv-drop-act]
+(doseq [B [GA GX]] (tree/restate! B '[inv-drop-act]))
+(both!
   '(a/theorem $resume [w :- World, a :- ActRow]
      (=> (= (act-sole (:acts w) a) true) (= (%G w) true) (= (%G (resume w a)) true))
      (intros hs h) (exact ($resume-o w a hs h))))
 
-(override-both! 'inv-fill-slot '[inv-resume]
+(doseq [B [GA GX]] (tree/restate! B '[inv-resume]))
+(both!
   '(a/theorem $fill-slot [w :- World, a :- ActRow, x :- Nat, v :- RunResult]
      (=> (= (act-sole (:acts w) a) true) (= (%G w) true) (= (%G (fill-slot w a x v)) true))
      (intros hs h)
@@ -699,7 +581,8 @@
      (exact ($act-upd w (:id a) (act-fill x v) (act-fill-act-id x v) (fn [c :- ActRow] (Eq.refl (:run c))) h))
      (simp only [fill-slot hm]) (exact ($resume w a hs h))))
 
-(override-both! 'inv-fire-dep '[inv-invalidate inv-fill-slot inv-dep-consumed]
+(doseq [B [GA GX]] (tree/restate! B '[inv-invalidate inv-fill-slot inv-dep-consumed]))
+(both!
   '(a/theorem $fire-dep [w :- World, e :- EdgeRow]
      (=> (= (%G w) true) (= (%G (fire-dep w e)) true))
      (intro h)
@@ -713,7 +596,8 @@
      (exact (Eq.trans (congrArg (fn [as :- (List ActRow)] (act-sole as a)) (dep-consumed-acts w e)) hs))
      (exact ($fill-slot _ a _ _ hs2 ($dep-consumed w e h)))))
 
-(override-both! 'inv-fire-wait-act '[inv-edge-set-phase inv-fill-slot]
+(doseq [B [GA GX]] (tree/restate! B '[inv-edge-set-phase inv-fill-slot]))
+(both!
   '(a/theorem $fire-wait-act [res :- RunResult, w :- World, e :- EdgeRow]
      (=> (= (%G w) true) (= (%G (fire-wait-act res w e)) true))
      (intro h)
@@ -725,7 +609,7 @@
      (have hs2 (= (act-sole (:acts (edge-upd w (:id e) (edge-set-phase ph-fired))) a) true)) (exact hs)
      (simp only [fire-wait-act ha hc]) (exact ($fill-slot _ a _ _ hs2 ($edge-set-phase w (:id e) ph-fired h)))))
 
-(copy! GX 'inv-fire-edge)
+(tree/restate! GX '[inv-fire-edge])
 
 ;; ---- T14's local part: the run is done and every activation of it is gone
 
@@ -798,12 +682,12 @@
            (inv-cancel-acts (run-upd w x run-cancel-row) x (inv-run-upd w x run-cancel-row run-cancel-row-id (ga-sample w h)))
            (gr-mk act-rows-good (cancel-acts (run-upd w x run-cancel-row) x) (And.left p2) h2 (And.right (And.right p2))))))
 
-(override! GA 'inv-cancel-run-local '[inv-cancel-debtor inv-cleanup-set inv-cancel-res]
-  '(a/theorem ga-cancel-run-local [w :- World, r :- RunRow, rep :- Bool]
-     (=> (= (ga w) true) (= (ga (cancel-run-local w r rep)) true))
-     (intro h)
-     (simp only [cancel-run-local])
-     (exact (ga-cancel-debtor rep _ r (ga-cleanup-set _ (:id r) _ (ga-cancel-res _ r (ga-cancel-acts-o w (:id r) h)))))))
+(tree/restate! GA '[inv-cancel-debtor inv-cleanup-set inv-cancel-res])
+(a/theorem ga-cancel-run-local [w :- World, r :- RunRow, rep :- Bool]
+  (=> (= (ga w) true) (= (ga (cancel-run-local w r rep)) true))
+  (intro h)
+  (simp only [cancel-run-local])
+  (exact (ga-cancel-debtor rep _ r (ga-cleanup-set _ (:id r) _ (ga-cancel-res _ r (ga-cancel-acts-o w (:id r) h))))))
 
 ;; ---- a run that is not parked, or holds the slice, has no activation
 
@@ -874,23 +758,23 @@
 
 ;; ---- T12, the scheduling choice, finalize, finally regions: the token or chosen run has no activation
 
-(override! GA 'inv-complete-raw '[inv-fin-if-final inv-run-cascade inv-retire-after inv-complete-body]
-  '(a/theorem ga-complete-raw [w :- World, r :- RunRow, res :- RunResult]
-     (=> (= (tbl-any (act-of-run (:id r)) (:acts w)) false) (= (ga w) true) (= (ga (complete-raw w r res)) true))
-     (intros hn h)
-     (have h0 := (ga-run-upd-free w (:id r) run-complete-row run-complete-row-id hn h))
-     (simp only [complete-raw])
-     (exact (ga-fin-if-final _ (:of r) (ga-run-cascade _ _ (ga-retire-after _ (:id r) (ga-complete-body _ r res h0)))))))
+(tree/restate! GA '[inv-fin-if-final inv-run-cascade inv-retire-after inv-complete-body])
+(a/theorem ga-complete-raw [w :- World, r :- RunRow, res :- RunResult]
+  (=> (= (tbl-any (act-of-run (:id r)) (:acts w)) false) (= (ga w) true) (= (ga (complete-raw w r res)) true))
+  (intros hn h)
+  (have h0 := (ga-run-upd-free w (:id r) run-complete-row run-complete-row-id hn h))
+  (simp only [complete-raw])
+  (exact (ga-fin-if-final _ (:of r) (ga-run-cascade _ _ (ga-retire-after _ (:id r) (ga-complete-body _ r res h0))))))
 
-(override! GA 't12-inv '[inv-complete-raw]
-  '(a/theorem t12-ga [w :- World, st :- Nat, tag :- Nat, v :- Nat]
-     (=> (= (ga w) true) (= (ga (:world (t12-complete w st tag v))) true))
-     (intro h)
-     (cases ht (tok-run w st)) (case' [some r]) (case' [none])
-     (simp only [t12-complete ht refuse]) (exact h)
-     (cases hn (run-normal r))
-     (simp only [t12-complete ht hn refuse]) (exact h)
-     (simp only [t12-complete ht hn accept]) (exact (ga-complete-raw w r _ (ga-free-of-tok w st r h ht) h))))
+(tree/restate! GA '[inv-complete-raw])
+(a/theorem t12-ga [w :- World, st :- Nat, tag :- Nat, v :- Nat]
+  (=> (= (ga w) true) (= (ga (:world (t12-complete w st tag v))) true))
+  (intro h)
+  (cases ht (tok-run w st)) (case' [some r]) (case' [none])
+  (simp only [t12-complete ht refuse]) (exact h)
+  (cases hn (run-normal r))
+  (simp only [t12-complete ht hn refuse]) (exact h)
+  (simp only [t12-complete ht hn accept]) (exact (ga-complete-raw w r _ (ga-free-of-tok w st r h ht) h)))
 
 ;; ---- Z#77 T28: the retired run has no activation from `cancel-acts` on (the resource deletions and the
 ;; finalizer drop change no activation), so T12's override applies to its completion
@@ -950,27 +834,27 @@
   (=> (= (run-find (retire-pre w r) rid) (Option.some RunRow r1)) (List.Mem r1 (:runs (retire-pre w r))))
   (intro h1) (exact (tbl-find-mem RunRow run-id rid r1 (:runs (retire-pre w r)) h1)))
 
-(override! GA 'inv-retire-pre '[inv-ack-if inv-cancel-acts]
-  '(a/theorem ga-retire-pre [w :- World, r :- RunRow]
-     (=> (= (ga w) true) (= (ga (retire-pre w r)) true))
-     (intro h)
-     (simp only [retire-pre])
-     (exact (ga-run-upd-free _ (:id r) run-drop-fins run-drop-fins-id (retire-mid-noact w r)
-              (nat-fold-ga (ack-if (:id r)) (ga-ack-if (:id r)) (:resources r) _ (ga-cancel-acts w (:id r) h))))))
-(override! GA 'inv-retire-one '[inv-retire-pre inv-complete-raw inv-run-cascade]
-  '(a/theorem ga-retire-one [v :- Nat, w :- World, rid :- Nat]
-     (=> (= (ga w) true) (= (ga (retire-one v w rid)) true))
-     (intro h)
-     (cases hf (run-find w rid))
-     (case [none] (simp only [retire-one hf]) (exact h))
-     (case [some r]
-       (have hp := (ga-retire-pre w r h))
-       (cases hf1 (run-find (retire-pre w r) rid))
-       (case [none] (simp only [retire-one hf hf1]) (exact hp))
-       (case [some r1]
-         (cases ha (Bool.and (run-alive r1) (run-of-local (retire-pre w r) r1)))
-         (case [true] (simp only [retire-one hf hf1 ha]) (exact (ga-complete-raw _ r1 _ (retire-r1-noact w r r1 rid hf hf1) hp)))
-         (case [false] (simp only [retire-one hf hf1 ha retire-full]) (exact (ga-run-cascade _ _ hp)))))))
+(tree/restate! GA '[inv-ack-if inv-cancel-acts])
+(a/theorem ga-retire-pre [w :- World, r :- RunRow]
+  (=> (= (ga w) true) (= (ga (retire-pre w r)) true))
+  (intro h)
+  (simp only [retire-pre])
+  (exact (ga-run-upd-free _ (:id r) run-drop-fins run-drop-fins-id (retire-mid-noact w r)
+           (nat-fold-ga (ack-if (:id r)) (ga-ack-if (:id r)) (:resources r) _ (ga-cancel-acts w (:id r) h)))))
+(tree/restate! GA '[inv-retire-pre inv-complete-raw inv-run-cascade])
+(a/theorem ga-retire-one [v :- Nat, w :- World, rid :- Nat]
+  (=> (= (ga w) true) (= (ga (retire-one v w rid)) true))
+  (intro h)
+  (cases hf (run-find w rid))
+  (case [none] (simp only [retire-one hf]) (exact h))
+  (case [some r]
+    (have hp := (ga-retire-pre w r h))
+    (cases hf1 (run-find (retire-pre w r) rid))
+    (case [none] (simp only [retire-one hf hf1]) (exact hp))
+    (case [some r1]
+      (cases ha (Bool.and (run-alive r1) (run-of-local (retire-pre w r) r1)))
+      (case [true] (simp only [retire-one hf hf1 ha]) (exact (ga-complete-raw _ r1 _ (retire-r1-noact w r r1 rid hf hf1) hp)))
+      (case [false] (simp only [retire-one hf hf1 ha retire-full]) (exact (ga-run-cascade _ _ hp))))))
 
 (a/theorem active-not-good [r :- RunRow] (=> (= (Nat.beq (:act r) act-active) true) (= (good-row r) false))
   (intro h)
@@ -981,85 +865,80 @@
   (have e (= (:act r) act-done)) (exact (Nat.eq_of_beq_eq_true h))
   (simp [good-row e act-done act-parked]))
 
-(override! GA 'sched-inv '[]
-  '(a/theorem sched-ga [w :- World, rid :- Nat]
-     (=> (= (ga w) true) (= (ga (:world (t-schedule w rid))) true))
-     (intro h)
-     (cases hf (run-find w rid)) (case' [some r]) (case' [none])
-     (simp only [t-schedule hf refuse]) (exact h)
-     (cases hg (sched-ok w r))
-     (simp only [t-schedule hf hg refuse]) (exact h)
-     (have p := (find-facts w rid r hf))
-     (have hg2 := hg)
-     (simp only [sched-ok Bool.and_eq_true] at hg2)
-     (have hn := (no-act-bad w r h (And.left p) (active-not-good r (And.left hg2))))
-     (rw [(And.right p)] at hn)
-     (simp only [t-schedule hf hg accept]) (exact (ga-run-upd-free w rid run-enter-row run-enter-row-id hn h))))
+(a/theorem sched-ga [w :- World, rid :- Nat]
+  (=> (= (ga w) true) (= (ga (:world (t-schedule w rid))) true))
+  (intro h)
+  (cases hf (run-find w rid)) (case' [some r]) (case' [none])
+  (simp only [t-schedule hf refuse]) (exact h)
+  (cases hg (sched-ok w r))
+  (simp only [t-schedule hf hg refuse]) (exact h)
+  (have p := (find-facts w rid r hf))
+  (have hg2 := hg)
+  (simp only [sched-ok Bool.and_eq_true] at hg2)
+  (have hn := (no-act-bad w r h (And.left p) (active-not-good r (And.left hg2))))
+  (rw [(And.right p)] at hn)
+  (simp only [t-schedule hf hg accept]) (exact (ga-run-upd-free w rid run-enter-row run-enter-row-id hn h)))
 
-(override! GA 't-finalize-inv '[]
-  '(a/theorem t-finalize-ga [w :- World, rid :- Nat]
-     (=> (= (ga w) true) (= (ga (:world (t-finalize w rid))) true))
-     (intro h)
-     (cases hf (run-find w rid)) (case' [some r]) (case' [none])
-     (simp only [t-finalize hf refuse]) (exact h)
-     (cases hg (cleanup-ready w r))
-     (simp only [t-finalize hf hg refuse]) (exact h)
-     (have p := (find-facts w rid r hf))
-     (have hg2 := hg)
-     (simp only [cleanup-ready Bool.and_eq_true] at hg2)
-     (have hn := (no-act-bad w r h (And.left p) (done-not-good r (And.left hg2))))
-     (rw [(And.right p)] at hn)
-     (simp only [t-finalize hf hg accept]) (exact (ga-run-upd-free w rid run-enter-row run-enter-row-id hn h))))
+(a/theorem t-finalize-ga [w :- World, rid :- Nat]
+  (=> (= (ga w) true) (= (ga (:world (t-finalize w rid))) true))
+  (intro h)
+  (cases hf (run-find w rid)) (case' [some r]) (case' [none])
+  (simp only [t-finalize hf refuse]) (exact h)
+  (cases hg (cleanup-ready w r))
+  (simp only [t-finalize hf hg refuse]) (exact h)
+  (have p := (find-facts w rid r hf))
+  (have hg2 := hg)
+  (simp only [cleanup-ready Bool.and_eq_true] at hg2)
+  (have hn := (no-act-bad w r h (And.left p) (done-not-good r (And.left hg2))))
+  (rw [(And.right p)] at hn)
+  (simp only [t-finalize hf hg accept]) (exact (ga-run-upd-free w rid run-enter-row run-enter-row-id hn h)))
 
-(override! GA 't-finally-enter-inv '[]
-  '(a/theorem t-finally-enter-ga [w :- World, st :- Nat]
-     (=> (= (ga w) true) (= (ga (:world (t-finally-enter w st))) true))
-     (intro h)
-     (cases ht (tok-run w st)) (case' [some r]) (case' [none])
-     (simp only [t-finally-enter ht refuse]) (exact h)
-     (cases hg (run-normal r))
-     (simp only [t-finally-enter ht hg refuse]) (exact h)
-     (simp only [t-finally-enter ht hg accept])
-     (exact (ga-run-upd-free w (:id r) (run-fin-push (Finalizer.mk 0 (:effect-index r) (List.nil Nat)))
-              (run-fin-push-id _) (ga-free-of-tok w st r h ht) h))))
+(a/theorem t-finally-enter-ga [w :- World, st :- Nat]
+  (=> (= (ga w) true) (= (ga (:world (t-finally-enter w st))) true))
+  (intro h)
+  (cases ht (tok-run w st)) (case' [some r]) (case' [none])
+  (simp only [t-finally-enter ht refuse]) (exact h)
+  (cases hg (run-normal r))
+  (simp only [t-finally-enter ht hg refuse]) (exact h)
+  (simp only [t-finally-enter ht hg accept])
+  (exact (ga-run-upd-free w (:id r) (run-fin-push (Finalizer.mk 0 (:effect-index r) (List.nil Nat)))
+           (run-fin-push-id _) (ga-free-of-tok w st r h ht) h)))
 
-(override! GA 't-finally-exit-inv '[]
-  '(a/theorem t-finally-exit-ga [w :- World, st :- Nat]
-     (=> (= (ga w) true) (= (ga (:world (t-finally-exit w st))) true))
-     (intro h)
-     (cases ht (tok-run w st)) (case' [some r]) (case' [none])
-     (simp only [t-finally-exit ht refuse]) (exact h)
-     (have hn := (ga-free-of-tok w st r h ht))
-     (cases he (fin-exit-bad (:finalizers r)))
-     (case [true] (simp only [t-finally-exit ht he refuse]) (exact h))
-     (case [false] (simp only [t-finally-exit ht he accept]) (exact (ga-run-upd-free w (:id r) run-fin-exit run-fin-exit-id hn h)))))
+(a/theorem t-finally-exit-ga [w :- World, st :- Nat]
+  (=> (= (ga w) true) (= (ga (:world (t-finally-exit w st))) true))
+  (intro h)
+  (cases ht (tok-run w st)) (case' [some r]) (case' [none])
+  (simp only [t-finally-exit ht refuse]) (exact h)
+  (have hn := (ga-free-of-tok w st r h ht))
+  (cases he (fin-exit-bad (:finalizers r)))
+  (case [true] (simp only [t-finally-exit ht he refuse]) (exact h))
+  (case [false] (simp only [t-finally-exit ht he accept]) (exact (ga-run-upd-free w (:id r) run-fin-exit run-fin-exit-id hn h))))
 
-(override! GA 't-finally-leave-inv '[]
-  '(a/theorem t-finally-leave-ga [w :- World, st :- Nat]
-     (=> (= (ga w) true) (= (ga (:world (t-finally-leave w st))) true))
-     (intro h)
-     (cases ht (tok-run w st)) (case' [some r]) (case' [none])
-     (simp only [t-finally-leave ht refuse]) (exact h)
-     (have hn := (ga-free-of-tok w st r h ht))
-     (cases he (fin-leave-bad (:finalizers r)))
-     (case [true] (simp only [t-finally-leave ht he refuse]) (exact h))
-     (case [false] (simp only [t-finally-leave ht he accept]) (exact (ga-run-upd-free w (:id r) run-fin-pop run-fin-pop-id hn h)))))
+(a/theorem t-finally-leave-ga [w :- World, st :- Nat]
+  (=> (= (ga w) true) (= (ga (:world (t-finally-leave w st))) true))
+  (intro h)
+  (cases ht (tok-run w st)) (case' [some r]) (case' [none])
+  (simp only [t-finally-leave ht refuse]) (exact h)
+  (have hn := (ga-free-of-tok w st r h ht))
+  (cases he (fin-leave-bad (:finalizers r)))
+  (case [true] (simp only [t-finally-leave ht he refuse]) (exact h))
+  (case [false] (simp only [t-finally-leave ht he accept]) (exact (ga-run-upd-free w (:id r) run-fin-pop run-fin-pop-id hn h))))
 
-(override! GA 't-slice-exit-inv '[inv-run-cascade]
-  '(a/theorem t-slice-exit-ga [w :- World, rid :- Nat]
-     (=> (= (ga w) true) (= (ga (:world (t-slice-exit w rid))) true))
-     (intro h)
-     (cases hf (run-find w rid)) (case' [some r]) (case' [none])
-     (simp only [t-slice-exit hf refuse]) (exact h)
-     (cases hg (exit-ready r))
-     (simp only [t-slice-exit hf hg refuse]) (exact h)
-     (have p := (find-facts w rid r hf))
-     (have hg2 := hg)
-     (simp only [exit-ready Bool.and_eq_true] at hg2)
-     (have hn := (no-act-bad w r h (And.left p) (done-not-good r (And.left hg2))))
-     (rw [(And.right p)] at hn)
-     (simp only [t-slice-exit hf hg accept retire-full])
-     (exact (ga-run-cascade _ _ (ga-run-upd-free w rid run-fin-pop-end run-fin-pop-end-id hn h)))))
+(tree/restate! GA '[inv-run-cascade])
+(a/theorem t-slice-exit-ga [w :- World, rid :- Nat]
+  (=> (= (ga w) true) (= (ga (:world (t-slice-exit w rid))) true))
+  (intro h)
+  (cases hf (run-find w rid)) (case' [some r]) (case' [none])
+  (simp only [t-slice-exit hf refuse]) (exact h)
+  (cases hg (exit-ready r))
+  (simp only [t-slice-exit hf hg refuse]) (exact h)
+  (have p := (find-facts w rid r hf))
+  (have hg2 := hg)
+  (simp only [exit-ready Bool.and_eq_true] at hg2)
+  (have hn := (no-act-bad w r h (And.left p) (done-not-good r (And.left hg2))))
+  (rw [(And.right p)] at hn)
+  (simp only [t-slice-exit hf hg accept retire-full])
+  (exact (ga-run-cascade _ _ (ga-run-upd-free w rid run-fin-pop-end run-fin-pop-end-id hn h))))
 
 ;; ---- T6 and take: the new activation's run is exempt until it parks
 
@@ -1217,14 +1096,14 @@
                  (arg-gone ex (:runs w)) (:acts w) hb (And.left (And.right p)))
                (And.right (And.right p)))))))
 
-(copy! GX 'nat-fold-inv)
-(copy! GX 'inv-demand-reactive)
-(copy! GX 'inv-await-wire)
-(copy! GX 'inv-fast-fill)
-(copy! GX 'inv-insert-edge-checked)
+(tree/restate! GX '[nat-fold-inv])
+(tree/restate! GX '[inv-demand-reactive])
+(tree/restate! GX '[inv-await-wire])
+(tree/restate! GX '[inv-fast-fill])
+(tree/restate! GX '[inv-insert-edge-checked])
 
-(copy! GA 'inv-fin-if-final)
-(copy! GA 'nat-fold-inv)
+(tree/restate! GA '[inv-fin-if-final])
+(tree/restate! GA '[nat-fold-inv])
 
 (a/theorem ga-await-raw-o [w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
   (=> (List.Mem r (:runs w)) (= (:slice r) true) (= (ga w) true) (= (ga (await-raw w r ds mode k mine)) true))
@@ -1260,63 +1139,61 @@
   (simp only [take-park])
   (exact (gx-restore (Ex.mk (:id r) (:next-id w)) _ run-tick-park run-tick-park-id run-tick-park-good h3)))
 
-(override! GA 'inv-await-raw '[]
-  '(a/theorem ga-await-raw [w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
-     (=> (List.Mem r (:runs w)) (= (:slice r) true) (= (ga w) true) (= (ga (await-raw w r ds mode k mine)) true))
-     (intros hm hs h) (exact (ga-await-raw-o w r ds mode k mine hm hs h))))
+(a/theorem ga-await-raw [w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
+  (=> (List.Mem r (:runs w)) (= (:slice r) true) (= (ga w) true) (= (ga (await-raw w r ds mode k mine)) true))
+  (intros hm hs h) (exact (ga-await-raw-o w r ds mode k mine hm hs h)))
 
-(override! GA 't6-inv '[inv-await-raw]
-  '(a/theorem t6-ga [w :- World, st :- Nat, ds :- (List Nat), mode :- Nat, k :- Nat, fresh :- Nat, mine :- (List Nat)]
-     (=> (= (ga w) true) (= (ga (:world (t6-await w st ds mode k fresh mine))) true))
-     (intro h)
-     (cases ht (tok-run w st)) (case' [some r]) (case' [none])
-     (simp only [t6-await ht refuse]) (exact h)
-     (have p := (tok-facts w st r ht))
-     (cases hg (Bool.and (await-ok w r ds mode fresh) (:ok (await-acc w r ds mode k mine))))
-     (simp only [t6-await ht hg refuse]) (exact h)
-     (simp only [t6-await ht hg accept])
-     (exact (ga-await-raw w r ds mode k mine (And.left p) (And.right p) h))))
+(tree/restate! GA '[inv-await-raw])
+(a/theorem t6-ga [w :- World, st :- Nat, ds :- (List Nat), mode :- Nat, k :- Nat, fresh :- Nat, mine :- (List Nat)]
+  (=> (= (ga w) true) (= (ga (:world (t6-await w st ds mode k fresh mine))) true))
+  (intro h)
+  (cases ht (tok-run w st)) (case' [some r]) (case' [none])
+  (simp only [t6-await ht refuse]) (exact h)
+  (have p := (tok-facts w st r ht))
+  (cases hg (Bool.and (await-ok w r ds mode fresh) (:ok (await-acc w r ds mode k mine))))
+  (simp only [t6-await ht hg refuse]) (exact h)
+  (simp only [t6-await ht hg accept])
+  (exact (ga-await-raw w r ds mode k mine (And.left p) (And.right p) h)))
 
-(override! GA 'inv-take-park '[]
-  '(a/theorem ga-take-park [w :- World, r :- RunRow, x :- Nat, k :- Nat]
-     (=> (List.Mem r (:runs w)) (= (:slice r) true) (= (ga w) true) (= (ga (take-park w r x k)) true))
-     (intros hm hs h) (exact (ga-take-park-o w r x k hm hs h))))
+(a/theorem ga-take-park [w :- World, r :- RunRow, x :- Nat, k :- Nat]
+  (=> (List.Mem r (:runs w)) (= (:slice r) true) (= (ga w) true) (= (ga (take-park w r x k)) true))
+  (intros hm hs h) (exact (ga-take-park-o w r x k hm hs h)))
 
-(override! GA 't-take-inv '[inv-take-park inv-take-now]
-  '(a/theorem t-take-ga [w :- World, st :- Nat, x :- Nat, k :- Nat, fresh :- Nat]
-     (=> (= (ga w) true) (= (ga (:world (t-take w st x k fresh))) true))
-     (intro h)
-     (cases ht (tok-run w st)) (case' [some r]) (case' [none])
-     (simp only [t-take ht refuse]) (exact h)
-     (have p := (tok-facts w st r ht))
-     (cases hs (source-find w x)) (case' [some s]) (case' [none])
-     (simp only [t-take ht hs refuse]) (exact h)
-     (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (Bool.and (run-normal r) (takeable s))))
-     (simp only [t-take ht hs hg refuse]) (exact h)
-     (cases hv (take-ready s))
-     (simp only [t-take ht hs hg hv accept]) (exact (ga-take-park w r x k (And.left p) (And.right p) h))
-     (simp only [t-take ht hs hg hv accept]) (exact (ga-take-now w r x h))))
+(tree/restate! GA '[inv-take-park inv-take-now])
+(a/theorem t-take-ga [w :- World, st :- Nat, x :- Nat, k :- Nat, fresh :- Nat]
+  (=> (= (ga w) true) (= (ga (:world (t-take w st x k fresh))) true))
+  (intro h)
+  (cases ht (tok-run w st)) (case' [some r]) (case' [none])
+  (simp only [t-take ht refuse]) (exact h)
+  (have p := (tok-facts w st r ht))
+  (cases hs (source-find w x)) (case' [some s]) (case' [none])
+  (simp only [t-take ht hs refuse]) (exact h)
+  (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (Bool.and (run-normal r) (takeable s))))
+  (simp only [t-take ht hs hg refuse]) (exact h)
+  (cases hv (take-ready s))
+  (simp only [t-take ht hs hg hv accept]) (exact (ga-take-park w r x k (And.left p) (And.right p) h))
+  (simp only [t-take ht hs hg hv accept]) (exact (ga-take-now w r x h)))
 
 ;; Z#55: arm = arm-raw (frame for ga) then take-park on the armed row (still the slice holder)
-(override! GA 'inv-arm-park '[inv-take-park inv-arm-raw]
-  '(a/theorem ga-arm-park [w :- World, r :- RunRow, kind :- Nat, k :- Nat]
-     (=> (List.Mem r (:runs w)) (= (:slice r) true) (= (ga w) true) (= (ga (arm-park w r kind k)) true))
-     (intros hm hs h)
-     (simp only [arm-park])
-     (exact (ga-take-park _ (run-arm (:next-id w) r) (:next-id w) k (arm-raw-mem w r kind hm) hs (ga-arm-raw w r kind h)))))
+(tree/restate! GA '[inv-take-park inv-arm-raw])
+(a/theorem ga-arm-park [w :- World, r :- RunRow, kind :- Nat, k :- Nat]
+  (=> (List.Mem r (:runs w)) (= (:slice r) true) (= (ga w) true) (= (ga (arm-park w r kind k)) true))
+  (intros hm hs h)
+  (simp only [arm-park])
+  (exact (ga-take-park _ (run-arm (:next-id w) r) (:next-id w) k (arm-raw-mem w r kind hm) hs (ga-arm-raw w r kind h))))
 
-(override! GA 't17-inv '[inv-arm-park]
-  '(a/theorem t17-ga [w :- World, st :- Nat, kind :- Nat, k :- Nat, fresh :- Nat]
-     (=> (= (ga w) true) (= (ga (:world (t17-arm w st kind k fresh))) true))
-     (intro h)
-     (cases ht (tok-run w st)) (case' [some r]) (case' [none])
-     (simp only [t17-arm ht refuse]) (exact h)
-     (have p := (tok-facts w st r ht))
-     (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (Bool.and (run-normal r) (arm-kind-ok kind))))
-     (simp only [t17-arm ht hg refuse]) (exact h)
-     (simp only [t17-arm ht hg accept]) (exact (ga-arm-park w r kind k (And.left p) (And.right p) h))))
+(tree/restate! GA '[inv-arm-park])
+(a/theorem t17-ga [w :- World, st :- Nat, kind :- Nat, k :- Nat, fresh :- Nat]
+  (=> (= (ga w) true) (= (ga (:world (t17-arm w st kind k fresh))) true))
+  (intro h)
+  (cases ht (tok-run w st)) (case' [some r]) (case' [none])
+  (simp only [t17-arm ht refuse]) (exact h)
+  (have p := (tok-facts w st r ht))
+  (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (Bool.and (run-normal r) (arm-kind-ok kind))))
+  (simp only [t17-arm ht hg refuse]) (exact h)
+  (simp only [t17-arm ht hg accept]) (exact (ga-arm-park w r kind k (And.left p) (And.right p) h)))
 
-(copy! GA 'step-inv)
+(tree/restate! GA '[step-inv])
 
 ;; ===========================================================================
 ;; Part E. The step
