@@ -741,16 +741,6 @@
 (defn- fhead [f] (if (seq? f) (first f) f))
 ;; a function applied to a row function's arguments: (f a b) -> (lem a b)
 (defn- lemma-app [f lem] (if (seq? f) (apply list lem (rest f)) lem))
-;; `_` as the row function: read it off the id lemma (`<f>-id`, `<f>-run-id`, `<f>-comp-id`); for the
-;; copier bundles of other namespaces (the tree reads it the same way, `tree/fill-rows`)
-(defn- f-of-hid [f hid]
-  (if (not= '_ f) f
-      (let [h (fhead hid) n (name h)
-            base (some (fn [suf] (when (str/ends-with? n suf) (subs n 0 (- (count n) (count suf))))) ["-run-id" "-comp-id" "-id"])]
-        (if base (if (seq? hid) (apply list (symbol base) (rest hid)) (symbol base)) f))))
-(defn- fix-f [form]
-  (subst-forms (fn [y] (and (seq? y) (#{'inv-run-upd 'inv-comp-upd} (first y)) (= '_ (nth y 3 nil))))
-               (fn [y] (let [v (vec y)] (apply list (assoc v 3 (f-of-hid (nth v 3) (nth v 4)))))) form))
 (defn- row-lemma [F suffix] (lemma-app F (symbol (str (name (fhead F)) suffix))))
 
 ;; ===========================================================================

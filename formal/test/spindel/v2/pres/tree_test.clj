@@ -1,8 +1,7 @@
 (ns spindel.v2.pres.tree-test
   "The generic tree (spindel.v2.pres.tree): every lemma of the step's closure that calls others has
   its shared generic lemma; a part gets its own (pres-x@part) only on its context paths; a gate gives
-  a part's continuations its fact; raw0 is cut by item; the parts converted to the tree (gl, g9, g8) have no copier overrides
-  or patches left."
+  a part's continuations its fact; raw0 is cut by item; every part is on the tree and the copier is gone."
   (:require [clojure.test :refer [deftest is]]
             [ansatz.core :as a]
             [spindel.v2.inv.acts :as acts]
@@ -77,22 +76,16 @@
     (swap! tree/parts dissoc 'tgate)))
 
 (deftest gl-is-not-copied
-  (is (empty? @(:overrides c/GL)))
-  (is (empty? @(:patches c/GL)))
   (is (= '{inv-cancel-run-local gl-cancel-run-local-o, inv-complete-raw gl-complete-raw-o,
            inv-retire-local gl-retire-local-o, inv-spawn-rows gl-spawn-rows-o,
            inv-start-raw gl-start-raw, inv-new-run-of gl-new-run-of}
          (get-in @tree/parts ['gl :over]))))
 
 (deftest g9-is-not-copied
-  (is (empty? @(:overrides c/G9)))
-  (is (empty? @(:patches c/G9)))
   (is (= '{inv-cancel-run-local g9-cancel-run-local, inv-ack-raw g9-ack-raw-o, inv-arm-park g9-arm-park}
          (get-in @tree/parts ['g9 :over]))))
 
 (deftest g8-is-not-copied
-  (is (empty? @(:overrides i8/G8)))
-  (is (empty? @(:patches i8/G8)))
   ;; the companion ga reaches the cascades from raw (raw -> raw0g -> raw0 -> the transitions)
   (doseq [x '[raw-inv raw0g-inv raw0-inv t15-full-inv inv-complete-raw inv-cancel-pred]]
     (is (tree/variant? i8/G8 x) (str x)))
@@ -103,9 +96,6 @@
 
 (deftest g7-is-not-copied
   ;; g7 and its companions awo (awc awr) and kdb (kc0 kl0 kd0): parameterised parts, Q := (B p)
-  (doseq [B [idle/G7 idle/AWO idle/KDB]]
-    (is (empty? @(:overrides B)) (str (:pred B)))
-    (is (empty? @(:patches B)) (str (:pred B))))
   ;; a computation edit is one site per row function, generic in its arguments
   (is (some #{'(comp-start-row rid)} (tree/site-keys 'inv-comp-upd)))
   (is (contains? (get-in @tree/parts ['awo :sites]) '[inv-comp-upd (comp-cut-row h k bs)]))
@@ -114,9 +104,6 @@
     (is (tree/variant? idle/G7 x) (str x))))
 
 (deftest gd-is-not-copied
-  (doseq [B [cf/GD cf/HKW]]
-    (is (empty? @(:overrides B)) (str (:pred B)))
-    (is (empty? @(:patches B)) (str (:pred B))))
   ;; g7 and g10r from the step's input reach T6, T22, T8 and T12 through raw: declared at raw, raw0g,
   ;; raw0, inferred at raw0's branches
   (is (= '[(= (g7 w) true) (= (g10r w) true)] (vec (take-nth 2 (rest (get (tree/table-own cf/GD) 'raw0-inv))))))
@@ -124,18 +111,12 @@
     (is (tree/variant? cf/GD x) (str x))))
 
 (deftest hmk-is-not-copied
-  (doseq [B [mk/HMK mk/HSW]]
-    (is (empty? @(:overrides B)) (str (:pred B)))
-    (is (empty? @(:patches B)) (str (:pred B))))
   ;; "not a computation id": the source and link chain takes it as a fact, from the transitions
   (doseq [x '[t-close-inv inv-close-raw inv-close-source inv-close-source0 t-append-inv inv-append-raw
               t-link-realize-inv link-realize-raw-inv inv-realize-link inv-deliver-res inv-resume inv-fill-slot]]
     (is (tree/variant? mk/HMK x) (str x))))
 
 (deftest scope-and-tomb-parts-are-not-copied
-  (doseq [B [tomb/GY acy/GCY i1s/G1 i11/GW]]
-    (is (empty? @(:overrides B)) (str (:pred B)))
-    (is (empty? @(:patches B)) (str (:pred B))))
   ;; gy takes g7 from the step's input at T7 and T6; g1 and gcy take "the parent is a scope" where a
   ;; run joins a scope
   (is (tree/variant? tomb/GY 'raw0-track-inv))
@@ -143,9 +124,6 @@
   (doseq [p '[g1 gcy]] (is (contains? (get-in @tree/parts [p :ctx]) 'inv-add-run-scope) (str p))))
 
 (deftest base-parts-are-not-copied
-  (doseq [B [base/MDB base/ESB base/NA base/AHA base/SVB]]
-    (is (empty? @(:overrides B)) (str (:pred B)))
-    (is (empty? @(:patches B)) (str (:pred B))))
   ;; an activation edit and a cleanup edit are sites per row function (na's and aha's extra argument
   ;; is rfl only at a concrete row function; esb proves cleanup-drop by its own lemma)
   (is (seq (tree/site-keys 'inv-act-upd)))
@@ -161,9 +139,6 @@
   (is (= 5 (count (tree/site-keys 'inv-edge-upd)))))
 
 (deftest g10-is-not-copied
-  (doseq [B [i10/G10 i10/NQ i10/G10R]]
-    (is (empty? @(:overrides B)) (str (:pred B)))
-    (is (empty? @(:patches B)) (str (:pred B))))
   ;; g10's job condition names its exempt lists: the part lemmas of a parameterised part take the
   ;; part's parameters after Q
   (doseq [x '[t16-inv t15-full-inv t-slice-exit-inv t-release-world-inv inv-retire-one t12-inv t11-inv]]
@@ -174,9 +149,6 @@
   (is (declared? 't-cancel-g10-r)))
 
 (deftest g5-and-the-owner-parts-are-not-copied
-  (doseq [B [i5/G5 i1o/NZ i1o/GSO]]
-    (is (empty? @(:overrides B)) (str (:pred B)))
-    (is (empty? @(:patches B)) (str (:pred B))))
   ;; g5 and gso take an extra argument at an inserted source or task row and at a phase edit: sites
   (is (= 1 ('inv-source-ins-fresh tree/dispatched)))
   (is (= 1 ('inv-task-ins-fresh tree/dispatched)))
@@ -187,9 +159,6 @@
   (is (not-any? #(tree/variant? i1o/NZ %) '[inv-normalize inv-norm-round inv-detach])))
 
 (deftest the-run-parts-are-not-copied
-  (doseq [B [i1r/GRX i1r/GR0 i1r/KRB i1r/NEB]]
-    (is (empty? @(:overrides B)) (str (:pred B)))
-    (is (empty? @(:patches B)) (str (:pred B))))
   ;; gr0 is grx at the empty list: its cell for a lemma grx has is grx's, at that argument
   (is (= 'grx-cancel-run-local (get @(:renames i1r/GR0) 'inv-cancel-run-local)))
   (is (= '[(List.nil Nat) 0] (get (:extra-args i1r/GR0) 'inv-cancel-run-local)))
@@ -198,9 +167,6 @@
   (is (tree/variant? i1r/GRX 'inv-job-apply)))
 
 (deftest open-scopes-i14-and-the-measure-are-not-copied
-  (doseq [B [os/GOX os/GOS i14/VQ i14/VR ms/MB]]
-    (is (empty? @(:overrides B)) (str (:pred B)))
-    (is (empty? @(:patches B)) (str (:pred B))))
   ;; mb's hypothesis "the parking run is not the tracked one" goes from the await and the take
   ;; down to the park, as an own fact
   (doseq [x '[inv-await-raw inv-await-post inv-take-park raw0-arm-inv]] (is (tree/variant? ms/MB x) (str x)))
@@ -208,9 +174,6 @@
   (is (= 1 ('inv-run-ins-fresh tree/dispatched))))
 
 (deftest grel-gc-and-gst-are-not-copied
-  (doseq [B [quiet/GR quiet/GK qw/GC stable/GST]]
-    (is (empty? @(:overrides B)) (str (:pred B)))
-    (is (empty? @(:patches B)) (str (:pred B))))
   ;; gst: T12 writes a result; the fact comes from raw0's complete arm
   (is (tree/variant? stable/GST 'raw0-complete-inv))
   (is (not-any? #(tree/variant? qw/GC %) '[raw-inv inv-normalize t14-inv])))
@@ -225,9 +188,6 @@
   (is (not-any? #(tree/variant? quiet/GK %) '[raw0-inv raw0g-inv raw-inv inv-normalize])))
 
 (deftest ga-gx-ch-and-ka-are-not-copied
-  (doseq [B [acts/GA acts/GX c/CH i8/KA]]
-    (is (empty? @(:overrides B)) (str (:pred B)))
-    (is (empty? @(:patches B)) (str (:pred B))))
   ;; ga's own proofs take their facts from their own callers, which are own proofs too: no node
   ;; takes or passes a fact
   (is (not-any? #(tree/variant? acts/GA %) (:nodes @tree/tree)))
@@ -235,8 +195,6 @@
   (is (= 4 (count (:over (get @tree/parts 'gx))))))
 
 (deftest ar-is-not-copied
-  (is (empty? @(:overrides ar/AR)))
-  (is (empty? @(:patches ar/AR)))
   ;; g7 and ga come from the step's input; raw0 hands each to one branch (T5, T11) and to no other
   (is (= '[(= (g7 w) true)] (vec (take-nth 2 (rest (get (tree/table-own ar/AR) 'raw0-start-inv))))))
   (is (= '[(= (ga w) true)] (vec (take-nth 2 (rest (get (tree/table-own ar/AR) 'raw0-dispatch-comp-inv))))))
@@ -247,9 +205,12 @@
 
 (deftest h3-ekb-and-fb-are-not-copied
   (doseq [B [mb/H3 mc/EKB mst/FB]]
-    (is (empty? @(:overrides B)) (str (:pred B)))
-    (is (empty? @(:patches B)) (str (:pred B)))
     ;; sites only: none of them takes a fact from the path
     (is (not-any? #(tree/variant? B %) (:nodes @tree/tree)) (str (:pred B))))
   ;; ekb's only site: the await's edge, whose kind is not closed at the insertion
   (is (= 1 (count (:sites (get @tree/parts 'ekb))))))
+
+(deftest the-copier-is-gone
+  (doseq [v '[lcopy! override! patch! closure copy-one-form source-of subst-forms]]
+    (is (nil? (ns-resolve 'spindel.v2.pres.part v)) (str v)))
+  (is (= #{:pred :params :prefix :extra-args :renames :copied} (set (keys c/GL)))))
