@@ -19,11 +19,14 @@
   i5-wait-of-sample i5-wait-of-well-formed
 
   rr-no-orphans rule-r-loop-no-orphans            ; rule-r-no-orphans is P9's theorem
+  ;; lemmas named g10 that are about g10r (the part), not its exempt form
+  step-g10 step-i10-current
+  h3-g10-run current-members-i10-current-run
   ;; tokens that are not the part of the same name: g10's exempt lists gxz/gkz, i8's view
-  g10-gk-mono-g i10-comp-exempt-gk-mono-g
-  g10-gx-app i10-comp-exempt-gx-app
-  g10-gx-cons i10-comp-exempt-gx-cons
-  r10-gx-cons i10-comp-run-ok-gx-cons
+  g10-gk-mono-g i10-current-exempt-gk-mono-g
+  g10-gx-app i10-current-exempt-gx-app
+  g10-gx-cons i10-current-exempt-gx-cons
+  r10-gx-cons i10-current-run-ok-gx-cons
   rc-gx-cons rc-gx-cons
   g8-of-kw i8-closed-of-view
   ;; h3's own proofs registered under the older prefix as a suffix: the copy's name
@@ -36,8 +39,8 @@
   finish then-rule-r
   post then-cancel-losers
   raw0 transition
-  raw0g admit-item                                ; NOT `admit`: Ansatz has an `admit` tactic (= sorry)
-  raw0g-of admit-item-non-host
+  raw0g host-guarded-transition                   ; not `admit` (enqueue, in the spec; also an Ansatz tactic), not `gate` (the world lock)
+  raw0g-of host-guarded-transition-non-host
   raw-ri round-facts-raw
   host-shut host-item-refused
   root-shut world-released
@@ -59,17 +62,27 @@
   root-ok-if root-open-if
 
   ;; -- transitions (b2; decision 12)
-  t1-body t1-create-source                        ; T1 in a run, any kind (frees after the legacy deletion)
+  ;; step.clj's own T1, T8, T15 stay (see :legacy-roots) and give their names to engine.clj's
+  t1-create-source t1-create-source-basic
+  t8-observe t8-observe-basic
+  t15-resource-ack t15-resource-ack-basic
+  t1-inv well-formed-t1-create-source-basic
+  t1-refuse t1-create-source-basic-refuse
+  t1-l4 t1-create-source-basic-l4
+  t15-inv well-formed-t15-resource-ack-basic
+  t15-refuse t15-resource-ack-basic-refuse
+  t15-l4 t15-resource-ack-basic-l4
+  t1-body t1-create-source                        ; T1 in a run, any kind
   t1-full t1-create-nonstream                     ; T1 in a run, not a stream
   t1-stream t1-create-stream                      ; T1 stream in a run (C0)
   t1-top-full t1-create-source-top                ; T1 top level, any kind (swap with the next row)
   t1-create-source-top t1-create-nonstream-top    ; T1 top level, not a stream (step.clj)
-  t8-full t8-observe                              ; frees after the legacy deletion
-  t8-obs t-observe
+  t8-full t8-observe-any-kind                     ; T8 before the stream refusal
+  t8-obs t8-observe                               ; T8 itself (a t-<verb> name is only for an unnumbered transition)
   finalize-debtor t10-finalize-debtor
   retire-full t13-retire
-  t-cancel t-host-cancel
-  t15-full t15-resource-ack                       ; frees after the legacy deletion
+  t-cancel t14-host-cancel                        ; the host's cancel item: T14 (or its done-run form)
+  t15-full t15-resource-ack
   t-release-world t21-release-world
   t-retire-local t28-retire-local
   sched-ok schedule-ok
@@ -104,7 +117,7 @@
   retire-with t13-retire-with-subtree
   close-with t16-close-with-subtree
   close-source0 close-source-ended
-  storage-gather0 storage-roots
+  storage-gather0 storage-seeds
 
   ;; -- spellings (b7; decision 16, res = resource, is NOT in this pass)
   create-source-cur create-source-in-run
@@ -129,11 +142,11 @@
 
   ;; -- the chain (b6; decision 7) and Reach1 (decision 17)
   p3b chain-start
-  p3c chain-to-i10-comp
+  p3c chain-to-i10-current
   p3d chain-to-i11a
   p3e chain-to-i1-scopes
   p3f chain-to-i5-dep-final
-  p3g chain-to-i1-owners
+  p3g chain-to-i1-detached-closed
   p3h chain-to-i1-runs
   p3i chain-to-i8-closed
   p3j chain-to-comp-facts
@@ -148,7 +161,7 @@
   ri round-facts
   v14 i14-ordered
   glx i10-task-exempt
-  i1-own lit-i1-owners
+  i1-own lit-i1-own
   i1-runs lit-i1-runs
   sok slice-holder-ok
   qinv quiet-world-inv
@@ -156,8 +169,8 @@
   bn round-bound
   Bnd Bound
   bnd-of bound-of
-  gk0-rest released-rootless-pending-rest         ; no pending activation or publication, no host edge once released
-  gh-rest released-rootless-handles-rest          ; once released, every handle count is zero
+  gk0-rest host-roots-revoked-pending-rest         ; no pending activation or publication, no host edge once released
+  gh-rest host-roots-revoked-handles-rest          ; once released, every handle count is zero
   grk-rest i1-runs-keys-rest                      ; the rest of i1-runs over the exempt list (grx-rest wraps it)
 
   ;; -- part views and key predicates (b5, last paragraph): <part>-view, <part>-keys-ok,
@@ -171,22 +184,22 @@
   RK7 I7IdleRunKey, rk7 i7-idle-run-key
   g7k i7-idle-keys-ok
   RK3 CurrentMembersRunKey, rk3 current-members-run-key
-  RK10 I10CompRunKey, rk10 i10-comp-run-key, rk10-id i10-comp-run-key-id, rk10s i10-comp-run-keys
-  CK10 I10CompCompKey, ck10 i10-comp-comp-key, ck10-id i10-comp-comp-key-id, ck10s i10-comp-comp-keys
-  TK10 I10CompTaskKey, tk10 i10-comp-task-key, tk10-id i10-comp-task-key-id, tk10s i10-comp-task-keys
-  r10 i10-comp-run-ok, c10 i10-comp-comp-ok, t10 i10-comp-task-ok
-  g10k i10-comp-exempt-keys-ok
-  KW10 I10CompView, kw10 i10-comp-view
+  RK10 I10CurrentRunKey, rk10 i10-current-run-key, rk10-id i10-current-run-key-id, rk10s i10-current-run-keys
+  CK10 I10CurrentCompKey, ck10 i10-current-comp-key, ck10-id i10-current-comp-key-id, ck10s i10-current-comp-keys
+  TK10 I10CurrentTaskKey, tk10 i10-current-task-key, tk10-id i10-current-task-key-id, tk10s i10-current-task-keys
+  r10 i10-current-run-ok, c10 i10-current-comp-ok, t10 i10-current-task-ok
+  g10k i10-current-exempt-keys-ok
+  KW10 I10CurrentView, kw10 i10-current-view
   T8K I8ClosedTaskKey, t8k i8-closed-task-key, t8k-id i8-closed-task-key-id, t8ks i8-closed-task-keys
   S8K I8ClosedScopeKey, s8k i8-closed-scope-key, s8k-id i8-closed-scope-key-id, s8ks i8-closed-scope-keys
   X8K I8ClosedSourceKey, x8k i8-closed-source-key, x8k-id i8-closed-source-key-id, x8ks i8-closed-source-keys
   KW8 I8ClosedView, kw8 i8-closed-view
   r8 i8-closed-run-ok, x8 i8-closed-source-ok
   i8k i8-closed-keys-ok
-  SKW RootScopeShapeScopeKey, skw root-scope-shape-scope-key, skw-id root-scope-shape-scope-key-id,
-  skws root-scope-shape-scope-keys
-  KWW RootScopeShapeView, kww root-scope-shape-view
-  gwk root-scope-shape-keys-ok
+  SKW RootScopeReservedScopeKey, skw root-scope-reserved-scope-key, skw-id root-scope-reserved-scope-key-id,
+  skws root-scope-reserved-scope-keys
+  KWW RootScopeReservedView, kww root-scope-reserved-view
+  gwk root-scope-reserved-keys-ok
   gyk tombs-dormant-keys-ok
   vqk i14-validity-raw-keys-ok
   vrk i14-validity-rule-r-keys-ok
@@ -210,13 +223,13 @@
   esb {:new refs-not-edges :role :round}
   aha {:new act-runs-alive :role :round}
   gy {:new tombs-dormant :role :round}
-  g10r {:new i10-comp :role :chain}
-  g10 {:new i10-comp-exempt :role :exempt}
-  nq {:new i10-comp-transport :role :exempt}
-  gw {:new root-scope-shape :role :chain}
+  g10r {:new i10-current :role :chain}
+  g10 {:new i10-current-exempt :role :exempt}
+  nq {:new i10-current-transport :role :exempt}
+  gw {:new root-scope-reserved :role :chain}
   g1 {:new i1-scopes :role :chain}
   g5 {:new i5-dep-final :role :chain}
-  gso {:new i1-owners :role :chain}
+  gso {:new i1-detached-closed :role :chain}
   gr0 {:new i1-runs :role :chain}
   grx {:new i1-runs-exempt :role :exempt}
   g8 {:new i8-closed :role :chain}
@@ -224,7 +237,7 @@
   vq {:new i14-validity-raw :role :exempt}
   vr {:new i14-validity-rule-r :role :exempt}
   hmk {:new marks-waiting :role :chain}
-  ar {:new alive-run-current :role :chain}
+  ar {:new alive-run-latest :role :chain}
   ekb {:new edge-kinds :role :chain}
   h3 {:new current-members :role :chain}
   svb {:new i5-seen :role :alongside}
@@ -241,18 +254,18 @@
   hkw {:new dispatch-epoch-kept :role :helper}
   hsw {:new done-epoch-below :role :helper}
   awo {:new comp-awake-owns-run :role :helper}
-  kdb {:new demote-cascade-complete :role :helper}
+  kdb {:new alive-runs-listed :role :helper}
   edb {:new no-dep-edges-of :role :helper}
   fb {:new members-round-frame :role :helper}
   nzb {:new owner-count-at-most :role :helper}
   ;; progress and completion parts (not in inv)
   mb {:new l2-measure :role :progress}
   grel {:new stays-released :role :completion}
-  gk {:new released-rootless :role :completion}
+  gk {:new host-roots-revoked :role :completion}
   gc {:new cleanup-runs-exist :role :completion}
-  gst {:new gone-stays-gone :role :completion}
-  gos {:new open-scopes-in-runs :role :completion}
-  gox {:new open-scopes-in-runs-exempt :role :exempt}
+  gst {:new task-unheld-scope-absent :role :completion}
+  gos {:new open-scopes-have-runs :role :completion}
+  gox {:new open-scopes-have-runs-exempt :role :exempt}
   gnf {:new markers-gone :role :completion}
   gcy {:new scope-parents-acyclic :role :completion}}
 
@@ -284,9 +297,15 @@
                h14 dispatch, h15 raw-lifts, h16 complete, h17 raw, h18 step}
 
  ;; ---------------------------------------------------------------------------------------------
- ;; step.clj legacy (decision 18): deleted if nothing outside the set references it.
- :legacy-roots [dispatch run-items t1-create-source t8-observe t15-resource-ack retire retire-check
-                close-scope-shallow]
+ ;; step.clj legacy (decision 18): deleted if nothing outside the set references it. Nothing is:
+ ;; test/spindel/v2/step_test.clj and rule_test.clj drive the compiled `st/dispatch`, which calls
+ ;; t1-create-source, t8-observe, t15-resource-ack and retire-check, and step_test lists the lemmas.
+ ;; (Candidates were: dispatch run-items t1-create-source t8-observe t15-resource-ack retire
+ ;; retire-check close-scope-shallow.)
+ :legacy-roots []
+
+ ;; Clojure vars of the generators that carry an old name (not constants of the model)
+ :clj-vars {raw0-branch-name transition-branch-name}
 
  ;; names the segmentation must leave alone (the token is not the renamed definition)
  :keep #{gk-all          ; members/cascade: the job list `gk` of a cascade, not the part gk

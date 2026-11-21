@@ -23,7 +23,7 @@
  ;; ---- pres/tree.clj
  {:file "src/spindel/v2/pres/tree.clj" :line 145
   :old "(symbol (str \"raw0-\" (name ctor) \"-inv\"))" :new "(symbol (str \"well-formed-transition-\" (name ctor)))"
-  :why "the 49 derived per-item base lemmas raw0-<item>-inv -> well-formed-transition-<item>; the defn's own name raw0-branch-name -> transition-branch-name (a Clojure var, 4 lines, not in the map)"}
+  :why "the 49 derived per-item base lemmas raw0-<item>-inv -> well-formed-transition-<item>; the defn's own name is in rules.edn :clj-vars"}
  {:file "src/spindel/v2/pres/tree.clj" :line 437
   :old "base (str \"pres-\" (cond (str/starts-with? s \"inv-\") (subs s 4)"
   :new "base (str \"pres-\" (str/replace-first s \"well-formed-\" \"\"))]"
@@ -81,8 +81,8 @@
 
  ;; ---- the exemption API: <part>-exempt-<role>[-<site>] is built from defexempt's first argument
  {:file "src/spindel/v2/inv/i10.clj" :line 826
-  :old "(exempt/defexempt 'g10" :new "(exempt/defexempt 'i10-comp"
-  :why "the substitution would write 'i10-comp-exempt and the API would build i10-comp-exempt-exempt-<role>; the argument is the part, not its exempt form"}
+  :old "(exempt/defexempt 'g10" :new "(exempt/defexempt 'i10-current"
+  :why "the substitution would write 'i10-current-exempt and the API would build i10-current-exempt-exempt-<role>; the argument is the part, not its exempt form"}
  {:file "src/spindel/v2/inv/i1_runs.clj" :line 716
   :old "(exempt/defexempt 'grx" :new "(exempt/defexempt 'i1-runs"
   :why "as above: grx-exempt-<role> -> i1-runs-exempt-<role>"}
@@ -92,5 +92,5 @@
 
  ;; ---- a test that selects names by a string prefix
  {:file "test/spindel/v2/inv/members/dispatch_test.clj" :line 12
-  :old "(.startsWith (str (:name %)) \"h14-\")" :new "(h14-names (str (:name %)))"
-  :why "selects the 19 h14- contracts of notes/hm14-contracts.edn by prefix; under current-members- the prefix also matches the manifest's 29 h3-/hm3-/h3r-/h9-/h13- names. Select by a set of the 19 new names (def h14-names, from this map)"}]
+  :old "(.startsWith (str (:name %)) \"h14-\")" :new "(#{$H14-NAMES} (str (:name %)))"
+  :why "selects the 19 h14- contracts of notes/hm14-contracts.edn by prefix; under current-members- the prefix also matches the manifest's 29 h3-/hm3-/h3r-/h9-/h13- names. $H14-NAMES is filled by renames.clj with the 19 names as they are after the substitution"}]
