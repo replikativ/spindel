@@ -2,29 +2,29 @@
   "Literal I1, the remaining clauses (resource owners; run entities and scopes) through `world-step`,
   kernel-checked (Init only), and with spindel.v2.inv.i1-scopes / spindel.v2.inv.i1-owners all of literal I1 (`inv-i1`).
 
-  Bundle grx xr w = inv-sample w && R1 (every resource's owner run exists and holds it, every run row
+  Bundle i1-runs-exempt xr w = well-formed w && R1 (every resource's owner run exists and holds it, every run row
   with the owner's id lists it) && R2 (every run's entity and scope exist) && R3 (every run is alive,
-  has a cleanup entry, or is exempt: in xr). gr0 = grx [] (no exemption).
-    - A run made done joins the exemptions until its cleanup entry is set (`grx-run-upd-x`,
-      `grx-cleanup-set`): T14's local part (`grx-cancel-run-local`).
-    - T12 (`gr0-complete-raw`, with ga): a run that completes retirable has no cleanup entry; its
-      retire job is the cascade's last, the cascade's worklist empties (P4, `casc-done-ga`), and the
-      job retires it (`track-cascade` over the bundles krb: the rows of the run stay retirable, neb:
+  has a cleanup entry, or is exempt: in xr). i1-runs = i1-runs-exempt [] (no exemption).
+    - A run made done joins the exemptions until its cleanup entry is set (`i1-runs-exempt-run-upd-x`,
+      `i1-runs-exempt-cleanup-set`): T14's local part (`i1-runs-exempt-cancel-run-local`).
+    - T12 (`i1-runs-complete-raw`, with acts-parked): a run that completes retirable has no cleanup entry; its
+      retire job is the cascade's last, the cascade's worklist empties (P4, `cascade-done-acts-parked`), and the
+      job retires it (`track-cascade` over the bundles run-retirable: the rows of the run stay retirable, run-gone:
       no row of the run is made again).
-    - T13 (`grx-retire-with`): a retirable run lists no resource, so no resource is owned by it.
-    - Demotion deletes a computation only when no run of it is left (`gr0-demote-aa`: the demote's
+    - T13 (`i1-runs-exempt-t13-retire-with-subtree`): a retirable run lists no resource, so no resource is owned by it.
+    - Demotion deletes a computation only when no run of it is left (`i1-runs-demote-aa`: the demote's
       cascade kills its alive runs, P4 with acts-alive; a dead run has a cleanup entry that stores its
-      entity, so demote-keep holds) — normalization is threaded with acts-alive (P2's bundle bn).
+      entity, so demote-keep holds) — normalization is threaded with acts-alive (P2's bundle round-bound).
     - Rule R's filter keeps every run (`run-kept`: an alive run is live, normalized; a dead run's
       cleanup entry stores it) and with it the run's entity and scope (live closure / cleanup rows)
-      and every resource's owner (`gr0-filter`).
-  GRX is copied over T12's cascade, GR0 reuses every GRX lemma at [] and threads ga into T12
-  (patched t12-inv/raw0-inv/raw0g-inv/raw-inv).
+      and every resource's owner (`i1-runs-filter`).
+  GRX is copied over T12's cascade, GR0 reuses every GRX lemma at [] and threads acts-parked into T12
+  (patched well-formed-t12-complete/well-formed-transition/well-formed-host-guarded-transition/well-formed-raw).
 
   Theorems:
-    step-gr0             ga w, gr0 w, rule-r-safe raw -> gr0 (world-step w it)
-    p3h = p3g && gr0     step-p3h, p3h-empty
-    step-lit-i1-total    p3h w -> inv-i1 (world-step w it)     (literal I1, every clause)"
+    step-i1-runs             acts-parked w, i1-runs w, rule-r-safe raw -> i1-runs (world-step w it)
+    chain-to-i1-runs = chain-to-i1-detached-closed && i1-runs     step-chain-to-i1-runs, chain-to-i1-runs-empty
+    step-lit-i1-total    chain-to-i1-runs w -> inv-i1 (world-step w it)     (literal I1, every clause)"
   (:require [ansatz.core :as a]
             [spindel.v2.pres.tree :as tree]
             [spindel.v2.pres.exempt :as exempt]
@@ -60,40 +60,40 @@
 ;; ---- R3: a run is not done, or it has a cleanup entry, or it is exempt
 (a/defn r3-ok [cl :- (List CleanupRow), xr :- (List Nat), r :- RunRow] Bool
   (Bool.or (run-alive r) (Bool.or (tbl-has cleanup-id (:id r) cl) (reach-mem (:id r) xr))))
-(a/defn grk-rest [xr :- (List Nat), w :- World] Bool
+(a/defn i1-runs-keys-rest [xr :- (List Nat), w :- World] Bool
   (Bool.and (tbl-all (r1-ok (:runs w)) (:res w))
    (Bool.and (tbl-all (r2-ok w) (:runs w)) (tbl-all (r3-ok (:cleanup w) xr) (:runs w)))))
-(a/defn grx [xr :- (List Nat), w :- World] Bool (Bool.and (inv-sample w) (grk-rest xr w)))
-(a/defn gr0 [w :- World] Bool (grx (List.nil Nat) w))
-(a/defn gr0-rest [w :- World] Bool (grk-rest (List.nil Nat) w))
+(a/defn i1-runs-exempt [xr :- (List Nat), w :- World] Bool (Bool.and (well-formed w) (i1-runs-keys-rest xr w)))
+(a/defn i1-runs [w :- World] Bool (i1-runs-exempt (List.nil Nat) w))
+(a/defn i1-runs-rest [w :- World] Bool (i1-runs-keys-rest (List.nil Nat) w))
 
-(a/theorem grx-sample [xr :- (List Nat), w :- World] (=> (= (grx xr w) true) (= (inv-sample w) true))
-  (intro h) (simp only [grx Bool.and_eq_true] at h) (exact (And.left h)))
-(a/theorem grx-rest-of [xr :- (List Nat), w :- World] (=> (= (grx xr w) true) (= (grk-rest xr w) true))
-  (intro h) (simp only [grx Bool.and_eq_true] at h) (exact (And.right h)))
-(a/theorem grx-intro [xr :- (List Nat), w :- World] (=> (= (inv-sample w) true) (= (grk-rest xr w) true) (= (grx xr w) true))
-  (intros h1 h2) (simp only [grx h1 h2 Bool.and_self]))
-(a/theorem grx-parts [xr :- (List Nat), w :- World]
-  (=> (= (grx xr w) true) (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
-  (intro h) (exact (inv-parts w (grx-sample xr w h))))
-(a/theorem gr0-sample [w :- World] (=> (= (gr0 w) true) (= (inv-sample w) true)) (intro h) (exact (grx-sample (List.nil Nat) w h)))
-(a/theorem gr0-rest-of [w :- World] (=> (= (gr0 w) true) (= (gr0-rest w) true)) (intro h) (exact (grx-rest-of (List.nil Nat) w h)))
-(a/theorem gr0-intro [w :- World] (=> (= (inv-sample w) true) (= (gr0-rest w) true) (= (gr0 w) true))
-  (intros h1 h2) (exact (grx-intro (List.nil Nat) w h1 h2)))
-(a/theorem gr0-parts [w :- World]
-  (=> (= (gr0 w) true) (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
-  (intro h) (exact (inv-parts w (gr0-sample w h))))
+(a/theorem i1-runs-exempt-well-formed [xr :- (List Nat), w :- World] (=> (= (i1-runs-exempt xr w) true) (= (well-formed w) true))
+  (intro h) (simp only [i1-runs-exempt Bool.and_eq_true] at h) (exact (And.left h)))
+(a/theorem i1-runs-exempt-rest-of [xr :- (List Nat), w :- World] (=> (= (i1-runs-exempt xr w) true) (= (i1-runs-keys-rest xr w) true))
+  (intro h) (simp only [i1-runs-exempt Bool.and_eq_true] at h) (exact (And.right h)))
+(a/theorem i1-runs-exempt-intro [xr :- (List Nat), w :- World] (=> (= (well-formed w) true) (= (i1-runs-keys-rest xr w) true) (= (i1-runs-exempt xr w) true))
+  (intros h1 h2) (simp only [i1-runs-exempt h1 h2 Bool.and_self]))
+(a/theorem i1-runs-exempt-parts [xr :- (List Nat), w :- World]
+  (=> (= (i1-runs-exempt xr w) true) (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
+  (intro h) (exact (well-formed-parts w (i1-runs-exempt-well-formed xr w h))))
+(a/theorem i1-runs-well-formed [w :- World] (=> (= (i1-runs w) true) (= (well-formed w) true)) (intro h) (exact (i1-runs-exempt-well-formed (List.nil Nat) w h)))
+(a/theorem i1-runs-rest-of [w :- World] (=> (= (i1-runs w) true) (= (i1-runs-rest w) true)) (intro h) (exact (i1-runs-exempt-rest-of (List.nil Nat) w h)))
+(a/theorem i1-runs-intro [w :- World] (=> (= (well-formed w) true) (= (i1-runs-rest w) true) (= (i1-runs w) true))
+  (intros h1 h2) (exact (i1-runs-exempt-intro (List.nil Nat) w h1 h2)))
+(a/theorem i1-runs-parts [w :- World]
+  (=> (= (i1-runs w) true) (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
+  (intro h) (exact (well-formed-parts w (i1-runs-well-formed w h))))
 
 (a/theorem grk-mk [xr :- (List Nat), w :- World]
   (=> (= (tbl-all (r1-ok (:runs w)) (:res w)) true) (= (tbl-all (r2-ok w) (:runs w)) true) (= (tbl-all (r3-ok (:cleanup w) xr) (:runs w)) true)
-      (= (grk-rest xr w) true))
-  (intros h1 h2 h3) (simp only [grk-rest h1 h2 h3 Bool.and_self]))
-(a/theorem grk-1 [xr :- (List Nat), w :- World] (=> (= (grk-rest xr w) true) (= (tbl-all (r1-ok (:runs w)) (:res w)) true))
-  (intro h) (simp only [grk-rest Bool.and_eq_true] at h) (exact (And.left h)))
-(a/theorem grk-2 [xr :- (List Nat), w :- World] (=> (= (grk-rest xr w) true) (= (tbl-all (r2-ok w) (:runs w)) true))
-  (intro h) (simp only [grk-rest Bool.and_eq_true] at h) (exact (And.left (And.right h))))
-(a/theorem grk-3 [xr :- (List Nat), w :- World] (=> (= (grk-rest xr w) true) (= (tbl-all (r3-ok (:cleanup w) xr) (:runs w)) true))
-  (intro h) (simp only [grk-rest Bool.and_eq_true] at h) (exact (And.right (And.right h))))
+      (= (i1-runs-keys-rest xr w) true))
+  (intros h1 h2 h3) (simp only [i1-runs-keys-rest h1 h2 h3 Bool.and_self]))
+(a/theorem grk-1 [xr :- (List Nat), w :- World] (=> (= (i1-runs-keys-rest xr w) true) (= (tbl-all (r1-ok (:runs w)) (:res w)) true))
+  (intro h) (simp only [i1-runs-keys-rest Bool.and_eq_true] at h) (exact (And.left h)))
+(a/theorem grk-2 [xr :- (List Nat), w :- World] (=> (= (i1-runs-keys-rest xr w) true) (= (tbl-all (r2-ok w) (:runs w)) true))
+  (intro h) (simp only [i1-runs-keys-rest Bool.and_eq_true] at h) (exact (And.left (And.right h))))
+(a/theorem grk-3 [xr :- (List Nat), w :- World] (=> (= (i1-runs-keys-rest xr w) true) (= (tbl-all (r3-ok (:cleanup w) xr) (:runs w)) true))
+  (intro h) (simp only [i1-runs-keys-rest Bool.and_eq_true] at h) (exact (And.right (And.right h))))
 
 ;; ---- frames: the run, resource and cleanup tables fixed, existence of computations, tasks, scopes only grows
 (a/theorem grk-frame [xr :- (List Nat), w :- World, w2 :- World]
@@ -101,7 +101,7 @@
       (forall [x :- Nat] (=> (= (comp-has w x) true) (= (comp-has w2 x) true)))
       (forall [x :- Nat] (=> (= (task-has w x) true) (= (task-has w2 x) true)))
       (forall [x :- Nat] (=> (= (scope-has w x) true) (= (scope-has w2 x) true)))
-      (= (grk-rest xr w) true) (= (grk-rest xr w2) true))
+      (= (i1-runs-keys-rest xr w) true) (= (i1-runs-keys-rest xr w2) true))
   (intros e1 e2 e3 hc ht hs h)
   (have a1 := (grk-1 xr w h)) (have a2 := (grk-2 xr w h)) (have a3 := (grk-3 xr w h))
   (apply (grk-mk xr w2))
@@ -117,58 +117,58 @@
   (exact (hs _ (And.right hr)))
   (rw [e1 e3]) (exact a3))
 
-(a/theorem grx-frame [xr :- (List Nat), w :- World, w2 :- World]
-  (=> (= (inv-sample w2) true) (= (:runs w2) (:runs w)) (= (:res w2) (:res w)) (= (:cleanup w2) (:cleanup w))
+(a/theorem i1-runs-exempt-frame [xr :- (List Nat), w :- World, w2 :- World]
+  (=> (= (well-formed w2) true) (= (:runs w2) (:runs w)) (= (:res w2) (:res w)) (= (:cleanup w2) (:cleanup w))
       (forall [x :- Nat] (=> (= (comp-has w x) true) (= (comp-has w2 x) true)))
       (forall [x :- Nat] (=> (= (task-has w x) true) (= (task-has w2 x) true)))
       (forall [x :- Nat] (=> (= (scope-has w x) true) (= (scope-has w2 x) true)))
-      (= (grx xr w) true) (= (grx xr w2) true))
+      (= (i1-runs-exempt xr w) true) (= (i1-runs-exempt xr w2) true))
   (intros hs e1 e2 e3 hc ht hsc h)
-  (exact (grx-intro xr w2 hs (grk-frame xr w w2 e1 e2 e3 hc ht hsc (grx-rest-of xr w h)))))
+  (exact (i1-runs-exempt-intro xr w2 hs (grk-frame xr w w2 e1 e2 e3 hc ht hsc (i1-runs-exempt-rest-of xr w h)))))
 
-(a/theorem grx-comp-upd [xr :- (List Nat), w :- World, x :- Nat, f :- (=> CompRow CompRow),
+(a/theorem i1-runs-exempt-comp-upd [xr :- (List Nat), w :- World, x :- Nat, f :- (=> CompRow CompRow),
                          hid :- (forall [c :- CompRow] (= (comp-id (f c)) (comp-id c))),
                          hp :- (forall [c :- CompRow] (= (:pending (f c)) (:pending c)))]
-  (=> (= (grx xr w) true) (= (grx xr (comp-upd w x f)) true))
+  (=> (= (i1-runs-exempt xr w) true) (= (i1-runs-exempt xr (comp-upd w x f)) true))
   (intro h)
-  (exact (grx-frame xr w _ (inv-comp-upd w x f hid hp (grx-sample xr w h)) (rfl) (rfl) (rfl)
+  (exact (i1-runs-exempt-frame xr w _ (well-formed-comp-upd w x f hid hp (i1-runs-exempt-well-formed xr w h)) (rfl) (rfl) (rfl)
            (fn [y :- Nat, q :- (= (comp-has w y) true)] (Eq.trans (tbl-has-upd CompRow comp-id x y f hid (:comps w)) q))
            (fn [y :- Nat, q :- (= (task-has w y) true)] q) (fn [y :- Nat, q :- (= (scope-has w y) true)] q) h)))
-(a/theorem grx-task-upd [xr :- (List Nat), w :- World, x :- Nat, f :- (=> TaskRow TaskRow),
+(a/theorem i1-runs-exempt-task-upd [xr :- (List Nat), w :- World, x :- Nat, f :- (=> TaskRow TaskRow),
                          hid :- (forall [c :- TaskRow] (= (task-id (f c)) (task-id c)))]
-  (=> (= (grx xr w) true) (= (grx xr (task-upd w x f)) true))
+  (=> (= (i1-runs-exempt xr w) true) (= (i1-runs-exempt xr (task-upd w x f)) true))
   (intro h)
-  (exact (grx-frame xr w _ (inv-task-upd w x f hid (grx-sample xr w h)) (rfl) (rfl) (rfl)
+  (exact (i1-runs-exempt-frame xr w _ (well-formed-task-upd w x f hid (i1-runs-exempt-well-formed xr w h)) (rfl) (rfl) (rfl)
            (fn [y :- Nat, q :- (= (comp-has w y) true)] q)
            (fn [y :- Nat, q :- (= (task-has w y) true)] (Eq.trans (tbl-has-upd TaskRow task-id x y f hid (:tasks w)) q))
            (fn [y :- Nat, q :- (= (scope-has w y) true)] q) h)))
-(a/theorem grx-scope-upd [xr :- (List Nat), w :- World, x :- Nat, f :- (=> ScopeRow ScopeRow),
+(a/theorem i1-runs-exempt-scope-upd [xr :- (List Nat), w :- World, x :- Nat, f :- (=> ScopeRow ScopeRow),
                           hid :- (forall [c :- ScopeRow] (= (scope-id (f c)) (scope-id c)))]
-  (=> (= (grx xr w) true) (= (grx xr (scope-upd w x f)) true))
+  (=> (= (i1-runs-exempt xr w) true) (= (i1-runs-exempt xr (scope-upd w x f)) true))
   (intro h)
-  (exact (grx-frame xr w _ (inv-scope-upd w x f hid (grx-sample xr w h)) (rfl) (rfl) (rfl)
+  (exact (i1-runs-exempt-frame xr w _ (well-formed-scope-upd w x f hid (i1-runs-exempt-well-formed xr w h)) (rfl) (rfl) (rfl)
            (fn [y :- Nat, q :- (= (comp-has w y) true)] q) (fn [y :- Nat, q :- (= (task-has w y) true)] q)
            (fn [y :- Nat, q :- (= (scope-has w y) true)] (Eq.trans (tbl-has-upd ScopeRow scope-id x y f hid (:scopes w)) q)) h)))
 (a/theorem has-ins-of [A :- Type, idf :- (=> A Nat), r :- A, xs :- (List A), y :- Nat]
   (=> (= (tbl-has idf y xs) true) (= (tbl-has idf y (tbl-ins r xs)) true))
   (intro h) (simp only [tbl-has-ins h Bool.or_true]))
-(a/theorem grx-comp-ins [xr :- (List Nat), w :- World, r :- CompRow]
-  (=> (= (comp-id r) (:next-id w)) (= (:pending r) (marked-in (:id r) (:edges w))) (= (grx xr w) true) (= (grx xr (bump (comp-ins w r))) true))
+(a/theorem i1-runs-exempt-comp-ins [xr :- (List Nat), w :- World, r :- CompRow]
+  (=> (= (comp-id r) (:next-id w)) (= (:pending r) (marked-in (:id r) (:edges w))) (= (i1-runs-exempt xr w) true) (= (i1-runs-exempt xr (bump (comp-ins w r))) true))
   (intros hi hp h)
-  (exact (grx-frame xr w _ (inv-comp-ins-fresh w r hi hp (grx-sample xr w h)) (rfl) (rfl) (rfl)
+  (exact (i1-runs-exempt-frame xr w _ (well-formed-comp-ins-fresh w r hi hp (i1-runs-exempt-well-formed xr w h)) (rfl) (rfl) (rfl)
            (fn [y :- Nat, q :- (= (comp-has w y) true)] (has-ins-of CompRow comp-id r (:comps w) y q))
            (fn [y :- Nat, q :- (= (task-has w y) true)] q) (fn [y :- Nat, q :- (= (scope-has w y) true)] q) h)))
-(a/theorem grx-task-ins [xr :- (List Nat), w :- World, r :- TaskRow]
-  (=> (= (task-id r) (:next-id w)) (= (grx xr w) true) (= (grx xr (bump (task-ins w r))) true))
+(a/theorem i1-runs-exempt-task-ins [xr :- (List Nat), w :- World, r :- TaskRow]
+  (=> (= (task-id r) (:next-id w)) (= (i1-runs-exempt xr w) true) (= (i1-runs-exempt xr (bump (task-ins w r))) true))
   (intros hi h)
-  (exact (grx-frame xr w _ (inv-task-ins-fresh w r hi (grx-sample xr w h)) (rfl) (rfl) (rfl)
+  (exact (i1-runs-exempt-frame xr w _ (well-formed-task-ins-fresh w r hi (i1-runs-exempt-well-formed xr w h)) (rfl) (rfl) (rfl)
            (fn [y :- Nat, q :- (= (comp-has w y) true)] q)
            (fn [y :- Nat, q :- (= (task-has w y) true)] (has-ins-of TaskRow task-id r (:tasks w) y q))
            (fn [y :- Nat, q :- (= (scope-has w y) true)] q) h)))
-(a/theorem grx-scope-ins [xr :- (List Nat), w :- World, r :- ScopeRow]
-  (=> (= (scope-id r) (:next-id w)) (= (grx xr w) true) (= (grx xr (bump (scope-ins w r))) true))
+(a/theorem i1-runs-exempt-scope-ins [xr :- (List Nat), w :- World, r :- ScopeRow]
+  (=> (= (scope-id r) (:next-id w)) (= (i1-runs-exempt xr w) true) (= (i1-runs-exempt xr (bump (scope-ins w r))) true))
   (intros hi h)
-  (exact (grx-frame xr w _ (inv-scope-ins-fresh w r hi (grx-sample xr w h)) (rfl) (rfl) (rfl)
+  (exact (i1-runs-exempt-frame xr w _ (well-formed-scope-ins-fresh w r hi (i1-runs-exempt-well-formed xr w h)) (rfl) (rfl) (rfl)
            (fn [y :- Nat, q :- (= (comp-has w y) true)] q) (fn [y :- Nat, q :- (= (task-has w y) true)] q)
            (fn [y :- Nat, q :- (= (scope-has w y) true)] (has-ins-of ScopeRow scope-id r (:scopes w) y q)) h)))
 
@@ -178,7 +178,7 @@
 (a/theorem cpend-has [w :- World, x :- Nat, f :- (=> CompRow CompRow), hid :- (forall [c :- CompRow] (= (comp-id (f c)) (comp-id c))), y :- Nat]
   (=> (= (comp-has w y) true) (= (comp-has (comp-upd w x f) y) true))
   (intro q) (exact (Eq.trans (tbl-has-upd CompRow comp-id x y f hid (:comps w)) q)))
-(a/theorem grk-remove-edge [xr :- (List Nat), w :- World, x :- Nat] (=> (= (grk-rest xr w) true) (= (grk-rest xr (remove-edge w x)) true))
+(a/theorem grk-remove-edge [xr :- (List Nat), w :- World, x :- Nat] (=> (= (i1-runs-keys-rest xr w) true) (= (i1-runs-keys-rest xr (remove-edge w x)) true))
   (intro h)
   (cases hf (edge-find w x))
   (case [none] (simp only [remove-edge hf]) (exact h))
@@ -191,7 +191,7 @@
       (exact (grk-frame xr w (comp-upd (edge-del w x) (:creditor e) comp-dec-pending) (rfl) (rfl) (rfl)
                (fn [y :- Nat, q :- (= (comp-has w y) true)] (cpend-has (edge-del w x) (:creditor e) comp-dec-pending (fn [c :- CompRow] (Eq.refl (comp-id c))) y q))
                (fn [y :- Nat, q :- (= (task-has w y) true)] q) (fn [y :- Nat, q :- (= (scope-has w y) true)] q) h)))))
-(a/theorem grk-mark-edge [xr :- (List Nat), w :- World, x :- Nat] (=> (= (grk-rest xr w) true) (= (grk-rest xr (mark-edge w x)) true))
+(a/theorem grk-mark-edge [xr :- (List Nat), w :- World, x :- Nat] (=> (= (i1-runs-keys-rest xr w) true) (= (i1-runs-keys-rest xr (mark-edge w x)) true))
   (intro h)
   (cases hf (edge-find w x))
   (case [none] (simp only [mark-edge hf]) (exact h))
@@ -202,7 +202,7 @@
       (exact (grk-frame xr w (comp-upd (edge-upd w x (edge-set-marked true)) (:creditor e) comp-inc-pending) (rfl) (rfl) (rfl)
                (fn [y :- Nat, q :- (= (comp-has w y) true)] (cpend-has (edge-upd w x (edge-set-marked true)) (:creditor e) comp-inc-pending (fn [c :- CompRow] (Eq.refl (comp-id c))) y q))
                (fn [y :- Nat, q :- (= (task-has w y) true)] q) (fn [y :- Nat, q :- (= (scope-has w y) true)] q) h)))))
-(a/theorem grk-unmark-edge [xr :- (List Nat), w :- World, x :- Nat] (=> (= (grk-rest xr w) true) (= (grk-rest xr (unmark-edge w x)) true))
+(a/theorem grk-unmark-edge [xr :- (List Nat), w :- World, x :- Nat] (=> (= (i1-runs-keys-rest xr w) true) (= (i1-runs-keys-rest xr (unmark-edge w x)) true))
   (intro h)
   (cases hf (edge-find w x))
   (case [none] (simp only [unmark-edge hf]) (exact h))
@@ -213,14 +213,14 @@
       (exact (grk-frame xr w (comp-upd (edge-upd w x (edge-set-marked false)) (:creditor e) comp-dec-pending) (rfl) (rfl) (rfl)
                (fn [y :- Nat, q :- (= (comp-has w y) true)] (cpend-has (edge-upd w x (edge-set-marked false)) (:creditor e) comp-dec-pending (fn [c :- CompRow] (Eq.refl (comp-id c))) y q))
                (fn [y :- Nat, q :- (= (task-has w y) true)] q) (fn [y :- Nat, q :- (= (scope-has w y) true)] q) h)))))
-(a/theorem grk-drop-cred [xr :- (List Nat), w :- World, a :- Nat] (=> (= (grk-rest xr w) true) (= (grk-rest xr (drop-cred-edges w a)) true))
+(a/theorem grk-drop-cred [xr :- (List Nat), w :- World, a :- Nat] (=> (= (i1-runs-keys-rest xr w) true) (= (i1-runs-keys-rest xr (drop-cred-edges w a)) true))
   (intro h)
   (exact (grk-frame xr w (drop-cred-edges w a) (rfl) (rfl) (rfl)
            (fn [y :- Nat, q :- (= (comp-has w y) true)] (cpend-has (set-edges w (tbl-filter (cred-ne a) (:edges w))) a (comp-set-pending 0) (fn [c :- CompRow] (Eq.refl (comp-id c))) y q))
            (fn [y :- Nat, q :- (= (task-has w y) true)] q) (fn [y :- Nat, q :- (= (scope-has w y) true)] q) h)))
-(a/theorem grk-drop-act [xr :- (List Nat), w :- World, a :- Nat] (=> (= (grk-rest xr w) true) (= (grk-rest xr (drop-act w a)) true))
+(a/theorem grk-drop-act [xr :- (List Nat), w :- World, a :- Nat] (=> (= (i1-runs-keys-rest xr w) true) (= (i1-runs-keys-rest xr (drop-act w a)) true))
   (intro h) (exact (grk-drop-cred xr w a h)))
-(a/theorem grk-drop-edges [xr :- (List Nat), w :- World, p :- (=> EdgeRow Bool)] (=> (= (grk-rest xr w) true) (= (grk-rest xr (drop-edges w p)) true))
+(a/theorem grk-drop-edges [xr :- (List Nat), w :- World, p :- (=> EdgeRow Bool)] (=> (= (i1-runs-keys-rest xr w) true) (= (i1-runs-keys-rest xr (drop-edges w p)) true))
   (intro h)
   (exact (grk-frame xr w (drop-edges w p) (rfl) (rfl) (rfl)
            (fn [y :- Nat, q :- (= (comp-has w y) true)] (Eq.trans (has-resync (tbl-filter p (:edges w)) (:comps w) y) q))
@@ -250,14 +250,14 @@
   (have e2 (= (run-alive q2) (run-alive q))) (exact (congrArg (fn [k :- RKR] (:alive k)) e))
   (simp only [r3-ok e1 e2]))
 
-(a/theorem grx-run-upd [xr :- (List Nat), w :- World, x :- Nat, f :- (=> RunRow RunRow),
+(a/theorem i1-runs-exempt-run-upd [xr :- (List Nat), w :- World, x :- Nat, f :- (=> RunRow RunRow),
                         hid :- (forall [r :- RunRow] (= (run-id (f r)) (run-id r))),
                         hk :- (forall [r :- RunRow] (= (rkr (f r)) (rkr r)))]
-  (=> (= (grx xr w) true) (= (grx xr (run-upd w x f)) true))
+  (=> (= (i1-runs-exempt xr w) true) (= (i1-runs-exempt xr (run-upd w x f)) true))
   (intro h)
-  (have r := (grx-rest-of xr w h))
+  (have r := (i1-runs-exempt-rest-of xr w h))
   (have a1 := (grk-1 xr w r)) (have a2 := (grk-2 xr w r)) (have a3 := (grk-3 xr w r))
-  (apply (grx-intro xr _ (inv-run-upd w x f hid (grx-sample xr w h))))
+  (apply (i1-runs-exempt-intro xr _ (well-formed-run-upd w x f hid (i1-runs-exempt-well-formed xr w h))))
   (apply (grk-mk xr _))
   (simp only [run-upd set-runs])
   (apply (tbl-all-mono ResRow _ _ _ (:res w) a1))
@@ -286,31 +286,31 @@
   (have h1 (forall [q :- RunRow] (= (res-held z2 q) (res-held z q)))) (intro q) (simp only [res-held e1 e2])
   (have h2 (forall [q :- RunRow] (= (listed-in z2 q) (listed-in z q)))) (intro q) (simp only [listed-in e1 e2])
   (simp only [r1-ok (tbl-any-congr RunRow (res-held z2) (res-held z) h1 rs) (tbl-all-congr RunRow (listed-in z2) (listed-in z) h2 rs)]))
-(a/theorem grx-resource-upd [xr :- (List Nat), w :- World, x :- Nat, f :- (=> ResRow ResRow),
+(a/theorem i1-runs-exempt-resource-upd [xr :- (List Nat), w :- World, x :- Nat, f :- (=> ResRow ResRow),
                              hid :- (forall [z :- ResRow] (= (resource-id (f z)) (resource-id z))),
                              hk :- (forall [z :- ResRow] (= (rzk (f z)) (rzk z)))]
-  (=> (= (grx xr w) true) (= (grx xr (resource-upd w x f)) true))
+  (=> (= (i1-runs-exempt xr w) true) (= (i1-runs-exempt xr (resource-upd w x f)) true))
   (intro h)
-  (have r := (grx-rest-of xr w h))
+  (have r := (i1-runs-exempt-rest-of xr w h))
   (have b1 (= (tbl-all (r1-ok (:runs (resource-upd w x f))) (:res (resource-upd w x f))) true))
   (simp only [resource-upd set-res])
   (rw [(tbl-all-upd-same ResRow resource-id x f (r1-ok (:runs w)) (fn [z :- ResRow] (rzk-r1 (:runs w) z (f z) (hk z))) (:res w))])
   (exact (grk-1 xr w r))
   (have b2 (= (tbl-all (r2-ok (resource-upd w x f)) (:runs (resource-upd w x f))) true)) (exact (grk-2 xr w r))
   (have b3 (= (tbl-all (r3-ok (:cleanup (resource-upd w x f)) xr) (:runs (resource-upd w x f))) true)) (exact (grk-3 xr w r))
-  (exact (grx-intro xr _ (inv-resource-upd w x f hid (grx-sample xr w h)) (grk-mk xr _ b1 b2 b3))))
+  (exact (i1-runs-exempt-intro xr _ (well-formed-resource-upd w x f hid (i1-runs-exempt-well-formed xr w h)) (grk-mk xr _ b1 b2 b3))))
 (a/theorem rzk-cancel [z :- ResRow] (= (rzk (res-cancel-row z)) (rzk z))
   (cases h (Nat.beq (:phase z) rp-armed)) (all_goals (simp only [rzk res-cancel-row h])))
-(a/theorem grx-res-cancel-row [xr :- (List Nat), w :- World, x :- Nat]
-  (=> (= (grx xr w) true) (= (grx xr (resource-upd w x res-cancel-row)) true))
-  (intro h) (exact (grx-resource-upd xr w x res-cancel-row res-cancel-row-id rzk-cancel h)))
+(a/theorem i1-runs-exempt-res-cancel-row [xr :- (List Nat), w :- World, x :- Nat]
+  (=> (= (i1-runs-exempt xr w) true) (= (i1-runs-exempt xr (resource-upd w x res-cancel-row)) true))
+  (intro h) (exact (i1-runs-exempt-resource-upd xr w x res-cancel-row res-cancel-row-id rzk-cancel h)))
 
 ;; ---- cleanup rows: an edit that keeps the run; an insertion only adds
-(a/theorem grx-cleanup-upd [xr :- (List Nat), w :- World, x :- Nat, f :- (=> CleanupRow CleanupRow),
+(a/theorem i1-runs-exempt-cleanup-upd [xr :- (List Nat), w :- World, x :- Nat, f :- (=> CleanupRow CleanupRow),
                             hk :- (forall [c :- CleanupRow] (= (cleanup-id (f c)) (cleanup-id c)))]
-  (=> (= (grx xr w) true) (= (grx xr (cleanup-upd w x f)) true))
+  (=> (= (i1-runs-exempt xr w) true) (= (i1-runs-exempt xr (cleanup-upd w x f)) true))
   (intro h)
-  (have r := (grx-rest-of xr w h))
+  (have r := (i1-runs-exempt-rest-of xr w h))
   (have b1 (= (tbl-all (r1-ok (:runs (cleanup-upd w x f))) (:res (cleanup-upd w x f))) true)) (exact (grk-1 xr w r))
   (have b2 (= (tbl-all (r2-ok (cleanup-upd w x f)) (:runs (cleanup-upd w x f))) true)) (exact (grk-2 xr w r))
   (have b3 (= (tbl-all (r3-ok (:cleanup (cleanup-upd w x f)) xr) (:runs (cleanup-upd w x f))) true))
@@ -318,14 +318,14 @@
   (intros q hq)
   (simp only [r3-ok cleanup-upd set-cleanup (tbl-has-upd CleanupRow cleanup-id x (:id q) f hk (:cleanup w))])
   (exact hq)
-  (exact (grx-intro xr _ (inv-cleanup-upd w x f (grx-sample xr w h)) (grk-mk xr _ b1 b2 b3))))
-(a/theorem grx-cleanup-ins [xr :- (List Nat), w :- World, c :- CleanupRow]
-  (=> (= (grx xr w) true) (= (grx xr (cleanup-ins w c)) true))
+  (exact (i1-runs-exempt-intro xr _ (well-formed-cleanup-upd w x f (i1-runs-exempt-well-formed xr w h)) (grk-mk xr _ b1 b2 b3))))
+(a/theorem i1-runs-exempt-cleanup-ins [xr :- (List Nat), w :- World, c :- CleanupRow]
+  (=> (= (i1-runs-exempt xr w) true) (= (i1-runs-exempt xr (cleanup-ins w c)) true))
   (intro h)
-  (have r := (grx-rest-of xr w h))
+  (have r := (i1-runs-exempt-rest-of xr w h))
   (have b1 (= (tbl-all (r1-ok (:runs (cleanup-ins w c))) (:res (cleanup-ins w c))) true)) (exact (grk-1 xr w r))
   (have b2 (= (tbl-all (r2-ok (cleanup-ins w c)) (:runs (cleanup-ins w c))) true)) (exact (grk-2 xr w r))
-  (apply (grx-intro xr _ (inv-cleanup-ins w c (grx-sample xr w h))))
+  (apply (i1-runs-exempt-intro xr _ (well-formed-cleanup-ins w c (i1-runs-exempt-well-formed xr w h))))
   (apply (grk-mk xr _ b1 b2))
   (apply (tbl-all-mono RunRow (r3-ok (:cleanup w) xr) _ _ (:runs w) (grk-3 xr w r)))
   (intros q hq)
@@ -346,21 +346,21 @@
     (simp only [r3-ok reach-mem ne2] at hq)
     (simp only [r3-ok tbl-has-ins cleanup-id hb Bool.false_or (tbl-has-del-ne CleanupRow cleanup-id rid (:id q) cl hb)])
     (exact hq)))
-(a/theorem grx-cleanup-set [xr :- (List Nat), w :- World, rid :- Nat, rows :- (List Nat)]
-  (=> (= (grx (List.cons Nat rid xr) w) true) (= (grx xr (cleanup-set w rid rows)) true))
+(a/theorem i1-runs-exempt-cleanup-set [xr :- (List Nat), w :- World, rid :- Nat, rows :- (List Nat)]
+  (=> (= (i1-runs-exempt (List.cons Nat rid xr) w) true) (= (i1-runs-exempt xr (cleanup-set w rid rows)) true))
   (intro h)
-  (have r := (grx-rest-of _ w h))
+  (have r := (i1-runs-exempt-rest-of _ w h))
   (have b1 (= (tbl-all (r1-ok (:runs (cleanup-set w rid rows))) (:res (cleanup-set w rid rows))) true)) (exact (grk-1 _ w r))
   (have b2 (= (tbl-all (r2-ok (cleanup-set w rid rows)) (:runs (cleanup-set w rid rows))) true)) (exact (grk-2 _ w r))
   (have b3 (= (tbl-all (r3-ok (:cleanup (cleanup-set w rid rows)) xr) (:runs (cleanup-set w rid rows))) true))
   (exact (tbl-all-mono RunRow _ _ (r3-cset (:cleanup w) xr rid rows) (:runs w) (grk-3 _ w r)))
-  (exact (grx-intro xr _ (inv-cleanup-set w rid rows (grx-sample _ w h)) (grk-mk xr _ b1 b2 b3))))
-(a/theorem grx-cleanup-set0 [xr :- (List Nat), w :- World, rid :- Nat, rows :- (List Nat)]
-  (=> (= (grx xr w) true) (= (grx xr (cleanup-set w rid rows)) true))
+  (exact (i1-runs-exempt-intro xr _ (well-formed-cleanup-set w rid rows (i1-runs-exempt-well-formed _ w h)) (grk-mk xr _ b1 b2 b3))))
+(a/theorem i1-runs-exempt-cleanup-set0 [xr :- (List Nat), w :- World, rid :- Nat, rows :- (List Nat)]
+  (=> (= (i1-runs-exempt xr w) true) (= (i1-runs-exempt xr (cleanup-set w rid rows)) true))
   (intro h)
-  (have r := (grx-rest-of _ w h))
-  (have h2 (= (grx (List.cons Nat rid xr) w) true))
-  (apply (grx-intro (List.cons Nat rid xr) w (grx-sample _ w h)))
+  (have r := (i1-runs-exempt-rest-of _ w h))
+  (have h2 (= (i1-runs-exempt (List.cons Nat rid xr) w) true))
+  (apply (i1-runs-exempt-intro (List.cons Nat rid xr) w (i1-runs-exempt-well-formed _ w h)))
   (apply (grk-mk (List.cons Nat rid xr) w (grk-1 _ w r) (grk-2 _ w r)))
   (apply (tbl-all-mono RunRow (r3-ok (:cleanup w) xr) _ _ (:runs w) (grk-3 _ w r)))
   (intros q hq)
@@ -369,18 +369,18 @@
   (cases hq) (case [inl a] (exact (Or.inl a)))
   (case [inr b] (cases b) (case [inl b1] (exact (Or.inr (Or.inl b1))))
     (case [inr b2] (apply Or.inr) (apply Or.inr) (cases hb (Nat.beq (:id q) rid)) (case [true] (simp only [hb])) (case [false] (simp only [hb]) (exact b2))))
-  (exact (grx-cleanup-set xr w rid rows h2)))
+  (exact (i1-runs-exempt-cleanup-set xr w rid rows h2)))
 
 ;; ---- run rows made (or kept) alive: parking (id, entity, scope, resources kept)
 (a/structure RKR0 [] (id Nat) (of Nat) (scope Nat) (res (List Nat)))
 (a/defn rkr0 [r :- RunRow] RKR0 (RKR0.mk (:id r) (:of r) (:scope r) (:resources r)))
-(a/theorem grx-run-upd-up [xr :- (List Nat), w :- World, x :- Nat, f :- (=> RunRow RunRow),
+(a/theorem i1-runs-exempt-run-upd-up [xr :- (List Nat), w :- World, x :- Nat, f :- (=> RunRow RunRow),
                            hid :- (forall [r :- RunRow] (= (run-id (f r)) (run-id r))),
                            hk :- (forall [r :- RunRow] (= (rkr0 (f r)) (rkr0 r))),
                            ha :- (forall [r :- RunRow] (= (run-alive (f r)) true))]
-  (=> (= (grx xr w) true) (= (grx xr (run-upd w x f)) true))
+  (=> (= (i1-runs-exempt xr w) true) (= (i1-runs-exempt xr (run-upd w x f)) true))
   (intro h)
-  (have r := (grx-rest-of xr w h))
+  (have r := (i1-runs-exempt-rest-of xr w h))
   (have a1 := (grk-1 xr w r)) (have a2 := (grk-2 xr w r)) (have a3 := (grk-3 xr w r))
   (have k1 (forall [q :- RunRow] (= (:id (f q)) (:id q)))) (intro q) (exact (congrArg (fn [k :- RKR0] (:id k)) (hk q)))
   (have k2 (forall [q :- RunRow] (= (:of (f q)) (:of q)))) (intro q) (exact (congrArg (fn [k :- RKR0] (:of k)) (hk q)))
@@ -403,55 +403,55 @@
   (apply (tbl-all-upd RunRow run-id x f (r3-ok (:cleanup w) xr) (r3-ok (:cleanup w) xr) _ _ (:runs w) a3))
   (intros q h1 h2) (simp only [r3-ok (ha q) Bool.true_or])
   (intros q h1 h2) (exact h1)
-  (exact (grx-intro xr _ (inv-run-upd w x f hid (grx-sample xr w h)) (grk-mk xr _ b1 b2 b3))))
+  (exact (i1-runs-exempt-intro xr _ (well-formed-run-upd w x f hid (i1-runs-exempt-well-formed xr w h)) (grk-mk xr _ b1 b2 b3))))
 (a/theorem rkr0-park [r :- RunRow] (= (rkr0 (run-park-row r)) (rkr0 r)) (rfl))
 (a/theorem alive-park [r :- RunRow] (= (run-alive (run-park-row r)) true) (rfl))
 (a/theorem rkr0-tick-park [r :- RunRow] (= (rkr0 (run-tick-park r)) (rkr0 r)) (rfl))
 (a/theorem alive-tick-park [r :- RunRow] (= (run-alive (run-tick-park r)) true) (rfl))
 (a/theorem rkr-wake [r :- RunRow] (= (rkr (run-wake r)) (rkr r)) (simp only [rkr run-wake-alive]))
 
-(a/defn grx-rest [xr :- (List Nat), w :- World] Bool (grk-rest xr w))
-(a/theorem grx-run-park [xr :- (List Nat), w :- World, x :- Nat]
-  (=> (= (grx xr w) true) (= (grx xr (run-upd w x run-park-row)) true))
-  (intro h) (exact (grx-run-upd-up xr w x run-park-row run-park-row-id rkr0-park alive-park h)))
-(a/theorem grx-run-tick-park [xr :- (List Nat), w :- World, x :- Nat]
-  (=> (= (grx xr w) true) (= (grx xr (run-upd w x run-tick-park)) true))
-  (intro h) (exact (grx-run-upd-up xr w x run-tick-park run-tick-park-id rkr0-tick-park alive-tick-park h)))
-(a/theorem grx-run-wake [xr :- (List Nat), w :- World, x :- Nat]
-  (=> (= (grx xr w) true) (= (grx xr (run-upd w x run-wake)) true))
-  (intro h) (exact (grx-run-upd xr w x run-wake run-wake-run-id rkr-wake h)))
+(a/defn i1-runs-exempt-rest [xr :- (List Nat), w :- World] Bool (i1-runs-keys-rest xr w))
+(a/theorem i1-runs-exempt-run-park [xr :- (List Nat), w :- World, x :- Nat]
+  (=> (= (i1-runs-exempt xr w) true) (= (i1-runs-exempt xr (run-upd w x run-park-row)) true))
+  (intro h) (exact (i1-runs-exempt-run-upd-up xr w x run-park-row run-park-row-id rkr0-park alive-park h)))
+(a/theorem i1-runs-exempt-run-tick-park [xr :- (List Nat), w :- World, x :- Nat]
+  (=> (= (i1-runs-exempt xr w) true) (= (i1-runs-exempt xr (run-upd w x run-tick-park)) true))
+  (intro h) (exact (i1-runs-exempt-run-upd-up xr w x run-tick-park run-tick-park-id rkr0-tick-park alive-tick-park h)))
+(a/theorem i1-runs-exempt-run-wake [xr :- (List Nat), w :- World, x :- Nat]
+  (=> (= (i1-runs-exempt xr w) true) (= (i1-runs-exempt xr (run-upd w x run-wake)) true))
+  (intro h) (exact (i1-runs-exempt-run-upd xr w x run-wake run-wake-run-id rkr-wake h)))
 
-(def GRX (mk-bundle 'grx '[x1r :- (List Nat)] "grx-"
-           {'inv-run-upd ['(fn [r :- RunRow] (Eq.refl (rkr r))) 4]
-            'inv-resource-upd ['(fn [z :- ResRow] (Eq.refl (rzk z))) 4]
-            'inv-cleanup-upd ['(fn [c :- CleanupRow] (Eq.refl (cleanup-id c))) 3]}))
-(swap! (:renames GRX) assoc 'inv-parts 'grx-parts 'inv-run-upd 'grx-run-upd 'inv-resource-upd 'grx-resource-upd
-       'inv-cleanup-upd 'grx-cleanup-upd 'inv-cleanup-ins 'grx-cleanup-ins 'inv-cleanup-set 'grx-cleanup-set0
-       'inv-comp-upd 'grx-comp-upd 'inv-task-upd 'grx-task-upd 'inv-scope-upd 'grx-scope-upd
-       'inv-comp-ins-fresh 'grx-comp-ins 'inv-task-ins-fresh 'grx-task-ins 'inv-scope-ins-fresh 'grx-scope-ins
-       'inv-remove-if-empty 'grx-remove-if-empty)
-;; grx on the generic tree (spindel.v2.pres.tree): its table. Its own proofs are below (T14 and T13).
+(def GRX (mk-bundle 'i1-runs-exempt '[x1r :- (List Nat)] "i1-runs-exempt-"
+           {'well-formed-run-upd ['(fn [r :- RunRow] (Eq.refl (rkr r))) 4]
+            'well-formed-resource-upd ['(fn [z :- ResRow] (Eq.refl (rzk z))) 4]
+            'well-formed-cleanup-upd ['(fn [c :- CleanupRow] (Eq.refl (cleanup-id c))) 3]}))
+(swap! (:renames GRX) assoc 'well-formed-parts 'i1-runs-exempt-parts 'well-formed-run-upd 'i1-runs-exempt-run-upd 'well-formed-resource-upd 'i1-runs-exempt-resource-upd
+       'well-formed-cleanup-upd 'i1-runs-exempt-cleanup-upd 'well-formed-cleanup-ins 'i1-runs-exempt-cleanup-ins 'well-formed-cleanup-set 'i1-runs-exempt-cleanup-set0
+       'well-formed-comp-upd 'i1-runs-exempt-comp-upd 'well-formed-task-upd 'i1-runs-exempt-task-upd 'well-formed-scope-upd 'i1-runs-exempt-scope-upd
+       'well-formed-comp-ins-fresh 'i1-runs-exempt-comp-ins 'well-formed-task-ins-fresh 'i1-runs-exempt-task-ins 'well-formed-scope-ins-fresh 'i1-runs-exempt-scope-ins
+       'well-formed-remove-if-empty 'i1-runs-exempt-remove-if-empty)
+;; i1-runs-exempt on the generic tree (spindel.v2.pres.tree): its table. Its own proofs are below (T14 and T13).
 (tree/part! GRX
-  :over '{inv-cancel-run-local grx-cancel-run-local   ; T14: the cancelled run is exempt while its rows go
-          inv-retire-with      grx-retire-with        ; T13: a retired run owns no resource (retire-owner-ne)
-          inv-retire-local     grx-retire-local}
+  :over '{well-formed-cancel-run-local i1-runs-exempt-cancel-run-local   ; T14: the cancelled run is exempt while its rows go
+          well-formed-t13-retire-with-subtree      i1-runs-exempt-t13-retire-with-subtree        ; T13: a retired run owns no resource (retire-owner-ne)
+          well-formed-retire-run     i1-runs-exempt-retire-run}
   ;; ---- sites: a park, resume or resource cancel keeps the row's key, by the row lemma
-  :sites '{[inv-run-upd run-park-row]         (grx-run-park x1r w x h0)
-           [inv-run-upd run-tick-park]        (grx-run-tick-park x1r w x h0)
-           [inv-run-upd run-wake]             (grx-run-wake x1r w x h0)
-           [inv-resource-upd res-cancel-row]  (grx-res-cancel-row x1r w x h0)}
+  :sites '{[well-formed-run-upd run-park-row]         (i1-runs-exempt-run-park x1r w x h0)
+           [well-formed-run-upd run-tick-park]        (i1-runs-exempt-run-tick-park x1r w x h0)
+           [well-formed-run-upd run-wake]             (i1-runs-exempt-run-wake x1r w x h0)
+           [well-formed-resource-upd res-cancel-row]  (i1-runs-exempt-res-cancel-row x1r w x h0)}
   ;; ---- facts from the path: the retired run is a done row of the world
-  :ctx '{inv-retire-with  [(List.Mem r (:runs w)) (= (retirable r) true)]
-         inv-retire-local [(List.Mem r (:runs w)) (= (retirable r) true)]}
-  :pass '{inv-job-apply {inv-retire-local [(tbl-find-mem RunRow run-id rid r (:runs w) hf) ha]}})   ; run-find found it; retirable
-(doseq [o '[inv-pub-upd inv-source-upd inv-set-pins inv-act-upd inv-edge-upd inv-bump inv-source-ins-fresh inv-fork-ins-fresh inv-act-ins-fresh insert-edge-fresh-inv-sample inv-fork-del]]
+  :ctx '{well-formed-t13-retire-with-subtree  [(List.Mem r (:runs w)) (= (retirable r) true)]
+         well-formed-retire-run [(List.Mem r (:runs w)) (= (retirable r) true)]}
+  :pass '{well-formed-job-apply {well-formed-retire-run [(tbl-find-mem RunRow run-id rid r (:runs w) hf) ha]}})   ; run-find found it; retirable
+(doseq [o '[well-formed-pub-upd well-formed-source-upd well-formed-set-pins well-formed-act-upd well-formed-edge-upd well-formed-bump well-formed-source-ins-fresh well-formed-fork-ins-fresh well-formed-act-ins-fresh well-formed-insert-edge-fresh well-formed-fork-del]]
   (prim! GRX o nil))
-(prim! GRX 'inv-remove-edge '(grk-remove-edge x1r w x R))
-(prim! GRX 'mark-edge-inv-sample '(grk-mark-edge x1r w x R))
-(prim! GRX 'unmark-edge-inv-sample '(grk-unmark-edge x1r w x R))
-(prim! GRX 'inv-drop-cred '(grk-drop-cred x1r w a R))
-(prim! GRX 'inv-drop-act '(grk-drop-act x1r w a R))
-(prim! GRX 'inv-drop-edges '(grk-drop-edges x1r w p R))
+(prim! GRX 'well-formed-remove-edge '(grk-remove-edge x1r w x R))
+(prim! GRX 'well-formed-mark-edge '(grk-mark-edge x1r w x R))
+(prim! GRX 'well-formed-unmark-edge '(grk-unmark-edge x1r w x R))
+(prim! GRX 'well-formed-drop-cred-edges '(grk-drop-cred x1r w a R))
+(prim! GRX 'well-formed-drop-act '(grk-drop-act x1r w a R))
+(prim! GRX 'well-formed-drop-edges '(grk-drop-edges x1r w p R))
 
 ;; ---- remove-if-empty: an empty subtree holds no run scope
 (a/structure SDK [] (runs (List RunRow)) (res (List ResRow)) (cl (List CleanupRow)) (comps (List CompRow)) (tasks (List TaskRow)))
@@ -481,14 +481,14 @@
   (intros h m)
   (have a := (tbl-all-mem A (bnot-of p) q xs (any-false-all A p xs h) m))
   (simp only [bnot-of] at a) (exact (bnot-true _ a)))
-(a/theorem grx-remove-if-empty [xr :- (List Nat), w :- World, sub :- (List Nat)]
-  (=> (= (grx xr w) true) (= (grx xr (remove-if-empty w sub)) true))
+(a/theorem i1-runs-exempt-remove-if-empty [xr :- (List Nat), w :- World, sub :- (List Nat)]
+  (=> (= (i1-runs-exempt xr w) true) (= (i1-runs-exempt xr (remove-if-empty w sub)) true))
   (intro h)
   (cases he (subtree-empty w sub))
   (case [false] (simp only [remove-if-empty he]) (exact h))
   (case [true]
     (simp only [remove-if-empty he])
-    (have r := (grx-rest-of xr w h))
+    (have r := (i1-runs-exempt-rest-of xr w h))
     (have e := (sdk-scope-fold sub w))
     (have e1 (= (:runs (nat-fold scope-del w sub)) (:runs w))) (exact (congrArg (fn [k :- SDK] (:runs k)) e))
     (have e2 (= (:res (nat-fold scope-del w sub)) (:res w))) (exact (congrArg (fn [k :- SDK] (:res k)) e))
@@ -510,7 +510,7 @@
     (have c2 (= (Bool.or (comp-has (nat-fold scope-del w sub) (:of q)) (task-has (nat-fold scope-del w sub) (:of q))) true))
     (simp only [comp-has task-has e4 e5]) (exact (And.left hq))
     (simp only [r2-ok c2 s2 Bool.and_self])
-    (exact (grx-intro xr _ (nat-fold-inv scope-del inv-scope-del sub w (grx-sample xr w h)) (grk-mk xr _ b1 b2 b3)))))
+    (exact (i1-runs-exempt-intro xr _ (well-formed-nat-fold scope-del well-formed-scope-del sub w (i1-runs-exempt-well-formed xr w h)) (grk-mk xr _ b1 b2 b3)))))
 
 ;; ---- the resource table through T13's local part (no resource is made or dropped there)
 (a/theorem res-remove-edge [w :- World, y :- Nat] (= (:res (remove-edge w y)) (:res w))
@@ -559,23 +559,23 @@
   (induction xs)
   (case [nil] (intro w) (simp only [nat-fold]))
   (case [cons h t ih] (intro w) (simp only [nat-fold]) (exact (Eq.trans (ih (f w h)) (hf w h)))))
-(a/theorem res-fin-loop [fuel :- (List Nat)]
-  (forall [w :- World, ds :- (List Nat)] (= (:res (:world (fin-loop fuel w ds))) (:res w)))
+(a/theorem res-finalize-loop [fuel :- (List Nat)]
+  (forall [w :- World, ds :- (List Nat)] (= (:res (:world (finalize-loop fuel w ds))) (:res w)))
   (induction fuel)
-  (case [nil] (intros w ds) (simp only [fin-loop]))
+  (case [nil] (intros w ds) (simp only [finalize-loop]))
   (case [cons h f ih]
     (intros w ds)
     (cases ds)
-    (simp only [fin-loop])
+    (simp only [finalize-loop])
     (rename_i d t)
-    (simp only [fin-loop])
+    (simp only [finalize-loop])
     (exact (Eq.trans (ih (finalize-one w d) _) (rfl)))))
-(a/theorem res-close-source0 [w :- World, x :- Nat] (= (:res (close-source0 w x)) (:res w))
-  (simp only [close-source0 finalize-debtor wake-closed])
-  (exact (Eq.trans (res-fin-loop _ _ _) (res-fold (fire-edge _) (res-fire-edge _) _ (source-upd w x source-close-row)))))
+(a/theorem res-close-source-ended [w :- World, x :- Nat] (= (:res (close-source-ended w x)) (:res w))
+  (simp only [close-source-ended t10-finalize-debtor wake-closed])
+  (exact (Eq.trans (res-finalize-loop _ _ _) (res-fold (fire-edge _) (res-fire-edge _) _ (source-upd w x source-close-row)))))
 (a/theorem res-deliver-res [w :- World, x :- Nat, v :- Nat, rr :- RunResult] (= (:res (deliver-res w x v rr)) (:res w))
-  (simp only [deliver-res finalize-debtor])
-  (exact (Eq.trans (res-fin-loop _ _ _)
+  (simp only [deliver-res t10-finalize-debtor])
+  (exact (Eq.trans (res-finalize-loop _ _ _)
            (Eq.trans (res-fold (fire-edge rr) (res-fire-edge rr) _ _) (res-fold (fire-edge rr) (res-fire-edge rr) _ (source-upd w x (source-write v)))))))
 (a/theorem res-end-link [w :- World, x :- Nat, fl :- Bool, v :- Nat] (= (:res (end-link w x fl v)) (:res w))
   (cases hp (link-pending w x))
@@ -588,7 +588,7 @@
   (simp only [end-stream hf hk])
   (simp only [end-stream hf hk]) (exact (res-end-link w _ false 0)))
 (a/theorem res-close-source [w :- World, x :- Nat] (= (:res (close-source w x)) (:res w))
-  (simp only [close-source]) (exact (Eq.trans (res-close-source0 _ x) (res-end-stream w x))))
+  (simp only [close-source]) (exact (Eq.trans (res-close-source-ended _ x) (res-end-stream w x))))
 (a/theorem res-close-local [w :- World, sub :- (List Nat)] (= (:res (close-local w sub)) (:res w))
   (simp only [close-local])
   (exact (Eq.trans (res-fold close-source res-close-source _ _) (res-fold close-scope-id (fn [W :- World, x :- Nat] (Eq.refl (:res W))) sub w))))
@@ -629,7 +629,7 @@
 
 (a/theorem grk-run-del-cl [xr :- (List Nat), w :- World, rid :- Nat]
   (=> (forall [z :- ResRow] (=> (List.Mem z (:res w)) (= (Nat.beq (:owner z) rid) false)))
-      (= (grk-rest xr w) true) (= (grk-rest xr (cleanup-del (run-del w rid) rid)) true))
+      (= (i1-runs-keys-rest xr w) true) (= (i1-runs-keys-rest xr (cleanup-del (run-del w rid) rid)) true))
   (intros hz h)
   (have b1 (= (tbl-all (r1-ok (:runs (cleanup-del (run-del w rid) rid))) (:res (cleanup-del (run-del w rid) rid))) true))
   (simp only [cleanup-del run-del set-cleanup set-runs])
@@ -660,7 +660,7 @@
   (exact (grk-mk xr _ b1 b2 b3)))
 
 (a/theorem retire-owner-ne [xr :- (List Nat), w :- World, r :- RunRow]
-  (=> (List.Mem r (:runs w)) (= (retirable r) true) (= (grk-rest xr w) true)
+  (=> (List.Mem r (:runs w)) (= (retirable r) true) (= (i1-runs-keys-rest xr w) true)
       (forall [z :- ResRow] (=> (List.Mem z (:res w)) (= (Nat.beq (:owner z) (:id r)) false))))
   (intros hm hr h z mz)
   (have a := (tbl-all-mem ResRow (r1-ok (:runs w)) z (:res w) (grk-1 xr w h) mz))
@@ -676,12 +676,12 @@
     (rw [beq-comm]) (exact q)))
 
 ;; ---- a run made done joins the exemptions (until its cleanup entry is set)
-(a/theorem grx-run-upd-x [xr :- (List Nat), w :- World, x :- Nat, f :- (=> RunRow RunRow),
+(a/theorem i1-runs-exempt-run-upd-x [xr :- (List Nat), w :- World, x :- Nat, f :- (=> RunRow RunRow),
                           hid :- (forall [r :- RunRow] (= (run-id (f r)) (run-id r))),
                           hk :- (forall [r :- RunRow] (= (rkr0 (f r)) (rkr0 r)))]
-  (=> (= (grx xr w) true) (= (grx (List.cons Nat x xr) (run-upd w x f)) true))
+  (=> (= (i1-runs-exempt xr w) true) (= (i1-runs-exempt (List.cons Nat x xr) (run-upd w x f)) true))
   (intro h)
-  (have r := (grx-rest-of xr w h))
+  (have r := (i1-runs-exempt-rest-of xr w h))
   (have a1 := (grk-1 xr w r)) (have a2 := (grk-2 xr w r)) (have a3 := (grk-3 xr w r))
   (have k1 (forall [q :- RunRow] (= (:id (f q)) (:id q)))) (intro q) (exact (congrArg (fn [k :- RKR0] (:id k)) (hk q)))
   (have k2 (forall [q :- RunRow] (= (:of (f q)) (:of q)))) (intro q) (exact (congrArg (fn [k :- RKR0] (:of k)) (hk q)))
@@ -710,85 +710,85 @@
   (have h3 (= (Nat.beq (:id q) x) false)) (exact h2)
   (simp only [r3-ok reach-mem h3 Bool.or_eq_true])
   (exact h1)
-  (exact (grx-intro _ _ (inv-run-upd w x f hid (grx-sample xr w h)) (grk-mk _ _ b1 b2 b3))))
+  (exact (i1-runs-exempt-intro _ _ (well-formed-run-upd w x f hid (i1-runs-exempt-well-formed xr w h)) (grk-mk _ _ b1 b2 b3))))
 
 ;; ---- grx's exempt form, uniform names (spindel.v2.pres.exempt): R3 waived for the runs in xr
-(exempt/defexempt 'grx
-  :form "grx xr w" :ids "run ids: a run made done before its cleanup entry is set" :commit "grx [] = gr0 (p3h)"
-  :break '{run-done grx-run-upd-x}             ; a run made done joins the exemptions
-  :repair '{cleanup-set grx-cleanup-set})      ; its cleanup entry is set: it leaves them
+(exempt/defexempt 'i1-runs
+  :form "i1-runs-exempt xr w" :ids "run ids: a run made done before its cleanup entry is set" :commit "i1-runs-exempt [] = i1-runs (chain-to-i1-runs)"
+  :break '{run-done i1-runs-exempt-run-upd-x}             ; a run made done joins the exemptions
+  :repair '{cleanup-set i1-runs-exempt-cleanup-set})      ; its cleanup entry is set: it leaves them
 
 (a/theorem rkr0-cancel [r :- RunRow] (= (rkr0 (run-cancel-row r)) (rkr0 r)) (rfl))
 (a/theorem rkr0-complete [r :- RunRow] (= (rkr0 (run-complete-row r)) (rkr0 r)) (rfl))
 
-(tree/restate! GRX '[inv-cancel-debtor inv-cancel-res inv-cancel-acts])
-(a/theorem grx-cancel-run-local [x1r :- (List Nat), w :- World, r :- RunRow, rep :- Bool]
-  (=> (= (grx x1r w) true) (= (grx x1r (cancel-run-local w r rep)) true))
+(tree/restate! GRX '[well-formed-cancel-debtor well-formed-cancel-res well-formed-cancel-acts])
+(a/theorem i1-runs-exempt-cancel-run-local [x1r :- (List Nat), w :- World, r :- RunRow, rep :- Bool]
+  (=> (= (i1-runs-exempt x1r w) true) (= (i1-runs-exempt x1r (cancel-run-local w r rep)) true))
   (intro h)
-  (have h1 := (grx-run-upd-x x1r w (:id r) run-cancel-row run-cancel-row-id rkr0-cancel h))
+  (have h1 := (i1-runs-exempt-run-upd-x x1r w (:id r) run-cancel-row run-cancel-row-id rkr0-cancel h))
   (simp only [cancel-run-local])
-  (exact (grx-cancel-debtor x1r rep _ r
-           (grx-cleanup-set x1r _ (:id r) (cleanup-rows-of w r)
-             (grx-cancel-res (List.cons Nat (:id r) x1r) _ r (grx-cancel-acts (List.cons Nat (:id r) x1r) _ (:id r) h1))))))
-(tree/restate! GRX '[inv-close-local inv-clear-comp-run])
-(a/theorem grx-retire-with [x1r :- (List Nat), w :- World, r :- RunRow, sub :- (List Nat)]
-  (=> (List.Mem r (:runs w)) (= (retirable r) true) (= (grx x1r w) true) (= (grx x1r (retire-with w r sub)) true))
+  (exact (i1-runs-exempt-cancel-debtor x1r rep _ r
+           (i1-runs-exempt-cleanup-set x1r _ (:id r) (cleanup-rows-of w r)
+             (i1-runs-exempt-cancel-res (List.cons Nat (:id r) x1r) _ r (i1-runs-exempt-cancel-acts (List.cons Nat (:id r) x1r) _ (:id r) h1))))))
+(tree/restate! GRX '[well-formed-close-local well-formed-clear-comp-run])
+(a/theorem i1-runs-exempt-t13-retire-with-subtree [x1r :- (List Nat), w :- World, r :- RunRow, sub :- (List Nat)]
+  (=> (List.Mem r (:runs w)) (= (retirable r) true) (= (i1-runs-exempt x1r w) true) (= (i1-runs-exempt x1r (t13-retire-with-subtree w r sub)) true))
   (intros hm hr h)
-  (have h1 := (grx-close-local x1r _ sub (grx-clear-comp-run x1r w r h)))
-  (have ne := (retire-owner-ne x1r w r hm hr (grx-rest-of x1r w h)))
+  (have h1 := (i1-runs-exempt-close-local x1r _ sub (i1-runs-exempt-clear-comp-run x1r w r h)))
+  (have ne := (retire-owner-ne x1r w r hm hr (i1-runs-exempt-rest-of x1r w h)))
   (have er (= (:res (close-local (clear-comp-run w r) sub)) (:res w))) (exact (Eq.trans (res-close-local _ sub) (res-clear-comp-run w r)))
   (have ne2 (forall [z :- ResRow] (=> (List.Mem z (:res (close-local (clear-comp-run w r) sub))) (= (Nat.beq (:owner z) (:id r)) false))))
   (intros z mz) (rw [er] at mz) (exact (ne z mz))
-  (have h2 := (grx-intro x1r _ (inv-cleanup-del _ (:id r) (inv-run-del _ (:id r) (grx-sample x1r _ h1)))
-                (grk-run-del-cl x1r _ (:id r) ne2 (grx-rest-of x1r _ h1))))
-  (simp only [retire-with])
-  (exact (grx-remove-if-empty x1r _ sub h2)))
-(a/theorem grx-retire-local [x1r :- (List Nat), w :- World, r :- RunRow]
-  (=> (List.Mem r (:runs w)) (= (retirable r) true) (= (grx x1r w) true) (= (grx x1r (retire-local w r)) true))
-  (intros hm hr h) (exact (grx-retire-with x1r w r (scope-subtree w (:scope r)) hm hr h)))
+  (have h2 := (i1-runs-exempt-intro x1r _ (well-formed-cleanup-del _ (:id r) (well-formed-run-del _ (:id r) (i1-runs-exempt-well-formed x1r _ h1)))
+                (grk-run-del-cl x1r _ (:id r) ne2 (i1-runs-exempt-rest-of x1r _ h1))))
+  (simp only [t13-retire-with-subtree])
+  (exact (i1-runs-exempt-remove-if-empty x1r _ sub h2)))
+(a/theorem i1-runs-exempt-retire-run [x1r :- (List Nat), w :- World, r :- RunRow]
+  (=> (List.Mem r (:runs w)) (= (retirable r) true) (= (i1-runs-exempt x1r w) true) (= (i1-runs-exempt x1r (retire-run w r)) true))
+  (intros hm hr h) (exact (i1-runs-exempt-t13-retire-with-subtree x1r w r (scope-subtree w (:scope r)) hm hr h)))
 
-(tree/restate! GRX '[inv-complete-body inv-retire-after inv-fin-if-final inv-run-cascade])
+(tree/restate! GRX '[well-formed-complete-body well-formed-retire-after well-formed-finalize-if-final well-formed-run-cascade])
 
 ;; ===========================================================================
-;; GR0 = grx [] (no exemption): the step and normalization; every GRX lemma is reused at []
+;; GR0 = i1-runs-exempt [] (no exemption): the step and normalization; every GRX lemma is reused at []
 ;; ===========================================================================
-(a/theorem gr0-run-upd [w :- World, x :- Nat, f :- (=> RunRow RunRow),
+(a/theorem i1-runs-run-upd [w :- World, x :- Nat, f :- (=> RunRow RunRow),
                         hid :- (forall [r :- RunRow] (= (run-id (f r)) (run-id r))),
                         hk :- (forall [r :- RunRow] (= (rkr (f r)) (rkr r)))]
-  (=> (= (gr0 w) true) (= (gr0 (run-upd w x f)) true))
-  (intro h) (exact (grx-run-upd (List.nil Nat) w x f hid hk h)))
-(a/theorem gr0-resource-upd [w :- World, x :- Nat, f :- (=> ResRow ResRow),
+  (=> (= (i1-runs w) true) (= (i1-runs (run-upd w x f)) true))
+  (intro h) (exact (i1-runs-exempt-run-upd (List.nil Nat) w x f hid hk h)))
+(a/theorem i1-runs-resource-upd [w :- World, x :- Nat, f :- (=> ResRow ResRow),
                              hid :- (forall [z :- ResRow] (= (resource-id (f z)) (resource-id z))),
                              hk :- (forall [z :- ResRow] (= (rzk (f z)) (rzk z)))]
-  (=> (= (gr0 w) true) (= (gr0 (resource-upd w x f)) true))
-  (intro h) (exact (grx-resource-upd (List.nil Nat) w x f hid hk h)))
-(a/theorem gr0-cleanup-upd [w :- World, x :- Nat, f :- (=> CleanupRow CleanupRow),
+  (=> (= (i1-runs w) true) (= (i1-runs (resource-upd w x f)) true))
+  (intro h) (exact (i1-runs-exempt-resource-upd (List.nil Nat) w x f hid hk h)))
+(a/theorem i1-runs-cleanup-upd [w :- World, x :- Nat, f :- (=> CleanupRow CleanupRow),
                             hk :- (forall [c :- CleanupRow] (= (cleanup-id (f c)) (cleanup-id c)))]
-  (=> (= (gr0 w) true) (= (gr0 (cleanup-upd w x f)) true))
-  (intro h) (exact (grx-cleanup-upd (List.nil Nat) w x f hk h)))
+  (=> (= (i1-runs w) true) (= (i1-runs (cleanup-upd w x f)) true))
+  (intro h) (exact (i1-runs-exempt-cleanup-upd (List.nil Nat) w x f hk h)))
 
 (def GR0
-  (let [special '#{inv-run-upd inv-resource-upd inv-cleanup-upd inv-parts}
+  (let [special '#{well-formed-run-upd well-formed-resource-upd well-formed-cleanup-upd well-formed-parts}
         reuse (remove special (keys @(:renames GRX)))]
-    (mk-bundle 'gr0 [] "gr0-"
+    (mk-bundle 'i1-runs [] "i1-runs-"
       (merge (zipmap reuse (repeat ['(List.nil Nat) 0]))
-             {'inv-run-upd ['(fn [r :- RunRow] (Eq.refl (rkr r))) 4]
-              'inv-resource-upd ['(fn [z :- ResRow] (Eq.refl (rzk z))) 4]
-              'inv-cleanup-upd ['(fn [c :- CleanupRow] (Eq.refl (cleanup-id c))) 3]}))))
-(swap! (:renames GR0) merge (dissoc @(:renames GRX) 'inv-run-upd 'inv-resource-upd 'inv-cleanup-upd 'inv-parts))
-(swap! (:renames GR0) assoc 'inv-parts 'gr0-parts 'inv-run-upd 'gr0-run-upd 'inv-resource-upd 'gr0-resource-upd 'inv-cleanup-upd 'gr0-cleanup-upd)
+             {'well-formed-run-upd ['(fn [r :- RunRow] (Eq.refl (rkr r))) 4]
+              'well-formed-resource-upd ['(fn [z :- ResRow] (Eq.refl (rzk z))) 4]
+              'well-formed-cleanup-upd ['(fn [c :- CleanupRow] (Eq.refl (cleanup-id c))) 3]}))))
+(swap! (:renames GR0) merge (dissoc @(:renames GRX) 'well-formed-run-upd 'well-formed-resource-upd 'well-formed-cleanup-upd 'well-formed-parts))
+(swap! (:renames GR0) assoc 'well-formed-parts 'i1-runs-parts 'well-formed-run-upd 'i1-runs-run-upd 'well-formed-resource-upd 'i1-runs-resource-upd 'well-formed-cleanup-upd 'i1-runs-cleanup-upd)
 
 ;; GR0 wrappers for GRX lemmas used as values (a bare function argument cannot take the [] parameter)
 (defn- gr0-wrap-form [n]
   (let [f (@#'spindel.v2.pres.part/copy-form GRX (@#'spindel.v2.pres.part/theorem-source n) 'x @(:renames GRX))
         [_ _ binders stmt] f
         bs (vec (drop 3 binders))
-        stmt2 (clojure.walk/postwalk (fn [y] (if (and (seq? y) (= 'grx (first y)) (= 'x1r (second y))) (list 'gr0 (nth y 2)) y)) stmt)
+        stmt2 (clojure.walk/postwalk (fn [y] (if (and (seq? y) (= 'i1-runs-exempt (first y)) (= 'x1r (second y))) (list 'i1-runs (nth y 2)) y)) stmt)
         nm (@#'spindel.v2.pres.part/copy-name GR0 n)
         gx (get @(:renames GRX) n)]
     (list 'a/theorem nm bs stmt2 (list 'exact (apply list gx '(List.nil Nat) (take-nth 3 bs))))))
-(def gr0-wrapped '[mark-edge-inv-sample inv-drop-act inv-fin-if-final inv-invalidate-id inv-res-cancel inv-close-source
-                  inv-fork-del inv-remove-empty-at])
+(def gr0-wrapped '[well-formed-mark-edge well-formed-drop-act well-formed-finalize-if-final well-formed-invalidate-id well-formed-res-cancel well-formed-close-source
+                  well-formed-fork-del well-formed-remove-empty-at])
 (doseq [n gr0-wrapped :when (contains? @(:renames GRX) n)]
   (let [form (gr0-wrap-form n)]
     (binding [*ns* (the-ns 'spindel.v2.inv.copier)] (eval form))
@@ -796,40 +796,40 @@
 (def GR0 (assoc GR0 :extra-args (apply dissoc (:extra-args GR0) gr0-wrapped)))
 
 ;; the local retire's lemma is a cell under its own name (the copier's name for it is not used)
-(swap! (:renames GR0) assoc 't-retire-local-inv 'gr0-t-retire-local)
-;; gr0 on the generic tree: its table. Its cells are grx's lemmas at the empty list (the bundle's
-;; first-position argument) wherever grx has one; its own proofs are below.
+(swap! (:renames GR0) assoc 'well-formed-t28-retire-local 'i1-runs-t28-retire-local)
+;; i1-runs on the generic tree: its table. Its cells are grx's lemmas at the empty list (the bundle's
+;; first-position argument) wherever i1-runs-exempt has one; its own proofs are below.
 (tree/part! GR0
-  :over '{inv-spawn-rows     gr0-spawn-rows       ; T4: a task's run, in a new scope
-          inv-start-raw      gr0-start-raw        ; T5: the started computation's first run
-          inv-new-run-of     gr0-new-run-of       ; a new run of an existing computation
-          inv-dispatch-raw   gr0-dispatch-raw     ; T11
-          inv-arm-raw        gr0-arm-raw          ; T17: the armed resource is held by its run
-          inv-arm-park       gr0-arm-park         ; Z#55: arm, then park
-          inv-ack-raw        gr0-ack-raw          ; T15: the acknowledged resource leaves its run
-          inv-complete-raw   gr0-complete-raw     ; T12 with ga: the completed run has no activation
-          inv-retire-one     gr0-retire-one}      ; Z#77 T28: each retired run completes or retires
-  :sites '{[inv-run-upd run-park-row]         (grx-run-park (List.nil Nat) w x h0)
-           [inv-run-upd run-tick-park]        (grx-run-tick-park (List.nil Nat) w x h0)
-           [inv-run-upd run-wake]             (grx-run-wake (List.nil Nat) w x h0)
-           [inv-resource-upd res-cancel-row]  (grx-res-cancel-row (List.nil Nat) w x h0)}
+  :over '{well-formed-spawn-rows     i1-runs-spawn-rows       ; T4: a task's run, in a new scope
+          well-formed-start-raw      i1-runs-start-raw        ; T5: the started computation's first run
+          well-formed-new-run-of     i1-runs-new-run-of       ; a new run of an existing computation
+          well-formed-dispatch-raw   i1-runs-dispatch-raw     ; T11
+          well-formed-arm-raw        i1-runs-arm-raw          ; T17: the armed resource is held by its run
+          well-formed-arm-park       i1-runs-arm-park         ; Z#55: arm, then park
+          well-formed-ack-raw        i1-runs-ack-raw          ; T15: the acknowledged resource leaves its run
+          well-formed-complete-raw   i1-runs-complete-raw     ; T12 with acts-parked: the completed run has no activation
+          well-formed-retire-one     i1-runs-retire-one}      ; Z#77 T28: each retired run completes or retires
+  :sites '{[well-formed-run-upd run-park-row]         (i1-runs-exempt-run-park (List.nil Nat) w x h0)
+           [well-formed-run-upd run-tick-park]        (i1-runs-exempt-run-tick-park (List.nil Nat) w x h0)
+           [well-formed-run-upd run-wake]             (i1-runs-exempt-run-wake (List.nil Nat) w x h0)
+           [well-formed-resource-upd res-cancel-row]  (i1-runs-exempt-res-cancel-row (List.nil Nat) w x h0)}
   ;; ---- facts from the path
-  :ctx '{inv-start-raw      [(= (comp-has w (:id c)) true)]      ; the run's entity exists
-         inv-new-run-of     [(= (comp-has w (:id c)) true)]
-         inv-dispatch-raw   [(= (comp-has w (:id c)) true)]
-         inv-arm-raw        [(List.Mem r (:runs w))]              ; the arming run is the world's
-         inv-arm-park       [(List.Mem r (:runs w))]
-         inv-complete-raw   [(= (tbl-any (act-of-run (:id r)) (:acts w)) false) (= (ga w) true)]
-         inv-retire-one     [(= (ga w) true)]
-         t-retire-local-inv [(= (ga w) true)]}
-  :own '{raw-inv   [hga (= (ga w) true)]                          ; the companion ga, from the step's input,
-         raw0g-inv [hga (= (ga w) true)]                          ;   down to T12 and the local retire
-         raw0-inv  [hga (= (ga w) true)]
-         t12-inv   [hga (= (ga w) true)]}
-  :pass '{t5-inv  {inv-start-raw    [(comp-find-has2 w cid c hc)]}                  ; comp-find found it
-          t11-inv {inv-dispatch-raw [(comp-find-has2 w cid c hc)]}
-          t17-inv {inv-arm-park     [(tok-run-mem w st r ht)]}                      ; the token's run
-          t12-inv {inv-complete-raw [(ga-free-of-tok w st r hga ht) hga]}})         ; ga: the token's run is free
+  :ctx '{well-formed-start-raw      [(= (comp-has w (:id c)) true)]      ; the run's entity exists
+         well-formed-new-run-of     [(= (comp-has w (:id c)) true)]
+         well-formed-dispatch-raw   [(= (comp-has w (:id c)) true)]
+         well-formed-arm-raw        [(List.Mem r (:runs w))]              ; the arming run is the world's
+         well-formed-arm-park       [(List.Mem r (:runs w))]
+         well-formed-complete-raw   [(= (tbl-any (act-of-run (:id r)) (:acts w)) false) (= (acts-parked w) true)]
+         well-formed-retire-one     [(= (acts-parked w) true)]
+         well-formed-t28-retire-local [(= (acts-parked w) true)]}
+  :own '{well-formed-raw   [hga (= (acts-parked w) true)]                          ; the companion acts-parked, from the step's input,
+         well-formed-host-guarded-transition [hga (= (acts-parked w) true)]                          ;   down to T12 and the local retire
+         well-formed-transition  [hga (= (acts-parked w) true)]
+         well-formed-t12-complete   [hga (= (acts-parked w) true)]}
+  :pass '{well-formed-t5-start  {well-formed-start-raw    [(comp-find-has2 w cid c hc)]}                  ; comp-find found it
+          well-formed-t11-dispatch {well-formed-dispatch-raw [(comp-find-has2 w cid c hc)]}
+          well-formed-t17-arm {well-formed-arm-park     [(tok-run-mem w st r ht)]}                      ; the token's run
+          well-formed-t12-complete {well-formed-complete-raw [(acts-parked-free-of-tok w st r hga ht) hga]}})         ; acts-parked: the token's run is free
 
 ;; ---- a new run (with its run scope): its entity exists (the caller's fact), its scope is new
 (a/theorem any-elim [A :- Type, p :- (=> A Bool), P :- Prop, xs :- (List A)]
@@ -845,7 +845,7 @@
 (a/theorem any-cons-of [A :- Type, p :- (=> A Bool), h :- A, t :- (List A)] (=> (= (tbl-any p t) true) (= (tbl-any p (List.cons A h t)) true))
   (intro q) (simp only [tbl-any q Bool.or_true]))
 (a/theorem owner-below [xr :- (List Nat), w :- World, z :- ResRow]
-  (=> (= (inv-sample w) true) (= (grk-rest xr w) true) (List.Mem z (:res w)) (< (:owner z) (:next-id w)))
+  (=> (= (well-formed w) true) (= (i1-runs-keys-rest xr w) true) (List.Mem z (:res w)) (< (:owner z) (:next-id w)))
   (intros hs h mz)
   (have a := (tbl-all-mem ResRow (r1-ok (:runs w)) z (:res w) (grk-1 xr w h) mz))
   (simp only [r1-ok Bool.and_eq_true] at a)
@@ -879,11 +879,11 @@
   (simp only [tbl-all hr0 Bool.true_and])
   (exact rest))
 
-(a/theorem gr0-add-run-scope [w :- World, of :- Nat, epoch :- Nat, parent :- Nat, ei :- Nat]
-  (=> (= (Bool.or (comp-has w of) (task-has w of)) true) (= (gr0 w) true) (= (gr0 (add-run-scope w of epoch parent ei)) true))
+(a/theorem i1-runs-add-run-scope [w :- World, of :- Nat, epoch :- Nat, parent :- Nat, ei :- Nat]
+  (=> (= (Bool.or (comp-has w of) (task-has w of)) true) (= (i1-runs w) true) (= (i1-runs (add-run-scope w of epoch parent ei)) true))
   (intros he h)
-  (have hs := (gr0-sample w h))
-  (have r := (gr0-rest-of w h))
+  (have hs := (i1-runs-well-formed w h))
+  (have r := (i1-runs-rest-of w h))
   (have b1 (= (tbl-all (r1-ok (:runs (add-run-scope w of epoch parent ei))) (:res (add-run-scope w of epoch parent ei))) true))
   (simp only [add-run-scope bump set-next-id scope-ins set-scopes run-ins set-runs tbl-ins])
   (apply (tbl-all-mem-mono ResRow (r1-ok (:runs w)) _ (:res w) _ (grk-1 _ w r)))
@@ -898,7 +898,7 @@
   (simp only [add-run-scope bump set-next-id scope-ins set-scopes run-ins set-runs tbl-ins tbl-all])
   (have h0 (= (r3-ok (:cleanup w) (List.nil Nat) (new-run-row (:next-id w) of epoch (+ (:next-id w) 1) ei)) true)) (rfl)
   (simp only [h0 (grk-3 _ w r) Bool.and_self])
-  (exact (gr0-intro _ (inv-add-run-scope w of epoch parent ei hs) (grk-mk _ _ b1 b2 b3))))
+  (exact (i1-runs-intro _ (well-formed-add-run-scope w of epoch parent ei hs) (grk-mk _ _ b1 b2 b3))))
 
 ;; ---- T4/T5/T11 run creation: the entity exists
 (a/theorem comp-find-has2 [w :- World, x :- Nat, c :- CompRow]
@@ -910,40 +910,40 @@
   (simp only [comp-has i2]) (exact hh))
 (a/theorem or-comp [w :- World, x :- Nat] (=> (= (comp-has w x) true) (= (Bool.or (comp-has w x) (task-has w x)) true))
   (intro h) (simp only [h Bool.true_or]))
-(a/theorem gr0-spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat), loc :- Bool]
-  (=> (= (gr0 w) true) (= (gr0 (spawn-rows w owner inputs loc)) true))
+(a/theorem i1-runs-spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat), loc :- Bool]
+  (=> (= (i1-runs w) true) (= (i1-runs (spawn-rows w owner inputs loc)) true))
   (intro h)
   (simp only [spawn-rows])
-  (have h1 := (grx-task-ins (List.nil Nat) w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc) (rfl) h))
+  (have h1 := (i1-runs-exempt-task-ins (List.nil Nat) w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc) (rfl) h))
   (have th (= (Bool.or (comp-has (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc))) (:next-id w))
                        (task-has (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc))) (:next-id w))) true))
   (simp only [task-has bump task-ins set-next-id set-tasks tbl-ins tbl-has-ins new-task-row task-id Nat.beq_refl Bool.true_or Bool.or_true])
-  (exact (gr0-add-run-scope _ (:next-id w) 0 (task-scope-parent w owner) 0 th h1)))
-(a/theorem gr0-start-raw [w :- World, c :- CompRow]
-  (=> (= (comp-has w (:id c)) true) (= (gr0 w) true) (= (gr0 (start-raw w c)) true))
+  (exact (i1-runs-add-run-scope _ (:next-id w) 0 (task-scope-parent w owner) 0 th h1)))
+(a/theorem i1-runs-start-raw [w :- World, c :- CompRow]
+  (=> (= (comp-has w (:id c)) true) (= (i1-runs w) true) (= (i1-runs (start-raw w c)) true))
   (intros hc h)
   (simp only [start-raw])
-  (exact (grx-comp-upd (List.nil Nat) _ (:id c) (comp-start-row (:next-id w)) (comp-start-row-id (:next-id w)) (comp-start-row-pending (:next-id w))
-           (gr0-add-run-scope w (:id c) (start-epoch c) 0 0 (or-comp w (:id c) hc) h))))
-(a/theorem gr0-new-run-of [w :- World, c :- CompRow, ei :- Nat]
-  (=> (= (comp-has w (:id c)) true) (= (gr0 w) true) (= (gr0 (new-run-of w c ei)) true))
+  (exact (i1-runs-exempt-comp-upd (List.nil Nat) _ (:id c) (comp-start-row (:next-id w)) (comp-start-row-id (:next-id w)) (comp-start-row-pending (:next-id w))
+           (i1-runs-add-run-scope w (:id c) (start-epoch c) 0 0 (or-comp w (:id c) hc) h))))
+(a/theorem i1-runs-new-run-of [w :- World, c :- CompRow, ei :- Nat]
+  (=> (= (comp-has w (:id c)) true) (= (i1-runs w) true) (= (i1-runs (new-run-of w c ei)) true))
   (intros hc h)
   (simp only [new-run-of])
-  (exact (grx-comp-upd (List.nil Nat) _ (:id c) (comp-set-run (:next-id w)) (comp-set-run-id (:next-id w)) (comp-set-run-pending (:next-id w))
-           (gr0-add-run-scope w (:id c) (:epoch c) 0 ei (or-comp w (:id c) hc) h))))
-(tree/restate! GR0 '[inv-cancel-pred inv-cut-suffix inv-consume-entry])
-(a/theorem gr0-dispatch-raw [w :- World, c :- CompRow]
-  (=> (= (comp-has w (:id c)) true) (= (gr0 w) true) (= (gr0 (dispatch-raw w c)) true))
+  (exact (i1-runs-exempt-comp-upd (List.nil Nat) _ (:id c) (comp-set-run (:next-id w)) (comp-set-run-id (:next-id w)) (comp-set-run-pending (:next-id w))
+           (i1-runs-add-run-scope w (:id c) (:epoch c) 0 ei (or-comp w (:id c) hc) h))))
+(tree/restate! GR0 '[well-formed-cancel-pred well-formed-cut-suffix well-formed-consume-entry])
+(a/theorem i1-runs-dispatch-raw [w :- World, c :- CompRow]
+  (=> (= (comp-has w (:id c)) true) (= (i1-runs w) true) (= (i1-runs (dispatch-raw w c)) true))
   (intros hc h)
-  (have h1 := (gr0-cancel-pred w c h))
-  (have c1 := (ch-cancel-pred (:id c) w c (ch-intro (:id c) w (gr0-sample w h) hc)))
+  (have h1 := (i1-runs-cancel-pred w c h))
+  (have c1 := (comp-exists-cancel-pred (:id c) w c (comp-exists-intro (:id c) w (i1-runs-well-formed w h) hc)))
   (cases he (entry-edge w (:id c))) (case' [some e]) (case' [none])
   (simp only [dispatch-raw he])
-  (exact (gr0-new-run-of _ c 0 (ch-rest-of _ _ (ch-cut-suffix (:id c) _ (:id c) false 0 0 c1)) (gr0-cut-suffix _ (:id c) false 0 0 h1)))
+  (exact (i1-runs-new-run-of _ c 0 (comp-exists-rest-of _ _ (comp-exists-cut-suffix (:id c) _ (:id c) false 0 0 c1)) (i1-runs-cut-suffix _ (:id c) false 0 0 h1)))
   (simp only [dispatch-raw he])
-  (have c2 := (ch-consume-entry (:id c) _ e (ch-cut-suffix (:id c) _ (:id c) true (:at e) (:id e) c1)))
-  (have h2 := (gr0-consume-entry _ e (gr0-cut-suffix _ (:id c) true (:at e) (:id e) h1)))
-  (exact (gr0-new-run-of _ c _ (ch-rest-of _ _ c2) h2)))
+  (have c2 := (comp-exists-consume-entry (:id c) _ e (comp-exists-cut-suffix (:id c) _ (:id c) true (:at e) (:id e) c1)))
+  (have h2 := (i1-runs-consume-entry _ e (i1-runs-cut-suffix _ (:id c) true (:at e) (:id e) h1)))
+  (exact (i1-runs-new-run-of _ c _ (comp-exists-rest-of _ _ c2) h2)))
 
 ;; ---- T17 arm: the new resource is held by its run; T15 ack: the resource and its listing go
 (a/theorem any-elim-of [A :- Type, p :- (=> A Bool), q :- A, xs :- (List A)] (=> (List.Mem q xs) (= (p q) true) (= (tbl-any p xs) true))
@@ -960,11 +960,11 @@
   (cases hq)
   (case [inl a] (simp only [listed-in run-arm a Bool.true_or]))
   (case [inr b] (simp only [listed-in run-arm (nat-mem-cons-of (:id z) n (:resources q) b) Bool.or_true])))
-(a/theorem gr0-arm-raw [w :- World, r :- RunRow, kind :- Nat]
-  (=> (List.Mem r (:runs w)) (= (gr0 w) true) (= (gr0 (arm-raw w r kind)) true))
+(a/theorem i1-runs-arm-raw [w :- World, r :- RunRow, kind :- Nat]
+  (=> (List.Mem r (:runs w)) (= (i1-runs w) true) (= (i1-runs (arm-raw w r kind)) true))
   (intros hm h)
-  (have hs := (gr0-sample w h))
-  (have rr := (gr0-rest-of w h))
+  (have hs := (i1-runs-well-formed w h))
+  (have rr := (i1-runs-rest-of w h))
   (have b1 (= (tbl-all (r1-ok (:runs (arm-raw w r kind))) (:res (arm-raw w r kind))) true))
   (simp only [arm-raw run-upd set-runs bump set-next-id resource-ins set-res tbl-ins tbl-all])
   (have hz0 (= (r1-ok (tbl-upd run-id (:id r) (run-arm (:next-id w)) (:runs w)) (ResRow.mk (:next-id w) (:id r) kind (:effect-index r) rp-armed)) true))
@@ -997,13 +997,13 @@
   (simp only [arm-raw run-upd set-runs])
   (rw [(tbl-all-upd-same RunRow run-id (:id r) (run-arm (:next-id w)) (r3-ok (:cleanup w) (List.nil Nat)) (fn [q :- RunRow] (Eq.refl (r3-ok (:cleanup w) (List.nil Nat) q))) (:runs w))])
   (exact (grk-3 _ w rr))
-  (exact (gr0-intro _ (inv-arm-raw w r kind hs) (grk-mk _ _ b1 b2 b3))))
+  (exact (i1-runs-intro _ (well-formed-arm-raw w r kind hs) (grk-mk _ _ b1 b2 b3))))
 
-(tree/restate! GR0 '[inv-take-park])
-(a/theorem gr0-arm-park [w :- World, r :- RunRow, kind :- Nat, k :- Nat]
-  (=> (List.Mem r (:runs w)) (= (gr0 w) true) (= (gr0 (arm-park w r kind k)) true))
+(tree/restate! GR0 '[well-formed-take-park])
+(a/theorem i1-runs-arm-park [w :- World, r :- RunRow, kind :- Nat, k :- Nat]
+  (=> (List.Mem r (:runs w)) (= (i1-runs w) true) (= (i1-runs (arm-park w r kind k)) true))
   (intros hm h) (simp only [arm-park])
-  (exact (gr0-take-park _ (run-arm (:next-id w) r) (:next-id w) k (gr0-arm-raw w r kind hm h))))
+  (exact (i1-runs-take-park _ (run-arm (:next-id w) r) (:next-id w) k (i1-runs-arm-raw w r kind hm h))))
 
 (a/theorem held-unres5 [z :- ResRow, x :- Nat, q :- RunRow] (=> (= (Nat.beq (:id z) x) false) (= (res-held z (run-unres x q)) (res-held z q)))
   (intro h) (simp only [res-held run-unres (nat-mem-del (:id z) x (:resources q) h)]))
@@ -1024,11 +1024,11 @@
   (simp only [r1-ok (tbl-any-upd-same RunRow (res-held zz) run-id owner (run-unres z) (fn [q :- RunRow] (held-unres5 zz z q ne)) (:runs w))
               (tbl-all-upd-same RunRow run-id owner (run-unres z) (listed-in zz) (fn [q :- RunRow] (listed-unres5 zz z q ne)) (:runs w))
               (And.left h1) (And.right h1) Bool.and_self]))
-(a/theorem gr0-ack-raw [w :- World, z :- Nat, owner :- Nat]
-  (=> (= (tbl-all (no-debtor z) (:edges w)) true) (= (gr0 w) true) (= (gr0 (ack-raw w z owner)) true))
+(a/theorem i1-runs-ack-raw [w :- World, z :- Nat, owner :- Nat]
+  (=> (= (tbl-all (no-debtor z) (:edges w)) true) (= (i1-runs w) true) (= (i1-runs (ack-raw w z owner)) true))
   (intros hu h)
-  (have hs := (gr0-sample w h))
-  (have rr := (gr0-rest-of w h))
+  (have hs := (i1-runs-well-formed w h))
+  (have rr := (i1-runs-rest-of w h))
   (have b1 := (ack-b1 w z owner (grk-1 _ w rr)))
   (have e2 (= (:runs (ack-raw w z owner)) (tbl-upd run-id owner (run-unres z) (:runs w)))) (rfl)
   (have b2 (= (tbl-all (r2-ok (ack-raw w z owner)) (:runs (ack-raw w z owner))) true))
@@ -1044,37 +1044,37 @@
   (intros q hq)
   (simp only [r3-ok (tbl-has-upd CleanupRow cleanup-id owner (:id q) (cleanup-drop z) (fn [c :- CleanupRow] (Eq.refl (cleanup-id c))) (:cleanup w))])
   (exact hq)
-  (exact (gr0-intro _ (inv-ack-raw w z owner hu hs) (grk-mk _ _ b1 b2 b3))))
+  (exact (i1-runs-intro _ (well-formed-ack-raw w z owner hu hs) (grk-mk _ _ b1 b2 b3))))
 
 ;; ===========================================================================
-;; T12's retirable run: the cascade's last job retires it (bundles krb, neb over the cascade's jobs)
+;; T12's retirable run: the cascade's last job retires it (bundles run-retirable, run-gone over the cascade's jobs)
 ;; ===========================================================================
 (a/defn kr-ok [k :- Nat, r :- RunRow] Bool (Bool.or (Bool.not (Nat.beq (:id r) k)) (retirable r)))
-(a/defn krb-rest [k2r :- Nat, w :- World] Bool (tbl-all (kr-ok k2r) (:runs w)))
-(a/defn krb [k2r :- Nat, w :- World] Bool (Bool.and (inv-sample w) (krb-rest k2r w)))
+(a/defn run-retirable-rest [k2r :- Nat, w :- World] Bool (tbl-all (kr-ok k2r) (:runs w)))
+(a/defn run-retirable [k2r :- Nat, w :- World] Bool (Bool.and (well-formed w) (run-retirable-rest k2r w)))
 (a/defn ne-ok [k :- Nat, r :- RunRow] Bool (Bool.not (Nat.beq (:id r) k)))
-(a/defn neb-rest [k3r :- Nat, w :- World] Bool (tbl-all (ne-ok k3r) (:runs w)))
-(a/defn neb [k3r :- Nat, w :- World] Bool (Bool.and (inv-sample w) (neb-rest k3r w)))
-(a/theorem krb-sample [k :- Nat, w :- World] (=> (= (krb k w) true) (= (inv-sample w) true)) (intro h) (simp only [krb Bool.and_eq_true] at h) (exact (And.left h)))
-(a/theorem krb-rest-of [k :- Nat, w :- World] (=> (= (krb k w) true) (= (krb-rest k w) true)) (intro h) (simp only [krb Bool.and_eq_true] at h) (exact (And.right h)))
-(a/theorem krb-intro [k :- Nat, w :- World] (=> (= (inv-sample w) true) (= (krb-rest k w) true) (= (krb k w) true)) (intros h1 h2) (simp only [krb h1 h2 Bool.and_self]))
-(a/theorem krb-parts [k :- Nat, w :- World] (=> (= (krb k w) true) (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
-  (intro h) (exact (inv-parts w (krb-sample k w h))))
-(a/theorem neb-sample [k :- Nat, w :- World] (=> (= (neb k w) true) (= (inv-sample w) true)) (intro h) (simp only [neb Bool.and_eq_true] at h) (exact (And.left h)))
-(a/theorem neb-rest-of [k :- Nat, w :- World] (=> (= (neb k w) true) (= (neb-rest k w) true)) (intro h) (simp only [neb Bool.and_eq_true] at h) (exact (And.right h)))
-(a/theorem neb-intro [k :- Nat, w :- World] (=> (= (inv-sample w) true) (= (neb-rest k w) true) (= (neb k w) true)) (intros h1 h2) (simp only [neb h1 h2 Bool.and_self]))
-(a/theorem neb-parts [k :- Nat, w :- World] (=> (= (neb k w) true) (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
-  (intro h) (exact (inv-parts w (neb-sample k w h))))
+(a/defn run-gone-rest [k3r :- Nat, w :- World] Bool (tbl-all (ne-ok k3r) (:runs w)))
+(a/defn run-gone [k3r :- Nat, w :- World] Bool (Bool.and (well-formed w) (run-gone-rest k3r w)))
+(a/theorem run-retirable-well-formed [k :- Nat, w :- World] (=> (= (run-retirable k w) true) (= (well-formed w) true)) (intro h) (simp only [run-retirable Bool.and_eq_true] at h) (exact (And.left h)))
+(a/theorem run-retirable-rest-of [k :- Nat, w :- World] (=> (= (run-retirable k w) true) (= (run-retirable-rest k w) true)) (intro h) (simp only [run-retirable Bool.and_eq_true] at h) (exact (And.right h)))
+(a/theorem run-retirable-intro [k :- Nat, w :- World] (=> (= (well-formed w) true) (= (run-retirable-rest k w) true) (= (run-retirable k w) true)) (intros h1 h2) (simp only [run-retirable h1 h2 Bool.and_self]))
+(a/theorem run-retirable-parts [k :- Nat, w :- World] (=> (= (run-retirable k w) true) (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
+  (intro h) (exact (well-formed-parts w (run-retirable-well-formed k w h))))
+(a/theorem run-gone-well-formed [k :- Nat, w :- World] (=> (= (run-gone k w) true) (= (well-formed w) true)) (intro h) (simp only [run-gone Bool.and_eq_true] at h) (exact (And.left h)))
+(a/theorem run-gone-rest-of [k :- Nat, w :- World] (=> (= (run-gone k w) true) (= (run-gone-rest k w) true)) (intro h) (simp only [run-gone Bool.and_eq_true] at h) (exact (And.right h)))
+(a/theorem run-gone-intro [k :- Nat, w :- World] (=> (= (well-formed w) true) (= (run-gone-rest k w) true) (= (run-gone k w) true)) (intros h1 h2) (simp only [run-gone h1 h2 Bool.and_self]))
+(a/theorem run-gone-parts [k :- Nat, w :- World] (=> (= (run-gone k w) true) (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
+  (intro h) (exact (well-formed-parts w (run-gone-well-formed k w h))))
 
-;; run rows: krb under an edit that keeps the id and does not undo retirability; neb under any
-(a/theorem krb-run-upd [k :- Nat, w :- World, x :- Nat, f :- (=> RunRow RunRow),
+;; run rows: run-retirable under an edit that keeps the id and does not undo retirability; run-gone under any
+(a/theorem run-retirable-run-upd [k :- Nat, w :- World, x :- Nat, f :- (=> RunRow RunRow),
                         hid :- (forall [r :- RunRow] (= (run-id (f r)) (run-id r))),
                         hk :- (forall [r :- RunRow] (=> (= (retirable r) true) (= (retirable (f r)) true)))]
-  (=> (= (krb k w) true) (= (krb k (run-upd w x f)) true))
+  (=> (= (run-retirable k w) true) (= (run-retirable k (run-upd w x f)) true))
   (intro h)
-  (have r := (krb-rest-of k w h)) (simp only [krb-rest] at r)
-  (have r2 (= (krb-rest k (run-upd w x f)) true))
-  (simp only [krb-rest run-upd set-runs])
+  (have r := (run-retirable-rest-of k w h)) (simp only [run-retirable-rest] at r)
+  (have r2 (= (run-retirable-rest k (run-upd w x f)) true))
+  (simp only [run-retirable-rest run-upd set-runs])
   (apply (tbl-all-upd RunRow run-id x f (kr-ok k) (kr-ok k) _ _ (:runs w) r))
   (intros q h1 h2)
   (simp only [kr-ok Bool.or_eq_true] at h1)
@@ -1083,18 +1083,18 @@
   (rw [e])
   (cases h1) (case [inl a] (exact (Or.inl a))) (case [inr b] (exact (Or.inr (hk q b))))
   (intros q h1 h2) (exact h1)
-  (exact (krb-intro k _ (inv-run-upd w x f hid (krb-sample k w h)) r2)))
-(a/theorem neb-run-upd [k :- Nat, w :- World, x :- Nat, f :- (=> RunRow RunRow),
+  (exact (run-retirable-intro k _ (well-formed-run-upd w x f hid (run-retirable-well-formed k w h)) r2)))
+(a/theorem run-gone-run-upd [k :- Nat, w :- World, x :- Nat, f :- (=> RunRow RunRow),
                         hid :- (forall [r :- RunRow] (= (run-id (f r)) (run-id r)))]
-  (=> (= (neb k w) true) (= (neb k (run-upd w x f)) true))
+  (=> (= (run-gone k w) true) (= (run-gone k (run-upd w x f)) true))
   (intro h)
-  (have r := (neb-rest-of k w h)) (simp only [neb-rest] at r)
-  (have r2 (= (neb-rest k (run-upd w x f)) true))
-  (simp only [neb-rest run-upd set-runs])
+  (have r := (run-gone-rest-of k w h)) (simp only [run-gone-rest] at r)
+  (have r2 (= (run-gone-rest k (run-upd w x f)) true))
+  (simp only [run-gone-rest run-upd set-runs])
   (apply (tbl-all-upd RunRow run-id x f (ne-ok k) (ne-ok k) _ _ (:runs w) r))
   (intros q h1 h2) (simp only [ne-ok] at h1) (simp only [ne-ok]) (have e (= (:id (f q)) (:id q))) (exact (hid q)) (rw [e]) (exact h1)
   (intros q h1 h2) (exact h1)
-  (exact (neb-intro k _ (inv-run-upd w x f hid (neb-sample k w h)) r2)))
+  (exact (run-gone-intro k _ (well-formed-run-upd w x f hid (run-gone-well-formed k w h)) r2)))
 (a/theorem ret-cancel [r :- RunRow] (=> (= (retirable r) true) (= (retirable (run-cancel-row r)) true))
   (intro h) (simp only [retirable Bool.and_eq_true] at h)
   (have h2 := (And.right h))
@@ -1108,39 +1108,39 @@
   (have e3 (= (retirable (run-wake r)) (retirable r))) (simp only [retirable run-wake e2])
   (rw [e3]) (exact h))
 
-(a/theorem krb-runs-eq [k :- Nat, w :- World, w2 :- World] (=> (= (:runs w2) (:runs w)) (= (krb-rest k w) true) (= (krb-rest k w2) true))
-  (intros e h) (simp only [krb-rest e]) (exact h))
-(a/theorem neb-runs-eq [k :- Nat, w :- World, w2 :- World] (=> (= (:runs w2) (:runs w)) (= (neb-rest k w) true) (= (neb-rest k w2) true))
-  (intros e h) (simp only [neb-rest e]) (exact h))
-(a/theorem krb-cancel-row [k :- Nat, w :- World, x :- Nat] (=> (= (krb k w) true) (= (krb k (run-upd w x run-cancel-row)) true))
-  (intro h) (exact (krb-run-upd k w x run-cancel-row run-cancel-row-id ret-cancel h)))
-(a/theorem krb-wake [k :- Nat, w :- World, x :- Nat] (=> (= (krb k w) true) (= (krb k (run-upd w x run-wake)) true))
-  (intro h) (exact (krb-run-upd k w x run-wake run-wake-run-id ret-wake h)))
+(a/theorem run-retirable-runs-eq [k :- Nat, w :- World, w2 :- World] (=> (= (:runs w2) (:runs w)) (= (run-retirable-rest k w) true) (= (run-retirable-rest k w2) true))
+  (intros e h) (simp only [run-retirable-rest e]) (exact h))
+(a/theorem run-gone-runs-eq [k :- Nat, w :- World, w2 :- World] (=> (= (:runs w2) (:runs w)) (= (run-gone-rest k w) true) (= (run-gone-rest k w2) true))
+  (intros e h) (simp only [run-gone-rest e]) (exact h))
+(a/theorem run-retirable-cancel-row [k :- Nat, w :- World, x :- Nat] (=> (= (run-retirable k w) true) (= (run-retirable k (run-upd w x run-cancel-row)) true))
+  (intro h) (exact (run-retirable-run-upd k w x run-cancel-row run-cancel-row-id ret-cancel h)))
+(a/theorem run-retirable-wake [k :- Nat, w :- World, x :- Nat] (=> (= (run-retirable k w) true) (= (run-retirable k (run-upd w x run-wake)) true))
+  (intro h) (exact (run-retirable-run-upd k w x run-wake run-wake-run-id ret-wake h)))
 
-(def KRB (mk-bundle 'krb '[k2r :- Nat] "krb-" {'inv-run-upd ['(fn [q :- RunRow, h :- (= (retirable q) true)] h) 4]}))
-(swap! (:renames KRB) assoc 'inv-parts 'krb-parts 'inv-run-upd 'krb-run-upd)
-;; krb on the generic tree: a cancelled or resumed run stays retirable-or-not as it was (the two row lemmas)
-(tree/part! KRB :sites '{[inv-run-upd run-cancel-row] (krb-cancel-row k2r w x h0)
-                         [inv-run-upd run-wake]       (krb-wake k2r w x h0)})
-(def NEB (mk-bundle 'neb '[k3r :- Nat] "neb-" {}))
-(swap! (:renames NEB) assoc 'inv-parts 'neb-parts 'inv-run-upd 'neb-run-upd)
+(def KRB (mk-bundle 'run-retirable '[k2r :- Nat] "run-retirable-" {'well-formed-run-upd ['(fn [q :- RunRow, h :- (= (retirable q) true)] h) 4]}))
+(swap! (:renames KRB) assoc 'well-formed-parts 'run-retirable-parts 'well-formed-run-upd 'run-retirable-run-upd)
+;; run-retirable on the generic tree: a cancelled or resumed run stays retirable-or-not as it was (the two row lemmas)
+(tree/part! KRB :sites '{[well-formed-run-upd run-cancel-row] (run-retirable-cancel-row k2r w x h0)
+                         [well-formed-run-upd run-wake]       (run-retirable-wake k2r w x h0)})
+(def NEB (mk-bundle 'run-gone '[k3r :- Nat] "run-gone-" {}))
+(swap! (:renames NEB) assoc 'well-formed-parts 'run-gone-parts 'well-formed-run-upd 'run-gone-run-upd)
 (doseq [B [KRB NEB]]
-  (doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-cleanup-ins inv-set-pins
-              inv-resource-del inv-scope-del inv-act-upd inv-task-upd inv-comp-upd inv-bump inv-edge-upd inv-drop-cred inv-drop-act inv-drop-edges
-              inv-comp-del-unref inv-act-ins-fresh inv-task-ins-fresh inv-comp-ins-fresh inv-scope-ins-fresh inv-resource-ins-fresh inv-source-ins-fresh inv-fork-ins-fresh
-              insert-edge-fresh-inv-sample inv-fork-del]]
+  (doseq [o '[well-formed-scope-upd well-formed-pub-upd well-formed-source-upd well-formed-resource-upd well-formed-cleanup-upd well-formed-cleanup-del well-formed-cleanup-ins well-formed-set-pins
+              well-formed-resource-del well-formed-scope-del well-formed-act-upd well-formed-task-upd well-formed-comp-upd well-formed-bump well-formed-edge-upd well-formed-drop-cred-edges well-formed-drop-act well-formed-drop-edges
+              well-formed-comp-del-unref well-formed-act-ins-fresh well-formed-task-ins-fresh well-formed-comp-ins-fresh well-formed-scope-ins-fresh well-formed-resource-ins-fresh well-formed-source-ins-fresh well-formed-fork-ins-fresh
+              well-formed-insert-edge-fresh well-formed-fork-del]]
     (prim! B o nil)))
-(prim! KRB 'inv-remove-edge '(krb-runs-eq k2r w (remove-edge w x) (runs-remove-edge w x) R))
-(prim! KRB 'mark-edge-inv-sample '(krb-runs-eq k2r w (mark-edge w x) (runs-mark-edge w x) R))
-(prim! KRB 'unmark-edge-inv-sample '(krb-runs-eq k2r w (unmark-edge w x) (runs-unmark-edge w x) R))
-(prim! KRB 'inv-run-del '(all-sub-del RunRow (kr-ok k2r) run-id x (:runs w) R))
-(prim! NEB 'inv-remove-edge '(neb-runs-eq k3r w (remove-edge w x) (runs-remove-edge w x) R))
-(prim! NEB 'mark-edge-inv-sample '(neb-runs-eq k3r w (mark-edge w x) (runs-mark-edge w x) R))
-(prim! NEB 'unmark-edge-inv-sample '(neb-runs-eq k3r w (unmark-edge w x) (runs-unmark-edge w x) R))
-(prim! NEB 'inv-run-del '(all-sub-del RunRow (ne-ok k3r) run-id x (:runs w) R))
+(prim! KRB 'well-formed-remove-edge '(run-retirable-runs-eq k2r w (remove-edge w x) (runs-remove-edge w x) R))
+(prim! KRB 'well-formed-mark-edge '(run-retirable-runs-eq k2r w (mark-edge w x) (runs-mark-edge w x) R))
+(prim! KRB 'well-formed-unmark-edge '(run-retirable-runs-eq k2r w (unmark-edge w x) (runs-unmark-edge w x) R))
+(prim! KRB 'well-formed-run-del '(all-sub-del RunRow (kr-ok k2r) run-id x (:runs w) R))
+(prim! NEB 'well-formed-remove-edge '(run-gone-runs-eq k3r w (remove-edge w x) (runs-remove-edge w x) R))
+(prim! NEB 'well-formed-mark-edge '(run-gone-runs-eq k3r w (mark-edge w x) (runs-mark-edge w x) R))
+(prim! NEB 'well-formed-unmark-edge '(run-gone-runs-eq k3r w (unmark-edge w x) (runs-unmark-edge w x) R))
+(prim! NEB 'well-formed-run-del '(all-sub-del RunRow (ne-ok k3r) run-id x (:runs w) R))
 
-(tree/restate! KRB '[inv-job-apply])
-(tree/restate! NEB '[inv-job-apply])
+(tree/restate! KRB '[well-formed-job-apply])
+(tree/restate! NEB '[well-formed-job-apply])
 
 (a/defn is-jr [k :- Nat, j :- Job] Bool (match j [(jcancel a b) false] [(jretire x) (Nat.beq x k)] [(jclose s) false]))
 (a/defn jr-in [k :- Nat, ks :- (List Job)] Bool (tbl-any (is-jr k) ks))
@@ -1149,8 +1149,8 @@
   (cases he (subtree-empty w sub))
   (case [false] (simp only [remove-if-empty he]))
   (case [true] (simp only [remove-if-empty he]) (exact (congrArg (fn [k :- SDK] (:runs k)) (sdk-scope-fold sub w)))))
-(a/theorem ne-retire [V :- World, r :- RunRow] (= (neb-rest (:id r) (retire-local V r)) true)
-  (simp only [neb-rest retire-local retire-with runs-rie cleanup-del set-cleanup run-del set-runs])
+(a/theorem ne-retire [V :- World, r :- RunRow] (= (run-gone-rest (:id r) (retire-run V r)) true)
+  (simp only [run-gone-rest retire-run t13-retire-with-subtree runs-rie cleanup-del set-cleanup run-del set-runs])
   (exact (del-ne-all RunRow run-id (:id r) _)))
 (a/theorem has-false-ne5 [k :- Nat, xs :- (List RunRow)] (=> (= (tbl-has run-id k xs) false) (= (tbl-all (ne-ok k) xs) true))
   (induction xs)
@@ -1160,14 +1160,14 @@
     (cases hb (Nat.beq (run-id hd) k))
     (case [true] (simp only [tbl-has hb] at h) (cases h))
     (case [false] (simp only [tbl-has hb] at h) (have hb2 (= (Nat.beq (:id hd) k) false)) (exact hb) (simp only [tbl-all ne-ok hb2 Bool.not_false (ih h) Bool.and_self]))))
-(a/theorem ne-of-none [V :- World, k :- Nat] (=> (= (run-find V k) (Option.none RunRow)) (= (neb-rest k V) true))
-  (intro h) (simp only [neb-rest]) (exact (has-false-ne5 k (:runs V) (tbl-find-none-has RunRow run-id k (:runs V) h))))
+(a/theorem ne-of-none [V :- World, k :- Nat] (=> (= (run-find V k) (Option.none RunRow)) (= (run-gone-rest k V) true))
+  (intro h) (simp only [run-gone-rest]) (exact (has-false-ne5 k (:runs V) (tbl-find-none-has RunRow run-id k (:runs V) h))))
 
 ;; the cascade retires a retirable run whose retire job is queued (the worklist empties: P4)
 (a/theorem track-cascade [k :- Nat, fuel :- (List Nat)]
   (forall [V :- World, ks :- (List Job)]
-    (=> (= (krb k V) true) (Or (= (neb-rest k V) true) (= (jr-in k ks) true)) (= (:rest (cascade fuel V ks)) (List.nil Job))
-        (= (neb-rest k (:world (cascade fuel V ks))) true)))
+    (=> (= (run-retirable k V) true) (Or (= (run-gone-rest k V) true) (= (jr-in k ks) true)) (= (:rest (cascade fuel V ks)) (List.nil Job))
+        (= (run-gone-rest k (:world (cascade fuel V ks))) true)))
   (induction fuel)
   (case [nil]
     (intros V ks hk ho hr)
@@ -1179,9 +1179,9 @@
     (case [nil] (simp only [cascade]) (cases ho) (case [inl a] (exact a)) (case [inr b] (simp [jr-in tbl-any] at b)))
     (case [cons j t]
       (simp only [cascade] at hr) (simp only [cascade])
-      (apply (ih (job-apply V j) (List.append Job t (job-next V j)) (krb-job-apply k V j hk) _ hr))
+      (apply (ih (job-apply V j) (List.append Job t (job-next V j)) (run-retirable-job-apply k V j hk) _ hr))
       (cases ho)
-      (case [inl a] (exact (Or.inl (neb-rest-of k _ (neb-job-apply k V j (neb-intro k V (krb-sample k V hk) a))))))
+      (case [inl a] (exact (Or.inl (run-gone-rest-of k _ (run-gone-job-apply k V j (run-gone-intro k V (run-retirable-well-formed k V hk) a))))))
       (case [inr b]
         (simp only [jr-in tbl-any Bool.or_eq_true] at b)
         (cases b)
@@ -1202,17 +1202,17 @@
             (case [some r1]
               (have m := (tbl-find-mem RunRow run-id k r1 (:runs V) hf))
               (have i (= (:id r1) k)) (exact (tbl-find-id RunRow run-id k r1 (:runs V) hf))
-              (have kr := (tbl-all-mem RunRow (kr-ok k) r1 (:runs V) (krb-rest-of k V hk) m))
+              (have kr := (tbl-all-mem RunRow (kr-ok k) r1 (:runs V) (run-retirable-rest-of k V hk) m))
               (have i2 (= (Nat.beq (:id r1) k) true)) (rw [i]) (exact (Nat.beq_refl k))
               (simp only [kr-ok i2 Bool.not_true Bool.false_or] at kr)
               (simp only [job-apply hf kr])
               (rw [← i]) (exact (ne-retire V r1)))))))))
 
-(a/theorem grx-disch [x :- Nat, xr :- (List Nat), V :- World]
-  (=> (= (grx (List.cons Nat x xr) V) true) (= (neb-rest x V) true) (= (grx xr V) true))
+(a/theorem i1-runs-exempt-disch [x :- Nat, xr :- (List Nat), V :- World]
+  (=> (= (i1-runs-exempt (List.cons Nat x xr) V) true) (= (run-gone-rest x V) true) (= (i1-runs-exempt xr V) true))
   (intros h hn)
-  (have r := (grx-rest-of _ V h))
-  (simp only [neb-rest] at hn)
+  (have r := (i1-runs-exempt-rest-of _ V h))
+  (simp only [run-gone-rest] at hn)
   (have b3 (= (tbl-all (r3-ok (:cleanup V) xr) (:runs V)) true))
   (apply (tbl-all-mono2 RunRow (r3-ok (:cleanup V) (List.cons Nat x xr)) (ne-ok x) _ _ (:runs V) (grk-3 _ V r) hn))
   (intros q h1 h2)
@@ -1220,81 +1220,81 @@
   (have ne := (bnot-true _ h2))
   (simp only [r3-ok reach-mem ne] at h1)
   (exact h1)
-  (exact (grx-intro xr V (grx-sample _ V h) (grk-mk xr V (grk-1 _ V r) (grk-2 _ V r) b3))))
+  (exact (i1-runs-exempt-intro xr V (i1-runs-exempt-well-formed _ V h) (grk-mk xr V (grk-1 _ V r) (grk-2 _ V r) b3))))
 (a/theorem jobs-nil [js :- (List Job)] (=> (= (jobs-empty js) true) (= js (List.nil Job)))
   (intro h) (cases js) (case [nil] (rfl)) (case [cons a b] (simp [jobs-empty] at h)))
 (a/theorem jr-last [k :- Nat, js :- (List Job)] (= (jr-in k (List.append Job js (List.cons Job (Job.jretire k) (List.nil Job)))) true)
   (simp only [jr-in tbl-any-app tbl-any is-jr Nat.beq_refl Bool.true_or Bool.or_true]))
-(a/theorem krb-of-find [w :- World, k :- Nat, r1 :- RunRow]
-  (=> (= (inv-sample w) true) (= (run-find w k) (Option.some RunRow r1)) (= (retirable r1) true) (= (krb k w) true))
+(a/theorem run-retirable-of-find [w :- World, k :- Nat, r1 :- RunRow]
+  (=> (= (well-formed w) true) (= (run-find w k) (Option.some RunRow r1)) (= (retirable r1) true) (= (run-retirable k w) true))
   (intros hs hf hr)
   (have m := (tbl-find-mem RunRow run-id k r1 (:runs w) hf))
   (have i (= (run-id r1) k)) (exact (tbl-find-id RunRow run-id k r1 (:runs w) hf))
   (have u := (uniq-all RunRow run-id retirable r1 (:runs w) (runs-nodup w hs) m hr))
   (rw [i] at u)
-  (have rest (= (krb-rest k w) true))
-  (simp only [krb-rest])
+  (have rest (= (run-retirable-rest k w) true))
+  (simp only [run-retirable-rest])
   (apply (tbl-all-mono RunRow _ _ _ (:runs w) u))
   (intros q hq)
   (simp only [same-id-then] at hq) (simp only [kr-ok]) (exact hq)
-  (exact (krb-intro k w hs rest)))
+  (exact (run-retirable-intro k w hs rest)))
 
-;; T12 (complete-raw) with ga: the run becomes done; cleanup or a retire job at the end of the cascade
-(a/theorem gr0-complete-raw [w :- World, r :- RunRow, res :- RunResult]
-  (=> (= (tbl-any (act-of-run (:id r)) (:acts w)) false) (= (ga w) true) (= (gr0 w) true) (= (gr0 (complete-raw w r res)) true))
+;; T12 (complete-raw) with acts-parked: the run becomes done; cleanup or a retire job at the end of the cascade
+(a/theorem i1-runs-complete-raw [w :- World, r :- RunRow, res :- RunResult]
+  (=> (= (tbl-any (act-of-run (:id r)) (:acts w)) false) (= (acts-parked w) true) (= (i1-runs w) true) (= (i1-runs (complete-raw w r res)) true))
   (intros hn hga h)
-  (have h0 := (grx-run-upd-x (List.nil Nat) w (:id r) run-complete-row run-complete-row-id rkr0-complete h))
-  (have h1 := (grx-complete-body (List.cons Nat (:id r) (List.nil Nat)) _ r res h0))
-  (have g0 := (ga-run-upd-free w (:id r) run-complete-row run-complete-row-id hn hga))
-  (have g1 := (ga-complete-body _ r res g0))
-  (have g2 := (ga-retire-after _ (:id r) g1))
-  (have hs1 := (grx-sample _ _ h1))
+  (have h0 := (i1-runs-exempt-run-upd-x (List.nil Nat) w (:id r) run-complete-row run-complete-row-id rkr0-complete h))
+  (have h1 := (i1-runs-exempt-complete-body (List.cons Nat (:id r) (List.nil Nat)) _ r res h0))
+  (have g0 := (acts-parked-run-upd-free w (:id r) run-complete-row run-complete-row-id hn hga))
+  (have g1 := (acts-parked-complete-body _ r res g0))
+  (have g2 := (acts-parked-retire-after _ (:id r) g1))
+  (have hs1 := (i1-runs-exempt-well-formed _ _ h1))
   (simp only [complete-raw])
-  (apply (grx-fin-if-final (List.nil Nat) _ (:of r)))
+  (apply (i1-runs-exempt-finalize-if-final (List.nil Nat) _ (:of r)))
   (cases hf (run-find (:world (complete-body (run-upd w (:id r) run-complete-row) r res)) (:id r)))
   (case [none]
     (simp only [retire-after hf])
-    (exact (grx-run-cascade (List.nil Nat) _ _ (grx-disch (:id r) (List.nil Nat) _ h1 (ne-of-none _ (:id r) hf)))))
+    (exact (i1-runs-exempt-run-cascade (List.nil Nat) _ _ (i1-runs-exempt-disch (:id r) (List.nil Nat) _ h1 (ne-of-none _ (:id r) hf)))))
   (case [some r1]
     (cases hr (retirable r1))
     (case [false]
       (simp only [retire-after hf hr])
-      (exact (grx-run-cascade (List.nil Nat) _ _ (grx-cleanup-set (List.nil Nat) _ (:id r) _ h1))))
+      (exact (i1-runs-exempt-run-cascade (List.nil Nat) _ _ (i1-runs-exempt-cleanup-set (List.nil Nat) _ (:id r) _ h1))))
     (case [true]
-      (have g3 (= (ga (retire-after (:world (complete-body (run-upd w (:id r) run-complete-row) r res)) (:id r))) true)) (exact g2)
+      (have g3 (= (acts-parked (retire-after (:world (complete-body (run-upd w (:id r) run-complete-row) r res)) (:id r))) true)) (exact g2)
       (simp only [retire-after hf hr] at g3)
       (simp only [retire-after hf hr])
-      (have hd := (jobs-nil _ (casc-done-ga _ (List.append Job (:rest (complete-body (run-upd w (:id r) run-complete-row) r res))
+      (have hd := (jobs-nil _ (cascade-done-acts-parked _ (List.append Job (:rest (complete-body (run-upd w (:id r) run-complete-row) r res))
                                                            (List.cons Job (Job.jretire (:id r)) (List.nil Job))) g3)))
-      (have ne := (track-cascade (:id r) _ _ _ (krb-of-find _ (:id r) r1 hs1 hf hr) (Or.inr (jr-last (:id r) _)) hd))
-      (exact (grx-disch (:id r) (List.nil Nat) _ (grx-run-cascade (List.cons Nat (:id r) (List.nil Nat)) _ _ h1) ne)))))
+      (have ne := (track-cascade (:id r) _ _ _ (run-retirable-of-find _ (:id r) r1 hs1 hf hr) (Or.inr (jr-last (:id r) _)) hd))
+      (exact (i1-runs-exempt-disch (:id r) (List.nil Nat) _ (i1-runs-exempt-run-cascade (List.cons Nat (:id r) (List.nil Nat)) _ _ h1) ne)))))
 
-;; Z#77 T28 (retire-local) with ga: each retired run completes (T12, no activation) or retires (T13)
-(tree/restate! GR0 '[inv-retire-pre])
-(a/theorem gr0-retire-one [v :- Nat, w :- World, rid :- Nat]
-  (=> (= (ga w) true) (= (gr0 w) true) (= (gr0 (retire-one v w rid)) true))
+;; Z#77 T28 (retire-run) with acts-parked: each retired run completes (T12, no activation) or retires (T13)
+(tree/restate! GR0 '[well-formed-retire-pre])
+(a/theorem i1-runs-retire-one [v :- Nat, w :- World, rid :- Nat]
+  (=> (= (acts-parked w) true) (= (i1-runs w) true) (= (i1-runs (retire-one v w rid)) true))
   (intros hga h)
   (cases hf (run-find w rid))
   (case [none] (simp only [retire-one hf]) (exact h))
   (case [some r]
-    (have hp := (gr0-retire-pre w r h))
-    (have gp := (ga-retire-pre w r hga))
+    (have hp := (i1-runs-retire-pre w r h))
+    (have gp := (acts-parked-retire-pre w r hga))
     (cases hf1 (run-find (retire-pre w r) rid))
     (case [none] (simp only [retire-one hf hf1]) (exact hp))
     (case [some r1]
       (cases ha (Bool.and (run-alive r1) (run-of-local (retire-pre w r) r1)))
-      (case [true] (simp only [retire-one hf hf1 ha]) (exact (gr0-complete-raw _ r1 _ (retire-r1-noact w r r1 rid hf hf1) gp hp)))
-      (case [false] (simp only [retire-one hf hf1 ha retire-full]) (exact (grx-run-cascade (List.nil Nat) _ _ hp))))))
-(a/theorem gr0-t-retire-local [w :- World, v :- Nat]
-  (=> (= (ga w) true) (= (gr0 w) true) (= (gr0 (:world (t-retire-local w v))) true))
+      (case [true] (simp only [retire-one hf hf1 ha]) (exact (i1-runs-complete-raw _ r1 _ (retire-r1-noact w r r1 rid hf hf1) gp hp)))
+      (case [false] (simp only [retire-one hf hf1 ha t13-retire]) (exact (i1-runs-exempt-run-cascade (List.nil Nat) _ _ hp))))))
+(a/theorem i1-runs-t28-retire-local [w :- World, v :- Nat]
+  (=> (= (acts-parked w) true) (= (i1-runs w) true) (= (i1-runs (:world (t28-retire-local w v))) true))
   (intros hga h)
   (cases hm (tbl-any (run-of-local w) (:runs w)))
-  (case [false] (simp only [t-retire-local hm refuse]) (exact h))
-  (case [true] (simp only [t-retire-local hm accept])
-    (exact (nat-fold-pres2 ga gr0 (retire-one v) (ga-retire-one v) (gr0-retire-one v) (local-order w) w hga h))))
-(tree/restate! GR0 '[raw-inv])
-(tree/restate! GR0 '[inv-detach])
-(tree/restate! GR0 '[inv-demote-epoch])
+  (case [false] (simp only [t28-retire-local hm refuse]) (exact h))
+  (case [true] (simp only [t28-retire-local hm accept])
+    (exact (nat-fold-pres2 acts-parked i1-runs (retire-one v) (acts-parked-retire-one v) (i1-runs-retire-one v) (local-order w) w hga h))))
+(tree/restate! GR0 '[well-formed-raw])
+(tree/restate! GR0 '[well-formed-detach])
+(tree/restate! GR0 '[well-formed-demote-epoch])
 
 ;; ---- a run with a cleanup entry: its stored rows (scope, entity, ...) are cleanup rows
 (a/theorem find-self [A :- Type, idf :- (=> A Nat), q :- A, xs :- (List A)]
@@ -1328,7 +1328,7 @@
     (case [tail m2] (exact (Or.inr (ih m2)))))
   (exact (g (:cleanup V) m)))
 (a/theorem cl-stored [V :- World, q :- RunRow, y :- Nat]
-  (=> (= (inv-sample V) true) (List.Mem q (:runs V)) (= (tbl-has cleanup-id (:id q) (:cleanup V)) true)
+  (=> (= (well-formed V) true) (List.Mem q (:runs V)) (= (tbl-has cleanup-id (:id q) (:cleanup V)) true)
       (= (reach-mem y (run-stored q)) true) (= (reach-mem y (cleanup-rows V)) true))
   (intros hs mq hc hy)
   (cases hf (tbl-find cleanup-id (:id q) (:cleanup V)))
@@ -1352,11 +1352,11 @@
 (a/theorem stored-scope [q :- RunRow] (= (reach-mem (:scope q) (run-stored q)) true)
   (simp only [run-stored reach-mem Nat.beq_refl]))
 (a/theorem no-run-of [w :- World, c :- CompRow]
-  (=> (= (gr0 w) true) (= (tbl-all (not-alive-of (:id c)) (:runs w)) true) (= (demote-keep w c) false)
+  (=> (= (i1-runs w) true) (= (tbl-all (not-alive-of (:id c)) (:runs w)) true) (= (demote-keep w c) false)
       (= (tbl-all (fn [q :- RunRow] (Bool.not (Nat.beq (:of q) (:id c)))) (:runs w)) true))
   (intros h hd hk)
-  (have hs := (gr0-sample w h))
-  (have r3 := (grk-3 _ w (gr0-rest-of w h)))
+  (have hs := (i1-runs-well-formed w h))
+  (have r3 := (grk-3 _ w (i1-runs-rest-of w h)))
   (apply (tbl-all-mem-mono RunRow _ _ (:runs w) _ (tbl-all-mono2 RunRow _ _ (both (not-alive-of (:id c)) (r3-ok (:cleanup w) (List.nil Nat)))
                                                     (fn [q :- RunRow, h1 :- (= (not-alive-of (:id c) q) true), h2 :- (= (r3-ok (:cleanup w) (List.nil Nat) q) true)] (both-of RunRow _ _ q h1 h2))
                                                     (:runs w) hd r3)))
@@ -1375,11 +1375,11 @@
     (simp only [demote-keep cr Bool.or_true] at hk)
     (cases hk)))
 
-(a/theorem gr0-comp-del-free [w :- World, cid :- Nat]
+(a/theorem i1-runs-comp-del-free [w :- World, cid :- Nat]
   (=> (= (tbl-all (fn [q :- RunRow] (Bool.not (Nat.beq (:of q) cid))) (:runs w)) true) (= (unreferenced w cid) true)
-      (= (gr0 w) true) (= (gr0 (comp-del w cid)) true))
+      (= (i1-runs w) true) (= (i1-runs (comp-del w cid)) true))
   (intros hn hu h)
-  (have r := (gr0-rest-of w h))
+  (have r := (i1-runs-rest-of w h))
   (have b1 (= (tbl-all (r1-ok (:runs (comp-del w cid))) (:res (comp-del w cid))) true)) (exact (grk-1 _ w r))
   (have b3 (= (tbl-all (r3-ok (:cleanup (comp-del w cid)) (List.nil Nat)) (:runs (comp-del w cid))) true)) (exact (grk-3 _ w r))
   (have b2 (= (tbl-all (r2-ok (comp-del w cid)) (:runs (comp-del w cid))) true))
@@ -1388,10 +1388,10 @@
   (have ne (= (Nat.beq cid (:of q)) false)) (rw [beq-comm]) (exact (bnot-true _ h2))
   (simp only [r2-ok comp-has comp-del set-comps (tbl-has-del-ne CompRow comp-id cid (:of q) (:comps w) ne)])
   (simp only [r2-ok comp-has] at h1) (exact h1)
-  (exact (gr0-intro _ (inv-comp-del-unref w cid hu (gr0-sample w h)) (grk-mk _ _ b1 b2 b3))))
+  (exact (i1-runs-intro _ (well-formed-comp-del-unref w cid hu (i1-runs-well-formed w h)) (grk-mk _ _ b1 b2 b3))))
 
-(a/theorem gr0-demote-finish-o [w :- World, cid :- Nat, vs :- (List Valid)]
-  (=> (= (tbl-all (not-alive-of cid) (:runs w)) true) (= (gr0 w) true) (= (gr0 (demote-finish w cid vs)) true))
+(a/theorem i1-runs-demote-finish-hand [w :- World, cid :- Nat, vs :- (List Valid)]
+  (=> (= (tbl-all (not-alive-of cid) (:runs w)) true) (= (i1-runs w) true) (= (i1-runs (demote-finish w cid vs)) true))
   (intros hd h)
   (cases hf (comp-find w cid))
   (case [none] (simp only [demote-finish hf]) (exact h))
@@ -1399,21 +1399,21 @@
     (have i (= (:id c) cid)) (exact (tbl-find-id CompRow comp-id cid c (:comps w) hf))
     (cases hk (demote-keep w c))
     (case [true] (simp only [demote-finish hf hk])
-      (exact (grx-comp-upd (List.nil Nat) w cid (comp-demote-row vs) (comp-demote-row-id vs) (comp-demote-row-pending vs) h)))
+      (exact (i1-runs-exempt-comp-upd (List.nil Nat) w cid (comp-demote-row vs) (comp-demote-row-id vs) (comp-demote-row-pending vs) h)))
     (case [false]
       (simp only [demote-finish hf hk])
       (have hd2 (= (tbl-all (not-alive-of (:id c)) (:runs w)) true)) (rw [i]) (exact hd)
       (have nr := (no-run-of w c h hd2 hk))
       (rw [i] at nr)
-      (have h2 := (grx-drop-edges (List.nil Nat) w (edge-avoids cid) h))
-      (exact (gr0-comp-del-free (drop-edges w (edge-avoids cid)) cid nr (drop-edges-avoids w cid) h2)))))
+      (have h2 := (i1-runs-exempt-drop-edges (List.nil Nat) w (edge-avoids cid) h))
+      (exact (i1-runs-comp-del-free (drop-edges w (edge-avoids cid)) cid nr (drop-edges-avoids w cid) h2)))))
 
-(tree/restate! GR0 '[inv-end-basis])
+(tree/restate! GR0 '[well-formed-end-basis])
 
-(a/theorem gr0-demote-aa [w :- World, cid :- Nat]
-  (=> (= (acts-alive w) true) (= (gr0 w) true) (= (gr0 (demote w cid)) true))
+(a/theorem i1-runs-demote-aa [w :- World, cid :- Nat]
+  (=> (= (acts-alive w) true) (= (i1-runs w) true) (= (i1-runs (demote w cid)) true))
   (intros ha h)
-  (have hs := (gr0-sample w h))
+  (have hs := (i1-runs-well-formed w h))
   (cases hf (comp-find w cid))
   (case [none] (simp only [demote hf]) (exact h))
   (case [some c]
@@ -1424,52 +1424,52 @@
       (have dd := (demote-dead w c hs ha))
       (rw [i] at dd)
       (simp only [demote hf hi demote-edges])
-      (have h1 := (gr0-demote-epoch _ cid (demote-cur w c) (grx-run-cascade (List.nil Nat) w (cancel-jobs (demote-cancels w c)) h)))
-      (have h2 := (grx-drop-edges (List.nil Nat) _ (not-dep-of cid) h1))
+      (have h1 := (i1-runs-demote-epoch _ cid (demote-cur w c) (i1-runs-exempt-run-cascade (List.nil Nat) w (cancel-jobs (demote-cancels w c)) h)))
+      (have h2 := (i1-runs-exempt-drop-edges (List.nil Nat) _ (not-dep-of cid) h1))
       (have dd2 (= (tbl-all (not-alive-of cid) (:runs (drop-edges (demote-epoch (run-cascade w (cancel-jobs (demote-cancels w c))) cid (demote-cur w c)) (not-dep-of cid)))) true))
       (simp only [drop-edges set-comps set-edges runs-demote-epoch]) (exact dd)
-      (have h3 := (gr0-end-basis _ cid h2))
-      (have dd3 := (end-basis-dead _ cid cid (gr0-sample _ h2) dd2))
-      (exact (gr0-demote-finish-o _ cid _ dd3 h3)))))
+      (have h3 := (i1-runs-end-basis _ cid h2))
+      (have dd3 := (end-basis-dead _ cid cid (i1-runs-well-formed _ h2) dd2))
+      (exact (i1-runs-demote-finish-hand _ cid _ dd3 h3)))))
 
-;; ---- normalization with acts-alive (P2's round bundle bn carries it)
-(a/theorem gr0-demote-fold [a :- Nat, k :- Nat, L :- (List Nat)]
-  (forall [W :- World] (=> (= (bn a k W) true) (= (gr0 W) true) (= (gr0 (nat-fold demote W L)) true)))
+;; ---- normalization with acts-alive (P2's round bundle round-bound carries it)
+(a/theorem i1-runs-demote-fold [a :- Nat, k :- Nat, L :- (List Nat)]
+  (forall [W :- World] (=> (= (round-bound a k W) true) (= (i1-runs W) true) (= (i1-runs (nat-fold demote W L)) true)))
   (induction L)
   (case [nil] (intros W hb h) (simp only [nat-fold]) (exact h))
   (case [cons x t ih]
     (intros W hb h)
     (simp only [nat-fold])
-    (have p := (bn-parts a k W hb))
-    (exact (ih (demote W x) (bn-demote a k W x hb) (gr0-demote-aa W x (And.left (And.right p)) h)))))
-(a/theorem gr0-norm-round-aa [w :- World]
-  (=> (= (acts-alive w) true) (= (gr0 w) true) (= (gr0 (norm-round w)) true))
+    (have p := (round-bound-parts a k W hb))
+    (exact (ih (demote W x) (round-bound-demote a k W x hb) (i1-runs-demote-aa W x (And.left (And.right p)) h)))))
+(a/theorem i1-runs-normalize-round-aa [w :- World]
+  (=> (= (acts-alive w) true) (= (i1-runs w) true) (= (i1-runs (normalize-round w)) true))
   (intros ha h)
-  (have hs := (gr0-sample w h))
-  (have b0 := (bn-intro (alive-cnt w) (act-cnt w) w hs ha (Nat.le_refl _) (Nat.le_refl _)))
-  (simp only [norm-round norm-round-lv])
-  (exact (gr0-detach _ (gr0-demote-fold (alive-cnt w) (act-cnt w) _ _
-           (bn-run-cascade (alive-cnt w) (act-cnt w) w (cancel-jobs (tbl-scan run-id (run-stray (live-list w)) (:runs w))) b0)
-           (grx-run-cascade (List.nil Nat) w (cancel-jobs (tbl-scan run-id (run-stray (live-list w)) (:runs w))) h)))))
-(a/theorem gr0-norm-loop-aa [fuel :- (List Nat)]
-  (forall [w :- World] (=> (= (acts-alive w) true) (= (gr0 w) true) (= (gr0 (norm-loop fuel w)) true)))
+  (have hs := (i1-runs-well-formed w h))
+  (have b0 := (round-bound-intro (alive-cnt w) (act-cnt w) w hs ha (Nat.le_refl _) (Nat.le_refl _)))
+  (simp only [normalize-round normalize-round-with-live])
+  (exact (i1-runs-detach _ (i1-runs-demote-fold (alive-cnt w) (act-cnt w) _ _
+           (round-bound-run-cascade (alive-cnt w) (act-cnt w) w (cancel-jobs (tbl-scan run-id (run-stray (live-list w)) (:runs w))) b0)
+           (i1-runs-exempt-run-cascade (List.nil Nat) w (cancel-jobs (tbl-scan run-id (run-stray (live-list w)) (:runs w))) h)))))
+(a/theorem i1-runs-normalize-loop-aa [fuel :- (List Nat)]
+  (forall [w :- World] (=> (= (acts-alive w) true) (= (i1-runs w) true) (= (i1-runs (normalize-loop fuel w)) true)))
   (induction fuel)
-  (case [nil] (intros w ha h) (simp only [norm-loop]) (exact h))
+  (case [nil] (intros w ha h) (simp only [normalize-loop]) (exact h))
   (case [cons x f ih]
     (intros w ha h)
     (cases hn (normalized w))
-    (case [true] (simp only [norm-loop hn]) (exact h))
+    (case [true] (simp only [normalize-loop hn]) (exact h))
     (case [false]
-      (have p := (bn-round w (gr0-sample w h) ha))
-      (simp only [norm-loop hn])
-      (exact (ih (norm-round w) (And.right p) (gr0-norm-round-aa w ha h))))))
-(a/theorem gr0-normalize-aa [w :- World]
-  (=> (= (acts-alive w) true) (= (gr0 w) true) (= (gr0 (normalize w)) true))
+      (have p := (round-bound-round w (i1-runs-well-formed w h) ha))
+      (simp only [normalize-loop hn])
+      (exact (ih (normalize-round w) (And.right p) (i1-runs-normalize-round-aa w ha h))))))
+(a/theorem i1-runs-normalize-aa [w :- World]
+  (=> (= (acts-alive w) true) (= (i1-runs w) true) (= (i1-runs (normalize w)) true))
   (intros ha h)
-  (have hs := (gr0-sample w h))
-  (have p := (bn-parts _ _ _ (bn-detach (alive-cnt w) (act-cnt w) w (bn-intro _ _ w hs ha (Nat.le_refl _) (Nat.le_refl _)))))
+  (have hs := (i1-runs-well-formed w h))
+  (have p := (round-bound-parts _ _ _ (round-bound-detach (alive-cnt w) (act-cnt w) w (round-bound-intro _ _ w hs ha (Nat.le_refl _) (Nat.le_refl _)))))
   (simp only [normalize])
-  (exact (gr0-norm-loop-aa _ (detach w) (And.left (And.right p)) (gr0-detach w h))))
+  (exact (i1-runs-normalize-loop-aa _ (detach w) (And.left (And.right p)) (i1-runs-detach w h))))
 
 ;; ===========================================================================
 ;; Rule R's filter keeps every run, and with it its entity, its scope and its resources' owner
@@ -1492,16 +1492,16 @@
   (simp only [retain-succ reach-mem-append g Bool.true_or Bool.or_true]))
 (a/theorem nz-mem5 [x :- Nat] (=> (= (Nat.beq x 0) false) (= (reach-mem x (nz x)) true))
   (intro h) (simp only [nz h reach-mem Nat.beq_refl]))
-(a/theorem task-pos5 [w :- World, y :- Nat] (=> (= (inv-sample w) true) (= (task-has w y) true) (= (Nat.beq y 0) false))
+(a/theorem task-pos5 [w :- World, y :- Nat] (=> (= (well-formed w) true) (= (task-has w y) true) (= (Nat.beq y 0) false))
   (intros h hh)
   (have hm (= (nat-mem y (tbl-ids task-id (:tasks w))) true)) (rw [nat-mem-ids]) (exact hh)
   (exact (id-pos w y h (mem-app-r _ _ _ (mem-app-r _ _ _ (mem-app-l _ _ _ hm))))))
 (a/theorem run-kept [W :- World, q :- RunRow]
-  (=> (= (normalized W) true) (= (gr0 W) true) (List.Mem q (:runs W))
+  (=> (= (normalized W) true) (= (i1-runs W) true) (List.Mem q (:runs W))
       (And (= (keep-fn W (:id q)) true) (And (= (keep-fn W (:of q)) true) (= (keep-fn W (:scope q)) true))))
   (intros hn h m)
-  (have hs := (gr0-sample W h))
-  (have r := (gr0-rest-of W h))
+  (have hs := (i1-runs-well-formed W h))
+  (have r := (i1-runs-rest-of W h))
   (have r2 := (tbl-all-mem RunRow (r2-ok W) q (:runs W) (grk-2 _ W r) m))
   (have r3 := (tbl-all-mem RunRow (r3-ok (:cleanup W) (List.nil Nat)) q (:runs W) (grk-3 _ W r) m))
   (simp only [r2-ok Bool.and_eq_true] at r2)
@@ -1534,10 +1534,10 @@
     (intro h)
     (have k := (h hd (List.Mem.head t)))
     (simp only [tbl-keep k (ih (fn [q :- A, m :- (List.Mem q t)] (h q (List.Mem.tail hd m))))])))
-(a/theorem gr0-filter [W :- World]
-  (=> (= (normalized W) true) (= (gr0 W) true) (= (filter-safe W) true) (= (gr0 (rule-r-filter W)) true))
+(a/theorem i1-runs-filter [W :- World]
+  (=> (= (normalized W) true) (= (i1-runs W) true) (= (filter-safe W) true) (= (i1-runs (rule-r-filter W)) true))
   (intros hn h hf)
-  (have r := (gr0-rest-of W h))
+  (have r := (i1-runs-rest-of W h))
   (rw [rule-r-filter-eq])
   (have kr (= (tbl-keep (keep-fn W) run-id (:runs W)) (:runs W)))
   (exact (keep-all-of RunRow (keep-fn W) run-id (:runs W) (fn [q :- RunRow, m :- (List.Mem q (:runs W))] (And.left (run-kept W q hn h m)))))
@@ -1557,46 +1557,46 @@
   (exact hq)
   (have b3 (= (tbl-all (r3-ok (:cleanup (filter-world (keep-fn W) W)) (List.nil Nat)) (:runs (filter-world (keep-fn W) W))) true))
   (rw [er]) (exact (grk-3 _ W r))
-  (exact (gr0-intro _ (inv-filter-world W (keep-fn W) (gr0-sample W h) hf) (grk-mk _ _ b1 b2 b3))))
+  (exact (i1-runs-intro _ (well-formed-filter-world W (keep-fn W) (i1-runs-well-formed W h) hf) (grk-mk _ _ b1 b2 b3))))
 
-(a/theorem gr0-rule-r-round [w :- World]
-  (=> (= (acts-alive w) true) (= (gr0 w) true) (= (filter-safe (normalize w)) true) (= (gr0 (rule-r-round w)) true))
+(a/theorem i1-runs-rule-r-round [w :- World]
+  (=> (= (acts-alive w) true) (= (i1-runs w) true) (= (filter-safe (normalize w)) true) (= (i1-runs (rule-r-round w)) true))
   (intros ha h hf)
   (simp only [rule-r-round])
-  (exact (gr0-filter (normalize w) (normalized-ok w (gr0-sample w h) ha) (gr0-normalize-aa w ha h) hf)))
-(a/theorem gr0-rr-loop [fuel :- (List Nat)]
-  (forall [w0 :- World] (=> (= (acts-alive w0) true) (= (gr0 w0) true) (= (rr-safe fuel w0) true)
-                            (= (gr0 (rr-loop fuel (rule-r-round w0))) true)))
+  (exact (i1-runs-filter (normalize w) (normalized-ok w (i1-runs-well-formed w h) ha) (i1-runs-normalize-aa w ha h) hf)))
+(a/theorem i1-runs-rule-r-loop [fuel :- (List Nat)]
+  (forall [w0 :- World] (=> (= (acts-alive w0) true) (= (i1-runs w0) true) (= (rounds-safe-loop fuel w0) true)
+                            (= (i1-runs (rule-r-loop fuel (rule-r-round w0))) true)))
   (induction fuel)
-  (case [nil] (intros w0 ha h hs) (simp only [rr-safe] at hs) (simp only [rr-loop]) (exact (gr0-rule-r-round w0 ha h hs)))
+  (case [nil] (intros w0 ha h hs) (simp only [rounds-safe-loop] at hs) (simp only [rule-r-loop]) (exact (i1-runs-rule-r-round w0 ha h hs)))
   (case [cons x f ih]
     (intros w0 ha h hs)
-    (have hs0 := (rr-safe-head x f w0 hs))
-    (have h1 := (gr0-rule-r-round w0 ha h hs0))
+    (have hs0 := (rounds-safe-loop-head x f w0 hs))
+    (have h1 := (i1-runs-rule-r-round w0 ha h hs0))
     (cases ho (no-orphans (rule-r-round w0)))
     (case [false]
-      (rw [(rr-loop-f x f (rule-r-round w0) ho)])
-      (exact (ih (rule-r-round w0) (acts-alive-round w0 (gr0-sample w0 h) ha) h1 (And.right (rr-safe-f x f w0 hs ho)))))
-    (case [true] (rw [(rr-loop-t x f (rule-r-round w0) ho)]) (exact h1))))
-(a/theorem gr0-rule-r [w :- World] (=> (= (acts-alive w) true) (= (gr0 w) true) (= (rule-r-safe w) true) (= (gr0 (rule-r w)) true))
+      (rw [(rule-r-loop-f x f (rule-r-round w0) ho)])
+      (exact (ih (rule-r-round w0) (acts-alive-round w0 (i1-runs-well-formed w0 h) ha) h1 (And.right (rounds-safe-loop-f x f w0 hs ho)))))
+    (case [true] (rw [(rule-r-loop-t x f (rule-r-round w0) ho)]) (exact h1))))
+(a/theorem i1-runs-rule-r [w :- World] (=> (= (acts-alive w) true) (= (i1-runs w) true) (= (rule-r-safe w) true) (= (i1-runs (rule-r w)) true))
   (intros ha h hs)
-  (have hs2 (= (rr-safe (List.cons Nat 0 (all-ids w)) w) true)) (exact hs)
+  (have hs2 (= (rounds-safe-loop (List.cons Nat 0 (all-ids w)) w) true)) (exact hs)
   (rw [rule-r-eq5])
-  (exact (gr0-rr-loop (List.cons Nat 0 (all-ids w)) w ha h hs2)))
-(a/theorem step-gr0 [w :- World, it :- Item]
-  (=> (= (ga w) true) (= (gr0 w) true) (= (rule-r-safe (:world (raw w it))) true) (= (gr0 (:world (world-step w it))) true))
+  (exact (i1-runs-rule-r-loop (List.cons Nat 0 (all-ids w)) w ha h hs2)))
+(a/theorem step-i1-runs [w :- World, it :- Item]
+  (=> (= (acts-parked w) true) (= (i1-runs w) true) (= (rule-r-safe (:world (raw w it))) true) (= (i1-runs (:world (world-step w it))) true))
   (intros hg h hs)
   (cases ha (:accepted (raw w it)))
   (case [false] (have e1 := (step-refuse w it ha)) (simp only [e1 refuse]) (exact h))
   (case [true] (have e2 := (step-accepted w it ha)) (rw [e2])
-    (exact (gr0-rule-r (:world (raw w it)) (raw-acts-alive w it hg) (raw-gr0 w it hg h) hs))))
-(a/theorem gr0-empty [] (= (gr0 empty-world) true) (rfl))
+    (exact (i1-runs-rule-r (:world (raw w it)) (raw-acts-alive w it hg) (i1-runs-raw w it hg h) hs))))
+(a/theorem i1-runs-empty [] (= (i1-runs empty-world) true) (rfl))
 
 ;; ---- literal I1, all clauses
-(a/defn i1-runs [w :- World] Bool (Bool.and (tbl-all (res-owner-ok w) (:res w)) (tbl-all (run-entity-ok w) (:runs w))))
-(a/theorem i1-runs-of [w :- World] (=> (= (gr0 w) true) (= (i1-runs w) true))
+(a/defn lit-i1-runs [w :- World] Bool (Bool.and (tbl-all (res-owner-ok w) (:res w)) (tbl-all (run-entity-ok w) (:runs w))))
+(a/theorem lit-i1-runs-of [w :- World] (=> (= (i1-runs w) true) (= (lit-i1-runs w) true))
   (intro h)
-  (have r := (gr0-rest-of w h))
+  (have r := (i1-runs-rest-of w h))
   (have a1 (= (tbl-all (res-owner-ok w) (:res w)) true))
   (apply (tbl-all-mono ResRow (r1-ok (:runs w)) _ _ (:res w) (grk-1 _ w r)))
   (intros z hz)
@@ -1610,24 +1610,24 @@
   (have a2 (= (tbl-all (run-entity-ok w) (:runs w)) true))
   (apply (tbl-all-mono RunRow (r2-ok w) _ _ (:runs w) (grk-2 _ w r)))
   (intros q hq) (simp only [r2-ok] at hq) (simp only [run-entity-ok]) (exact hq)
-  (simp only [i1-runs a1 a2 Bool.and_self]))
+  (simp only [lit-i1-runs a1 a2 Bool.and_self]))
 
-(a/defn p3h [w :- World] Bool (Bool.and (p3g w) (gr0 w)))
-(a/theorem p3h-parts [w :- World] (=> (= (p3h w) true) (And (= (p3g w) true) (= (gr0 w) true)))
-  (intro h) (simp only [p3h Bool.and_eq_true] at h) (exact h))
-(a/theorem p3h-empty [] (= (p3h empty-world) true) (rfl))
-(a/theorem step-p3h [w :- World, it :- Item] (=> (= (p3h w) true) (= (p3h (:world (world-step w it))) true))
+(a/defn chain-to-i1-runs [w :- World] Bool (Bool.and (chain-to-i1-detached-closed w) (i1-runs w)))
+(a/theorem chain-to-i1-runs-parts [w :- World] (=> (= (chain-to-i1-runs w) true) (And (= (chain-to-i1-detached-closed w) true) (= (i1-runs w) true)))
+  (intro h) (simp only [chain-to-i1-runs Bool.and_eq_true] at h) (exact h))
+(a/theorem chain-to-i1-runs-empty [] (= (chain-to-i1-runs empty-world) true) (rfl))
+(a/theorem step-chain-to-i1-runs [w :- World, it :- Item] (=> (= (chain-to-i1-runs w) true) (= (chain-to-i1-runs (:world (world-step w it))) true))
   (intro h)
-  (have p := (p3h-parts w h))
-  (have pg := (p3g-parts w (And.left p)))
-  (have pf := (p3f-parts w (And.left pg)))
-  (have pe := (p3e-parts w (And.left pf)))
-  (have pd := (p3d-parts w (And.left pe)))
-  (have pc := (p3c-parts w (And.left pd)))
-  (have pb := (p3b-parts w (And.left pc)))
-  (have a1 := (step-p3g w it (And.left p)))
-  (have a2 := (step-gr0 w it (And.left pb) (And.right p) (step-rule-r-safe w it (And.left pc))))
-  (simp only [p3h a1 a2 Bool.and_self]))
+  (have p := (chain-to-i1-runs-parts w h))
+  (have pg := (chain-to-i1-detached-closed-parts w (And.left p)))
+  (have pf := (chain-to-i5-dep-final-parts w (And.left pg)))
+  (have pe := (chain-to-i1-scopes-parts w (And.left pf)))
+  (have pd := (chain-to-i11a-parts w (And.left pe)))
+  (have pc := (chain-to-i10-current-parts w (And.left pd)))
+  (have pb := (chain-start-parts w (And.left pc)))
+  (have a1 := (step-chain-to-i1-detached-closed w it (And.left p)))
+  (have a2 := (step-i1-runs w it (And.left pb) (And.right p) (step-rule-r-safe w it (And.left pc))))
+  (simp only [chain-to-i1-runs a1 a2 Bool.and_self]))
 
 (a/theorem i1-scope-of [w :- World] (=> (= (lit-i1-scope w) true) (= (tbl-all (scope-parent-ok w) (:scopes w)) true))
   (intro h) (simp only [lit-i1-scope] at h)
@@ -1638,19 +1638,19 @@
   (cases hs) (case [inl a] (exact (Or.inl a)))
   (case [inr b] (cases b) (case [inl b1] (exact (Or.inr (Or.inl b1)))) (case [inr b2] (exact (Or.inr (Or.inr (Or.inl b2)))))))
 ;; Theorem: literal I1 (every clause: scope parents, owners of tasks/computations/sources, resource
-;; owners, run entities and scopes) after every step from a p3h world
+;; owners, run entities and scopes) after every step from a chain-to-i1-runs world
 (a/theorem step-lit-i1-total [w :- World, it :- Item]
-  (=> (= (p3h w) true) (= (inv-i1 (:world (world-step w it))) true))
+  (=> (= (chain-to-i1-runs w) true) (= (inv-i1 (:world (world-step w it))) true))
   (intro h)
-  (have q := (step-p3h w it h))
-  (have p := (p3h-parts _ q))
-  (have pg := (p3g-parts _ (And.left p)))
-  (have pf := (p3f-parts _ (And.left pg)))
-  (have pe := (p3e-parts _ (And.left pf)))
-  (have sc := (i1-scope-of _ (g1-rest-of _ (And.right pe))))
+  (have q := (step-chain-to-i1-runs w it h))
+  (have p := (chain-to-i1-runs-parts _ q))
+  (have pg := (chain-to-i1-detached-closed-parts _ (And.left p)))
+  (have pf := (chain-to-i5-dep-final-parts _ (And.left pg)))
+  (have pe := (chain-to-i1-scopes-parts _ (And.left pf)))
+  (have sc := (i1-scope-of _ (i1-scopes-rest-of _ (And.right pe))))
   (have ow := (And.right (And.right pg)))
-  (simp only [i1-own Bool.and_eq_true] at ow)
-  (have rr := (i1-runs-of _ (And.right p)))
-  (simp only [i1-runs Bool.and_eq_true] at rr)
+  (simp only [lit-i1-own Bool.and_eq_true] at ow)
+  (have rr := (lit-i1-runs-of _ (And.right p)))
+  (simp only [lit-i1-runs Bool.and_eq_true] at rr)
   (simp only [inv-i1 sc (And.left ow) (And.left (And.right ow)) (And.right (And.right ow)) (And.left rr) (And.right rr) Bool.and_self]))
 

@@ -2,7 +2,7 @@
   "Loading spindel.v2.engine kernel-checks T3-T6, T11, T12, T22, the settle, validation and
   the model's step theorems. The deftests run scenarios built from items only (starting at
   `empty-world`) through the compiled `world-step`, and drive it with random items of every
-  kind, checking after every step: inv-sample with a plain pending count, Rule R's honest
+  kind, checking after every step: well-formed with a plain pending count, Rule R's honest
   hypotheses, I3/I4 against the plain BFS of spindel.v2.retain-test, that a refusal leaves the
   world unchanged and that an invalid token is refused (L4)."
   (:require [clojure.test :refer [deftest is testing]]
@@ -17,28 +17,28 @@
 
 (def theorems
   '[cred-ok-mono deb-ok-mono comp-ins-edges-ref-ok task-ins-edges-ref-ok act-ins-edges-ref-ok
-    inv-scope-ins-fresh inv-run-ins-fresh inv-task-ins-fresh inv-act-ins-fresh inv-comp-ins-fresh
-    inv-insert-edge-checked inv-add-run-scope inv-react-one inv-react-loop inv-demand-reactive
-    inv-spawn-rows t4-inv t4-refuse t4-top-inv t4-top-refuse inv-start-raw t5-inv t5-refuse
-    inv-mark-from inv-create-comp-raw t3-inv t3-refuse t3-top-inv t3-top-refuse
-    inv-cancel-pred inv-cut-suffix inv-consume-entry inv-new-run-of inv-dispatch-raw t11-inv t11-refuse
-    inv-settle-edge inv-settle-one inv-settle-loop inv-settle inv-complete-body inv-retire-after
-    inv-complete-raw t12-inv t12-refuse
-    inv-await-step inv-await-wire inv-fast-fill inv-fin-if-final inv-park-if inv-await-pre
-    inv-await-post inv-await-raw t6-inv t6-refuse
-    inv-host-await-raw t22-inv t22-refuse t22-un-inv t22-un-refuse t8-full-inv t8-full-refuse
-    sched-inv sched-refuse t-handle-new-inv t-handle-new-refuse inv-cancel-losers
-    raw0-inv raw0-refuse raw-inv raw-refuse raw0-l4 raw-l4 step-refuse step-l4 step-accepted
-    step-inv step-i3 step-normalized step-i4 step-i3-total step-normalized-total step-i4-total
+    well-formed-scope-ins-fresh well-formed-run-ins-fresh well-formed-task-ins-fresh well-formed-act-ins-fresh well-formed-comp-ins-fresh
+    well-formed-insert-edge-checked well-formed-add-run-scope well-formed-react-one well-formed-react-loop well-formed-demand-reactive
+    well-formed-spawn-rows well-formed-t4-spawn t4-spawn-refuse well-formed-t4-spawn-top t4-spawn-top-refuse well-formed-start-raw well-formed-t5-start t5-start-refuse
+    well-formed-mark-from well-formed-create-comp-raw well-formed-t3-create t3-create-refuse well-formed-t3-create-top t3-create-top-refuse
+    well-formed-cancel-pred well-formed-cut-suffix well-formed-consume-entry well-formed-new-run-of well-formed-dispatch-raw well-formed-t11-dispatch t11-dispatch-refuse
+    well-formed-settle-edge well-formed-settle-one well-formed-settle-loop well-formed-settle well-formed-complete-body well-formed-retire-after
+    well-formed-complete-raw well-formed-t12-complete t12-complete-refuse
+    well-formed-await-step well-formed-await-wire well-formed-fast-fill well-formed-finalize-if-final well-formed-park-if well-formed-await-pre
+    well-formed-await-post well-formed-await-raw well-formed-t6-await t6-await-refuse
+    well-formed-host-await-raw well-formed-t22-host-await t22-host-await-refuse well-formed-t22-host-unawait t22-host-unawait-refuse well-formed-t8-observe-any-kind t8-observe-any-kind-refuse
+    well-formed-t-schedule t-schedule-refuse well-formed-t-handle-new t-handle-new-refuse well-formed-cancel-losers
+    well-formed-transition transition-refuse well-formed-raw raw-refuse transition-l4 raw-l4 step-refuse step-l4 step-accepted
+    step-well-formed step-i3 step-normalized step-i4 step-i3-total step-normalized-total step-i4-total
     ;; sources, finalizers, host items, ranks, Blocked
-    ids-ok-bump inv-bump t-deliver-inv t-deliver-refuse inv-serve-or t-post-inv t-post-refuse
-    t-release-inv t-release-refuse inv-take-park inv-take-now t-take-inv t-take-refuse t-take-l4
-    t-finally-enter-inv t-finally-enter-refuse t-finally-enter-l4 t-finally-exit-inv t-finally-exit-refuse
-    t-finally-exit-l4 t-finally-leave-inv t-finally-leave-refuse t-finally-leave-l4 t-slice-exit-inv t-slice-exit-refuse inv-deliver-fire inv-dep-consumed t-finalize-inv t-finalize-refuse t-cancel-inv t-cancel-refuse
-    t-open-scope-inv t-open-scope-refuse t-open-scope-l4 t-close-scope-inv t-close-scope-refuse
-    t-detach-inv t-detach-refuse inv-zero-handles inv-revoke-roots t-release-world-inv
-    t-release-world-refuse inv-raise-loop inv-raise-for inv-react-add blocked-sound blocked-complete
-    inv-create-source-cur t1-full-inv t1-full-refuse comp-demand-row-id])
+    ids-ok-bump well-formed-bump well-formed-t-deliver t-deliver-refuse well-formed-serve-or well-formed-t-post t-post-refuse
+    well-formed-t-release t-release-refuse well-formed-take-park well-formed-take-now well-formed-t-take t-take-refuse t-take-l4
+    well-formed-t-finally-enter t-finally-enter-refuse t-finally-enter-l4 well-formed-t-finally-exit t-finally-exit-refuse
+    t-finally-exit-l4 well-formed-t-finally-leave t-finally-leave-refuse t-finally-leave-l4 well-formed-t-slice-exit t-slice-exit-refuse well-formed-deliver-fire well-formed-dep-consumed well-formed-t-finalize t-finalize-refuse well-formed-t14-host-cancel t14-host-cancel-refuse
+    well-formed-t-open-scope t-open-scope-refuse t-open-scope-l4 well-formed-t-close-scope t-close-scope-refuse
+    well-formed-t-detach t-detach-refuse well-formed-zero-handles well-formed-revoke-roots well-formed-t21-release-world
+    t21-release-world-refuse well-formed-raise-loop well-formed-raise-for well-formed-react-add blocked-sound blocked-complete
+    well-formed-create-source-in-run well-formed-t1-create-nonstream t1-create-nonstream-refuse comp-demand-row-id])
 
 (deftest theorems-kernel-checked
   (doseq [t theorems]
@@ -74,7 +74,7 @@
 (defn host-unawait [e] [23 e])
 (defn handle-new [x] [24 x])
 (defn deliver [x v] [25 x v])
-(defn post [x v] [26 x v])
+(defn then-cancel-losers [x v] [26 x v])
 (defn take* [st x k fresh] [27 st x k fresh])
 (defn release [x] [28 x])
 (defn finalize [r] [29 r])
@@ -387,14 +387,14 @@
         w (step! w (cancel r1))
         _ (is (nil? (find-row w :acts a1)) "the cancelled waiter is gone")
         _ (is (= [s/res-err r/cancelled-code] ((juxt :tag :val) (:result (find-row w :tasks k1)))))
-        w (step! w (post m 10))]
+        w (step! w (then-cancel-losers m 10))]
     (is (nil? (find-row w :acts a2)) "the oldest live waiter gets the first message")
     (is (some? (find-row w :acts a3)))
     (is (= s/act-active (:act (find-row w :runs r2))))
-    (let [w (step! w (post m 11))
+    (let [w (step! w (then-cancel-losers m 11))
           _ (is (nil? (find-row w :acts a3)) "the next waiter gets the next one")
-          w (step! w (post m 12))
-          w (step! w (post m 13))]
+          w (step! w (then-cancel-losers m 12))
+          w (step! w (then-cancel-losers m 13))]
       (is (= [12 13] (vec (:queue (src-row w m)))) "no waiter: queued in order")
       (is (= 4 (:version (src-row w m))))
       (testing "a take with queued messages consumes the head at once (two ids allocated)"
@@ -543,7 +543,7 @@
     (is (true? (inv/lit-i1-scope w)))
     (is (true? (inv/inv-all w)))))
 
-;; Z#56: (1) after T21 only the host's admissions are revoked (`host-shut`: a host item while no run
+;; Z#56: (1) after T21 only the host's admissions are revoked (`host-item-refused`: a host item while no run
 ;; holds the slice); a cleanup slice's own effects (Z#44: host items while the slice is held) and
 ;; resource completions (fire, then ack) stay accepted,
 ;; so L2 can still join; (3) the root scope is never removed
@@ -711,10 +711,10 @@
       (is (= (s/->RunResult s/res-err 2) (st/deb-result w y)) "err ::closed")
       (is (true? (inv/lit-i5-dep-final w))))
     (testing "a closed source with a value delivers it"
-      (is (= (s/->RunResult s/res-ok 7) (st/src-result (s/->SourceRow 1 0 s/sk-signal 7 3 false 1 [] 0 0 0 false 0))))
-      (is (= (s/->RunResult s/res-ok 7) (st/src-result (s/->SourceRow 1 0 s/sk-deferred 7 1 false 1 [] 0 0 0 false 0))))
-      (is (= (s/->RunResult s/res-err 2) (st/src-result (s/->SourceRow 1 0 s/sk-deferred 0 0 false 1 [] 0 0 0 false 0))))
-      (is (= (s/->RunResult s/res-ok 0) (st/src-result (s/->SourceRow 1 0 s/sk-mailbox 0 0 true 1 [] 0 0 0 false 0)))
+      (is (= (s/->RunResult s/res-ok 7) (st/source-result (s/->SourceRow 1 0 s/sk-signal 7 3 false 1 [] 0 0 0 false 0))))
+      (is (= (s/->RunResult s/res-ok 7) (st/source-result (s/->SourceRow 1 0 s/sk-deferred 7 1 false 1 [] 0 0 0 false 0))))
+      (is (= (s/->RunResult s/res-err 2) (st/source-result (s/->SourceRow 1 0 s/sk-deferred 0 0 false 1 [] 0 0 0 false 0))))
+      (is (= (s/->RunResult s/res-ok 0) (st/source-result (s/->SourceRow 1 0 s/sk-mailbox 0 0 true 1 [] 0 0 0 false 0)))
           "an open source: its state"))))
 
 (deftest blocked-least-fixpoint
@@ -790,7 +790,7 @@
       23 (host-unawait (pick edges))
       24 (handle-new (id))
       25 (deliver (of-kind s/sk-deferred) v)
-      26 (post (of-kind s/sk-mailbox) v)
+      26 (then-cancel-losers (of-kind s/sk-mailbox) v)
       27 (take* (st) (of-kind (if (zero? (.nextInt rng 2)) s/sk-mailbox s/sk-semaphore)) (inc v) fresh)
       28 (release (of-kind s/sk-semaphore))
       29 (if (and (seq unwinding) (seq slice-runs) (not= s/mode-unwinding (:mode (first slice-runs))))
@@ -915,7 +915,7 @@
     (is (= w4 w5) "observe on a stream is refused")))
 
 ;; C0 (engine session, feat/v2-world-completion): a link owned by the root scope is created only
-;; while the root scope is open, and no link is realized once it is closed (raw0's `c0-gate`): with
+;; while the root scope is open, and no link is realized once it is closed (raw0's `require-root-open`): with
 ;; the root scope closed (T21) an append is refused (the engine logs [:append s v 0] accepted false),
 ;; so are create-link-top and link-realize with every tag (the engine's link-done! realizes nothing)
 (deftest c0-root-gate
@@ -926,7 +926,7 @@
         w2 (:world (step w1 (create-link-top root l)))
         shut (fn [w] (update w :scopes (fn [ss] (map #(if (= (:id %) root) (st/scope-close %) %) ss))))
         w3 (shut w2)
-        acc (fn [w it] (:accepted (en/raw0 w it)))]
+        acc (fn [w it] (:accepted (en/transition w it)))]
     (is (true? (st/scope-open-at w2 root)))
     (is (false? (st/scope-open-at w3 root)))
     (is (= [true true true true true]
@@ -934,12 +934,12 @@
             (acc w2 (link-realize l 0 0 0)) (acc w2 (link-realize l 2 9 0))
             (acc w2 (create-link-top root (:next-id w2)))]) "root scope open: accepted")
     (is (false? (acc w3 (append* sx 5 (:next-id w3)))) "append refused under a closed root scope")
-    (is (= w3 (:world (en/raw0 w3 (append* sx 5 (:next-id w3))))) "and changes nothing")
+    (is (= w3 (:world (en/transition w3 (append* sx 5 (:next-id w3))))) "and changes nothing")
     (is (false? (acc w3 (link-realize l 1 5 (:next-id w3)))) "no next link under a closed root scope")
     (is (false? (acc w3 (create-link-top root (:next-id w3)))))
     (doseq [it [(link-realize l 0 0 0) (link-realize l 2 9 0)]]
       (is (false? (acc w3 it)) (str "no realization under a closed root scope " (pr-str it)))
-      (is (= w3 (:world (en/raw0 w3 it))) "and the world is unchanged"))))
+      (is (= w3 (:world (en/transition w3 it))) "and the world is unchanged"))))
 
 ;; ---------------------------------------------------------------------------
 ;; C1 (spec Z#67, T14, T21, B8 reduced; engine 823771c)
@@ -1026,9 +1026,9 @@
         st (stamp w rk)
         _ (step! w (finally-leave st) :refused)                          ; no clause
         w (step! w (finally-enter st))
-        _ (is (false? (en/in-fin w st)) "a region is no clause")
+        _ (is (false? (en/in-finally w st)) "a region is no clause")
         w (step! w (finally-exit st))
-        _ (is (true? (en/in-fin w st)) "the clause runs")
+        _ (is (true? (en/in-finally w st)) "the clause runs")
         _ (step! w (await* st [d] s/am-one 1 (:next-id w) []) :refused)   ; would suspend
         _ (step! w (await* st [sg d] s/am-all 1 (:next-id w) []) :refused)
         _ (step! w (take* st mb 1 (:next-id w)) :refused)
@@ -1039,7 +1039,7 @@
         _ (step! w (await* st [sg d] s/am-any 1 (:next-id w) []))
         w (step! w (write sg 6))
         w (step! w (finally-leave st))
-        _ (is (false? (en/in-fin w st)))
+        _ (is (false? (en/in-finally w st)))
         _ (is (empty? (:finalizers (find-row w :runs rk))))
         w (step! w (await* st [d] s/am-one 1 (:next-id w) []))]
     (is (= s/act-parked (:act (find-row w :runs rk))) "outside the clause the await parks")))

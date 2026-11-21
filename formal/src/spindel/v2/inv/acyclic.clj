@@ -8,7 +8,7 @@
     scopes-acyclic w   no scope is on its own `scope-ancestors` (executable); equivalently no scope
                        reaches itself through the parent fields (`cy-acyc-of`, `cy-acyc-intro`:
                        forall y, Reach (scope-up w) (scope-up w y) y -> False)
-    gcy w              inv-sample w and `gcy-rest`: every scope's parent is below the allocator
+    scope-parents-acyclic w              well-formed w and `scope-parents-acyclic-rest`: every scope's parent is below the allocator
                        (`cy-par-below`: a fresh scope is nobody's parent yet) and scopes-acyclic.
 
   The graph lemmas are generic over the parent function (Part A): a sub-graph keeps acyclicity
@@ -16,10 +16,10 @@
   next-id, the parent 0 or an existing scope, so below next-id), and re-parenting x under p keeps
   it when x is neither p nor above p (detach under the guard). The restatement over the raw transition and
   normalization is the generic tree's (spindel.v2.pres.tree), as spindel.v2.inv.i1-scopes's G1:
-  own proofs at run creation (`gcy-add-run-scope`: the parent is 0 or the owner scope), open-scope
-  (the current scope exists, `open-ok`) and detach (`t-detach-gcy`: the guard).
+  own proofs at run creation (`scope-parents-acyclic-add-run-scope`: the parent is 0 or the owner scope), open-scope
+  (the current scope exists, `open-ok`) and detach (`scope-parents-acyclic-t-detach`: the guard).
 
-  Theorems: step-gcy (Rule R's honest hypothesis), step-acyc / acyc-empty (from p3b, no hypothesis),
+  Theorems: step-scope-parents-acyclic (Rule R's honest hypothesis), step-acyc / acyc-empty (from chain-start, no hypothesis),
   step-acyclic, step-acyclic-reach."
   (:require [ansatz.core :as a]
             [spindel.v2.pres.tree :as tree]
@@ -308,39 +308,39 @@
   (case [true] (exact (False.elim (ha (:id s) (Iff.mp (cy-anc-iff w (:id s) (:id s)) hr))))))
 
 ;; ===========================================================================
-;; Part C. The bundle gcy and its primitives
+;; Part C. The bundle scope-parents-acyclic and its primitives
 ;; ===========================================================================
 
-(a/defn gcy-rest [w :- World] Bool
+(a/defn scope-parents-acyclic-rest [w :- World] Bool
   (Bool.and (tbl-all (cy-par-below (:next-id w)) (:scopes w)) (scopes-acyclic w)))
-(a/defn gcy [w :- World] Bool (Bool.and (inv-sample w) (gcy-rest w)))
+(a/defn scope-parents-acyclic [w :- World] Bool (Bool.and (well-formed w) (scope-parents-acyclic-rest w)))
 
-(a/theorem gcy-sample [w :- World] (=> (= (gcy w) true) (= (inv-sample w) true))
-  (intro h) (simp only [gcy Bool.and_eq_true] at h) (exact (And.left h)))
-(a/theorem gcy-rest-of [w :- World] (=> (= (gcy w) true) (= (gcy-rest w) true))
-  (intro h) (simp only [gcy Bool.and_eq_true] at h) (exact (And.right h)))
-(a/theorem gcy-intro [w :- World] (=> (= (inv-sample w) true) (= (gcy-rest w) true) (= (gcy w) true))
-  (intros h1 h2) (simp only [gcy h1 h2 Bool.and_self]))
-(a/theorem gcy-parts [w :- World]
-  (=> (= (gcy w) true) (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
-  (intro h) (exact (inv-parts w (gcy-sample w h))))
-(a/theorem gcy-rest-parts [w :- World]
-  (=> (= (gcy-rest w) true)
+(a/theorem scope-parents-acyclic-well-formed [w :- World] (=> (= (scope-parents-acyclic w) true) (= (well-formed w) true))
+  (intro h) (simp only [scope-parents-acyclic Bool.and_eq_true] at h) (exact (And.left h)))
+(a/theorem scope-parents-acyclic-rest-of [w :- World] (=> (= (scope-parents-acyclic w) true) (= (scope-parents-acyclic-rest w) true))
+  (intro h) (simp only [scope-parents-acyclic Bool.and_eq_true] at h) (exact (And.right h)))
+(a/theorem scope-parents-acyclic-intro [w :- World] (=> (= (well-formed w) true) (= (scope-parents-acyclic-rest w) true) (= (scope-parents-acyclic w) true))
+  (intros h1 h2) (simp only [scope-parents-acyclic h1 h2 Bool.and_self]))
+(a/theorem scope-parents-acyclic-parts [w :- World]
+  (=> (= (scope-parents-acyclic w) true) (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
+  (intro h) (exact (well-formed-parts w (scope-parents-acyclic-well-formed w h))))
+(a/theorem scope-parents-acyclic-rest-parts [w :- World]
+  (=> (= (scope-parents-acyclic-rest w) true)
       (And (= (tbl-all (cy-par-below (:next-id w)) (:scopes w)) true) (= (scopes-acyclic w) true)))
-  (intro h) (simp only [gcy-rest Bool.and_eq_true] at h) (exact h))
-(a/theorem gcy-rest-intro [w :- World]
-  (=> (= (tbl-all (cy-par-below (:next-id w)) (:scopes w)) true) (= (scopes-acyclic w) true) (= (gcy-rest w) true))
-  (intros h1 h2) (simp only [gcy-rest h1 h2 Bool.and_self]))
-(a/theorem gcy-acyc [w :- World]
-  (=> (= (gcy w) true) (forall [y :- Nat] (=> (Reach (scope-up w) (scope-up w y) y) False)))
-  (intro h) (exact (cy-acyc-of w (And.right (gcy-rest-parts w (gcy-rest-of w h))))))
+  (intro h) (simp only [scope-parents-acyclic-rest Bool.and_eq_true] at h) (exact h))
+(a/theorem scope-parents-acyclic-rest-intro [w :- World]
+  (=> (= (tbl-all (cy-par-below (:next-id w)) (:scopes w)) true) (= (scopes-acyclic w) true) (= (scope-parents-acyclic-rest w) true))
+  (intros h1 h2) (simp only [scope-parents-acyclic-rest h1 h2 Bool.and_self]))
+(a/theorem scope-parents-acyclic-acyc [w :- World]
+  (=> (= (scope-parents-acyclic w) true) (forall [y :- Nat] (=> (Reach (scope-up w) (scope-up w y) y) False)))
+  (intro h) (exact (cy-acyc-of w (And.right (scope-parents-acyclic-rest-parts w (scope-parents-acyclic-rest-of w h))))))
 
 (a/theorem cy-lt-beq [q :- Nat, n :- Nat] (=> (< q n) (= (Nat.beq q n) false))
   (intro h) (cases hb (Nat.beq q n)) (rfl) (have e := (Nat.eq_of_beq_eq_true hb)) (omega))
 
 ;; a scope id is below the allocator
 (a/theorem cy-scope-below [w :- World, x :- Nat]
-  (=> (= (inv-sample w) true) (= (scope-has w x) true) (< x (:next-id w)))
+  (=> (= (well-formed w) true) (= (scope-has w x) true) (< x (:next-id w)))
   (intros h hc)
   (have hb := (ids-below-of w h))
   (simp only [all-ids tbl-all-nat-app Bool.and_eq_true] at hb)
@@ -351,27 +351,27 @@
 
 ;; ---- the allocator
 
-(a/theorem gcy-rest-next [w :- World, v :- Nat]
-  (=> (= (gcy-rest w) true) (<= (:next-id w) v) (= (gcy-rest (set-next-id w v)) true))
+(a/theorem scope-parents-acyclic-rest-next [w :- World, v :- Nat]
+  (=> (= (scope-parents-acyclic-rest w) true) (<= (:next-id w) v) (= (scope-parents-acyclic-rest (set-next-id w v)) true))
   (intros h hv)
-  (have p := (gcy-rest-parts w h))
+  (have p := (scope-parents-acyclic-rest-parts w h))
   (have m (forall [s :- ScopeRow] (=> (= (cy-par-below (:next-id w) s) true) (= (cy-par-below v s) true))))
   (intros s hs) (simp only [cy-par-below Nat.blt_eq] at hs) (simp only [cy-par-below Nat.blt_eq]) (omega)
   (have a1 (= (tbl-all (cy-par-below (:next-id (set-next-id w v))) (:scopes (set-next-id w v))) true))
   (exact (tbl-all-mono ScopeRow (cy-par-below (:next-id w)) (cy-par-below v) m (:scopes w) (And.left p)))
   (have a2 (= (scopes-acyclic (set-next-id w v)) true)) (exact (And.right p))
-  (exact (gcy-rest-intro _ a1 a2)))
-(a/theorem gcy-rest-bump [w :- World] (=> (= (gcy-rest w) true) (= (gcy-rest (bump w)) true))
-  (intro h) (simp only [bump]) (exact (gcy-rest-next w (+ (:next-id w) 1) h (Nat.le_succ (:next-id w)))))
+  (exact (scope-parents-acyclic-rest-intro _ a1 a2)))
+(a/theorem scope-parents-acyclic-rest-bump [w :- World] (=> (= (scope-parents-acyclic-rest w) true) (= (scope-parents-acyclic-rest (bump w)) true))
+  (intro h) (simp only [bump]) (exact (scope-parents-acyclic-rest-next w (+ (:next-id w) 1) h (Nat.le_succ (:next-id w)))))
 
 ;; ---- scope edits that keep every parent
 
-(a/theorem gcy-scope-upd [w :- World, x :- Nat, f :- (=> ScopeRow ScopeRow),
+(a/theorem scope-parents-acyclic-scope-upd [w :- World, x :- Nat, f :- (=> ScopeRow ScopeRow),
                           hf :- (forall [s :- ScopeRow] (= (scope-id (f s)) (scope-id s))),
                           hk :- (forall [s :- ScopeRow] (= (:parent (f s)) (:parent s)))]
-  (=> (= (gcy w) true) (= (gcy (scope-upd w x f)) true))
+  (=> (= (scope-parents-acyclic w) true) (= (scope-parents-acyclic (scope-upd w x f)) true))
   (intro h)
-  (have p := (gcy-rest-parts w (gcy-rest-of w h)))
+  (have p := (scope-parents-acyclic-rest-parts w (scope-parents-acyclic-rest-of w h)))
   (have es (= (:scopes (scope-upd w x f)) (tbl-upd scope-id x f (:scopes w)))) (rfl)
   (have a1 (= (tbl-all (cy-par-below (:next-id (scope-upd w x f))) (:scopes (scope-upd w x f))) true))
   (rw [es])
@@ -381,33 +381,33 @@
   (have hs (forall [y :- Nat, z :- Nat] (=> (List.Mem z (scope-up (scope-upd w x f) y)) (List.Mem z (scope-up w y)))))
   (intros y z hm) (rw [(cy-up (scope-upd w x f) y) es (cy-par-upd x f hf hk y (:scopes w))] at hm) (rw [(cy-up w y)]) (exact hm)
   (have a2 := (cy-acyc-intro (scope-upd w x f) (cy-acyc-sub (scope-up w) (scope-up (scope-upd w x f)) hs (cy-acyc-of w (And.right p)))))
-  (exact (gcy-intro _ (inv-scope-upd w x f hf (gcy-sample w h)) (gcy-rest-intro _ a1 a2))))
+  (exact (scope-parents-acyclic-intro _ (well-formed-scope-upd w x f hf (scope-parents-acyclic-well-formed w h)) (scope-parents-acyclic-rest-intro _ a1 a2))))
 
-(a/theorem gcy-rest-scope-del [w :- World, x :- Nat] (=> (= (gcy-rest w) true) (= (gcy-rest (scope-del w x)) true))
+(a/theorem scope-parents-acyclic-rest-scope-del [w :- World, x :- Nat] (=> (= (scope-parents-acyclic-rest w) true) (= (scope-parents-acyclic-rest (scope-del w x)) true))
   (intro h)
-  (have p := (gcy-rest-parts w h))
+  (have p := (scope-parents-acyclic-rest-parts w h))
   (have es (= (:scopes (scope-del w x)) (tbl-del scope-id x (:scopes w)))) (rfl)
   (have a1 (= (tbl-all (cy-par-below (:next-id (scope-del w x))) (:scopes (scope-del w x))) true))
   (rw [es])
   (exact (tbl-all-del ScopeRow scope-id x _ _ (fn [s :- ScopeRow, q :- (= (cy-par-below (:next-id w) s) true), e :- (= (Nat.beq (scope-id s) x) false)] q) _ (And.left p)))
   (have hs (forall [y :- Nat, z :- Nat] (=> (List.Mem z (scope-up (scope-del w x) y)) (List.Mem z (scope-up w y)))))
   (intros y z hm) (rw [(cy-up (scope-del w x) y) es] at hm) (rw [(cy-up w y)]) (exact (cy-par-del x y z (:scopes w) hm))
-  (exact (gcy-rest-intro _ a1 (cy-acyc-intro (scope-del w x) (cy-acyc-sub (scope-up w) (scope-up (scope-del w x)) hs (cy-acyc-of w (And.right p)))))))
+  (exact (scope-parents-acyclic-rest-intro _ a1 (cy-acyc-intro (scope-del w x) (cy-acyc-sub (scope-up w) (scope-up (scope-del w x)) hs (cy-acyc-of w (And.right p)))))))
 
-(a/theorem gcy-rest-filter [w :- World, K :- (=> Nat Bool)] (=> (= (gcy-rest w) true) (= (gcy-rest (filter-world K w)) true))
+(a/theorem scope-parents-acyclic-rest-filter [w :- World, K :- (=> Nat Bool)] (=> (= (scope-parents-acyclic-rest w) true) (= (scope-parents-acyclic-rest (filter-world K w)) true))
   (intro h)
-  (have p := (gcy-rest-parts w h))
+  (have p := (scope-parents-acyclic-rest-parts w h))
   (have es (= (:scopes (filter-world K w)) (tbl-keep K scope-id (:scopes w)))) (rfl)
   (have a1 (= (tbl-all (cy-par-below (:next-id (filter-world K w))) (:scopes (filter-world K w))) true))
   (rw [es]) (exact (tbl-all-keep-same ScopeRow K scope-id _ _ (And.left p)))
   (have hs (forall [y :- Nat, z :- Nat] (=> (List.Mem z (scope-up (filter-world K w) y)) (List.Mem z (scope-up w y)))))
   (intros y z hm) (rw [(cy-up (filter-world K w) y) es] at hm) (rw [(cy-up w y)]) (exact (cy-par-keep K y z (:scopes w) hm))
-  (exact (gcy-rest-intro _ a1 (cy-acyc-intro (filter-world K w) (cy-acyc-sub (scope-up w) (scope-up (filter-world K w)) hs (cy-acyc-of w (And.right p)))))))
+  (exact (scope-parents-acyclic-rest-intro _ a1 (cy-acyc-intro (filter-world K w) (cy-acyc-sub (scope-up w) (scope-up (filter-world K w)) hs (cy-acyc-of w (And.right p)))))))
 
 ;; ---- a fresh scope (id next-id) whose parent is 0 or an existing scope: no parent field names
 ;; the fresh id, so no cycle passes through it
 (a/theorem cy-hp-lt [w :- World, p :- Nat, z :- Nat]
-  (=> (= (inv-sample w) true) (= (Bool.or (Nat.beq p 0) (scope-has w p)) true) (List.Mem z (nz p)) (< z (:next-id w)))
+  (=> (= (well-formed w) true) (= (Bool.or (Nat.beq p 0) (scope-has w p)) true) (List.Mem z (nz p)) (< z (:next-id w)))
   (intros h hp hm)
   (have e := (cy-mem-nz p z hm))
   (cases hz (Nat.beq p 0))
@@ -416,7 +416,7 @@
     (simp only [hz Bool.false_or] at hp)
     (rw [e]) (exact (cy-scope-below w p h hp))))
 (a/theorem cy-hp-le [w :- World, p :- Nat]
-  (=> (= (inv-sample w) true) (= (Bool.or (Nat.beq p 0) (scope-has w p)) true) (< p (+ (:next-id w) 1)))
+  (=> (= (well-formed w) true) (= (Bool.or (Nat.beq p 0) (scope-has w p)) true) (< p (+ (:next-id w) 1)))
   (intros h hp)
   (cases hz (Nat.beq p 0))
   (case [true] (have e := (Nat.eq_of_beq_eq_true hz)) (omega))
@@ -432,23 +432,23 @@
   (rw [(cy-up (bump (scope-ins w r)) y) (cy-up w y) es])
   (simp only [tbl-find hb]))
 (a/theorem cy-ins-avoid [w :- World, r :- ScopeRow, y :- Nat, q :- Nat]
-  (=> (= (Bool.or (Nat.beq (:parent r) 0) (scope-has w (:parent r))) true) (= (gcy w) true)
+  (=> (= (Bool.or (Nat.beq (:parent r) 0) (scope-has w (:parent r))) true) (= (scope-parents-acyclic w) true)
      (List.Mem q (scope-up (bump (scope-ins w r)) y)) (= (Nat.beq q (:next-id w)) false))
   (intros hp h hm)
-  (have hs := (gcy-sample w h))
-  (have p := (gcy-rest-parts w (gcy-rest-of w h)))
+  (have hs := (scope-parents-acyclic-well-formed w h))
+  (have p := (scope-parents-acyclic-rest-parts w (scope-parents-acyclic-rest-of w h)))
   (have es (= (:scopes (bump (scope-ins w r))) (List.cons ScopeRow r (:scopes w)))) (rfl)
   (rw [(cy-up (bump (scope-ins w r)) y) es] at hm)
   (apply (cy-lt-beq q (:next-id w)))
   (cases hb (Nat.beq (scope-id r) y))
   (case [false] (simp only [tbl-find hb] at hm) (exact (cy-par-lt (:next-id w) y q (:scopes w) (And.left p) hm)))
   (case [true] (simp only [tbl-find hb cy-par] at hm) (exact (cy-hp-lt w (:parent r) q hs hp hm))))
-(a/theorem gcy-scope-ins-fresh [w :- World, r :- ScopeRow]
+(a/theorem scope-parents-acyclic-scope-ins-fresh [w :- World, r :- ScopeRow]
   (=> (= (scope-id r) (:next-id w)) (= (Bool.or (Nat.beq (:parent r) 0) (scope-has w (:parent r))) true)
-      (= (gcy w) true) (= (gcy (bump (scope-ins w r))) true))
+      (= (scope-parents-acyclic w) true) (= (scope-parents-acyclic (bump (scope-ins w r))) true))
   (intros hr hp h)
-  (have hs := (gcy-sample w h))
-  (have p := (gcy-rest-parts w (gcy-rest-of w h)))
+  (have hs := (scope-parents-acyclic-well-formed w h))
+  (have p := (scope-parents-acyclic-rest-parts w (scope-parents-acyclic-rest-of w h)))
   (have es (= (:scopes (bump (scope-ins w r))) (List.cons ScopeRow r (:scopes w)))) (rfl)
   (have en (= (:next-id (bump (scope-ins w r))) (+ (:next-id w) 1))) (rfl)
   (have m (forall [s :- ScopeRow] (=> (= (cy-par-below (:next-id w) s) true) (= (cy-par-below (+ (:next-id w) 1) s) true))))
@@ -464,15 +464,15 @@
                                  (fn [y :- Nat, hy :- (= (Nat.beq y (:next-id w)) false)] (cy-ins-same w r y hr hy))
                                  (fn [y :- Nat, q :- Nat, hm :- (List.Mem q (scope-up (bump (scope-ins w r)) y))] (cy-ins-avoid w r y q hp h hm))
                                  (cy-acyc-of w (And.right p)))))
-  (exact (gcy-intro _ (inv-scope-ins-fresh w r hr hs) (gcy-rest-intro _ a1 a2))))
+  (exact (scope-parents-acyclic-intro _ (well-formed-scope-ins-fresh w r hr hs) (scope-parents-acyclic-rest-intro _ a1 a2))))
 
 ;; ---- detach: the run scope x gets the parent p, which is neither x nor below x
-(a/theorem gcy-set-parent [w :- World, x :- Nat, p :- Nat]
-  (=> (= (scope-within w p x) false) (= (scope-has w p) true) (= (gcy w) true)
-      (= (gcy (scope-upd w x (scope-set-parent p))) true))
+(a/theorem scope-parents-acyclic-set-parent [w :- World, x :- Nat, p :- Nat]
+  (=> (= (scope-within w p x) false) (= (scope-has w p) true) (= (scope-parents-acyclic w) true)
+      (= (scope-parents-acyclic (scope-upd w x (scope-set-parent p))) true))
   (intros hg hp h)
-  (have hs := (gcy-sample w h))
-  (have pp := (gcy-rest-parts w (gcy-rest-of w h)))
+  (have hs := (scope-parents-acyclic-well-formed w h))
+  (have pp := (scope-parents-acyclic-rest-parts w (scope-parents-acyclic-rest-of w h)))
   (simp only [scope-within Bool.or_eq_false_iff] at hg)
   (have hxp (= (Nat.beq x p) false)) (exact (beq-symm-false p x (And.left hg)))
   (have hr (=> (Reach (scope-up w) (scope-up w p) x) False))
@@ -490,21 +490,21 @@
   (have hpx (forall [z :- Nat] (=> (List.Mem z (scope-up (scope-upd w x (scope-set-parent p)) x)) (= z p))))
   (intros z hm) (rw [(cy-up (scope-upd w x (scope-set-parent p)) x) es] at hm) (exact (cy-par-set x p z (:scopes w) hm))
   (have a2 := (cy-acyc-intro _ (cy-acyc-reparent (scope-up w) (scope-up (scope-upd w x (scope-set-parent p))) x p he hpx hxp hr (cy-acyc-of w (And.right pp)))))
-  (exact (gcy-intro _ (inv-scope-upd w x (scope-set-parent p) (scope-set-parent-id p) hs) (gcy-rest-intro _ a1 a2))))
+  (exact (scope-parents-acyclic-intro _ (well-formed-scope-upd w x (scope-set-parent p) (scope-set-parent-id p) hs) (scope-parents-acyclic-rest-intro _ a1 a2))))
 
 ;; ---- run + run scope (T4 / T5 / T11), the parent given (0 or an existing scope)
-(a/theorem gcy-add-run-scope [w :- World, of :- Nat, epoch :- Nat, parent :- Nat, ei :- Nat]
-  (=> (= (Bool.or (Nat.beq parent 0) (scope-has w parent)) true) (= (gcy w) true)
-      (= (gcy (add-run-scope w of epoch parent ei)) true))
+(a/theorem scope-parents-acyclic-add-run-scope [w :- World, of :- Nat, epoch :- Nat, parent :- Nat, ei :- Nat]
+  (=> (= (Bool.or (Nat.beq parent 0) (scope-has w parent)) true) (= (scope-parents-acyclic w) true)
+      (= (scope-parents-acyclic (add-run-scope w of epoch parent ei)) true))
   (intros hp h)
   (simp only [add-run-scope])
-  (have h1 (= (gcy (bump (run-ins w (new-run-row (:next-id w) of epoch (+ (:next-id w) 1) ei)))) true))
-  (exact (gcy-intro _ (inv-run-ins-fresh w (new-run-row (:next-id w) of epoch (+ (:next-id w) 1) ei) (rfl) (gcy-sample w h))
-           (gcy-rest-bump _ (gcy-rest-of w h))))
+  (have h1 (= (scope-parents-acyclic (bump (run-ins w (new-run-row (:next-id w) of epoch (+ (:next-id w) 1) ei)))) true))
+  (exact (scope-parents-acyclic-intro _ (well-formed-run-ins-fresh w (new-run-row (:next-id w) of epoch (+ (:next-id w) 1) ei) (rfl) (scope-parents-acyclic-well-formed w h))
+           (scope-parents-acyclic-rest-bump _ (scope-parents-acyclic-rest-of w h))))
   (have he (= (scope-id (new-scope-row (+ (:next-id w) 1) parent))
               (:next-id (bump (run-ins w (new-run-row (:next-id w) of epoch (+ (:next-id w) 1) ei))))))
   (rfl)
-  (exact (gcy-scope-ins-fresh _ (new-scope-row (+ (:next-id w) 1) parent) he hp h1)))
+  (exact (scope-parents-acyclic-scope-ins-fresh _ (new-scope-row (+ (:next-id w) 1) parent) he hp h1)))
 
 (a/theorem cy-open-has [w :- World, s :- Nat] (=> (= (scope-open-at w s) true) (= (scope-has w s) true))
   (intro h)
@@ -522,40 +522,40 @@
 ;; Part D. The copy
 ;; ===========================================================================
 
-(def GCY (mk-bundle 'gcy [] "gcy-" {'inv-scope-upd ['(fn [s :- ScopeRow] (Eq.refl (:parent s))) 4]}))
-(swap! (:renames GCY) assoc 'inv-parts 'gcy-parts 'inv-scope-upd 'gcy-scope-upd 'inv-scope-ins-fresh 'gcy-scope-ins-fresh)
+(def GCY (mk-bundle 'scope-parents-acyclic [] "scope-parents-acyclic-" {'well-formed-scope-upd ['(fn [s :- ScopeRow] (Eq.refl (:parent s))) 4]}))
+(swap! (:renames GCY) assoc 'well-formed-parts 'scope-parents-acyclic-parts 'well-formed-scope-upd 'scope-parents-acyclic-scope-upd 'well-formed-scope-ins-fresh 'scope-parents-acyclic-scope-ins-fresh)
 (defpart GCY :reads '[next-id scopes])
-(frames/frame-theorem! 'gcy-rest-mark-edge 'gcy-rest 'mark-edge-inv-sample)
-(frames/frame-theorem! 'gcy-rest-unmark-edge 'gcy-rest 'unmark-edge-inv-sample)
-(frames/frame-theorem! 'gcy-rest-remove-edge 'gcy-rest 'inv-remove-edge)
-(doseq [o '[inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-act-ins-fresh inv-comp-ins-fresh inv-task-ins-fresh]]
-  (prim! GCY o (list 'gcy-rest-bump (list (symbol (str/replace (subs (name o) 4) "-fresh" "")) 'w 'r) (list 'Eq.trans '(rfl) 'R))))
-(prim! GCY 'inv-bump '(gcy-rest-bump w R))
-(prim! GCY 'insert-edge-fresh-inv-sample '(gcy-rest-bump (insert-edge w (edge-set-id (:next-id w) e)) (Eq.trans (rfl) R)))
-(prim! GCY 'inv-scope-del '(gcy-rest-scope-del w x R))
-(prim! GCY 'inv-filter-world '(gcy-rest-filter w K R))
+(frames/frame-theorem! 'scope-parents-acyclic-rest-mark-edge 'scope-parents-acyclic-rest 'well-formed-mark-edge)
+(frames/frame-theorem! 'scope-parents-acyclic-rest-unmark-edge 'scope-parents-acyclic-rest 'well-formed-unmark-edge)
+(frames/frame-theorem! 'scope-parents-acyclic-rest-remove-edge 'scope-parents-acyclic-rest 'well-formed-remove-edge)
+(doseq [o '[well-formed-source-ins-fresh well-formed-fork-ins-fresh well-formed-resource-ins-fresh well-formed-act-ins-fresh well-formed-comp-ins-fresh well-formed-task-ins-fresh]]
+  (prim! GCY o (list 'scope-parents-acyclic-rest-bump (list (symbol (str/replace (subs (name o) 12) "-fresh" "")) 'w 'r) (list 'Eq.trans '(rfl) 'R))))
+(prim! GCY 'well-formed-bump '(scope-parents-acyclic-rest-bump w R))
+(prim! GCY 'well-formed-insert-edge-fresh '(scope-parents-acyclic-rest-bump (insert-edge w (edge-set-id (:next-id w) e)) (Eq.trans (rfl) R)))
+(prim! GCY 'well-formed-scope-del '(scope-parents-acyclic-rest-scope-del w x R))
+(prim! GCY 'well-formed-filter-world '(scope-parents-acyclic-rest-filter w K R))
 
 ;; callers of add-run-scope: a computation run scope has parent 0 (Z#26), a task run scope its owner
 ;; scope when that exists (task-scope-parent)
 (tree/part! GCY
-  :over '{inv-add-run-scope   gcy-add-run-scope   ; the run scope's parent exists (or is 0)
-          inv-spawn-rows      gcy-spawn-rows
-          t-open-scope-inv    t-open-scope-gcy
-          t-detach-inv        t-detach-gcy}
-  :ctx '{inv-add-run-scope [(= (Bool.or (Nat.beq parent 0) (scope-has w parent)) true)]}
-  :pass '{inv-start-raw  {inv-add-run-scope [(Eq.refl true)]}     ; parent 0
-          inv-new-run-of {inv-add-run-scope [(Eq.refl true)]}})
-(a/theorem gcy-spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat), loc :- Bool]
-  (=> (= (gcy w) true) (= (gcy (spawn-rows w owner inputs loc)) true))
+  :over '{well-formed-add-run-scope   scope-parents-acyclic-add-run-scope   ; the run scope's parent exists (or is 0)
+          well-formed-spawn-rows      scope-parents-acyclic-spawn-rows
+          well-formed-t-open-scope    scope-parents-acyclic-t-open-scope
+          well-formed-t-detach        scope-parents-acyclic-t-detach}
+  :ctx '{well-formed-add-run-scope [(= (Bool.or (Nat.beq parent 0) (scope-has w parent)) true)]}
+  :pass '{well-formed-start-raw  {well-formed-add-run-scope [(Eq.refl true)]}     ; parent 0
+          well-formed-new-run-of {well-formed-add-run-scope [(Eq.refl true)]}})
+(a/theorem scope-parents-acyclic-spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat), loc :- Bool]
+  (=> (= (scope-parents-acyclic w) true) (= (scope-parents-acyclic (spawn-rows w owner inputs loc)) true))
   (intro h)
   (simp only [spawn-rows])
-  (have h1 (= (gcy (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc)))) true))
-  (exact (gcy-task-ins-fresh w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc) (rfl) h))
-  (exact (gcy-add-run-scope (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc)))
+  (have h1 (= (scope-parents-acyclic (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc)))) true))
+  (exact (scope-parents-acyclic-task-ins-fresh w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc) (rfl) h))
+  (exact (scope-parents-acyclic-add-run-scope (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc)))
            (:next-id w) 0 (task-scope-parent w owner) 0 (cy-tsp-has w owner) h1)))
 ;; open-scope: the new explicit scope's parent is the run's current scope, which exists (open-ok)
-(a/theorem t-open-scope-gcy [w :- World, st :- Nat, s :- Nat]
-  (=> (= (gcy w) true) (= (gcy (:world (t-open-scope w st s))) true))
+(a/theorem scope-parents-acyclic-t-open-scope [w :- World, st :- Nat, s :- Nat]
+  (=> (= (scope-parents-acyclic w) true) (= (scope-parents-acyclic (:world (t-open-scope w st s))) true))
   (intro h)
   (cases ht (tok-run w st)) (case' [some r]) (case' [none])
   (simp only [t-open-scope ht refuse]) (exact h)
@@ -565,14 +565,14 @@
   (have hc (= (Bool.or (Nat.beq (cur-scope w r) 0) (scope-has w (cur-scope w r))) true))
   (simp only [open-ok Bool.and_eq_true] at hg) (simp only [(And.right (And.right hg)) Bool.or_true])
   (simp only [t-open-scope ht hg accept])
-  (exact (gcy-scope-ins-fresh w (ScopeRow.mk s (cur-scope w r) scope-explicit true) hs hc h)))
-(tree/restate! GCY '[inv-remove-if-empty])
+  (exact (scope-parents-acyclic-scope-ins-fresh w (ScopeRow.mk s (cur-scope w r) scope-explicit true) hs hc h)))
+(tree/restate! GCY '[well-formed-remove-if-empty])
 (a/theorem cy-not-true [b :- Bool] (=> (= (Bool.not b) true) (= b false))
   (intro h) (cases b) (rfl) (simp at h))
 ;; detach (Z#69): the run scope is re-parented under the open scope s, which the guard keeps out of
 ;; the run scope's subtree (`scope-within w s rs = false`): no cycle
-(a/theorem t-detach-gcy [w :- World, k :- Nat, s :- Nat]
-  (=> (= (gcy w) true) (= (gcy (:world (t-detach w k s))) true))
+(a/theorem scope-parents-acyclic-t-detach [w :- World, k :- Nat, s :- Nat]
+  (=> (= (scope-parents-acyclic w) true) (= (scope-parents-acyclic (:world (t-detach w k s))) true))
   (intro h)
   (cases hf (task-find w k))
   (case [none] (simp only [t-detach hf refuse]) (exact h))
@@ -585,55 +585,55 @@
       (have hs2 (= (scope-has w s) true)) (exact (cy-open-has w s (And.left (And.right (And.right hg2)))))
       (have hw (= (scope-within w s (task-run-scope w t)) false)) (exact (cy-not-true _ (And.right (And.right (And.right hg2)))))
       (simp only [t-detach hf hg accept remove-empty-at detach-move])
-      (have h1 := (gcy-task-upd w k (task-set-owner s) (task-set-owner-id s) h))
-      (exact (gcy-remove-if-empty _ _ (gcy-set-parent (task-upd w k (task-set-owner s)) (task-run-scope w t) s hw hs2 h1))))))
+      (have h1 := (scope-parents-acyclic-task-upd w k (task-set-owner s) (task-set-owner-id s) h))
+      (exact (scope-parents-acyclic-remove-if-empty _ _ (scope-parents-acyclic-set-parent (task-upd w k (task-set-owner s)) (task-run-scope w t) s hw hs2 h1))))))
 
-(tree/restate! GCY '[raw-inv])
-(tree/restate! GCY '[inv-normalize])
+(tree/restate! GCY '[well-formed-raw])
+(tree/restate! GCY '[well-formed-normalize])
 
 ;; ===========================================================================
 ;; Part E. Rule R and the step
 ;; ===========================================================================
 
-(a/theorem gcy-rule-r-round [w :- World]
-  (=> (= (gcy w) true) (= (filter-safe (normalize w)) true) (= (gcy (rule-r-round w)) true))
+(a/theorem scope-parents-acyclic-rule-r-round [w :- World]
+  (=> (= (scope-parents-acyclic w) true) (= (filter-safe (normalize w)) true) (= (scope-parents-acyclic (rule-r-round w)) true))
   (intros h hf) (simp only [rule-r-round]) (rw [rule-r-filter-eq])
-  (exact (gcy-filter-world (normalize w) (keep-fn (normalize w)) (gcy-normalize w h) hf)))
-(a/theorem gcy-rr-loop [fuel :- (List Nat)]
-  (forall [w0 :- World] (=> (= (gcy w0) true) (= (rr-safe fuel w0) true) (= (gcy (rr-loop fuel (rule-r-round w0))) true)))
+  (exact (scope-parents-acyclic-filter-world (normalize w) (keep-fn (normalize w)) (scope-parents-acyclic-normalize w h) hf)))
+(a/theorem scope-parents-acyclic-rule-r-loop [fuel :- (List Nat)]
+  (forall [w0 :- World] (=> (= (scope-parents-acyclic w0) true) (= (rounds-safe-loop fuel w0) true) (= (scope-parents-acyclic (rule-r-loop fuel (rule-r-round w0))) true)))
   (induction fuel)
-  (case [nil] (intros w0 h hs) (simp only [rr-safe] at hs) (simp only [rr-loop]) (exact (gcy-rule-r-round w0 h hs)))
+  (case [nil] (intros w0 h hs) (simp only [rounds-safe-loop] at hs) (simp only [rule-r-loop]) (exact (scope-parents-acyclic-rule-r-round w0 h hs)))
   (case [cons x f ih]
     (intros w0 h hs)
-    (simp only [rr-safe Bool.and_eq_true] at hs)
-    (have h1 := (gcy-rule-r-round w0 h (And.left hs)))
+    (simp only [rounds-safe-loop Bool.and_eq_true] at hs)
+    (have h1 := (scope-parents-acyclic-rule-r-round w0 h (And.left hs)))
     (cases ho (no-orphans (rule-r-round w0)))
-    (case [false] (simp only [ho] at hs) (simp only [rr-loop ho]) (exact (ih (rule-r-round w0) h1 (And.right hs))))
-    (case [true] (simp only [rr-loop ho]) (exact h1))))
-(a/theorem gcy-rule-r [w :- World] (=> (= (gcy w) true) (= (rule-r-safe w) true) (= (gcy (rule-r w)) true))
-  (intros h hs) (simp only [rule-r-safe] at hs) (simp only [rule-r]) (exact (gcy-rr-loop (rr-fuel w) w h hs)))
+    (case [false] (simp only [ho] at hs) (simp only [rule-r-loop ho]) (exact (ih (rule-r-round w0) h1 (And.right hs))))
+    (case [true] (simp only [rule-r-loop ho]) (exact h1))))
+(a/theorem scope-parents-acyclic-rule-r [w :- World] (=> (= (scope-parents-acyclic w) true) (= (rule-r-safe w) true) (= (scope-parents-acyclic (rule-r w)) true))
+  (intros h hs) (simp only [rule-r-safe] at hs) (simp only [rule-r]) (exact (scope-parents-acyclic-rule-r-loop (rule-r-fuel w) w h hs)))
 
-;; the bundle through every step (Rule R's honest hypothesis as in step-inv)
-(a/theorem step-gcy [w :- World, it :- Item]
-  (=> (= (gcy w) true) (= (rule-r-safe (:world (raw w it))) true) (= (gcy (:world (world-step w it))) true))
+;; the bundle through every step (Rule R's honest hypothesis as in step-well-formed)
+(a/theorem step-scope-parents-acyclic [w :- World, it :- Item]
+  (=> (= (scope-parents-acyclic w) true) (= (rule-r-safe (:world (raw w it))) true) (= (scope-parents-acyclic (:world (world-step w it))) true))
   (intros h hs)
   (cases ha (:accepted (raw w it)))
   (case [false] (have e1 := (step-refuse w it ha)) (simp only [e1 refuse]) (exact h))
-  (case [true] (have e2 := (step-accepted w it ha)) (rw [e2]) (exact (gcy-rule-r (:world (raw w it)) (raw-gcy w it h) hs))))
-(a/theorem gcy-empty [] (= (gcy empty-world) true) (rfl))
+  (case [true] (have e2 := (step-accepted w it ha)) (rw [e2]) (exact (scope-parents-acyclic-rule-r (:world (raw w it)) (scope-parents-acyclic-raw w it h) hs))))
+(a/theorem scope-parents-acyclic-empty [] (= (scope-parents-acyclic empty-world) true) (rfl))
 
-;; ---- the invariant through every step from a p3b world (no hypothesis); the empty world has it
+;; ---- the invariant through every step from a chain-start world (no hypothesis); the empty world has it
 (a/theorem step-acyc [w :- World, it :- Item]
-  (=> (= (p3b w) true) (= (gcy-rest w) true) (= (gcy-rest (:world (world-step w it))) true))
+  (=> (= (chain-start w) true) (= (scope-parents-acyclic-rest w) true) (= (scope-parents-acyclic-rest (:world (world-step w it))) true))
   (intros h hk)
-  (exact (gcy-rest-of _ (step-gcy w it (gcy-intro w (ga-sample w (And.left (p3b-parts w h))) hk) (step-rule-r-safe w it h)))))
-(a/theorem acyc-empty [] (= (gcy-rest empty-world) true) (rfl))
+  (exact (scope-parents-acyclic-rest-of _ (step-scope-parents-acyclic w it (scope-parents-acyclic-intro w (acts-parked-well-formed w (And.left (chain-start-parts w h))) hk) (step-rule-r-safe w it h)))))
+(a/theorem acyc-empty [] (= (scope-parents-acyclic-rest empty-world) true) (rfl))
 (a/theorem step-acyclic [w :- World, it :- Item]
-  (=> (= (p3b w) true) (= (gcy-rest w) true) (= (scopes-acyclic (:world (world-step w it))) true))
-  (intros h hk) (exact (And.right (gcy-rest-parts _ (step-acyc w it h hk)))))
+  (=> (= (chain-start w) true) (= (scope-parents-acyclic-rest w) true) (= (scopes-acyclic (:world (world-step w it))) true))
+  (intros h hk) (exact (And.right (scope-parents-acyclic-rest-parts _ (step-acyc w it h hk)))))
 ;; no scope reaches itself through the parent fields
 (a/theorem step-acyclic-reach [w :- World, it :- Item, y :- Nat]
-  (=> (= (p3b w) true) (= (gcy-rest w) true)
+  (=> (= (chain-start w) true) (= (scope-parents-acyclic-rest w) true)
       (Reach (scope-up (:world (world-step w it))) (scope-up (:world (world-step w it)) y) y) False)
   (intros h hk r)
   (exact (cy-acyc-of _ (step-acyclic w it h hk) y r)))

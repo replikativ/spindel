@@ -17,8 +17,8 @@
   (`useen-add`, unique ids). Before branch z57 the walk had no `seen` and followed every path of the
   validity DAG: it ran out of the fuel on reachable worlds (react_test `p6-validity-chain`).
 
-  Theorems: react-done-ok   inv-sample w -> react-done w d = true
-            valid-done-ok   inv-sample w -> comp-find w x = some c -> valid-done w c = true"
+  Theorems: react-done-ok   well-formed w -> react-done w d = true
+            valid-done-ok   well-formed w -> comp-find w x = some c -> valid-done w c = true"
   (:require [ansatz.core :as a]
             [spindel.v2.state :refer :all]
             [spindel.v2.edits :refer :all]
@@ -192,7 +192,7 @@
   (case [nil] (simp only [valid-debtors List.length]))
   (case [cons h t ih] (simp only [valid-debtors List.length ih])))
 (a/theorem vm8-react-one [w :- World, x :- Nat, c :- CompRow]
-  (=> (= (inv-sample w) true) (= (comp-find w x) (Option.some CompRow c)) (= (:idle c) true)
+  (=> (= (well-formed w) true) (= (comp-find w x) (Option.some CompRow c)) (= (:idle c) true)
       (= (+ (vm8 (react-one w c)) (List.length Valid (:validity c))) (vm8 w)))
   (intros hs hf hi)
   (have i (= (:id c) x)) (exact (tbl-find-id CompRow comp-id x c (:comps w) hf))
@@ -206,7 +206,7 @@
 
 (a/theorem react-run8-done [fuel :- (List Nat)]
   (forall [w :- World, q :- (List Nat)]
-    (=> (= (inv-sample w) true) (< (+ (List.length Nat q) (vm8 w)) (List.length Nat fuel))
+    (=> (= (well-formed w) true) (< (+ (List.length Nat q) (vm8 w)) (List.length Nat fuel))
         (= (:rest (react-run8 fuel w q)) (List.nil Nat))))
   (induction fuel)
   (case [nil] (intros w q hs hl) (rw [nlen-nil] at hl) (omega))
@@ -223,7 +223,7 @@
         (case [false] (simp only [react-run8 hc hi]) (apply (ih w t hs)) (omega))
         (case [true]
           (simp only [react-run8 hc hi])
-          (apply (ih (react-one w c) _ (inv-react-one w c hs)))
+          (apply (ih (react-one w c) _ (well-formed-react-one w c hs)))
           (have v := (vm8-react-one w x c hs hc hi))
           (rw [nlen-app, vd-len])
           (omega))))))
@@ -240,7 +240,7 @@
     (all_goals (omega))))
 
 ;; Theorem (P8): the reactivation worklist empties within react-fuel
-(a/theorem react-done-ok [w :- World, d :- Nat] (=> (= (inv-sample w) true) (= (react-done w d) true))
+(a/theorem react-done-ok [w :- World, d :- Nat] (=> (= (well-formed w) true) (= (react-done w d) true))
   (intro hs)
   (have le := (vm-le-all (:comps w)))
   (have hl (< (+ (List.length Nat (List.cons Nat d (List.nil Nat))) (vm8 w)) (List.length Nat (react-fuel w))))
@@ -401,7 +401,7 @@
 
 ;; Theorem (P6): validation of a computation of the world never runs out of fuel
 (a/theorem valid-done-ok [w :- World, x :- Nat, c :- CompRow]
-  (=> (= (inv-sample w) true) (= (comp-find w x) (Option.some CompRow c)) (= (valid-done w c) true))
+  (=> (= (well-formed w) true) (= (comp-find w x) (Option.some CompRow c)) (= (valid-done w c) true))
   (intros hs hf)
   (have hn := (comps-nodup w hs))
   (have i (= (:id c) x)) (exact (tbl-find-id CompRow comp-id x c (:comps w) hf))

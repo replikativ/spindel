@@ -3,7 +3,7 @@
   cleanup row, admitted by §3.4, or a finalizer ref of a reached run) through the step,
   kernel-checked (Init only).
 
-  Bundle gw = inv-sample and: id 2 is the root scope's (a scope of kind root or with id 2 is the
+  Bundle root-scope-reserved = well-formed and: id 2 is the root scope's (a scope of kind root or with id 2 is the
   root scope with parent 0), no run scope is 2, the allocator is above 2, no fork marker is owned
   by the root scope (C1c stage B; before it: no fork markers). Restated over the raw transition and normalization by the generic tree; own proofs:
   run creation (`add-run-scope`: the new scope is next-id + 1) and detach (the re-parented scope is
@@ -11,11 +11,11 @@
   Reach: from the roots, every node is the root scope or reached from the obligations
   (`reach-roots-obl`): the other roots are obligations (pins, observe edges, open explicit scopes,
   pending activation, armed publications with handles), and the root scope's successors are the
-  running tasks it owns (reached from their alive run: K.run names a run of K, from i10's g10r)
+  running tasks it owns (reached from their alive run: K.run names a run of K, from i10's i10-current)
   and its fork markers (none). With I3 (`step-i3-total`: the filter keeps only live, cleanup,
   admitted and stored rows) every row is `obl-ok` (`i11a-of`); obl-reach converges with its fuel
   (`obl-converged`).
-  Theorems: step-gw, i11a-of, p3d = p3c && gw && inv-i11a with step-p3d, p3d-empty and
+  Theorems: step-root-scope-reserved, i11a-of, chain-to-i11a = chain-to-i10-current && root-scope-reserved && inv-i11a with step-chain-to-i11a, chain-to-i11a-empty and
   step-i11a-total (no honest hypothesis)."
   (:require [ansatz.core :as a]
             [spindel.v2.pres.tree :as tree]
@@ -39,173 +39,173 @@
             [spindel.v2.inv.i10 :refer :all]))
 
 ;; ===========================================================================
-;; Part A. The bundle gw: id 2 is the root scope's (kind root -> id 2, parent 0), no run scope
+;; Part A. The bundle root-scope-reserved: id 2 is the root scope's (kind root -> id 2, parent 0), no run scope
 ;; is 2, the allocator is above 2, no fork marker owned by the root scope (C1c stage B, `fk-ok`)
 ;; ===========================================================================
 
-(a/structure SKW [] (id Nat) (kind Nat) (parent Nat))
-(a/defn skw [s :- ScopeRow] SKW (SKW.mk (:id s) (:kind s) (:parent s)))
-(a/defn skw-id [k :- SKW] Nat (:id k))
-(a/defn skws [ss :- (List ScopeRow)] (List SKW)
-  (match ss [nil (List.nil SKW)] [(cons h t) (List.cons SKW (skw h) (skws t))]))
+(a/structure RootScopeReservedScopeKey [] (id Nat) (kind Nat) (parent Nat))
+(a/defn root-scope-reserved-scope-key [s :- ScopeRow] RootScopeReservedScopeKey (RootScopeReservedScopeKey.mk (:id s) (:kind s) (:parent s)))
+(a/defn root-scope-reserved-scope-key-id [k :- RootScopeReservedScopeKey] Nat (:id k))
+(a/defn root-scope-reserved-scope-keys [ss :- (List ScopeRow)] (List RootScopeReservedScopeKey)
+  (match ss [nil (List.nil RootScopeReservedScopeKey)] [(cons h t) (List.cons RootScopeReservedScopeKey (root-scope-reserved-scope-key h) (root-scope-reserved-scope-keys t))]))
 (a/defn rscs [rs :- (List RunRow)] (List Nat)
   (match rs [nil (List.nil Nat)] [(cons h t) (List.cons Nat (:scope h) (rscs t))]))
-(a/defn root-ok [k :- SKW] Bool
+(a/defn root-ok [k :- RootScopeReservedScopeKey] Bool
   (Bool.or (Bool.not (Bool.or (Nat.beq (:kind k) scope-root) (Nat.beq (:id k) 2)))
            (Bool.and (Nat.beq (:id k) 2) (Bool.and (Nat.beq (:kind k) scope-root) (Nat.beq (:parent k) 0)))))
 (a/defn ne2 [x :- Nat] Bool (Bool.not (Nat.beq x 2)))
 ;; C1c stage B: no fork marker is owned by the root scope (the owner is the forking run's current scope)
 (a/defn fk-ok [f :- ForkRow] Bool (ne2 (:owner f)))
-(a/defn gwk [sks :- (List SKW), rss :- (List Nat), fs :- (List ForkRow), n :- Nat] Bool
+(a/defn root-scope-reserved-keys-ok [sks :- (List RootScopeReservedScopeKey), rss :- (List Nat), fs :- (List ForkRow), n :- Nat] Bool
   (Bool.and (tbl-all root-ok sks) (Bool.and (tbl-all ne2 rss) (Bool.and (tbl-all fk-ok fs) (Nat.blt 2 n)))))
-(a/defn gw-rest [w :- World] Bool (gwk (skws (:scopes w)) (rscs (:runs w)) (:forks w) (:next-id w)))
-(a/defn gw [w :- World] Bool (Bool.and (inv-sample w) (gw-rest w)))
+(a/defn root-scope-reserved-rest [w :- World] Bool (root-scope-reserved-keys-ok (root-scope-reserved-scope-keys (:scopes w)) (rscs (:runs w)) (:forks w) (:next-id w)))
+(a/defn root-scope-reserved [w :- World] Bool (Bool.and (well-formed w) (root-scope-reserved-rest w)))
 
-(a/theorem gw-sample [w :- World] (=> (= (gw w) true) (= (inv-sample w) true))
-  (intro h) (simp only [gw Bool.and_eq_true] at h) (exact (And.left h)))
-(a/theorem gw-rest-of [w :- World] (=> (= (gw w) true) (= (gw-rest w) true))
-  (intro h) (simp only [gw Bool.and_eq_true] at h) (exact (And.right h)))
-(a/theorem gw-intro [w :- World] (=> (= (inv-sample w) true) (= (gw-rest w) true) (= (gw w) true))
-  (intros h1 h2) (simp only [gw h1 h2 Bool.and_self]))
-(a/theorem gw-parts [w :- World]
-  (=> (= (gw w) true) (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
-  (intro h) (exact (inv-parts w (gw-sample w h))))
+(a/theorem root-scope-reserved-well-formed [w :- World] (=> (= (root-scope-reserved w) true) (= (well-formed w) true))
+  (intro h) (simp only [root-scope-reserved Bool.and_eq_true] at h) (exact (And.left h)))
+(a/theorem root-scope-reserved-rest-of [w :- World] (=> (= (root-scope-reserved w) true) (= (root-scope-reserved-rest w) true))
+  (intro h) (simp only [root-scope-reserved Bool.and_eq_true] at h) (exact (And.right h)))
+(a/theorem root-scope-reserved-intro [w :- World] (=> (= (well-formed w) true) (= (root-scope-reserved-rest w) true) (= (root-scope-reserved w) true))
+  (intros h1 h2) (simp only [root-scope-reserved h1 h2 Bool.and_self]))
+(a/theorem root-scope-reserved-parts [w :- World]
+  (=> (= (root-scope-reserved w) true) (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
+  (intro h) (exact (well-formed-parts w (root-scope-reserved-well-formed w h))))
 
-(a/structure KWW [] (sks (List SKW)) (rss (List Nat)) (fs (List ForkRow)) (n Nat))
-(a/defn kww [w :- World] KWW (KWW.mk (skws (:scopes w)) (rscs (:runs w)) (:forks w) (:next-id w)))
-(a/theorem gw-rest-kw [w :- World, w2 :- World] (=> (= (kww w2) (kww w)) (= (gw-rest w2) (gw-rest w)))
+(a/structure RootScopeReservedView [] (sks (List RootScopeReservedScopeKey)) (rss (List Nat)) (fs (List ForkRow)) (n Nat))
+(a/defn root-scope-reserved-view [w :- World] RootScopeReservedView (RootScopeReservedView.mk (root-scope-reserved-scope-keys (:scopes w)) (rscs (:runs w)) (:forks w) (:next-id w)))
+(a/theorem root-scope-reserved-rest-frame [w :- World, w2 :- World] (=> (= (root-scope-reserved-view w2) (root-scope-reserved-view w)) (= (root-scope-reserved-rest w2) (root-scope-reserved-rest w)))
   (intro e)
-  (have e1 (= (skws (:scopes w2)) (skws (:scopes w)))) (exact (congrArg (fn [k :- KWW] (:sks k)) e))
-  (have e2 (= (rscs (:runs w2)) (rscs (:runs w)))) (exact (congrArg (fn [k :- KWW] (:rss k)) e))
-  (have e3 (= (:forks w2) (:forks w))) (exact (congrArg (fn [k :- KWW] (:fs k)) e))
-  (have e4 (= (:next-id w2) (:next-id w))) (exact (congrArg (fn [k :- KWW] (:n k)) e))
-  (simp only [gw-rest e1 e2 e3 e4]))
+  (have e1 (= (root-scope-reserved-scope-keys (:scopes w2)) (root-scope-reserved-scope-keys (:scopes w)))) (exact (congrArg (fn [k :- RootScopeReservedView] (:sks k)) e))
+  (have e2 (= (rscs (:runs w2)) (rscs (:runs w)))) (exact (congrArg (fn [k :- RootScopeReservedView] (:rss k)) e))
+  (have e3 (= (:forks w2) (:forks w))) (exact (congrArg (fn [k :- RootScopeReservedView] (:fs k)) e))
+  (have e4 (= (:next-id w2) (:next-id w))) (exact (congrArg (fn [k :- RootScopeReservedView] (:n k)) e))
+  (simp only [root-scope-reserved-rest e1 e2 e3 e4]))
 
-(a/theorem skws-same [x :- Nat, f :- (=> ScopeRow ScopeRow), hk :- (forall [s :- ScopeRow] (= (skw (f s)) (skw s))), ss :- (List ScopeRow)]
-  (= (skws (tbl-upd scope-id x f ss)) (skws ss))
+(a/theorem root-scope-reserved-scope-keys-same [x :- Nat, f :- (=> ScopeRow ScopeRow), hk :- (forall [s :- ScopeRow] (= (root-scope-reserved-scope-key (f s)) (root-scope-reserved-scope-key s))), ss :- (List ScopeRow)]
+  (= (root-scope-reserved-scope-keys (tbl-upd scope-id x f ss)) (root-scope-reserved-scope-keys ss))
   (induction ss)
-  (case [nil] (simp only [tbl-upd skws]))
-  (case [cons h t ih] (cases hx (Nat.beq (scope-id h) x)) (all_goals (simp only [tbl-upd hx skws ih (hk h)]))))
+  (case [nil] (simp only [tbl-upd root-scope-reserved-scope-keys]))
+  (case [cons h t ih] (cases hx (Nat.beq (scope-id h) x)) (all_goals (simp only [tbl-upd hx root-scope-reserved-scope-keys ih (hk h)]))))
 (a/theorem rscs-same [x :- Nat, f :- (=> RunRow RunRow), hk :- (forall [r :- RunRow] (= (:scope (f r)) (:scope r))), rs :- (List RunRow)]
   (= (rscs (tbl-upd run-id x f rs)) (rscs rs))
   (induction rs)
   (case [nil] (simp only [tbl-upd rscs]))
   (case [cons h t ih] (cases hx (Nat.beq (run-id h) x)) (all_goals (simp only [tbl-upd hx rscs ih (hk h)]))))
 
-(a/theorem gw-run-upd [w :- World, x :- Nat, f :- (=> RunRow RunRow),
+(a/theorem root-scope-reserved-run-upd [w :- World, x :- Nat, f :- (=> RunRow RunRow),
                        hf :- (forall [r :- RunRow] (= (run-id (f r)) (run-id r))),
                        hk :- (forall [r :- RunRow] (= (:scope (f r)) (:scope r)))]
-  (=> (= (gw w) true) (= (gw (run-upd w x f)) true))
+  (=> (= (root-scope-reserved w) true) (= (root-scope-reserved (run-upd w x f)) true))
   (intro h)
-  (have e (= (kww (run-upd w x f)) (kww w))) (simp only [kww run-upd set-runs (rscs-same x f hk (:runs w))])
-  (exact (gw-intro _ (inv-run-upd w x f hf (gw-sample w h)) (Eq.trans (gw-rest-kw w _ e) (gw-rest-of w h)))))
-(a/theorem gw-scope-upd [w :- World, x :- Nat, f :- (=> ScopeRow ScopeRow),
+  (have e (= (root-scope-reserved-view (run-upd w x f)) (root-scope-reserved-view w))) (simp only [root-scope-reserved-view run-upd set-runs (rscs-same x f hk (:runs w))])
+  (exact (root-scope-reserved-intro _ (well-formed-run-upd w x f hf (root-scope-reserved-well-formed w h)) (Eq.trans (root-scope-reserved-rest-frame w _ e) (root-scope-reserved-rest-of w h)))))
+(a/theorem root-scope-reserved-scope-upd [w :- World, x :- Nat, f :- (=> ScopeRow ScopeRow),
                          hf :- (forall [s :- ScopeRow] (= (scope-id (f s)) (scope-id s))),
-                         hk :- (forall [s :- ScopeRow] (= (skw (f s)) (skw s)))]
-  (=> (= (gw w) true) (= (gw (scope-upd w x f)) true))
+                         hk :- (forall [s :- ScopeRow] (= (root-scope-reserved-scope-key (f s)) (root-scope-reserved-scope-key s)))]
+  (=> (= (root-scope-reserved w) true) (= (root-scope-reserved (scope-upd w x f)) true))
   (intro h)
-  (have e (= (kww (scope-upd w x f)) (kww w))) (simp only [kww scope-upd set-scopes (skws-same x f hk (:scopes w))])
-  (exact (gw-intro _ (inv-scope-upd w x f hf (gw-sample w h)) (Eq.trans (gw-rest-kw w _ e) (gw-rest-of w h)))))
+  (have e (= (root-scope-reserved-view (scope-upd w x f)) (root-scope-reserved-view w))) (simp only [root-scope-reserved-view scope-upd set-scopes (root-scope-reserved-scope-keys-same x f hk (:scopes w))])
+  (exact (root-scope-reserved-intro _ (well-formed-scope-upd w x f hf (root-scope-reserved-well-formed w h)) (Eq.trans (root-scope-reserved-rest-frame w _ e) (root-scope-reserved-rest-of w h)))))
 
 ;; ---- deletions, the allocator, insertions
 
-(a/theorem skws-del [x :- Nat, ss :- (List ScopeRow)] (= (skws (tbl-del scope-id x ss)) (tbl-del skw-id x (skws ss)))
+(a/theorem root-scope-reserved-scope-keys-del [x :- Nat, ss :- (List ScopeRow)] (= (root-scope-reserved-scope-keys (tbl-del scope-id x ss)) (tbl-del root-scope-reserved-scope-key-id x (root-scope-reserved-scope-keys ss)))
   (induction ss)
-  (case [nil] (simp only [tbl-del skws]))
+  (case [nil] (simp only [tbl-del root-scope-reserved-scope-keys]))
   (case [cons h t ih]
-    (have e (= (Nat.beq (skw-id (skw h)) x) (Nat.beq (scope-id h) x))) (rfl)
-    (cases hx (Nat.beq (scope-id h) x)) (all_goals (simp only [tbl-del hx skws e ih]))))
+    (have e (= (Nat.beq (root-scope-reserved-scope-key-id (root-scope-reserved-scope-key h)) x) (Nat.beq (scope-id h) x))) (rfl)
+    (cases hx (Nat.beq (scope-id h) x)) (all_goals (simp only [tbl-del hx root-scope-reserved-scope-keys e ih]))))
 (a/defn rsc-of [r :- RunRow] Nat (:scope r))
 (a/theorem all-rscs [P :- (=> Nat Bool), rs :- (List RunRow)] (= (tbl-all P (rscs rs)) (tbl-all (fn [r :- RunRow] (P (:scope r))) rs))
   (induction rs) (case [nil] (simp only [rscs tbl-all])) (case [cons h t ih] (simp only [rscs tbl-all ih])))
-(a/theorem all-skws [P :- (=> SKW Bool), ss :- (List ScopeRow)] (= (tbl-all P (skws ss)) (tbl-all (fn [s :- ScopeRow] (P (skw s))) ss))
-  (induction ss) (case [nil] (simp only [skws tbl-all])) (case [cons h t ih] (simp only [skws tbl-all ih])))
+(a/theorem all-root-scope-reserved-scope-keys [P :- (=> RootScopeReservedScopeKey Bool), ss :- (List ScopeRow)] (= (tbl-all P (root-scope-reserved-scope-keys ss)) (tbl-all (fn [s :- ScopeRow] (P (root-scope-reserved-scope-key s))) ss))
+  (induction ss) (case [nil] (simp only [root-scope-reserved-scope-keys tbl-all])) (case [cons h t ih] (simp only [root-scope-reserved-scope-keys tbl-all ih])))
 
-(a/theorem gw-rest-run-del [w :- World, x :- Nat] (=> (= (gw-rest w) true) (= (gw-rest (run-del w x)) true))
+(a/theorem root-scope-reserved-rest-run-del [w :- World, x :- Nat] (=> (= (root-scope-reserved-rest w) true) (= (root-scope-reserved-rest (run-del w x)) true))
   (intro h)
-  (simp only [gw-rest gwk Bool.and_eq_true] at h)
+  (simp only [root-scope-reserved-rest root-scope-reserved-keys-ok Bool.and_eq_true] at h)
   (have a1 (= (tbl-all ne2 (rscs (tbl-del run-id x (:runs w)))) true))
   (rw [all-rscs]) (have a0 := (And.left (And.right h))) (rw [all-rscs] at a0)
   (exact (tbl-all-del RunRow run-id x _ _ (fn [r :- RunRow, p :- (= (ne2 (:scope r)) true), q :- (= (Nat.beq (run-id r) x) false)] p) _ a0))
-  (simp only [gw-rest gwk run-del set-runs a1 (And.left h) (And.right (And.right h)) Bool.and_self]))
-(a/theorem gw-rest-scope-del [w :- World, x :- Nat] (=> (= (gw-rest w) true) (= (gw-rest (scope-del w x)) true))
+  (simp only [root-scope-reserved-rest root-scope-reserved-keys-ok run-del set-runs a1 (And.left h) (And.right (And.right h)) Bool.and_self]))
+(a/theorem root-scope-reserved-rest-scope-del [w :- World, x :- Nat] (=> (= (root-scope-reserved-rest w) true) (= (root-scope-reserved-rest (scope-del w x)) true))
   (intro h)
-  (simp only [gw-rest gwk Bool.and_eq_true] at h)
-  (have a1 (= (tbl-all root-ok (skws (tbl-del scope-id x (:scopes w)))) true))
-  (rw [skws-del])
-  (exact (tbl-all-del SKW skw-id x _ _ (fn [k :- SKW, p :- (= (root-ok k) true), q :- (= (Nat.beq (skw-id k) x) false)] p) _ (And.left h)))
-  (simp only [gw-rest gwk scope-del set-scopes a1 (And.right h) Bool.and_self]))
-(a/theorem gw-rest-filter [w :- World, K :- (=> Nat Bool)] (=> (= (gw-rest w) true) (= (gw-rest (filter-world K w)) true))
+  (simp only [root-scope-reserved-rest root-scope-reserved-keys-ok Bool.and_eq_true] at h)
+  (have a1 (= (tbl-all root-ok (root-scope-reserved-scope-keys (tbl-del scope-id x (:scopes w)))) true))
+  (rw [root-scope-reserved-scope-keys-del])
+  (exact (tbl-all-del RootScopeReservedScopeKey root-scope-reserved-scope-key-id x _ _ (fn [k :- RootScopeReservedScopeKey, p :- (= (root-ok k) true), q :- (= (Nat.beq (root-scope-reserved-scope-key-id k) x) false)] p) _ (And.left h)))
+  (simp only [root-scope-reserved-rest root-scope-reserved-keys-ok scope-del set-scopes a1 (And.right h) Bool.and_self]))
+(a/theorem root-scope-reserved-rest-filter [w :- World, K :- (=> Nat Bool)] (=> (= (root-scope-reserved-rest w) true) (= (root-scope-reserved-rest (filter-world K w)) true))
   (intro h)
-  (simp only [gw-rest gwk Bool.and_eq_true] at h)
-  (have a1 (= (tbl-all root-ok (skws (tbl-keep K scope-id (:scopes w)))) true))
-  (rw [all-skws]) (have a0 := (And.left h)) (rw [all-skws] at a0) (exact (tbl-all-keep-same ScopeRow K scope-id _ _ a0))
+  (simp only [root-scope-reserved-rest root-scope-reserved-keys-ok Bool.and_eq_true] at h)
+  (have a1 (= (tbl-all root-ok (root-scope-reserved-scope-keys (tbl-keep K scope-id (:scopes w)))) true))
+  (rw [all-root-scope-reserved-scope-keys]) (have a0 := (And.left h)) (rw [all-root-scope-reserved-scope-keys] at a0) (exact (tbl-all-keep-same ScopeRow K scope-id _ _ a0))
   (have a2 (= (tbl-all ne2 (rscs (tbl-keep K run-id (:runs w)))) true))
   (rw [all-rscs]) (have a0 := (And.left (And.right h))) (rw [all-rscs] at a0) (exact (tbl-all-keep-same RunRow K run-id _ _ a0))
   (have f0 := (And.left (And.right (And.right h))))
   (have a3 (= (tbl-all fk-ok (tbl-keep K fork-id (:forks w))) true)) (exact (tbl-all-keep-same ForkRow K fork-id _ _ f0))
-  (simp only [gw-rest gwk filter-world a1 a2 a3 (And.right (And.right (And.right h))) Bool.and_self]))
-(a/theorem gw-rest-next [w :- World, v :- Nat]
-  (=> (= (gw-rest w) true) (<= (:next-id w) v) (= (gw-rest (set-next-id w v)) true))
+  (simp only [root-scope-reserved-rest root-scope-reserved-keys-ok filter-world a1 a2 a3 (And.right (And.right (And.right h))) Bool.and_self]))
+(a/theorem root-scope-reserved-rest-next [w :- World, v :- Nat]
+  (=> (= (root-scope-reserved-rest w) true) (<= (:next-id w) v) (= (root-scope-reserved-rest (set-next-id w v)) true))
   (intros h hv)
-  (simp only [gw-rest gwk Bool.and_eq_true Nat.blt_eq] at h)
+  (simp only [root-scope-reserved-rest root-scope-reserved-keys-ok Bool.and_eq_true Nat.blt_eq] at h)
   (have b (= (Nat.blt 2 v) true)) (simp only [Nat.blt_eq]) (have z := (And.right (And.right (And.right h)))) (omega)
   (have e1 (= (:scopes (set-next-id w v)) (:scopes w))) (rfl)
   (have e2 (= (:runs (set-next-id w v)) (:runs w))) (rfl)
   (have e3 (= (:forks (set-next-id w v)) (:forks w))) (rfl)
   (have e4 (= (:next-id (set-next-id w v)) v)) (rfl)
-  (simp only [gw-rest gwk e1 e2 e3 e4 b (And.left h) (And.left (And.right h)) (And.left (And.right (And.right h))) Bool.and_self]))
-(a/theorem gw-rest-bump [w :- World] (=> (= (gw-rest w) true) (= (gw-rest (bump w)) true))
-  (intro h) (simp only [bump]) (exact (gw-rest-next w (+ (:next-id w) 1) h (Nat.le_succ (:next-id w)))))
+  (simp only [root-scope-reserved-rest root-scope-reserved-keys-ok e1 e2 e3 e4 b (And.left h) (And.left (And.right h)) (And.left (And.right (And.right h))) Bool.and_self]))
+(a/theorem root-scope-reserved-rest-bump [w :- World] (=> (= (root-scope-reserved-rest w) true) (= (root-scope-reserved-rest (bump w)) true))
+  (intro h) (simp only [bump]) (exact (root-scope-reserved-rest-next w (+ (:next-id w) 1) h (Nat.le_succ (:next-id w)))))
 
 ;; a new scope that is not of kind root (run and explicit scopes)
-(a/theorem gw-scope-ins-fresh [w :- World, r :- ScopeRow, hk :- (= (Nat.beq (:kind r) scope-root) false)]
-  (=> (= (scope-id r) (:next-id w)) (= (gw w) true) (= (gw (bump (scope-ins w r))) true))
+(a/theorem root-scope-reserved-scope-ins-fresh [w :- World, r :- ScopeRow, hk :- (= (Nat.beq (:kind r) scope-root) false)]
+  (=> (= (scope-id r) (:next-id w)) (= (root-scope-reserved w) true) (= (root-scope-reserved (bump (scope-ins w r))) true))
   (intros hr h)
-  (have h0 := (gw-rest-of w h)) (simp only [gw-rest gwk Bool.and_eq_true] at h0)
+  (have h0 := (root-scope-reserved-rest-of w h)) (simp only [root-scope-reserved-rest root-scope-reserved-keys-ok Bool.and_eq_true] at h0)
   (have hi (= (Nat.beq (:id r) 2) false))
   (cases hb (Nat.beq (:id r) 2)) (rfl) (have z := (Nat.eq_of_beq_eq_true hb)) (have z2 := (And.right (And.right (And.right h0))))
   (simp only [Nat.blt_eq] at z2) (have z3 (= (:id r) (:next-id w))) (exact hr) (omega)
-  (have ro (= (root-ok (skw r)) true)) (simp only [root-ok skw hk hi Bool.or_false Bool.not_false Bool.true_or])
-  (have hrest (= (gw-rest (scope-ins w r)) true))
-  (simp only [gw-rest gwk scope-ins set-scopes tbl-ins skws tbl-all ro (And.left h0) (And.right h0) Bool.and_self Bool.true_and])
-  (exact (gw-intro _ (inv-scope-ins-fresh w r hr (gw-sample w h)) (gw-rest-bump _ hrest))))
+  (have ro (= (root-ok (root-scope-reserved-scope-key r)) true)) (simp only [root-ok root-scope-reserved-scope-key hk hi Bool.or_false Bool.not_false Bool.true_or])
+  (have hrest (= (root-scope-reserved-rest (scope-ins w r)) true))
+  (simp only [root-scope-reserved-rest root-scope-reserved-keys-ok scope-ins set-scopes tbl-ins root-scope-reserved-scope-keys tbl-all ro (And.left h0) (And.right h0) Bool.and_self Bool.true_and])
+  (exact (root-scope-reserved-intro _ (well-formed-scope-ins-fresh w r hr (root-scope-reserved-well-formed w h)) (root-scope-reserved-rest-bump _ hrest))))
 
 ;; ===========================================================================
 ;; Part B. The copy
 ;; ===========================================================================
 
-(def GW (mk-bundle 'gw [] "gw-"
-          {'inv-run-upd ['(fn [r :- RunRow] (Eq.refl (:scope r))) 4]
-           'inv-scope-upd ['(fn [s :- ScopeRow] (Eq.refl (skw s))) 4]
-           'inv-scope-ins-fresh ['(Eq.refl false) 2]}))
-(swap! (:renames GW) assoc 'inv-parts 'gw-parts 'inv-run-upd 'gw-run-upd 'inv-scope-upd 'gw-scope-upd 'inv-scope-ins-fresh 'gw-scope-ins-fresh)
+(def GW (mk-bundle 'root-scope-reserved [] "root-scope-reserved-"
+          {'well-formed-run-upd ['(fn [r :- RunRow] (Eq.refl (:scope r))) 4]
+           'well-formed-scope-upd ['(fn [s :- ScopeRow] (Eq.refl (root-scope-reserved-scope-key s))) 4]
+           'well-formed-scope-ins-fresh ['(Eq.refl false) 2]}))
+(swap! (:renames GW) assoc 'well-formed-parts 'root-scope-reserved-parts 'well-formed-run-upd 'root-scope-reserved-run-upd 'well-formed-scope-upd 'root-scope-reserved-scope-upd 'well-formed-scope-ins-fresh 'root-scope-reserved-scope-ins-fresh)
 (defpart GW :reads '[forks next-id runs scopes])
-(frames/frame-theorem! 'gw-rest-mark-edge 'gw-rest 'mark-edge-inv-sample)
-(frames/frame-theorem! 'gw-rest-unmark-edge 'gw-rest 'unmark-edge-inv-sample)
-(frames/frame-theorem! 'gw-rest-remove-edge 'gw-rest 'inv-remove-edge)
-(doseq [o '[inv-source-ins-fresh inv-resource-ins-fresh inv-act-ins-fresh inv-comp-ins-fresh inv-task-ins-fresh]]
-  (prim! GW o (list 'gw-rest-bump (list (symbol (str/replace (subs (name o) 4) "-fresh" "")) 'w 'r) (list 'Eq.trans '(rfl) 'R))))
-(prim! GW 'inv-bump '(gw-rest-bump w R))
-(prim! GW 'insert-edge-fresh-inv-sample '(gw-rest-bump (insert-edge w (edge-set-id (:next-id w) e)) (Eq.trans (rfl) R)))
-(prim! GW 'inv-run-del '(gw-rest-run-del w x R))
-(prim! GW 'inv-scope-del '(gw-rest-scope-del w x R))
-(prim! GW 'inv-filter-world '(gw-rest-filter w K R))
+(frames/frame-theorem! 'root-scope-reserved-rest-mark-edge 'root-scope-reserved-rest 'well-formed-mark-edge)
+(frames/frame-theorem! 'root-scope-reserved-rest-unmark-edge 'root-scope-reserved-rest 'well-formed-unmark-edge)
+(frames/frame-theorem! 'root-scope-reserved-rest-remove-edge 'root-scope-reserved-rest 'well-formed-remove-edge)
+(doseq [o '[well-formed-source-ins-fresh well-formed-resource-ins-fresh well-formed-act-ins-fresh well-formed-comp-ins-fresh well-formed-task-ins-fresh]]
+  (prim! GW o (list 'root-scope-reserved-rest-bump (list (symbol (str/replace (subs (name o) 12) "-fresh" "")) 'w 'r) (list 'Eq.trans '(rfl) 'R))))
+(prim! GW 'well-formed-bump '(root-scope-reserved-rest-bump w R))
+(prim! GW 'well-formed-insert-edge-fresh '(root-scope-reserved-rest-bump (insert-edge w (edge-set-id (:next-id w) e)) (Eq.trans (rfl) R)))
+(prim! GW 'well-formed-run-del '(root-scope-reserved-rest-run-del w x R))
+(prim! GW 'well-formed-scope-del '(root-scope-reserved-rest-scope-del w x R))
+(prim! GW 'well-formed-filter-world '(root-scope-reserved-rest-filter w K R))
 (tree/part! GW
-  :over '{t-own-inv         t-own-gw            ; own: the marker's owner is not the root scope
-          inv-add-run-scope gw-add-run-scope    ; T4/T5/T11: the new run's scope is a run scope (> 2)
-          t-detach-inv      t-detach-gw})       ; detach: the task's run scope is not 2
+  :over '{well-formed-t-own         root-scope-reserved-t-own            ; own: the marker's owner is not the root scope
+          well-formed-add-run-scope root-scope-reserved-add-run-scope    ; T4/T5/T11: the new run's scope is a run scope (> 2)
+          well-formed-t-detach      root-scope-reserved-t-detach})       ; detach: the task's run scope is not 2
 
 ;; C1c stage B: a marker goes (fk-ok kept); own adds one whose owner is not the root scope (own-ok)
-(a/theorem gw-rest-fork-del [w :- World, x :- Nat] (=> (= (gw-rest w) true) (= (gw-rest (fork-del w x)) true))
+(a/theorem root-scope-reserved-rest-fork-del [w :- World, x :- Nat] (=> (= (root-scope-reserved-rest w) true) (= (root-scope-reserved-rest (fork-del w x)) true))
   (intro h)
-  (simp only [gw-rest gwk Bool.and_eq_true] at h)
+  (simp only [root-scope-reserved-rest root-scope-reserved-keys-ok Bool.and_eq_true] at h)
   (have a (= (tbl-all fk-ok (tbl-del fork-id x (:forks w))) true))
   (exact (tbl-all-del ForkRow fork-id x _ _ (fn [f :- ForkRow, p :- (= (fk-ok f) true), q :- (= (Nat.beq (fork-id f) x) false)] p) _ (And.left (And.right (And.right h)))))
-  (simp only [gw-rest gwk fork-del set-forks a (And.left h) (And.left (And.right h)) (And.right (And.right (And.right h))) Bool.and_self]))
-(prim! GW 'inv-fork-del '(gw-rest-fork-del w x R))
-(a/theorem t-own-gw [w :- World, s :- Nat, m :- Nat]
-  (=> (= (gw w) true) (= (gw (:world (t-own w s m))) true))
+  (simp only [root-scope-reserved-rest root-scope-reserved-keys-ok fork-del set-forks a (And.left h) (And.left (And.right h)) (And.right (And.right (And.right h))) Bool.and_self]))
+(prim! GW 'well-formed-fork-del '(root-scope-reserved-rest-fork-del w x R))
+(a/theorem root-scope-reserved-t-own [w :- World, s :- Nat, m :- Nat]
+  (=> (= (root-scope-reserved w) true) (= (root-scope-reserved (:world (t-own w s m))) true))
   (intro h)
   (cases ho (own-ok w s))
   (case [false] (simp only [t-own ho refuse]) (exact h))
@@ -213,68 +213,68 @@
     (simp only [t-own ho accept])
     (have o := (own-ok-parts w s ho))
     (have f1 (= (fk-ok (ForkRow.mk (:next-id w) m s)) true)) (simp only [fk-ok ne2 (And.left (And.right o)) Bool.not_false])
-    (have h0 := (gw-rest-of w h)) (simp only [gw-rest gwk Bool.and_eq_true] at h0)
-    (have r1 (= (gw-rest (fork-ins w (ForkRow.mk (:next-id w) m s))) true))
-    (simp only [gw-rest gwk fork-ins set-forks tbl-ins tbl-all f1 (And.left h0) (And.left (And.right h0))
+    (have h0 := (root-scope-reserved-rest-of w h)) (simp only [root-scope-reserved-rest root-scope-reserved-keys-ok Bool.and_eq_true] at h0)
+    (have r1 (= (root-scope-reserved-rest (fork-ins w (ForkRow.mk (:next-id w) m s))) true))
+    (simp only [root-scope-reserved-rest root-scope-reserved-keys-ok fork-ins set-forks tbl-ins tbl-all f1 (And.left h0) (And.left (And.right h0))
                 (And.left (And.right (And.right h0))) (And.right (And.right (And.right h0))) Bool.and_self Bool.true_and])
-    (exact (gw-intro _ (inv-fork-ins-fresh w (ForkRow.mk (:next-id w) m s) (rfl) (gw-sample w h)) (gw-rest-bump _ r1)))))
+    (exact (root-scope-reserved-intro _ (well-formed-fork-ins-fresh w (ForkRow.mk (:next-id w) m s) (rfl) (root-scope-reserved-well-formed w h)) (root-scope-reserved-rest-bump _ r1)))))
 
 ;; T4/T5/T11: the new run's scope is next-id + 1 (> 2), a run scope
-(a/theorem gw-add-run-scope-o [w :- World, of :- Nat, epoch :- Nat, parent :- Nat, ei :- Nat]
-  (=> (= (gw w) true) (= (gw (add-run-scope w of epoch parent ei)) true))
+(a/theorem root-scope-reserved-add-run-scope-hand [w :- World, of :- Nat, epoch :- Nat, parent :- Nat, ei :- Nat]
+  (=> (= (root-scope-reserved w) true) (= (root-scope-reserved (add-run-scope w of epoch parent ei)) true))
   (intro h)
-  (have hs := (gw-sample w h))
-  (have h0 := (gw-rest-of w h)) (simp only [gw-rest gwk Bool.and_eq_true Nat.blt_eq] at h0)
+  (have hs := (root-scope-reserved-well-formed w h))
+  (have h0 := (root-scope-reserved-rest-of w h)) (simp only [root-scope-reserved-rest root-scope-reserved-keys-ok Bool.and_eq_true Nat.blt_eq] at h0)
   (have b (= (ne2 (+ (:next-id w) 1)) true))
   (simp only [ne2]) (cases hb (Nat.beq (+ (:next-id w) 1) 2)) (rfl) (have z := (Nat.eq_of_beq_eq_true hb)) (have z2 := (And.right (And.right (And.right h0)))) (omega)
-  (have h1 (= (gw (bump (run-ins w (new-run-row (:next-id w) of epoch (+ (:next-id w) 1) ei)))) true))
-  (have r1 (= (gw-rest (run-ins w (new-run-row (:next-id w) of epoch (+ (:next-id w) 1) ei))) true))
-  (simp only [gw-rest gwk run-ins set-runs tbl-ins rscs new-run-row tbl-all b (And.left h0) (And.left (And.right h0))
+  (have h1 (= (root-scope-reserved (bump (run-ins w (new-run-row (:next-id w) of epoch (+ (:next-id w) 1) ei)))) true))
+  (have r1 (= (root-scope-reserved-rest (run-ins w (new-run-row (:next-id w) of epoch (+ (:next-id w) 1) ei))) true))
+  (simp only [root-scope-reserved-rest root-scope-reserved-keys-ok run-ins set-runs tbl-ins rscs new-run-row tbl-all b (And.left h0) (And.left (And.right h0))
               (And.left (And.right (And.right h0))) Bool.and_self Bool.true_and])
   (have z2 := (And.right (And.right (And.right h0)))) (simp only [Nat.blt_eq]) (exact z2)
-  (exact (gw-intro _ (inv-run-ins-fresh w (new-run-row (:next-id w) of epoch (+ (:next-id w) 1) ei) (rfl) hs) (gw-rest-bump _ r1)))
+  (exact (root-scope-reserved-intro _ (well-formed-run-ins-fresh w (new-run-row (:next-id w) of epoch (+ (:next-id w) 1) ei) (rfl) hs) (root-scope-reserved-rest-bump _ r1)))
   (simp only [add-run-scope])
   (have he (= (scope-id (new-scope-row (+ (:next-id w) 1) parent)) (:next-id (bump (run-ins w (new-run-row (:next-id w) of epoch (+ (:next-id w) 1) ei)))))) (rfl)
-  (exact (gw-scope-ins-fresh _ (new-scope-row (+ (:next-id w) 1) parent) (Eq.refl false) he h1)))
-(a/theorem gw-add-run-scope [w :- World, of :- Nat, epoch :- Nat, parent :- Nat, ei :- Nat]
-  (=> (= (gw w) true) (= (gw (add-run-scope w of epoch parent ei)) true))
-  (intro h) (exact (gw-add-run-scope-o w of epoch parent ei h)))
+  (exact (root-scope-reserved-scope-ins-fresh _ (new-scope-row (+ (:next-id w) 1) parent) (Eq.refl false) he h1)))
+(a/theorem root-scope-reserved-add-run-scope [w :- World, of :- Nat, epoch :- Nat, parent :- Nat, ei :- Nat]
+  (=> (= (root-scope-reserved w) true) (= (root-scope-reserved (add-run-scope w of epoch parent ei)) true))
+  (intro h) (exact (root-scope-reserved-add-run-scope-hand w of epoch parent ei h)))
 
 ;; detach: the task's run scope (a run's scope: not 2) gets the new parent
-(a/theorem gw-set-parent [w :- World, x :- Nat, p :- Nat]
-  (=> (= (Nat.beq x 2) false) (= (gw w) true) (= (gw (scope-upd w x (scope-set-parent p))) true))
+(a/theorem root-scope-reserved-set-parent [w :- World, x :- Nat, p :- Nat]
+  (=> (= (Nat.beq x 2) false) (= (root-scope-reserved w) true) (= (root-scope-reserved (scope-upd w x (scope-set-parent p))) true))
   (intros hx h)
-  (have hs := (gw-sample w h))
-  (have h0 := (gw-rest-of w h)) (simp only [gw-rest gwk Bool.and_eq_true] at h0)
-  (have a1 (= (tbl-all root-ok (skws (tbl-upd scope-id x (scope-set-parent p) (:scopes w)))) true))
-  (rw [all-skws]) (have a0 := (And.left h0)) (rw [all-skws] at a0)
+  (have hs := (root-scope-reserved-well-formed w h))
+  (have h0 := (root-scope-reserved-rest-of w h)) (simp only [root-scope-reserved-rest root-scope-reserved-keys-ok Bool.and_eq_true] at h0)
+  (have a1 (= (tbl-all root-ok (root-scope-reserved-scope-keys (tbl-upd scope-id x (scope-set-parent p) (:scopes w)))) true))
+  (rw [all-root-scope-reserved-scope-keys]) (have a0 := (And.left h0)) (rw [all-root-scope-reserved-scope-keys] at a0)
   (apply (tbl-all-upd ScopeRow scope-id x (scope-set-parent p) _ _ _ _ _ a0))
   (intros s q e)
   (have e2 (= (:id s) x)) (exact (Nat.eq_of_beq_eq_true e))
-  (simp only [root-ok skw Bool.or_eq_true Bool.and_eq_true] at q)
-  (simp only [root-ok skw scope-set-parent Bool.or_eq_true Bool.and_eq_true])
+  (simp only [root-ok root-scope-reserved-scope-key Bool.or_eq_true Bool.and_eq_true] at q)
+  (simp only [root-ok root-scope-reserved-scope-key scope-set-parent Bool.or_eq_true Bool.and_eq_true])
   (cases q)
   (case [inl a] (exact (Or.inl a)))
   (case [inr b] (have z := (And.left b)) (rw [e2 hx] at z) (cases z))
   (intros s q e) (exact q)
-  (have hrest (= (gw-rest (scope-upd w x (scope-set-parent p))) true))
-  (simp only [gw-rest gwk scope-upd set-scopes a1 (And.right h0) Bool.and_self Bool.true_and])
-  (exact (gw-intro _ (inv-scope-upd w x (scope-set-parent p) (scope-set-parent-id p) hs) hrest)))
+  (have hrest (= (root-scope-reserved-rest (scope-upd w x (scope-set-parent p))) true))
+  (simp only [root-scope-reserved-rest root-scope-reserved-keys-ok scope-upd set-scopes a1 (And.right h0) Bool.and_self Bool.true_and])
+  (exact (root-scope-reserved-intro _ (well-formed-scope-upd w x (scope-set-parent p) (scope-set-parent-id p) hs) hrest)))
 
-(a/theorem trs-ne2 [w :- World, t :- TaskRow] (=> (= (gw w) true) (= (Nat.beq (task-run-scope w t) 2) false))
+(a/theorem trs-ne2 [w :- World, t :- TaskRow] (=> (= (root-scope-reserved w) true) (= (Nat.beq (task-run-scope w t) 2) false))
   (intro h)
   (cases hf (run-find w (:run t)))
   (case [none] (simp only [task-run-scope hf]))
   (case [some r]
     (simp only [task-run-scope hf])
-    (have h0 := (gw-rest-of w h)) (simp only [gw-rest gwk Bool.and_eq_true] at h0)
+    (have h0 := (root-scope-reserved-rest-of w h)) (simp only [root-scope-reserved-rest root-scope-reserved-keys-ok Bool.and_eq_true] at h0)
     (have a0 := (And.left (And.right h0))) (rw [all-rscs] at a0)
     (have q := (tbl-all-mem RunRow _ r _ a0 (tbl-find-mem RunRow run-id (:run t) r (:runs w) hf)))
     (simp only [ne2] at q) (exact (bnot-true _ q))))
 
-(tree/restate! GW '[inv-remove-if-empty])
-(a/theorem t-detach-gw [w :- World, k :- Nat, s :- Nat]
-  (=> (= (gw w) true) (= (gw (:world (t-detach w k s))) true))
+(tree/restate! GW '[well-formed-remove-if-empty])
+(a/theorem root-scope-reserved-t-detach [w :- World, k :- Nat, s :- Nat]
+  (=> (= (root-scope-reserved w) true) (= (root-scope-reserved (:world (t-detach w k s))) true))
   (intro h)
   (cases hf (task-find w k))
   (case [none] (simp only [t-detach hf refuse]) (exact h))
@@ -283,37 +283,37 @@
     (case [false] (simp only [t-detach hf hg refuse]) (exact h))
     (case [true]
       (simp only [t-detach hf hg accept remove-empty-at detach-move])
-      (have h1 := (gw-task-upd w k (task-set-owner s) (task-set-owner-id s) h))
+      (have h1 := (root-scope-reserved-task-upd w k (task-set-owner s) (task-set-owner-id s) h))
       (have hne (= (Nat.beq (task-run-scope w t) 2) false)) (exact (trs-ne2 w t h))
-      (exact (gw-remove-if-empty _ _ (gw-set-parent _ (task-run-scope w t) s hne h1))))))
+      (exact (root-scope-reserved-remove-if-empty _ _ (root-scope-reserved-set-parent _ (task-run-scope w t) s hne h1))))))
 
-(tree/restate! GW '[raw-inv])
-(tree/restate! GW '[inv-normalize])
+(tree/restate! GW '[well-formed-raw])
+(tree/restate! GW '[well-formed-normalize])
 
-(a/theorem gw-rule-r-round [w :- World]
-  (=> (= (gw w) true) (= (filter-safe (normalize w)) true) (= (gw (rule-r-round w)) true))
+(a/theorem root-scope-reserved-rule-r-round [w :- World]
+  (=> (= (root-scope-reserved w) true) (= (filter-safe (normalize w)) true) (= (root-scope-reserved (rule-r-round w)) true))
   (intros h hf) (simp only [rule-r-round]) (rw [rule-r-filter-eq])
-  (exact (gw-filter-world (normalize w) (keep-fn (normalize w)) (gw-normalize w h) hf)))
-(a/theorem gw-rr-loop [fuel :- (List Nat)]
-  (forall [w0 :- World] (=> (= (gw w0) true) (= (rr-safe fuel w0) true) (= (gw (rr-loop fuel (rule-r-round w0))) true)))
+  (exact (root-scope-reserved-filter-world (normalize w) (keep-fn (normalize w)) (root-scope-reserved-normalize w h) hf)))
+(a/theorem root-scope-reserved-rule-r-loop [fuel :- (List Nat)]
+  (forall [w0 :- World] (=> (= (root-scope-reserved w0) true) (= (rounds-safe-loop fuel w0) true) (= (root-scope-reserved (rule-r-loop fuel (rule-r-round w0))) true)))
   (induction fuel)
-  (case [nil] (intros w0 h hs) (simp only [rr-safe] at hs) (simp only [rr-loop]) (exact (gw-rule-r-round w0 h hs)))
+  (case [nil] (intros w0 h hs) (simp only [rounds-safe-loop] at hs) (simp only [rule-r-loop]) (exact (root-scope-reserved-rule-r-round w0 h hs)))
   (case [cons x f ih]
     (intros w0 h hs)
-    (simp only [rr-safe Bool.and_eq_true] at hs)
-    (have h1 := (gw-rule-r-round w0 h (And.left hs)))
+    (simp only [rounds-safe-loop Bool.and_eq_true] at hs)
+    (have h1 := (root-scope-reserved-rule-r-round w0 h (And.left hs)))
     (cases ho (no-orphans (rule-r-round w0)))
-    (case [false] (simp only [ho] at hs) (simp only [rr-loop ho]) (exact (ih (rule-r-round w0) h1 (And.right hs))))
-    (case [true] (simp only [rr-loop ho]) (exact h1))))
-(a/theorem gw-rule-r [w :- World] (=> (= (gw w) true) (= (rule-r-safe w) true) (= (gw (rule-r w)) true))
-  (intros h hs) (simp only [rule-r-safe] at hs) (simp only [rule-r]) (exact (gw-rr-loop (rr-fuel w) w h hs)))
-(a/theorem step-gw [w :- World, it :- Item]
-  (=> (= (gw w) true) (= (rule-r-safe (:world (raw w it))) true) (= (gw (:world (world-step w it))) true))
+    (case [false] (simp only [ho] at hs) (simp only [rule-r-loop ho]) (exact (ih (rule-r-round w0) h1 (And.right hs))))
+    (case [true] (simp only [rule-r-loop ho]) (exact h1))))
+(a/theorem root-scope-reserved-rule-r [w :- World] (=> (= (root-scope-reserved w) true) (= (rule-r-safe w) true) (= (root-scope-reserved (rule-r w)) true))
+  (intros h hs) (simp only [rule-r-safe] at hs) (simp only [rule-r]) (exact (root-scope-reserved-rule-r-loop (rule-r-fuel w) w h hs)))
+(a/theorem step-root-scope-reserved [w :- World, it :- Item]
+  (=> (= (root-scope-reserved w) true) (= (rule-r-safe (:world (raw w it))) true) (= (root-scope-reserved (:world (world-step w it))) true))
   (intros h hs)
   (cases ha (:accepted (raw w it)))
   (case [false] (have e1 := (step-refuse w it ha)) (simp only [e1 refuse]) (exact h))
-  (case [true] (have e2 := (step-accepted w it ha)) (rw [e2]) (exact (gw-rule-r (:world (raw w it)) (raw-gw w it h) hs))))
-(a/theorem gw-empty [] (= (gw empty-world) true) (rfl))
+  (case [true] (have e2 := (step-accepted w it ha)) (rw [e2]) (exact (root-scope-reserved-rule-r (:world (raw w it)) (root-scope-reserved-raw w it h) hs))))
+(a/theorem root-scope-reserved-empty [] (= (root-scope-reserved empty-world) true) (rfl))
 
 ;; ===========================================================================
 ;; Part C. Reach from the roots is the root scope (id 2) or reach from the obligations
@@ -394,10 +394,10 @@
 ;; a root is the root scope or an obligation
 (a/defn is2 [w :- World, y :- Nat] Prop (And (= y 2) (= (scope-has w 2) true)))
 (a/theorem root-cases [w :- World, y :- Nat]
-  (=> (= (gw w) true) (= (reach-mem y (roots w)) true) (Or (is2 w y) (= (reach-mem y (obligations w)) true)))
+  (=> (= (root-scope-reserved w) true) (= (reach-mem y (roots w)) true) (Or (is2 w y) (= (reach-mem y (obligations w)) true)))
   (intros h hm)
-  (have h0 := (gw-rest-of w h)) (simp only [gw-rest gwk Bool.and_eq_true] at h0)
-  (have ro := (And.left h0)) (rw [all-skws] at ro)
+  (have h0 := (root-scope-reserved-rest-of w h)) (simp only [root-scope-reserved-rest root-scope-reserved-keys-ok Bool.and_eq_true] at h0)
+  (have ro := (And.left h0)) (rw [all-root-scope-reserved-scope-keys] at ro)
   (simp only [roots reach-mem-append Bool.or_eq_true] at hm)
   (have ob (forall [z :- Nat] (=> (= (reach-mem z (obligations w)) true) (Or (is2 w y) (= (reach-mem z (obligations w)) true)))))
   (intros z hz) (exact (Or.inr hz))
@@ -407,7 +407,7 @@
       (apply (scan-prop ScopeRow scope-id is-root-scope (is2 w) (:scopes w) _ y a))
       (intros s m p)
       (have q := (tbl-all-mem ScopeRow _ s _ ro m))
-      (simp only [root-ok skw] at q)
+      (simp only [root-ok root-scope-reserved-scope-key] at q)
       (simp only [is-root-scope] at p)
       (simp only [p Bool.true_or Bool.not_true Bool.false_or Bool.and_eq_true] at q)
       (have e (= (scope-id s) 2)) (exact (Nat.eq_of_beq_eq_true (And.left q)))
@@ -443,7 +443,7 @@
   (have hm := (mem-ids-has A idf a xs m)) (rw [nat-mem-ids e] at hm) (exact hm))
 
 (a/theorem only2 [w :- World]
-  (=> (= (inv-sample w) true) (= (scope-has w 2) true)
+  (=> (= (well-formed w) true) (= (scope-has w 2) true)
       (= (Bool.or (tbl-has comp-id 2 (:comps w)) (Bool.or (tbl-has task-id 2 (:tasks w)) (Bool.or (tbl-has run-id 2 (:runs w))
           (Bool.or (tbl-has act-id 2 (:acts w)) (Bool.or (tbl-has edge-id 2 (:edges w)) (tbl-has pub-id 2 (:pubs w))))))) false))
   (intros hs hh)
@@ -459,7 +459,7 @@
                         (And.left (And.right (And.right (And.right (And.right (And.right (And.right (And.right d)))))))))))))))
 
 (a/theorem task-id-pos [w :- World, t :- TaskRow]
-  (=> (= (inv-sample w) true) (List.Mem t (:tasks w)) (= (Nat.beq (:id t) 0) false))
+  (=> (= (well-formed w) true) (List.Mem t (:tasks w)) (= (Nat.beq (:id t) 0) false))
   (intros hs m)
   (have hb := (ids-below-of w hs))
   (simp only [all-ids tbl-all-nat-app Bool.and_eq_true] at hb)
@@ -482,10 +482,10 @@
   (exact (rm-nz (:of r) hz)))
 
 (a/theorem root-task [w :- World, t :- TaskRow]
-  (=> (= (gw w) true) (= (g10r w) true) (List.Mem t (:tasks w)) (= (owned-running-task w 2 t) true)
+  (=> (= (root-scope-reserved w) true) (= (i10-current w) true) (List.Mem t (:tasks w)) (= (owned-running-task w 2 t) true)
       (Reach (retain-succ w) (obligations w) (:id t)))
   (intros h h10 mt p)
-  (have hs := (gw-sample w h))
+  (have hs := (root-scope-reserved-well-formed w h))
   (simp only [owned-running-task task-running Bool.and_eq_true] at p)
   (have hr0 := (bnot-true _ (And.left (And.right p))))
   (have po := (And.right (And.right p)))
@@ -495,10 +495,10 @@
     (simp only [opt-test hf] at po)
     (have mr := (tbl-find-mem RunRow run-id (:run t) r (:runs w) hf))
     (have er (= (:id r) (:run t))) (exact (tbl-find-id RunRow run-id (:run t) r (:runs w) hf))
-    (have tp := (g10-tof (List.nil Nat) (List.nil Nat) w r t h10 mr mt))
+    (have tp := (i10-current-exempt-tof (List.nil Nat) (List.nil Nat) w r t h10 mr mt))
     (have hz (= (Nat.beq (:id r) 0) false)) (rw [er]) (exact hr0)
     (have hx (= (Nat.beq (:id r) (:run t)) true)) (rw [er]) (exact (Nat.beq_refl _))
-    (simp only [tof-pair rk10 tk10 hz hx Bool.not_true Bool.false_or] at tp)
+    (simp only [tof-pair i10-current-run-key i10-current-task-key hz hx Bool.not_true Bool.false_or] at tp)
     (have eo := (Nat.eq_of_beq_eq_true tp))
     (have sm (= (reach-mem (:id r) (tbl-scan run-id run-alive (:runs w))) true)) (exact (scan-mem RunRow run-id run-alive r (:runs w) mr po))
     (have om (= (reach-mem (:id r) (obligations w)) true)) (simp only [obligations reach-mem-nat-app sm Bool.true_or Bool.or_true])
@@ -513,15 +513,15 @@
 (a/theorem fk-root [f :- ForkRow] (=> (= (fk-ok f) true) (= (owned-fork 2 f) true) False)
   (intros h p) (simp only [fk-ok ne2 owned-fork] at h p) (rw [p] at h) (cases h))
 (a/theorem root-scope-succ [w :- World, s :- ScopeRow, z :- Nat]
-  (=> (= (gw w) true) (= (g10r w) true) (List.Mem s (:scopes w)) (= (id-is scope-id 2 s) true) (= (reach-mem z (scope-contrib w s)) true)
+  (=> (= (root-scope-reserved w) true) (= (i10-current w) true) (List.Mem s (:scopes w)) (= (id-is scope-id 2 s) true) (= (reach-mem z (scope-contrib w s)) true)
       (Reach (retain-succ w) (obligations w) z))
   (intros h h10 m p hz)
-  (have h0 := (gw-rest-of w h)) (simp only [gw-rest gwk Bool.and_eq_true] at h0)
-  (have ro := (And.left h0)) (rw [all-skws] at ro)
+  (have h0 := (root-scope-reserved-rest-of w h)) (simp only [root-scope-reserved-rest root-scope-reserved-keys-ok Bool.and_eq_true] at h0)
+  (have ro := (And.left h0)) (rw [all-root-scope-reserved-scope-keys] at ro)
   (have fk := (And.left (And.right (And.right h0))))
   (have q := (tbl-all-mem ScopeRow _ s _ ro m))
   (have e (= (:id s) 2)) (have p2 := p) (simp only [id-is] at p2) (exact (Nat.eq_of_beq_eq_true p2))
-  (have e2 (= (Nat.beq (:id (skw s)) 2) true)) (simp only [skw]) (rw [e])
+  (have e2 (= (Nat.beq (:id (root-scope-reserved-scope-key s)) 2) true)) (simp only [root-scope-reserved-scope-key]) (rw [e])
   (simp only [root-ok e2 Bool.or_true Bool.not_true Bool.false_or Bool.and_eq_true] at q)
   (have ep (= (:parent s) 0)) (exact (Nat.eq_of_beq_eq_true (And.right (And.right q))))
   (simp only [scope-contrib ep e reach-mem-append Bool.or_eq_true] at hz)
@@ -538,7 +538,7 @@
                  (fk-root f (tbl-all-mem ForkRow fk-ok f (:forks w) fk mf) pf)) z d))))))
 
 (a/theorem root-succ-other [w :- World, y :- Nat]
-  (=> (= (inv-sample w) true) (= (scope-has w 2) true)
+  (=> (= (well-formed w) true) (= (scope-has w 2) true)
       (= (Bool.or (reach-mem y (tbl-gather (id-is comp-id 2) (comp-contrib w) (:comps w)))
          (Bool.or (reach-mem y (tbl-gather (id-is task-id 2) task-contrib (:tasks w)))
          (Bool.or (reach-mem y (tbl-gather (id-is run-id 2) (run-contrib w) (:runs w)))
@@ -562,10 +562,10 @@
               Bool.or_self]))
 
 (a/theorem root-succ [w :- World, y :- Nat]
-  (=> (= (gw w) true) (= (g10r w) true) (= (scope-has w 2) true) (= (reach-mem y (retain-succ w 2)) true)
+  (=> (= (root-scope-reserved w) true) (= (i10-current w) true) (= (scope-has w 2) true) (= (reach-mem y (retain-succ w 2)) true)
       (Reach (retain-succ w) (obligations w) y))
   (intros h h10 hh hm)
-  (have hs := (gw-sample w h))
+  (have hs := (root-scope-reserved-well-formed w h))
   (have oth := (root-succ-other w y hs hh))
   (simp only [retain-succ reach-mem-append] at hm)
   (cases hsc (reach-mem y (tbl-gather (id-is scope-id 2) (scope-contrib w) (:scopes w))))
@@ -579,7 +579,7 @@
     (rw [hm] at oth) (cases oth)))
 
 (a/theorem reach-roots-obl [w :- World, y :- Nat]
-  (=> (= (gw w) true) (= (g10r w) true) (Reach (retain-succ w) (roots w) y)
+  (=> (= (root-scope-reserved w) true) (= (i10-current w) true) (Reach (retain-succ w) (roots w) y)
       (Or (is2 w y) (Reach (retain-succ w) (obligations w) y)))
   (intros h h10 hr)
   (induction hr)
@@ -603,7 +603,7 @@
 ;; ===========================================================================
 
 (a/theorem live-obl [w :- World, y :- Nat]
-  (=> (= (gw w) true) (= (g10r w) true) (= (reach-mem y (live-list w)) true)
+  (=> (= (root-scope-reserved w) true) (= (i10-current w) true) (= (reach-mem y (live-list w)) true)
       (Or (is2 w y) (= (reach-mem y (:visited (obl-reach w))) true)))
   (intros h h10 hl)
   (have r := (Iff.mp (in-live-iff w y (live-converged-all w)) hl))
@@ -613,10 +613,10 @@
   (case [inr b] (exact (Or.inr (Iff.mpr (obl-iff w y) b)))))
 
 (a/theorem storage-obl [w :- World, y :- Nat]
-  (=> (= (gw w) true) (= (g10r w) true) (= (reach-mem y (storage w)) true)
+  (=> (= (root-scope-reserved w) true) (= (i10-current w) true) (= (reach-mem y (storage w)) true)
       (= (reach-mem y (storage-with w (:visited (obl-reach w)))) true))
   (intros h h10 hs)
-  (have hsm := (gw-sample w h))
+  (have hsm := (root-scope-reserved-well-formed w h))
   (have sub (forall [yy :- Nat] (=> (= (reach-mem yy (storage-gather w (live-list w))) true)
                                     (= (reach-mem yy (storage-gather w (:visited (obl-reach w)))) true))))
   (intros yy hyy0)
@@ -626,8 +626,8 @@
   (case [inr hf] (exact (Or.inr hf)))
   (rename_i hyy)
   (apply Or.inl)
-  (simp only [storage-gather0] at hyy)
-  (simp only [storage-gather0])
+  (simp only [storage-seeds] at hyy)
+  (simp only [storage-seeds])
   (apply (gather-prop RunRow (stored-run (live-list w)) run-refs
            (fn [z :- Nat] (= (reach-mem z (tbl-gather (stored-run (:visited (obl-reach w))) run-refs (:runs w))) true)) (:runs w) _ yy hyy))
   (intros r z m p hz)
@@ -653,7 +653,7 @@
   (exact (Iff.mpr (obl-iff w y) (Reach.root y (Iff.mp (reach-mem-iff y (obligations w)) om)))))
 
 (a/theorem obl-ok-of [w :- World, y :- Nat]
-  (=> (= (gw w) true) (= (g10r w) true) (= (keep-fn w y) true) (= (obl-ok w (:visited (obl-reach w)) y) true))
+  (=> (= (root-scope-reserved w) true) (= (i10-current w) true) (= (keep-fn w y) true) (= (obl-ok w (:visited (obl-reach w)) y) true))
   (intros h h10 hk)
   (simp only [keep-fn keep-with Bool.or_eq_true] at hk)
   (simp only [obl-ok Bool.or_eq_true])
@@ -672,7 +672,7 @@
       (case [inr d] (exact (Or.inr (Or.inr (Or.inr (Or.inr (storage-obl w y h h10 d))))))))))
 
 (a/theorem i11a-of [w :- World]
-  (=> (= (gw w) true) (= (g10r w) true) (= (tbl-all (keep-fn w) (all-ids w)) true) (= (inv-i11a w) true))
+  (=> (= (root-scope-reserved w) true) (= (i10-current w) true) (= (tbl-all (keep-fn w) (all-ids w)) true) (= (inv-i11a w) true))
   (intros h h10 hk)
   (have a1 := (tbl-all-mono Nat (keep-fn w) (obl-ok w (:visited (obl-reach w)))
                 (fn [y :- Nat, q :- (= (keep-fn w y) true)] (obl-ok-of w y h h10 q)) (all-ids w) hk))
@@ -680,20 +680,20 @@
 
 ;; ---- the combined bundle and the step
 
-(a/defn p3d [w :- World] Bool (Bool.and (p3c w) (Bool.and (gw w) (inv-i11a w))))
-(a/theorem p3d-parts [w :- World] (=> (= (p3d w) true) (And (= (p3c w) true) (And (= (gw w) true) (= (inv-i11a w) true))))
-  (intro h) (simp only [p3d Bool.and_eq_true] at h) (exact h))
-(a/theorem p3d-empty [] (= (p3d empty-world) true) (rfl))
-(a/theorem step-p3d [w :- World, it :- Item] (=> (= (p3d w) true) (= (p3d (:world (world-step w it))) true))
+(a/defn chain-to-i11a [w :- World] Bool (Bool.and (chain-to-i10-current w) (Bool.and (root-scope-reserved w) (inv-i11a w))))
+(a/theorem chain-to-i11a-parts [w :- World] (=> (= (chain-to-i11a w) true) (And (= (chain-to-i10-current w) true) (And (= (root-scope-reserved w) true) (= (inv-i11a w) true))))
+  (intro h) (simp only [chain-to-i11a Bool.and_eq_true] at h) (exact h))
+(a/theorem chain-to-i11a-empty [] (= (chain-to-i11a empty-world) true) (rfl))
+(a/theorem step-chain-to-i11a [w :- World, it :- Item] (=> (= (chain-to-i11a w) true) (= (chain-to-i11a (:world (world-step w it))) true))
   (intro h)
-  (have p := (p3d-parts w h))
-  (have pc := (p3c-parts w (And.left p)))
-  (have a1 := (step-p3c w it (And.left p)))
-  (have a2 := (step-gw w it (And.left (And.right p)) (step-rule-r-safe w it (And.left pc))))
+  (have p := (chain-to-i11a-parts w h))
+  (have pc := (chain-to-i10-current-parts w (And.left p)))
+  (have a1 := (step-chain-to-i10-current w it (And.left p)))
+  (have a2 := (step-root-scope-reserved w it (And.left (And.right p)) (step-rule-r-safe w it (And.left pc))))
   (have a3 (= (inv-i11a (:world (world-step w it))) true))
   (cases ha (:accepted (raw w it)))
   (case [false] (have e1 := (step-refuse w it ha)) (simp only [e1 refuse]) (exact (And.right (And.right p))))
-  (case [true] (exact (i11a-of _ a2 (And.right (p3c-parts _ a1)) (step-i3-total w it ha))))
-  (simp only [p3d a1 a2 a3 Bool.and_self]))
-(a/theorem step-i11a-total [w :- World, it :- Item] (=> (= (p3d w) true) (= (inv-i11a (:world (world-step w it))) true))
-  (intro h) (exact (And.right (And.right (p3d-parts _ (step-p3d w it h))))))
+  (case [true] (exact (i11a-of _ a2 (And.right (chain-to-i10-current-parts _ a1)) (step-i3-total w it ha))))
+  (simp only [chain-to-i11a a1 a2 a3 Bool.and_self]))
+(a/theorem step-i11a-total [w :- World, it :- Item] (=> (= (chain-to-i11a w) true) (= (inv-i11a (:world (world-step w it))) true))
+  (intro h) (exact (And.right (And.right (chain-to-i11a-parts _ (step-chain-to-i11a w it h))))))

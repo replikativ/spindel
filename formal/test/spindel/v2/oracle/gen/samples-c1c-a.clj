@@ -1,6 +1,6 @@
 ;; C1c stage A log samples for the oracle (samples 29-33, spec Z#70): task and scope
 ;; completion is derived state, never a log item. Each world's own log plus a
-;; `log-sample-N-observations.edn` sidecar, [{:step kw :log-length {world n} :obs {world {...}}}],
+;; `log-sample-N-observations.edn` sidecar, [{:step i10-task-view :log-length {world n} :obs {world {...}}}],
 ;; recorded at host checkpoints. Per world:
 ;;   :complete? :released? :runs :kids :token       as in samples-c1.clj
 ;;   :tasks  {id {:done? :retired? :materialized? :srow-present? :complete?}}  every task seen

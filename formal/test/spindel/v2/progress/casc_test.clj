@@ -1,9 +1,9 @@
 (ns spindel.v2.progress.casc-test
   "Loading spindel.v2.progress.casc and spindel.v2.inv.acts kernel-checks P4 (cascade completion,
-  `casc-done-ok`), P2 (normalization ends normalized, `normalized-ok`) and the activation
-  invariant `ga` that discharges their hypothesis in every step (`step-acts`,
-  `step-normalized-ga`, `casc-done-ga`), including every copied composite lemma (`bc-copy!`,
-  `copy!`). The runtime tests keep the flags as tripwires: `ga`, `acts-alive`, `casc-done` and
+  `cascade-done-ok`), P2 (normalization ends normalized, `normalized-ok`) and the activation
+  invariant `acts-parked` that discharges their hypothesis in every step (`step-acts`,
+  `step-normalized-acts-parked`, `cascade-done-acts-parked`), including every copied composite lemma (`bc-copy!`,
+  `copy!`). The runtime tests keep the flags as tripwires: `acts-parked`, `acts-alive`, `cascade-done` and
   `normalized` after every step of the engine-test random driver."
   (:require [clojure.test :refer [deftest is testing]]
             [ansatz.core :as a]
@@ -16,14 +16,14 @@
 
 (def theorems
   '[;; P4
-    bc-rest-mono bc-of-bnd cancel-acts-bc cancel-alive-lt retire-rows-lt casc-step-pot casc-empties
-    casc-fuel-above casc-done-ok
+    cascade-bound-rest-mono cascade-bound-of-bnd cancel-acts-cascade-bound cancel-alive-lt retire-rows-lt cascade-step-pot cascade-empties
+    cascade-fuel-above cascade-done-ok
     ;; P2
-    round-lt demote-lt cascade-first-lt bn-round-lv norm-loop-ok normalized-ok acts-alive-normalize
-    acts-alive-filter rr-pre-ok rule-r-normalized-ok step-normalized-ok step-i4-ok
+    round-lt demote-lt cascade-first-lt round-bound-round-lv normalize-loop-ok normalized-ok acts-alive-normalize
+    acts-alive-filter last-input-loop-ok rule-r-normalized-ok step-normalized-ok step-i4-ok
     ;; the activation invariant
-    ga-acts-alive gx-act-ins gx-park gx-restore ga-cancel-acts-o ga-await-raw-o ga-take-park-o
-    ga-empty step-acts raw-acts-alive step-normalized-ga step-i4-ga casc-done-ga])
+    acts-parked-acts-alive acts-parked-exempt-act-ins acts-parked-exempt-park acts-parked-exempt-restore acts-parked-cancel-acts-hand acts-parked-await-raw-hand acts-parked-take-park-hand
+    acts-parked-empty step-acts raw-acts-alive step-normalized-acts-parked step-i4-acts-parked cascade-done-acts-parked])
 
 (defn- present? [t] (some? (.lookup ^ansatz.kernel.Env @a/ansatz-env (ansatz.kernel.Name/fromString (str t)))))
 
@@ -34,7 +34,7 @@
   (doseq [t (concat @c/bc-copied @(:copied ac/GA) @(:copied ac/GX))] (is (present? t) (str t))))
 
 (deftest invariant-runs
-  (is (true? (ac/ga s/empty-world)))
+  (is (true? (ac/acts-parked s/empty-world)))
   (is (true? (c/acts-alive s/empty-world))))
 
 ;; the tripwires along the random driver of engine-test
@@ -51,8 +51,8 @@
             (when (:accepted raw)
               (swap! n inc)
               (is (true? (c/acts-alive (:world raw))) (str "acts-alive raw " msg))
-              (is (true? (r/normalized (r/normalize (r/rule-r-pre (:world raw))))) (str "normalized " msg)))
-            (is (true? (ac/ga w2)) (str "ga " msg))
-            (is (true? (r/casc-done w2 (mapv (fn [x] [0 (:id x) false]) (:runs w2)))) (str "casc-done " msg))
+              (is (true? (r/normalized (r/normalize (r/rule-r-last-input (:world raw))))) (str "normalized " msg)))
+            (is (true? (ac/acts-parked w2)) (str "acts-parked " msg))
+            (is (true? (r/cascade-done w2 (mapv (fn [x] [0 (:id x) false]) (:runs w2)))) (str "cascade-done " msg))
             (recur (inc i) w2)))))
     (is (< 100 @n))))

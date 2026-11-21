@@ -9,7 +9,7 @@
             [spindel.v2.layer2.top]
             [spindel.v2.oracle :as o]))
 
-(def theorems '[inv-top-parts inv-p3m inv-p3l inv-empty inv-step Reach1 reach-inv sysinv sysinv-mk SysReach sys-reach-inv])
+(def theorems '[inv-top-parts inv-chain inv-chain-to-marks-waiting inv-empty inv-step WorldReach reach-inv sysinv sysinv-mk SysReach sys-reach-inv])
 
 (deftest headline-constants
   (doseq [t theorems]

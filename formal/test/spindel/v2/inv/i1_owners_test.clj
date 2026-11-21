@@ -1,7 +1,7 @@
 (ns spindel.v2.inv.i1-owners-test
   "Loading spindel.v2.inv.i1-owners kernel-checks literal I1's owner clauses for tasks, computations and
   sources through the step (`step-lit-i1-owners-total`) and the termination of Rule R's loop with
-  no orphan (`rule-r-no-orphans`). The bundle gso and the clauses run as a tripwire on the random
+  no orphan (`rule-r-no-orphans`). The bundle i1-detached-closed and the clauses run as a tripwire on the random
   drivers of engine-test; the step's worlds never end Rule R with an orphan."
   (:require [clojure.test :refer [deftest is]]
             [ansatz.core :as a]
@@ -12,9 +12,9 @@
             [spindel.v2.inv-test :as it]))
 
 (def theorems
-  '[nzb-normalize detach-lt oc-normalize-lt oc-round-lt rr-no-orphans rule-r-no-orphans
-    gso-create-source-cur t1-top-gso gso-serve-or raw-gso gso-normalize gso-rule-r step-gso gso-empty
-    i1-own-of p3g-empty step-p3g step-lit-i1-owners-total])
+  '[owner-count-at-most-normalize detach-lt oc-normalize-lt oc-round-lt rule-r-loop-no-orphans rule-r-no-orphans
+    i1-detached-closed-create-source-in-run i1-detached-closed-t1-create-nonstream-top i1-detached-closed-serve-or i1-detached-closed-raw i1-detached-closed-normalize i1-detached-closed-rule-r step-i1-detached-closed i1-detached-closed-empty
+    lit-i1-own-of chain-to-i1-detached-closed-empty step-chain-to-i1-detached-closed step-lit-i1-owners-total])
 
 (deftest theorems-kernel-checked
   (doseq [t theorems]
@@ -30,12 +30,12 @@
                          (if (or (not d0?) (it/d0-ok? w x) (> k 50)) x (recur (inc k)))))
                 w2 (:world (en/world-step w item))
                 tag (str "seed " seed " run " run " step " i " " (pr-str item))]
-            (is (true? (i1o/gso w2)) (str "gso " tag))
-            (is (true? (i1o/i1-own w2)) (str "i1-own " tag))
+            (is (true? (i1o/i1-detached-closed w2)) (str "i1-detached-closed " tag))
+            (is (true? (i1o/lit-i1-own w2)) (str "lit-i1-own " tag))
             (is (true? (ru/no-orphans w2)) (str "no-orphans " tag))
             (recur (inc i) w2)))))))
 
 (deftest bundle-random
-  (is (true? (i1o/p3g (et/prefix-world))))
+  (is (true? (i1o/chain-to-i1-detached-closed (et/prefix-world))))
   (drive 20261161 15 50 false)
   (drive 20261162 15 50 true))

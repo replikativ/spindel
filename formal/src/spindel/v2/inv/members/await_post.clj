@@ -36,81 +36,81 @@
             [spindel.v2.progress.l5 :refer :all]
             [spindel.v2.inv.members.await-fill :refer :all]))
 
-(a/defn h11-parked [a :- Nat, rid :- Nat, ds :- (List Nat),
+(a/defn current-members-parked [a :- Nat, rid :- Nat, ds :- (List Nat),
                     acc :- AwAcc] World
-  (park-if (h10-fill-prefix a ds acc (nat-distinct ds)) a rid))
+  (park-if (current-members-fill-prefix a ds acc (nat-distinct ds)) a rid))
 
-(a/defn h11-final-prefix [a :- Nat, rid :- Nat, ds :- (List Nat),
+(a/defn current-members-final-prefix [a :- Nat, rid :- Nat, ds :- (List Nat),
                          acc :- AwAcc, pre :- (List Nat)] World
-  (nat-fold fin-if-final (h11-parked a rid ds acc) pre))
+  (nat-fold finalize-if-final (current-members-parked a rid ds acc) pre))
 
 
-(a/theorem h11-park-hmk [xm :- (List Nat), w :- World, r :- RunRow,
+(a/theorem current-members-park-marks-waiting [xm :- (List Nat), w :- World, r :- RunRow,
          ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat),
          st :- Nat, fresh :- Nat]
-  (=> (h9-entry xm w r ds mode st fresh)
-      (= (hmk (List.nil Nat)
-           (h11-parked (:next-id w) (:id r) ds
+  (=> (current-members-entry xm w r ds mode st fresh)
+      (= (marks-waiting (List.nil Nat)
+           (current-members-parked (:next-id w) (:id r) ds
              (await-acc w r ds mode k mine))) true))
   (intro ent)
-  (have support := (h9-prefix-support xm w r ds mode k mine st fresh
-                     (nat-distinct ds) (List.nil Nat) ent (h9-app-nil _)))
+  (have support := (current-members-prefix-support xm w r ds mode k mine st fresh
+                     (nat-distinct ds) (List.nil Nat) ent (current-members-app-nil _)))
   (have hk := (And.left (And.right (And.right (And.right (And.right (And.right support)))))))
-  (have installed := (hmk-act-upd (List.nil Nat) (:world (await-acc w r ds mode k mine)) (:next-id w)
+  (have installed := (marks-waiting-act-upd (List.nil Nat) (:world (await-acc w r ds mode k mine)) (:next-id w)
                         (act-set-members (mk-members (:pairs (await-acc w r ds mode k mine)) 0 ds))
                         (act-set-members-id _) hk))
-  (have filled := (nat-fold-hmk (List.nil Nat) (fast-fill (:pairs (await-acc w r ds mode k mine)))
-                     (hmk-fast-fill (List.nil Nat) (:pairs (await-acc w r ds mode k mine)))
-                     (nat-distinct ds) (h10-install (:next-id w) ds (await-acc w r ds mode k mine)) installed))
-  (exact (hmk-park-if (List.nil Nat)
-           (h10-fill-prefix (:next-id w) ds (await-acc w r ds mode k mine) (nat-distinct ds))
+  (have filled := (marks-waiting-nat-fold (List.nil Nat) (fast-fill (:pairs (await-acc w r ds mode k mine)))
+                     (marks-waiting-fast-fill (List.nil Nat) (:pairs (await-acc w r ds mode k mine)))
+                     (nat-distinct ds) (current-members-install (:next-id w) ds (await-acc w r ds mode k mine)) installed))
+  (exact (marks-waiting-park-if (List.nil Nat)
+           (current-members-fill-prefix (:next-id w) ds (await-acc w r ds mode k mine) (nat-distinct ds))
            (:next-id w) (:id r) filled)))
 
 ;; Generalize the current world in the induction; xm and hx stay independent.
-(a/theorem h11-fin-fold-general [xm :- (List Nat), hx :- (List Nat), ds :- (List Nat)]
+(a/theorem current-members-fin-fold-general [xm :- (List Nat), hx :- (List Nat), ds :- (List Nat)]
   (forall [w :- World]
-    (=> (= (hmk hx w) true) (= (h3 xm w) true)
-        (And (= (hmk hx (nat-fold fin-if-final w ds)) true)
-             (= (h3 xm (nat-fold fin-if-final w ds)) true))))
+    (=> (= (marks-waiting hx w) true) (= (current-members xm w) true)
+        (And (= (marks-waiting hx (nat-fold finalize-if-final w ds)) true)
+             (= (current-members xm (nat-fold finalize-if-final w ds)) true))))
   (induction ds)
   (case [nil] (intros w hk h) (simp only [nat-fold]) (exact (And.intro hk h)))
   (case [cons d tail ih]
     (intros w hk h)
     (simp only [nat-fold])
-    (exact (ih (fin-if-final w d) (hmk-fin-if-final hx w d hk) (h3-fin-if-final xm hx w d hk h)))))
+    (exact (ih (finalize-if-final w d) (marks-waiting-finalize-if-final hx w d hk) (current-members-finalize-if-final xm hx w d hk h)))))
 
-(a/theorem h11-fin-fold [xm :- (List Nat), hx :- (List Nat), w :- World,
+(a/theorem current-members-fin-fold [xm :- (List Nat), hx :- (List Nat), w :- World,
          ds :- (List Nat)]
-  (=> (= (hmk hx w) true)
-      (= (h3 xm w) true)
-      (And (= (hmk hx (nat-fold fin-if-final w ds)) true)
-           (= (h3 xm (nat-fold fin-if-final w ds)) true)))
+  (=> (= (marks-waiting hx w) true)
+      (= (current-members xm w) true)
+      (And (= (marks-waiting hx (nat-fold finalize-if-final w ds)) true)
+           (= (current-members xm (nat-fold finalize-if-final w ds)) true)))
   (intros hk h)
-  (exact (h11-fin-fold-general xm hx ds w hk h)))
+  (exact (current-members-fin-fold-general xm hx ds w hk h)))
 
-(a/theorem h11-final-prefix-invariants [xm :- (List Nat), w :- World, r :- RunRow,
+(a/theorem current-members-final-prefix-invariants [xm :- (List Nat), w :- World, r :- RunRow,
          ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat),
          st :- Nat, fresh :- Nat, pre :- (List Nat), tail :- (List Nat)]
-  (=> (h9-entry xm w r ds mode st fresh)
+  (=> (current-members-entry xm w r ds mode st fresh)
       (= (List.append Nat pre tail) (nat-distinct ds))
-      (let [W (h11-final-prefix (:next-id w) (:id r) ds
+      (let [W (current-members-final-prefix (:next-id w) (:id r) ds
                 (await-acc w r ds mode k mine) pre)]
-        (And (= (hmk (List.nil Nat) W) true)
-             (= (h3 xm W) true))))
+        (And (= (marks-waiting (List.nil Nat) W) true)
+             (= (current-members xm W) true))))
   (intros ent split)
-  (exact (h11-fin-fold xm (List.nil Nat)
-           (h11-parked (:next-id w) (:id r) ds (await-acc w r ds mode k mine)) pre
-           (h11-park-hmk xm w r ds mode k mine st fresh ent)
-           (h10-park-h3 xm w r ds mode k mine st fresh ent))))
+  (exact (current-members-fin-fold xm (List.nil Nat)
+           (current-members-parked (:next-id w) (:id r) ds (await-acc w r ds mode k mine)) pre
+           (current-members-park-marks-waiting xm w r ds mode k mine st fresh ent)
+           (current-members-park xm w r ds mode k mine st fresh ent))))
 
-(a/theorem h11-await-post-h3 [xm :- (List Nat), w :- World, r :- RunRow,
+(a/theorem current-members-await-post [xm :- (List Nat), w :- World, r :- RunRow,
          ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat),
          st :- Nat, fresh :- Nat]
-  (=> (h9-entry xm w r ds mode st fresh)
-      (= (h3 xm
+  (=> (current-members-entry xm w r ds mode st fresh)
+      (= (current-members xm
            (await-post (:next-id w) (:id r) ds
              (await-acc w r ds mode k mine))) true))
   (intro ent)
-  (have final := (h11-final-prefix-invariants xm w r ds mode k mine st fresh
-                   (nat-distinct ds) (List.nil Nat) ent (h9-app-nil _)))
+  (have final := (current-members-final-prefix-invariants xm w r ds mode k mine st fresh
+                   (nat-distinct ds) (List.nil Nat) ent (current-members-app-nil _)))
   (exact (And.right final)))

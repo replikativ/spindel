@@ -1,8 +1,8 @@
 (ns spindel.v2.inv.members.bundle-test
-  "Loading spindel.v2.inv.members.bundle kernel-checks the h-mem2 bundle `h3 xm` (member edges of a current activation exist,
+  "Loading spindel.v2.inv.members.bundle kernel-checks the h-mem2 bundle `current-members xm` (member edges of a current activation exist,
   are armed, structured, first-held, and their debtors are alive tasks or strongly waiting computations, unless
   exempt), its transfer and primitive lemmas, the first fire overrides, and the derivation of h-mem2
-  (`h3-h-mem2`: h3 [] and gd's rof give h-mem2; `h3-l5-safety`). Tripwire: `h3 []` after every step of the
+  (`current-members-h-mem2`: current-members [] and gd's rof give h-mem2; `current-members-l5-safety`). Tripwire: `current-members []` after every step of the
   random drivers and every commit of the oracle samples 7-13 (the step proof is open: notes/history/PLAN.md, branch hm3)."
   (:require [clojure.test :refer [deftest is]]
             [ansatz.core :as a]
@@ -14,13 +14,13 @@
             [spindel.v2.inv-test :as it]))
 
 (def theorems
-  '[h3-sample h3-intro h3-m-rel h3-s-edge h3-x-rel h3-r-rel h3-a-rel h3-rest-rel h3r-cs h3r-ts h3r-rs h3r-es h3r-nid
-    h3r-comp-upd h3-comp-upd-m h3r-edge-upd h3r-ce-upd h3r-mark-edge h3r-unmark-edge h3-r-acts h3r-acts h3r-act-del
-    h3r-act-upd h3r-run-upd h3r-task-upd h3r-run-ins h3r-task-ins h3r-comp-ins h3r-run-del h3r-comp-del h3r-es-sub
-    h3r-insert-edge-fresh h3r-insert-edge-checked h3r-comp-dec h3r-edge-del h3r-remove-edge h3r-drop-cred h3r-drop-act
-    h3r-drop-edges h3-edge-upd-m h3-run-upd-m h3-task-upd-m h3-act-upd-m h3-unmark-edge h3-remove-edge h3-drop-cred
-    h3-drop-act h3-drop-edges h3-run-del h3-ob-use h3-free-cred h3r-edge-upd-free h3-free-inc h3-invalidate h3-resume
-    h3-fill-slot h3-rest-xm h3-undo-x h3-mem-y h3-h-mem2 h3-l5-safety])
+  '[current-members-well-formed current-members-intro current-members-m-rel current-members-s-edge current-members-x-rel current-members-r-rel current-members-a-rel current-members-rest-rel current-members-rest-cs current-members-rest-ts current-members-rest-rs current-members-rest-es current-members-rest-nid
+    current-members-rest-comp-upd current-members-comp-upd-m current-members-rest-edge-upd current-members-rest-ce-upd current-members-rest-mark-edge current-members-rest-unmark-edge current-members-r-acts current-members-rest-acts current-members-rest-act-del
+    current-members-rest-act-upd current-members-rest-run-upd current-members-rest-task-upd current-members-rest-run-ins current-members-rest-task-ins current-members-rest-comp-ins current-members-rest-run-del current-members-rest-comp-del current-members-rest-es-sub
+    current-members-rest-insert-edge-fresh current-members-rest-insert-edge-checked current-members-rest-comp-dec current-members-rest-edge-del current-members-rest-remove-edge current-members-rest-drop-cred current-members-rest-drop-act
+    current-members-rest-drop-edges current-members-edge-upd-m current-members-run-upd-m current-members-task-upd-m current-members-act-upd-m current-members-unmark-edge current-members-remove-edge current-members-drop-cred
+    current-members-drop-act current-members-drop-edges current-members-run-del current-members-ob-use current-members-free-cred current-members-rest-edge-upd-free current-members-free-inc current-members-invalidate current-members-resume
+    current-members-fill-slot current-members-rest-xm current-members-undo-x current-members-mem-y current-members-h-mem2 current-members-l5-safety])
 
 (deftest theorems-kernel-checked
   (doseq [t theorems]
@@ -35,7 +35,7 @@
                        (let [x (et/random-item rng w)]
                          (if (or (not d0?) (it/d0-ok? w x) (> k 50)) x (recur (inc k)))))
                 w2 (:world (en/world-step w item))]
-            (is (true? (h3/h3 '() w2)) (str "h3 seed " seed " run " run " step " i " " (pr-str item)))
+            (is (true? (h3/current-members '() w2)) (str "current-members seed " seed " run " run " step " i " " (pr-str item)))
             (recur (inc i) w2)))))))
 
 ;; AR (not yet a theorem; the T6 override needs it): every alive run of a computation is that computation's C.run
@@ -70,6 +70,6 @@
     (let [log (o/read-log (str "test/spindel/v2/oracle/log-sample-" n ".edn"))]
       (reduce (fn [w [i c]]
                 (let [w2 (:world (en/world-step w (:item (o/adapt :table {:post (:proj c) :w w} (:item c)))))]
-                  (is (true? (h3/h3 '() w2)) (str "h3 sample " n " commit " i))
+                  (is (true? (h3/current-members '() w2)) (str "current-members sample " n " commit " i))
                   w2))
               s/empty-world (map-indexed vector log)))))

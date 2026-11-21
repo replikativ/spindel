@@ -12,7 +12,7 @@
     `observe` edge's the host, and a `wait` edge with creditor 0 is a host wait (T22,
     Z#27). The debtor is a computation, task or source, or, for a wait edge only, a resource
     (Z#6); so resource edits are no longer frames: `resource-upd-edges-ref-ok` (ids kept),
-    `resource-ins-edges-ref-ok`, and `resource-del-edges-ref-ok` / `inv-resource-del` need
+    `resource-ins-edges-ref-ok`, and `resource-del-edges-ref-ok` / `well-formed-resource-del` need
     `tbl-all (no-debtor z) edges` (the T15 token).
   - Id uniqueness over the global id space: `ids-unique` (no id twice in `all-ids`) and
     `ids-below` (every id is in 1 .. next-id-1, next-id >= 1). Inserting a row whose id is
@@ -677,32 +677,32 @@
   (exact (insert-edge-edges-ref-ok w (edge-set-id (:next-id w) e) he h)))
 
 ;; The sample bundle and the edge edits.
-(a/defn inv-sample [w :- World] Bool
+(a/defn well-formed [w :- World] Bool
   (Bool.and (pending-exact w) (Bool.and (edges-ref-ok w) (ids-ok w))))
 
-(a/theorem inv-sample-empty [] (= (inv-sample empty-world) true) (rfl))
+(a/theorem well-formed-empty [] (= (well-formed empty-world) true) (rfl))
 
-(a/theorem mark-edge-inv-sample [w :- World, x :- Nat]
-  (=> (= (inv-sample w) true) (= (inv-sample (mark-edge w x)) true))
+(a/theorem well-formed-mark-edge [w :- World, x :- Nat]
+  (=> (= (well-formed w) true) (= (well-formed (mark-edge w x)) true))
   (intro h)
-  (simp only [inv-sample Bool.and_eq_true] at h)
-  (simp only [inv-sample Bool.and_eq_true (mark-edge-ids-ok w x)])
+  (simp only [well-formed Bool.and_eq_true] at h)
+  (simp only [well-formed Bool.and_eq_true (mark-edge-ids-ok w x)])
   (exact (And.intro (mark-edge-pending-exact w x (ids-ok-edges w (And.right (And.right h))) (And.left h))
            (And.intro (mark-edge-edges-ref-ok w x (And.left (And.right h))) (And.right (And.right h))))))
 
-(a/theorem unmark-edge-inv-sample [w :- World, x :- Nat]
-  (=> (= (inv-sample w) true) (= (inv-sample (unmark-edge w x)) true))
+(a/theorem well-formed-unmark-edge [w :- World, x :- Nat]
+  (=> (= (well-formed w) true) (= (well-formed (unmark-edge w x)) true))
   (intro h)
-  (simp only [inv-sample Bool.and_eq_true] at h)
-  (simp only [inv-sample Bool.and_eq_true (unmark-edge-ids-ok w x)])
+  (simp only [well-formed Bool.and_eq_true] at h)
+  (simp only [well-formed Bool.and_eq_true (unmark-edge-ids-ok w x)])
   (exact (And.intro (unmark-edge-pending-exact w x (ids-ok-edges w (And.right (And.right h))) (And.left h))
            (And.intro (unmark-edge-edges-ref-ok w x (And.left (And.right h))) (And.right (And.right h))))))
 
-(a/theorem insert-edge-fresh-inv-sample [w :- World, e :- EdgeRow]
-  (=> (= (edge-ok-in w e) true) (= (inv-sample w) true) (= (inv-sample (insert-edge-fresh w e)) true))
+(a/theorem well-formed-insert-edge-fresh [w :- World, e :- EdgeRow]
+  (=> (= (edge-ok-in w e) true) (= (well-formed w) true) (= (well-formed (insert-edge-fresh w e)) true))
   (intros he h)
-  (simp only [inv-sample Bool.and_eq_true] at h)
-  (simp only [inv-sample Bool.and_eq_true])
+  (simp only [well-formed Bool.and_eq_true] at h)
+  (simp only [well-formed Bool.and_eq_true])
   (exact (And.intro (insert-edge-fresh-pending-exact w e (And.left h))
            (And.intro (insert-edge-fresh-edges-ref-ok w e he (And.left (And.right h)))
                       (insert-edge-fresh-ids-ok w e (And.right (And.right h)))))))
@@ -718,11 +718,11 @@
 ;; - edges-ref-ok: id-preserving updates of sources/tasks/acts, `source-ins` (monotone).
 ;; - `drop-cred-edges w a` removes every edge whose creditor is a (and zeroes a's pending);
 ;;   `drop-act w a` then removes activation a.
-;; - inv-sample (pending-exact ∧ edges-ref-ok ∧ ids-ok), one lemma per edit: `inv-<p>-upd`,
-;;   `inv-edge-upd` (keeps id/kind/creditor/debtor/marked), `inv-comp-upd` (keeps id/pending),
-;;   `inv-run-del`, `inv-resource-del`, `inv-cleanup-*`, `inv-set-pins`, `inv-source-ins-fresh`,
-;;   `inv-resource-ins-fresh`, `inv-remove-edge`, `inv-drop-cred`, `inv-drop-act`.
-;; - `nat-fold f w ids` (an edit over a list of ids) and `nat-fold-inv`; `tbl-find-has`.
+;; - well-formed (pending-exact ∧ edges-ref-ok ∧ ids-ok), one lemma per edit: `inv-<p>-upd`,
+;;   `well-formed-edge-upd` (keeps id/kind/creditor/debtor/marked), `well-formed-comp-upd` (keeps id/pending),
+;;   `well-formed-run-del`, `well-formed-resource-del`, `inv-cleanup-*`, `well-formed-set-pins`, `well-formed-source-ins-fresh`,
+;;   `well-formed-resource-ins-fresh`, `well-formed-remove-edge`, `well-formed-drop-cred-edges`, `well-formed-drop-act`.
+;; - `nat-fold f w ids` (an edit over a list of ids) and `well-formed-nat-fold`; `tbl-find-has`.
 ;; ===========================================================================
 
 (a/defn tbl-filter [A :- Type :implicit, p :- (=> A Bool), xs :- (List A)] (List A)
@@ -1209,16 +1209,16 @@
            (edge-ok (:comps w) (:tasks w) (:sources w) (tbl-del act-id a (:acts w)) (:res w)) hpq (:edges w) h hu)))
 
 ;; ---------------------------------------------------------------------------
-;; inv-sample, one lemma per primitive edit
+;; well-formed, one lemma per primitive edit
 
-(a/theorem inv-parts [w :- World]
-  (=> (= (inv-sample w) true)
+(a/theorem well-formed-parts [w :- World]
+  (=> (= (well-formed w) true)
       (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
-  (intro h) (simp only [inv-sample Bool.and_eq_true] at h) (exact h))
+  (intro h) (simp only [well-formed Bool.and_eq_true] at h) (exact h))
 
-(a/theorem inv-intro [w :- World]
-  (=> (= (pending-exact w) true) (= (edges-ref-ok w) true) (= (ids-ok w) true) (= (inv-sample w) true))
-  (intros h1 h2 h3) (simp only [inv-sample Bool.and_eq_true]) (exact (And.intro h1 (And.intro h2 h3))))
+(a/theorem well-formed-intro [w :- World]
+  (=> (= (pending-exact w) true) (= (edges-ref-ok w) true) (= (ids-ok w) true) (= (well-formed w) true))
+  (intros h1 h2 h3) (simp only [well-formed Bool.and_eq_true]) (exact (And.intro h1 (And.intro h2 h3))))
 
 (defmacro ^:private definv-frame-upd
   "inv-<p>-upd for tables whose pending-exact and edges-ref-ok frames are rfl lemmas."
@@ -1226,15 +1226,15 @@
   `(do
      ~@(for [[prefix row] (partition 2 specs)
              :let [idf (symbol (str prefix "-id")) upd (symbol (str prefix "-upd"))]]
-         `(a/theorem ~(symbol (str "inv-" prefix "-upd"))
+         `(a/theorem ~(symbol (str "well-formed-" prefix "-upd"))
             [~'w :- ~'World, ~'x :- ~'Nat, ~'f :- (~'=> ~row ~row),
              ~'hf :- (~'forall [~'r :- ~row] (~'= (~idf (~'f ~'r)) (~idf ~'r)))]
-            (~'=> (~'= (~'inv-sample ~'w) true) (~'= (~'inv-sample (~upd ~'w ~'x ~'f)) true))
+            (~'=> (~'= (~'well-formed ~'w) true) (~'= (~'well-formed (~upd ~'w ~'x ~'f)) true))
             (~'intro ~'h)
-            (~'simp ~'only [~'inv-sample ~(symbol (str "pending-exact-" prefix "-upd"))
+            (~'simp ~'only [~'well-formed ~(symbol (str "pending-exact-" prefix "-upd"))
                             ~(symbol (str "edges-ref-ok-" prefix "-upd"))
                             (~(symbol (str prefix "-upd-ids-ok")) ~'w ~'x ~'f ~'hf)])
-            (~'simp ~'only [~'inv-sample] ~'at ~'h)
+            (~'simp ~'only [~'well-formed] ~'at ~'h)
             (~'exact ~'h)))))
 
 (definv-frame-upd run RunRow scope ScopeRow pub PubRow)
@@ -1245,27 +1245,27 @@
   `(do
      ~@(for [[prefix row] (partition 2 specs)
              :let [idf (symbol (str prefix "-id")) upd (symbol (str prefix "-upd"))]]
-         `(a/theorem ~(symbol (str "inv-" prefix "-upd"))
+         `(a/theorem ~(symbol (str "well-formed-" prefix "-upd"))
             [~'w :- ~'World, ~'x :- ~'Nat, ~'f :- (~'=> ~row ~row),
              ~'hf :- (~'forall [~'r :- ~row] (~'= (~idf (~'f ~'r)) (~idf ~'r)))]
-            (~'=> (~'= (~'inv-sample ~'w) true) (~'= (~'inv-sample (~upd ~'w ~'x ~'f)) true))
+            (~'=> (~'= (~'well-formed ~'w) true) (~'= (~'well-formed (~upd ~'w ~'x ~'f)) true))
             (~'intro ~'h)
-            (~'simp ~'only [~'inv-sample ~(symbol (str "pending-exact-" prefix "-upd"))
+            (~'simp ~'only [~'well-formed ~(symbol (str "pending-exact-" prefix "-upd"))
                             (~(symbol (str prefix "-upd-edges-ref-ok")) ~'w ~'x ~'f ~'hf)
                             (~(symbol (str prefix "-upd-ids-ok")) ~'w ~'x ~'f ~'hf)])
-            (~'simp ~'only [~'inv-sample] ~'at ~'h)
+            (~'simp ~'only [~'well-formed] ~'at ~'h)
             (~'exact ~'h)))))
 
 (definv-ref-upd source SourceRow task TaskRow act ActRow resource ResRow)
 
-(a/theorem inv-comp-upd [w :- World, x :- Nat, f :- (=> CompRow CompRow),
+(a/theorem well-formed-comp-upd [w :- World, x :- Nat, f :- (=> CompRow CompRow),
                          hid :- (forall [c :- CompRow] (= (comp-id (f c)) (comp-id c))),
                          hp :- (forall [c :- CompRow] (= (:pending (f c)) (:pending c)))]
-  (=> (= (inv-sample w) true) (= (inv-sample (comp-upd w x f)) true))
+  (=> (= (well-formed w) true) (= (well-formed (comp-upd w x f)) true))
   (intro h)
   (have hs (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
-  (exact (inv-parts w h))
-  (exact (inv-intro (comp-upd w x f) (pending-exact-comp-upd w x f hid hp (And.left hs))
+  (exact (well-formed-parts w h))
+  (exact (well-formed-intro (comp-upd w x f) (pending-exact-comp-upd w x f hid hp (And.left hs))
            (Eq.trans (comp-upd-edges-ref-ok w x f hid) (And.left (And.right hs)))
            (Eq.trans (comp-upd-ids-ok w x f hid) (And.right (And.right hs))))))
 
@@ -1276,16 +1276,16 @@
   (intros h1 h2 h3) (simp only [edge-ok cred-ok host-cred deb-ok h1 h2 h3]))
 
 ;; edge updates that keep id, kind, creditor, debtor and marked
-(a/theorem inv-edge-upd [w :- World, x :- Nat, f :- (=> EdgeRow EdgeRow),
+(a/theorem well-formed-edge-upd [w :- World, x :- Nat, f :- (=> EdgeRow EdgeRow),
                          hid :- (forall [e :- EdgeRow] (= (edge-id (f e)) (edge-id e))),
                          hk :- (forall [e :- EdgeRow] (= (:kind (f e)) (:kind e))),
                          hc :- (forall [e :- EdgeRow] (= (:creditor (f e)) (:creditor e))),
                          hd :- (forall [e :- EdgeRow] (= (:debtor (f e)) (:debtor e))),
                          hm :- (forall [e :- EdgeRow] (= (:marked (f e)) (:marked e)))]
-  (=> (= (inv-sample w) true) (= (inv-sample (edge-upd w x f)) true))
+  (=> (= (well-formed w) true) (= (well-formed (edge-upd w x f)) true))
   (intro h)
   (have hs (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
-  (exact (inv-parts w h))
+  (exact (well-formed-parts w h))
   (have hin (forall [r :- EdgeRow]
               (=> (= (edge-ok (:comps w) (:tasks w) (:sources w) (:acts w) (:res w) r) true) (= (Nat.beq (edge-id r) x) true)
                   (= (edge-ok (:comps w) (:tasks w) (:sources w) (:acts w) (:res w) (f r)) true))))
@@ -1303,112 +1303,112 @@
   (simp only [edges-ref-ok-in] at h2)
   (exact (tbl-all-upd EdgeRow edge-id x f (edge-ok (:comps w) (:tasks w) (:sources w) (:acts w) (:res w))
            (edge-ok (:comps w) (:tasks w) (:sources w) (:acts w) (:res w)) hin hout (:edges w) h2))
-  (exact (inv-intro (edge-upd w x f) (pending-exact-edge-upd w x f hc hm (And.left hs)) hr
+  (exact (well-formed-intro (edge-upd w x f) (pending-exact-edge-upd w x f hc hm (And.left hs)) hr
            (Eq.trans (edge-upd-ids-ok w x f hid) (And.right (And.right hs))))))
 
-(a/theorem inv-cleanup-upd [w :- World, x :- Nat, f :- (=> CleanupRow CleanupRow)]
-  (=> (= (inv-sample w) true) (= (inv-sample (cleanup-upd w x f)) true))
-  (intro h) (simp only [inv-sample pending-exact-cleanup-upd edges-ref-ok-cleanup-upd ids-ok-cleanup-upd])
-  (simp only [inv-sample] at h) (exact h))
+(a/theorem well-formed-cleanup-upd [w :- World, x :- Nat, f :- (=> CleanupRow CleanupRow)]
+  (=> (= (well-formed w) true) (= (well-formed (cleanup-upd w x f)) true))
+  (intro h) (simp only [well-formed pending-exact-cleanup-upd edges-ref-ok-cleanup-upd ids-ok-cleanup-upd])
+  (simp only [well-formed] at h) (exact h))
 
-(a/theorem inv-cleanup-del [w :- World, x :- Nat]
-  (=> (= (inv-sample w) true) (= (inv-sample (cleanup-del w x)) true))
-  (intro h) (simp only [inv-sample pending-exact-cleanup-del edges-ref-ok-cleanup-del ids-ok-cleanup-del])
-  (simp only [inv-sample] at h) (exact h))
+(a/theorem well-formed-cleanup-del [w :- World, x :- Nat]
+  (=> (= (well-formed w) true) (= (well-formed (cleanup-del w x)) true))
+  (intro h) (simp only [well-formed pending-exact-cleanup-del edges-ref-ok-cleanup-del ids-ok-cleanup-del])
+  (simp only [well-formed] at h) (exact h))
 
-(a/theorem inv-set-pins [w :- World, v :- (List Nat)]
-  (=> (= (inv-sample w) true) (= (inv-sample (set-pins w v)) true))
-  (intro h) (simp only [inv-sample pending-exact-set-pins edges-ref-ok-set-pins ids-ok-set-pins])
-  (simp only [inv-sample] at h) (exact h))
+(a/theorem well-formed-set-pins [w :- World, v :- (List Nat)]
+  (=> (= (well-formed w) true) (= (well-formed (set-pins w v)) true))
+  (intro h) (simp only [well-formed pending-exact-set-pins edges-ref-ok-set-pins ids-ok-set-pins])
+  (simp only [well-formed] at h) (exact h))
 
-(a/theorem inv-run-del [w :- World, x :- Nat]
-  (=> (= (inv-sample w) true) (= (inv-sample (run-del w x)) true))
+(a/theorem well-formed-run-del [w :- World, x :- Nat]
+  (=> (= (well-formed w) true) (= (well-formed (run-del w x)) true))
   (intro h)
   (have hs (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
-  (exact (inv-parts w h))
-  (exact (inv-intro (run-del w x) (Eq.trans (pending-exact-run-del w x) (And.left hs))
+  (exact (well-formed-parts w h))
+  (exact (well-formed-intro (run-del w x) (Eq.trans (pending-exact-run-del w x) (And.left hs))
            (Eq.trans (edges-ref-ok-run-del w x) (And.left (And.right hs)))
            (run-del-ids-ok w x (And.right (And.right hs))))))
 
-(a/theorem inv-resource-del [w :- World, x :- Nat]
-  (=> (= (tbl-all (no-debtor x) (:edges w)) true) (= (inv-sample w) true) (= (inv-sample (resource-del w x)) true))
+(a/theorem well-formed-resource-del [w :- World, x :- Nat]
+  (=> (= (tbl-all (no-debtor x) (:edges w)) true) (= (well-formed w) true) (= (well-formed (resource-del w x)) true))
   (intros hu h)
   (have hs (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
-  (exact (inv-parts w h))
-  (exact (inv-intro (resource-del w x) (Eq.trans (pending-exact-resource-del w x) (And.left hs))
+  (exact (well-formed-parts w h))
+  (exact (well-formed-intro (resource-del w x) (Eq.trans (pending-exact-resource-del w x) (And.left hs))
            (resource-del-edges-ref-ok w x hu (And.left (And.right hs)))
            (resource-del-ids-ok w x (And.right (And.right hs))))))
 
-(a/theorem inv-source-ins-fresh [w :- World, r :- SourceRow]
-  (=> (= (source-id r) (:next-id w)) (= (inv-sample w) true) (= (inv-sample (bump (source-ins w r))) true))
+(a/theorem well-formed-source-ins-fresh [w :- World, r :- SourceRow]
+  (=> (= (source-id r) (:next-id w)) (= (well-formed w) true) (= (well-formed (bump (source-ins w r))) true))
   (intros hr h)
   (have hs (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
-  (exact (inv-parts w h))
-  (exact (inv-intro (bump (source-ins w r))
+  (exact (well-formed-parts w h))
+  (exact (well-formed-intro (bump (source-ins w r))
            (Eq.trans (pending-exact-bump (source-ins w r)) (Eq.trans (pending-exact-source-ins w r) (And.left hs)))
            (Eq.trans (edges-ref-ok-bump (source-ins w r)) (source-ins-edges-ref-ok w r (And.left (And.right hs))))
            (source-ins-fresh-ids-ok w r hr (And.right (And.right hs))))))
 
-(a/theorem inv-resource-ins-fresh [w :- World, r :- ResRow]
-  (=> (= (resource-id r) (:next-id w)) (= (inv-sample w) true) (= (inv-sample (bump (resource-ins w r))) true))
+(a/theorem well-formed-resource-ins-fresh [w :- World, r :- ResRow]
+  (=> (= (resource-id r) (:next-id w)) (= (well-formed w) true) (= (well-formed (bump (resource-ins w r))) true))
   (intros hr h)
   (have hs (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
-  (exact (inv-parts w h))
-  (exact (inv-intro (bump (resource-ins w r))
+  (exact (well-formed-parts w h))
+  (exact (well-formed-intro (bump (resource-ins w r))
            (Eq.trans (pending-exact-bump (resource-ins w r)) (Eq.trans (pending-exact-resource-ins w r) (And.left hs)))
            (Eq.trans (edges-ref-ok-bump (resource-ins w r)) (resource-ins-edges-ref-ok w r (And.left (And.right hs))))
            (resource-ins-fresh-ids-ok w r hr (And.right (And.right hs))))))
 
-(a/theorem inv-fork-del [w :- World, x :- Nat]
-  (=> (= (inv-sample w) true) (= (inv-sample (fork-del w x)) true))
+(a/theorem well-formed-fork-del [w :- World, x :- Nat]
+  (=> (= (well-formed w) true) (= (well-formed (fork-del w x)) true))
   (intro h)
   (have hs (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
-  (exact (inv-parts w h))
-  (exact (inv-intro (fork-del w x) (Eq.trans (pending-exact-fork-del w x) (And.left hs))
+  (exact (well-formed-parts w h))
+  (exact (well-formed-intro (fork-del w x) (Eq.trans (pending-exact-fork-del w x) (And.left hs))
            (Eq.trans (edges-ref-ok-fork-del w x) (And.left (And.right hs)))
            (fork-del-ids-ok w x (And.right (And.right hs))))))
 
-(a/theorem inv-fork-ins-fresh [w :- World, r :- ForkRow]
-  (=> (= (fork-id r) (:next-id w)) (= (inv-sample w) true) (= (inv-sample (bump (fork-ins w r))) true))
+(a/theorem well-formed-fork-ins-fresh [w :- World, r :- ForkRow]
+  (=> (= (fork-id r) (:next-id w)) (= (well-formed w) true) (= (well-formed (bump (fork-ins w r))) true))
   (intros hr h)
   (have hs (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
-  (exact (inv-parts w h))
-  (exact (inv-intro (bump (fork-ins w r))
+  (exact (well-formed-parts w h))
+  (exact (well-formed-intro (bump (fork-ins w r))
            (Eq.trans (pending-exact-bump (fork-ins w r)) (Eq.trans (pending-exact-fork-ins w r) (And.left hs)))
            (Eq.trans (edges-ref-ok-bump (fork-ins w r)) (Eq.trans (edges-ref-ok-fork-ins w r) (And.left (And.right hs))))
            (fork-ins-fresh-ids-ok w r hr (And.right (And.right hs))))))
 
-(a/theorem inv-remove-edge [w :- World, x :- Nat]
-  (=> (= (inv-sample w) true) (= (inv-sample (remove-edge w x)) true))
+(a/theorem well-formed-remove-edge [w :- World, x :- Nat]
+  (=> (= (well-formed w) true) (= (well-formed (remove-edge w x)) true))
   (intro h)
   (have hs (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
-  (exact (inv-parts w h))
-  (exact (inv-intro (remove-edge w x)
+  (exact (well-formed-parts w h))
+  (exact (well-formed-intro (remove-edge w x)
            (remove-edge-pending-exact w x (ids-ok-edges w (And.right (And.right hs))) (And.left hs))
            (remove-edge-edges-ref-ok w x (And.left (And.right hs)))
            (remove-edge-ids-ok w x (And.right (And.right hs))))))
 
-(a/theorem inv-drop-cred [w :- World, a :- Nat]
-  (=> (= (inv-sample w) true) (= (inv-sample (drop-cred-edges w a)) true))
+(a/theorem well-formed-drop-cred-edges [w :- World, a :- Nat]
+  (=> (= (well-formed w) true) (= (well-formed (drop-cred-edges w a)) true))
   (intro h)
   (have hs (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
-  (exact (inv-parts w h))
-  (exact (inv-intro (drop-cred-edges w a) (drop-cred-pending-exact w a (And.left hs))
+  (exact (well-formed-parts w h))
+  (exact (well-formed-intro (drop-cred-edges w a) (drop-cred-pending-exact w a (And.left hs))
            (drop-cred-edges-ref-ok w a (And.left (And.right hs)))
            (drop-cred-ids-ok w a (And.right (And.right hs))))))
 
 ;; removing an activation together with every edge it is the creditor of
 (a/defn drop-act [w :- World, a :- Nat] World (act-del (drop-cred-edges w a) a))
 
-(a/theorem inv-drop-act [w :- World, a :- Nat]
-  (=> (= (inv-sample w) true) (= (inv-sample (drop-act w a)) true))
+(a/theorem well-formed-drop-act [w :- World, a :- Nat]
+  (=> (= (well-formed w) true) (= (well-formed (drop-act w a)) true))
   (intro h)
   (have hs (And (= (pending-exact (drop-cred-edges w a)) true)
                 (And (= (edges-ref-ok (drop-cred-edges w a)) true) (= (ids-ok (drop-cred-edges w a)) true))))
-  (exact (inv-parts (drop-cred-edges w a) (inv-drop-cred w a h)))
+  (exact (well-formed-parts (drop-cred-edges w a) (well-formed-drop-cred-edges w a h)))
   (have hu (= (tbl-all (cred-ne a) (:edges (drop-cred-edges w a))) true))
   (rw [drop-cred-edges-edges]) (exact (tbl-all-filter-self EdgeRow (cred-ne a) (:edges w)))
-  (exact (inv-intro (drop-act w a)
+  (exact (well-formed-intro (drop-act w a)
            (Eq.trans (pending-exact-act-del (drop-cred-edges w a) a) (And.left hs))
            (act-del-edges-ref-ok (drop-cred-edges w a) a hu (And.left (And.right hs)))
            (act-del-ids-ok (drop-cred-edges w a) a (And.right (And.right hs))))))
@@ -1418,10 +1418,10 @@
 (a/defn nat-fold [f :- (=> World Nat World), w :- World, xs :- (List Nat)] World
   (match xs [nil w] [(cons h t) (nat-fold f (f w h) t)]))
 
-(a/theorem nat-fold-inv [f :- (=> World Nat World),
-                         hf :- (forall [w :- World, x :- Nat] (=> (= (inv-sample w) true) (= (inv-sample (f w x)) true))),
+(a/theorem well-formed-nat-fold [f :- (=> World Nat World),
+                         hf :- (forall [w :- World, x :- Nat] (=> (= (well-formed w) true) (= (well-formed (f w x)) true))),
                          xs :- (List Nat)]
-  (forall [w :- World] (=> (= (inv-sample w) true) (= (inv-sample (nat-fold f w xs)) true)))
+  (forall [w :- World] (=> (= (well-formed w) true) (= (well-formed (nat-fold f w xs)) true)))
   (induction xs)
   (case' [cons h t ih])
   (case' [nil])

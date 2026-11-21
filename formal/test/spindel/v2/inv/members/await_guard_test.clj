@@ -26,50 +26,50 @@
 
 (def public-contracts
   '[
-{:name h12-await-raw-h3
+{:name current-members-await-raw
  :type (forall [xm :- (List Nat), w :- World, r :- RunRow,
          ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat),
          st :- Nat, fresh :- Nat]
-  (=> (h9-entry xm w r ds mode st fresh)
-      (= (h3 xm (await-raw w r ds mode k mine)) true)))}
+  (=> (current-members-entry xm w r ds mode st fresh)
+      (= (current-members xm (await-raw w r ds mode k mine)) true)))}
 
-{:name h12-t6-accepted
+{:name current-members-t6-await-accepted
  :type (forall [xm :- (List Nat), w :- World, r :- RunRow,
          st :- Nat, ds :- (List Nat), mode :- Nat, k :- Nat,
          fresh :- Nat, mine :- (List Nat)]
-  (=> (= (p3la w) true)
-      (= (h3 xm w) true)
+  (=> (= (chain-to-edge-kinds w) true)
+      (= (current-members xm w) true)
       (= (tok-run w st) (Option.some RunRow r))
       (= (:accepted (t6-await w st ds mode k fresh mine)) true)
       (And (= (t6-await w st ds mode k fresh mine)
               (accept (await-raw w r ds mode k mine)))
-           (= (h3 xm (:world (t6-await w st ds mode k fresh mine))) true))))}
+           (= (current-members xm (:world (t6-await w st ds mode k fresh mine))) true))))}
 
-{:name h12-t6-outcome
+{:name current-members-t6-await-outcome
  :type (forall [xm :- (List Nat), w :- World, st :- Nat,
          ds :- (List Nat), mode :- Nat, k :- Nat,
          fresh :- Nat, mine :- (List Nat)]
-  (=> (= (p3la w) true)
-      (= (h3 xm w) true)
-      (And (= (h3 xm (:world (t6-await w st ds mode k fresh mine))) true)
+  (=> (= (chain-to-edge-kinds w) true)
+      (= (current-members xm w) true)
+      (And (= (current-members xm (:world (t6-await w st ds mode k fresh mine))) true)
            (=> (= (:accepted (t6-await w st ds mode k fresh mine)) false)
                (= (:world (t6-await w st ds mode k fresh mine)) w)))))}
 
-{:name h12-raw0-await-outcome
+{:name current-members-transition-await-outcome
  :type (forall [xm :- (List Nat), w :- World, st :- Nat,
          ds :- (List Nat), mode :- Nat, k :- Nat,
          fresh :- Nat, mine :- (List Nat)]
-  (=> (= (p3la w) true)
-      (= (h3 xm w) true)
-      (And (= (h3 xm
-                (:world (raw0 w (Item.await st ds mode k fresh mine)))) true)
-           (=> (= (:accepted (raw0 w (Item.await st ds mode k fresh mine))) false)
-               (= (:world (raw0 w (Item.await st ds mode k fresh mine))) w)))))}])
+  (=> (= (chain-to-edge-kinds w) true)
+      (= (current-members xm w) true)
+      (And (= (current-members xm
+                (:world (transition w (Item.await st ds mode k fresh mine)))) true)
+           (=> (= (:accepted (transition w (Item.await st ds mode k fresh mine))) false)
+               (= (:world (transition w (Item.await st ds mode k fresh mine))) w)))))}])
 
 (deftest frozen-hm12-manifest
   (is (empty? helper-definitions))
   (is (= 4 (count public-contracts)))
-  (is (= '[h12-await-raw-h3 h12-t6-accepted h12-t6-outcome h12-raw0-await-outcome]
+  (is (= '[current-members-await-raw current-members-t6-await-accepted current-members-t6-await-outcome current-members-transition-await-outcome]
          (mapv :name public-contracts))))
 
 
@@ -83,11 +83,11 @@
 (defn declaration [name] (.lookup ^Env @a/ansatz-env (Name/fromString (str name))))
 
 (def expected-wrappers
-  '{h9-entry
-    (a/defn h9-entry [xm :- (List Nat) w :- World r :- RunRow ds :- (List Nat)
+  '{current-members-entry
+    (a/defn current-members-entry [xm :- (List Nat) w :- World r :- RunRow ds :- (List Nat)
                      mode :- Nat st :- Nat fresh :- Nat] Prop
-      (And (= (p3la w) true)
-        (And (= (h3 xm w) true)
+      (And (= (chain-to-edge-kinds w) true)
+        (And (= (current-members xm w) true)
           (And (= (tok-run w st) (Option.some RunRow r))
                (= (await-ok w r ds mode fresh) true)))))
     await-raw
@@ -98,22 +98,22 @@
   (list 'let
         (vec (mapcat (fn [name]
                        (let [[_ _ parameters _ body] (get expected-wrappers name)]
-                         [name (list 'fn parameters body)])) '[h9-entry await-raw]))
+                         [name (list 'fn parameters body)])) '[current-members-entry await-raw]))
         contract))
 
 (def dependency-contracts
-  '{h11-await-post-h3
+  '{current-members-await-post
     (forall [xm :- (List Nat) w :- World r :- RunRow ds :- (List Nat) mode :- Nat k :- Nat
              mine :- (List Nat) st :- Nat fresh :- Nat]
-      (=> (h9-entry xm w r ds mode st fresh)
-          (= (h3 xm (await-post (:next-id w) (:id r) ds (await-acc w r ds mode k mine))) true)))
-    t6-refuse
+      (=> (current-members-entry xm w r ds mode st fresh)
+          (= (current-members xm (await-post (:next-id w) (:id r) ds (await-acc w r ds mode k mine))) true)))
+    t6-await-refuse
     (forall [w :- World st :- Nat ds :- (List Nat) mode :- Nat k :- Nat fresh :- Nat mine :- (List Nat)]
       (=> (= (:accepted (t6-await w st ds mode k fresh mine)) false)
           (= (:world (t6-await w st ds mode k fresh mine)) w)))
-    raw0-refuse
+    transition-refuse
     (forall [w :- World it :- Item]
-      (=> (= (:accepted (raw0 w it)) false) (= (:world (raw0 w it)) w)))})
+      (=> (= (:accepted (transition w it)) false) (= (:world (transition w it)) w)))})
 
 (def item-await-signature
   '(forall [st :- Nat ds :- (List Nat) mode :- Nat k :- Nat fresh :- Nat mine :- (List Nat)] Item))
@@ -125,7 +125,7 @@
                    (accept (await-raw w r ds mode k mine)) (refuse w))])))
 (def expected-raw0-await-branch
   '[(await st ds m k fresh mine)
-    (if (await-bad w st ds m) (refuse w) (t6-await w st ds m k fresh mine))])
+    (if (await-refused w st ds m) (refuse w) (t6-await w st ds m k fresh mine))])
 
 (deftest actual-safe-closed-exact-endpoints-and-dependencies
   (is (= 4 (count theorems)))
@@ -156,7 +156,7 @@
     (is (= (closed/type-form (elab/elaborate @a/ansatz-env item-await-signature))
            (closed/type-form (.-type d))))
     (doseq [[name [_ _ parameters result body :as expected]] expected-wrappers]
-      (let [actual-source (get (if (= name 'h9-entry) hm9-forms engine-forms) name)
+      (let [actual-source (get (if (= name 'current-members-entry) hm9-forms engine-forms) name)
             ^ConstantInfo d (declaration name)
             expected-value (elab/elaborate @a/ansatz-env (list 'fn parameters body) (.-type d))]
         (is (= expected actual-source))
@@ -167,42 +167,42 @@
                (closed/type-form (.-type d))))
         (is (tc/is-def-eq (tc/mk-tc-state @a/ansatz-env) (.value d) expected-value))))
     (is (= expected-t6 (get engine-forms 't6-await)))
-    (let [raw0-body (nth (get engine-forms 'raw0) 4), branch (first (filter #(= 'await (ffirst %)) (drop 2 raw0-body)))]
+    (let [raw0-body (nth (get engine-forms 'transition) 4), branch (first (filter #(= 'await (ffirst %)) (drop 2 raw0-body)))]
       (is (= expected-raw0-await-branch branch)))))
 
 (defn row [w table id] (fixture/row w table id))
 (defn check-input [f xm]
-  (is (true? (base/p3la (:w f))))
-  (is (true? (hm3/h3 xm (:w f))))
+  (is (true? (base/chain-to-edge-kinds (:w f))))
+  (is (true? (hm3/current-members xm (:w f))))
   (is (true? (closed/member-fields? xm (:w f)))))
 
 (defn positive-outcomes [f ds mode k mine xm]
   (let [{:keys [w rid]} f, r (row w :runs rid), st (:stamp r), fresh (:next-id w)
         staged (finalizing/await-final-prefixes f ds mode k mine xm)
         acc (engine/await-acc w r ds mode k mine), raw (engine/await-raw w r ds mode k mine)
-        direct (engine/t6-await w st ds mode k fresh mine), outer (engine/raw0 w [18 st ds mode k fresh mine])]
+        direct (engine/t6-await w st ds mode k fresh mine), outer (engine/transition w [18 st ds mode k fresh mine])]
     (check-input f xm)
     (is (= [r] (step/tok-run w st)))
     (is (true? (engine/await-ok w r ds mode fresh)))
     (is (true? (:ok acc)))
     (is (= (:final staged) raw))
     (is (= (step/->Outcome raw true) direct))
-    (is (false? (engine/await-kind-bad w ds)))
+    (is (false? (engine/await-kind-refused w ds)))
     (is (= direct outer))
-    (is (true? (hm3/h3 xm (:world direct))))
+    (is (true? (hm3/current-members xm (:world direct))))
     (is (true? (closed/member-fields? xm (:world direct))))
     (fill/check-old-unexempt f (:world direct) xm)
     {:staged staged :acc acc :raw raw :direct direct :outer outer}))
 
 (defn refused-outcomes [w st ds mode k fresh mine xm]
-  (let [direct (engine/t6-await w st ds mode k fresh mine), outer (engine/raw0 w [18 st ds mode k fresh mine])]
-    (is (true? (base/p3la w)))
-    (is (true? (hm3/h3 xm w)))
+  (let [direct (engine/t6-await w st ds mode k fresh mine), outer (engine/transition w [18 st ds mode k fresh mine])]
+    (is (true? (base/chain-to-edge-kinds w)))
+    (is (true? (hm3/current-members xm w)))
     (doseq [[label out] [[:direct direct] [:raw0 outer]]]
       (is (false? (:accepted out)) (str label " actual refusal"))
       (is (= w (:world out)) (str label " ENTIRE original World, not speculative accumulator"))
       (is (= (step/->Outcome w false) out))
-      (is (true? (hm3/h3 xm (:world out)))))))
+      (is (true? (hm3/current-members xm (:world out)))))))
 
 (deftest accepted-direct-and-raw0-outcomes-across-actual-modes-and-kinds
   (doseq [kind [:comp :task]]
@@ -281,18 +281,18 @@
         (let [ds (if (= mode s/am-one) [d] [d deferred d]), mine [d d]
               acc (engine/await-acc w r ds mode 4010 mine)
               direct (engine/t6-await w st ds mode 4010 fresh mine)
-              outer (engine/raw0 w [18 st ds mode 4010 fresh mine])]
+              outer (engine/transition w [18 st ds mode 4010 fresh mine])]
           (check-input f [])
           (is (= [r] (step/tok-run w st)))
           (is (true? (engine/await-ok w r ds mode fresh)))
           (is (true? (:ok acc)))
-          (is (true? (engine/await-kind-bad w ds)))
+          (is (true? (engine/await-kind-refused w ds)))
           (is (true? (:accepted direct)) "inspect direct T6 independently of the outer guard")
           (is (= (step/->Outcome (engine/await-raw w r ds mode 4010 mine) true) direct))
-          (is (true? (hm3/h3 [] (:world direct))))
+          (is (true? (hm3/current-members [] (:world direct))))
           (is (= (:sources w) (:sources (:world direct))) "await does not consume mailbox/semaphore")
           (is (= (step/->Outcome w false) outer))
-          (is (= w (:world outer)) "whole raw0 refusal world, including allocator/tentative rows")
+          (is (= w (:world outer)) "whole transition refusal world, including allocator/tentative rows")
           (fill/check-old-unexempt f (:world direct) []))))))
 
 (deftest actual-cycle-guard-discards-real-speculative-wiring

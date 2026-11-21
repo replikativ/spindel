@@ -26,74 +26,74 @@
 
 (def helper-definitions
   '[
-(a/defn h10-install [a :- Nat, ds :- (List Nat), acc :- AwAcc] World
+(a/defn current-members-install [a :- Nat, ds :- (List Nat), acc :- AwAcc] World
   (act-upd (:world acc) a
     (act-set-members (mk-members (:pairs acc) 0 ds))))
 
-(a/defn h10-fill-prefix [a :- Nat, ds :- (List Nat), acc :- AwAcc,
+(a/defn current-members-fill-prefix [a :- Nat, ds :- (List Nat), acc :- AwAcc,
                        pre :- (List Nat)] World
-  (nat-fold (fast-fill (:pairs acc)) (h10-install a ds acc) pre))
+  (nat-fold (fast-fill (:pairs acc)) (current-members-install a ds acc) pre))
 
-(a/defn h10-pending-exempt [ps :- (List DE), tail :- (List Nat),
+(a/defn current-members-pending-exempt [ps :- (List DE), tail :- (List Nat),
                           xm :- (List Nat)] (List Nat)
   (match tail
     [nil xm]
     [(cons d t) (List.cons Nat (pair-edge d ps)
-                         (h10-pending-exempt ps t xm))]))
+                         (current-members-pending-exempt ps t xm))]))
 ])
 
 (def public-contracts
   '[
-{:name h10-fast-not-ready-waiting
+{:name current-members-fast-not-ready-waiting
  :type (forall [w :- World, d :- Nat]
-  (=> (= (gd w) true)
+  (=> (= (comp-facts w) true)
       (= (awake (:comps w) d) true)
       (= (fast-ready w d) false)
       (= (tbl-all (hk-wif d) (:comps w)) true)))}
 
-{:name h10-await-debtor-awake
+{:name current-members-await-debtor-awake
  :type (forall [xm :- (List Nat), w :- World, r :- RunRow,
          ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat),
          st :- Nat, fresh :- Nat, d :- Nat]
-  (=> (h9-entry xm w r ds mode st fresh)
+  (=> (current-members-entry xm w r ds mode st fresh)
       (= (nat-mem d ds) true)
       (= (awake (:comps (:world (await-acc w r ds mode k mine))) d) true)))}
 
-{:name h10-install-h3-exempt
+{:name current-members-install-exempt
  :type (forall [xm :- (List Nat), w :- World, r :- RunRow,
          ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat),
          st :- Nat, fresh :- Nat]
-  (=> (h9-entry xm w r ds mode st fresh)
+  (=> (current-members-entry xm w r ds mode st fresh)
       (let [C (await-acc w r ds mode k mine)]
-        (= (h3 (h10-pending-exempt (:pairs C) (nat-distinct ds) xm)
-               (h10-install (:next-id w) ds C)) true))))}
+        (= (current-members (current-members-pending-exempt (:pairs C) (nat-distinct ds) xm)
+               (current-members-install (:next-id w) ds C)) true))))}
 
-{:name h10-fill-prefix-h3
+{:name current-members-fill-prefix-preserved
  :type (forall [xm :- (List Nat), w :- World, r :- RunRow,
          ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat),
          st :- Nat, fresh :- Nat, pre :- (List Nat), tail :- (List Nat)]
-  (=> (h9-entry xm w r ds mode st fresh)
+  (=> (current-members-entry xm w r ds mode st fresh)
       (= (List.append Nat pre tail) (nat-distinct ds))
       (let [C (await-acc w r ds mode k mine)]
-        (= (h3 (h10-pending-exempt (:pairs C) tail xm)
-               (h10-fill-prefix (:next-id w) ds C pre)) true))))}
+        (= (current-members (current-members-pending-exempt (:pairs C) tail xm)
+               (current-members-fill-prefix (:next-id w) ds C pre)) true))))}
 
-{:name h10-fast-fill-h3
+{:name current-members-fast-fill-hand
  :type (forall [xm :- (List Nat), w :- World, r :- RunRow,
          ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat),
          st :- Nat, fresh :- Nat]
-  (=> (h9-entry xm w r ds mode st fresh)
-      (= (h3 xm (h10-fill-prefix (:next-id w) ds
+  (=> (current-members-entry xm w r ds mode st fresh)
+      (= (current-members xm (current-members-fill-prefix (:next-id w) ds
                   (await-acc w r ds mode k mine) (nat-distinct ds))) true)))}
 
-{:name h10-park-h3
+{:name current-members-park
  :type (forall [xm :- (List Nat), w :- World, r :- RunRow,
          ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat),
          st :- Nat, fresh :- Nat]
-  (=> (h9-entry xm w r ds mode st fresh)
-      (= (h3 xm
+  (=> (current-members-entry xm w r ds mode st fresh)
+      (= (current-members xm
            (park-if
-             (h10-fill-prefix (:next-id w) ds
+             (current-members-fill-prefix (:next-id w) ds
                (await-acc w r ds mode k mine) (nat-distinct ds))
              (:next-id w) (:id r))) true)))}
 ])
@@ -116,10 +116,10 @@
 
 (defn expanded-independent-contract [contract]
   ;; Nonrecursive aliases are independently bound to the frozen meanings.
-  ;; Kernel beta/delta/zeta equality performs expansion; recursive h10-pending-exempt
+  ;; Kernel beta/delta/zeta equality performs expansion; recursive current-members-pending-exempt
   ;; is retained and its exact source recursion is separately pinned below.
   (let [bindings (mapcat (fn [[_ name parameters _ body]]
-                          (when-not (= name 'h10-pending-exempt)
+                          (when-not (= name 'current-members-pending-exempt)
                             [name (list 'fn parameters body)])) helper-definitions)]
     (list 'let (vec bindings) contract)))
 
@@ -154,8 +154,8 @@
           (is (seq (closed/type-form (.value d))))
           (is (= (closed/type-form (elab/elaborate @a/ansatz-env (list 'forall parameters result)))
                  (closed/type-form (.-type d))) (str name " exact safe definition signature"))
-          (if (= name 'h10-pending-exempt)
-            (is (= '(match tail [nil xm] [(cons d t) (List.cons Nat (pair-edge d ps) (h10-pending-exempt ps t xm))]) body)
+          (if (= name 'current-members-pending-exempt)
+            (is (= '(match tail [nil xm] [(cons d t) (List.cons Nat (pair-edge d ps) (current-members-pending-exempt ps t xm))]) body)
                 "recursive body pinned without claiming evaluation of a symbolic list")
             (let [expected (elab/elaborate @a/ansatz-env (list 'fn parameters body) (.-type d))]
               (is (tc/is-def-eq (tc/mk-tc-state @a/ansatz-env) (.value d) expected)
@@ -163,21 +163,21 @@
 
 
 (def helper-equations
-  '{h10-install.eq_1
+  '{current-members-install.eq_1
     (forall [a :- Nat ds :- (List Nat) acc :- AwAcc]
-      (= (h10-install a ds acc)
+      (= (current-members-install a ds acc)
          (act-upd (:world acc) a (act-set-members (mk-members (:pairs acc) 0 ds)))))
-    h10-fill-prefix.eq_1
+    current-members-fill-prefix.eq_1
     (forall [a :- Nat ds :- (List Nat) acc :- AwAcc pre :- (List Nat)]
-      (= (h10-fill-prefix a ds acc pre)
-         (nat-fold (fast-fill (:pairs acc)) (h10-install a ds acc) pre)))
-    h10-pending-exempt.eq_1
+      (= (current-members-fill-prefix a ds acc pre)
+         (nat-fold (fast-fill (:pairs acc)) (current-members-install a ds acc) pre)))
+    current-members-pending-exempt.eq_1
     (forall [ps :- (List DE) xm :- (List Nat)]
-      (= (h10-pending-exempt ps (List.nil Nat) xm) xm))
-    h10-pending-exempt.eq_2
+      (= (current-members-pending-exempt ps (List.nil Nat) xm) xm))
+    current-members-pending-exempt.eq_2
     (forall [ps :- (List DE) xm :- (List Nat) d :- Nat tail :- (List Nat)]
-      (= (h10-pending-exempt ps (List.cons Nat d tail) xm)
-         (List.cons Nat (pair-edge d ps) (h10-pending-exempt ps tail xm))))})
+      (= (current-members-pending-exempt ps (List.cons Nat d tail) xm)
+         (List.cons Nat (pair-edge d ps) (current-members-pending-exempt ps tail xm))))})
 
 (deftest actual-helper-equations-and-match-declaration
   (is (= 4 (count helper-equations)))
@@ -185,7 +185,7 @@
     (when-let [^ConstantInfo d (certification/checked-declaration name)]
       (is (= (closed/type-form (elab/elaborate @a/ansatz-env expected))
              (closed/type-form (.-type d))) (str name " exact independent equation"))))
-  (let [^ConstantInfo d (declaration 'h10-pending-exempt.match_1)]
+  (let [^ConstantInfo d (declaration 'current-members-pending-exempt.match_1)]
     (is (some? d))
     (is (= :def (kernel-env/ci-tag d)))
     (is (zero? (.-safety d)))
@@ -195,10 +195,10 @@
 (def generated-contracts
   ;; Independent invariant schemas; neither copied forms nor registered types
   ;; are consulted to construct these expectations.
-  (let [families [['h3 '[xm :- (List Nat)] '[xm] 'hm3-fast-fill 'nat-fold-h3]
-                  ['gd [] [] 'gd-fast-fill 'nat-fold-gd]
-                  ['gl [] [] 'gl-fast-fill 'nat-fold-gl]
-                  ['awo '[awc :- Nat awr :- Nat] '[awc awr] 'awo-fast-fill 'nat-fold-awo]]
+  (let [families [['current-members '[xm :- (List Nat)] '[xm] 'current-members-fast-fill 'current-members-nat-fold]
+                  ['comp-facts [] [] 'comp-facts-fast-fill 'comp-facts-nat-fold]
+                  ['i10-task [] [] 'i10-task-fast-fill 'i10-task-nat-fold]
+                  ['comp-awake-owns-run '[awc :- Nat awr :- Nat] '[awc awr] 'comp-awake-owns-run-fast-fill 'comp-awake-owns-run-nat-fold]]
         predicate (fn [p args w] (apply list p (concat args [w])))
         truth (fn [p args w] (list '= (predicate p args w) true))
         fills (into {} (for [[p params args fill] families]
@@ -219,16 +219,16 @@
                                               hf :- (forall [r :- ActRow] (= (act-id (f r)) (act-id r)))])
                                   (list '=> (truth p args 'w) (truth p args '(act-upd w x f))))]))]
     (merge fills folds updates
-           {'awo-react-edges
+           {'comp-awake-owns-run-react-edges
             '(forall [awc :- Nat awr :- Nat vs :- (List Valid) w :- World c :- Nat]
-               (=> (= (awo awc awr w) true) (= (awo awc awr (react-edges w c vs)) true)))
-            'awo-react-loop
+               (=> (= (comp-awake-owns-run awc awr w) true) (= (comp-awake-owns-run awc awr (react-edges w c vs)) true)))
+            'comp-awake-owns-run-react-loop
             '(forall [awc :- Nat awr :- Nat fuel :- (List Nat) w :- World q :- (List Nat)]
-               (=> (= (awo awc awr w) true) (= (awo awc awr (react-loop fuel w q)) true)))
-            'awo-demand-reactive
+               (=> (= (comp-awake-owns-run awc awr w) true) (= (comp-awake-owns-run awc awr (react-loop fuel w q)) true)))
+            'comp-awake-owns-run-demand-reactive
             '(forall [awc :- Nat awr :- Nat w :- World d :- Nat]
-               (=> (= (awo awc awr w) true) (= (awo awc awr (demand-reactive w d)) true)))
-            'awo-await-wire (get wiring/generated-contracts 'awo-await-wire)})))
+               (=> (= (comp-awake-owns-run awc awr w) true) (= (comp-awake-owns-run awc awr (demand-reactive w d)) true)))
+            'comp-awake-owns-run-await-wire (get wiring/generated-contracts 'comp-awake-owns-run-await-wire)})))
 
 (deftest exact-safe-generated-dependencies
   (is (= 15 (count generated-contracts)))
@@ -257,7 +257,7 @@
     (is (not-any? (set exemptions) [old-owner old-edge deferred]))
     (is (= [s/sk-deferred true 0] ((juxt :kind :open :version) (row w :sources deferred))))
     (is (true? (closed/member-fields? [] (assoc w :acts [a]))))
-    (is (true? (hm3/h3-s (:acts w) a (hm3/rk3 (row w :runs old-run)) e)))))
+    (is (true? (hm3/current-members-s (:acts w) a (hm3/current-members-run-key (row w :runs old-run)) e)))))
 
 (defn expected-result [w d]
   (cond
@@ -271,17 +271,17 @@
     :else (s/->RunResult s/res-ok 0)))
 
 (defn checkpoint
-  "Walk actual distinct fast-fill prefixes before fin-if-final. Expected member
+  "Walk actual distinct fast-fill prefixes before finalize-if-final. Expected member
    aliases, slots, counters and delivery/invalidation choices are read independently."
   [f ds mode k mine xm]
   (let [{:keys [w rid owner]} f, r (row w :runs rid), aid (:next-id w)
-        _ (is (true? (base/p3la w))), _ (is (true? (hm3/h3 xm w)))
+        _ (is (true? (base/chain-to-edge-kinds w))), _ (is (true? (hm3/current-members xm w)))
         _ (is (true? (closed/member-fields? xm w))), _ (is (= [r] (step/tok-run w (:stamp r))))
         _ (is (true? (engine/run-normal r))), _ (is (true? (engine/await-ok w r ds mode aid)))
-        _ (is (false? (engine/await-kind-bad w ds)))
+        _ (is (false? (engine/await-kind-refused w ds)))
         acc (engine/await-acc w r ds mode k mine), pairs (into {} (map (juxt :deb :edge) (:pairs acc)))
         debtors (vec (distinct ds)), initial-members (mapv (fn [i d] (s/->Member (get pairs d) i)) (range) ds)
-        installed (h10/h10-install aid ds acc)]
+        installed (h10/current-members-install aid ds acc)]
     (is (true? (:ok acc)))
     (is (= (set debtors) (set (keys pairs))))
     (is (= (count debtors) (count (set (vals pairs)))))
@@ -290,13 +290,13 @@
     (loop [i 0, W installed, slots (vec (repeat (count ds) (s/->RunResult s/res-none 0))), members initial-members, deliveries []]
       (let [pre (subvec debtors 0 i), tail (subvec debtors i)
             exemptions (vec (concat (map pairs tail) xm)), a (row W :acts aid)]
-        (is (= W (h10/h10-fill-prefix aid ds acc pre)))
-        (is (= exemptions (vec (h10/h10-pending-exempt (:pairs acc) tail xm))))
-        (is (true? (edits/inv-sample W)))
-        (is (true? (hm3/h3 exemptions W)))
+        (is (= W (h10/current-members-fill-prefix aid ds acc pre)))
+        (is (= exemptions (vec (h10/current-members-pending-exempt (:pairs acc) tail xm))))
+        (is (true? (edits/well-formed W)))
+        (is (true? (hm3/current-members exemptions W)))
         (is (true? (closed/member-fields? exemptions W)))
-        (is (true? (hm/gd W)))
-        (is (true? (lit/gl W)))
+        (is (true? (hm/comp-facts W)))
+        (is (true? (lit/i10-task W)))
         (doseq [d debtors] (is (true? (idle/awake (:comps W) d))))
         (check-old-unexempt f W exemptions)
         (when a
@@ -349,9 +349,9 @@
                   (is (= a (row out :acts aid)))))
             (recur (inc i) out next-slots next-members (cond-> deliveries deliver? (conj d))))
           (let [parked (engine/park-if W aid rid)]
-            (is (true? (hm3/h3 xm W)))
+            (is (true? (hm3/current-members xm W)))
             (is (true? (closed/member-fields? xm W)))
-            (is (true? (hm3/h3 xm parked)))
+            (is (true? (hm3/current-members xm parked)))
             (is (true? (closed/member-fields? xm parked)))
             (check-old-unexempt f parked xm)
             (if a
@@ -401,8 +401,8 @@
           aid (:next-id (:w f)), installed (:installed out), filled (:filled out)
           a (row filled :acts aid)]
       (when (= kind :comp)
-        (is (false? (hm3/h3 [] installed)) "live computation dep members really require temporary exemptions"))
-      (is (true? (hm3/h3 [] filled)))
+        (is (false? (hm3/current-members [] installed)) "live computation dep members really require temporary exemptions"))
+      (is (true? (hm3/current-members [] filled)))
       (is (some? a) "pending computation, task, deferred and resource leave actual members")
       (is (= #{pending-task pending-resource fresh deferred}
              (set (keep (fn [[d eid]] (when (some #(= eid (:edge %)) (:members a)) d)) (:pairs out)))))
@@ -515,14 +515,14 @@
         xm [overlap], out (checkpoint f ds s/am-all 2007 [signal] xm)]
     (is (pos? overlap))
     (is (not= overlap (:old-edge f)))
-    (is (true? (hm3/h3 xm (:filled out))))
+    (is (true? (hm3/current-members xm (:filled out))))
     (is (some? (row (:filled out) :acts (:next-id w))))
     (check-old-unexempt f (:filled out) xm)))
 
 (deftest retained-raw0-refusals-have-real-outer-guards
   ;; The comprehensive predecessor suite independently covers sticky rank failure,
   ;; arbitrary checked insertion refusal, parked broad inputs and cleanup tokens.
-  ;; Here the actual raw0 identity branches are exercised again at the checkpoint.
+  ;; Here the actual transition identity branches are exercised again at the checkpoint.
   (let [{:keys [w rid owner deferred consuming]} (fixture/fixture :comp)
         r (row w :runs rid), st (:stamp r), fresh (:next-id w)]
     (doseq [item [[18 999999 [deferred] s/am-one 2008 fresh []]
@@ -533,8 +533,8 @@
                   [18 st [owner] s/am-one 2008 fresh []]]]
       (fixture/refused-raw w item))
     (is (true? (engine/await-ok w r [consuming] s/am-one fresh)))
-    (is (true? (engine/await-kind-bad w [consuming])))
+    (is (true? (engine/await-kind-refused w [consuming])))
     (fixture/refused-raw w [18 st [consuming] s/am-one 2008 fresh []])
-    (let [accepted (engine/raw0 w [18 st [deferred] s/am-one 2008 fresh []])]
+    (let [accepted (engine/transition w [18 st [deferred] s/am-one 2008 fresh []])]
       (is (true? (:accepted accepted)))
       (fixture/refused-raw (:world accepted) [18 st [deferred] s/am-one 2008 (:next-id (:world accepted)) []]))))

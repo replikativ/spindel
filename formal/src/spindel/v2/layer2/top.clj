@@ -5,7 +5,7 @@
     sysinv cells pubs := sinv cells && pinv pubs && cinv cells && qsinv cells && qpinv pubs && jinv cells
       sinv / pinv    every live world / live publication basis satisfies the top invariant `inv`
       cinv           completion soundness: a live complete cell is ready
-      qsinv / qpinv  every live world / basis is quiet-compatible (unborn-released or qinv)
+      qsinv / qpinv  every live world / basis is quiet-compatible (unborn-released or quiet-world-inv)
       jinv           the host joins are well formed
     SysReach        the systems reachable from an initial one by the 28 operations of spindel.v2.layer2.sys,
                     each with the premises (guards) its preservation theorems take

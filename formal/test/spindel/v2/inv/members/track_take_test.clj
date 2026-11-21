@@ -1,14 +1,14 @@
 (ns spindel.v2.inv.members.track-take-test
-  "Loading spindel.v2.inv.members.track-take kernel-checks the next h-mem2 overrides of the h3 copier (notes/history/PLAN.md, branch hm5):
-  T7 track (the removed site edge is held by no obliged activation: AR + ga), take and T17 arm (a new activation
-  whose member is exempt until its wait edge exists), T14's cancel-acts, T10 finalize and its callers (with hmk),
-  T13's run-pointer clears. The step theorem for h3 is still open; the tripwire is hm3_test."
+  "Loading spindel.v2.inv.members.track-take kernel-checks the next h-mem2 overrides of the current-members copier (notes/history/PLAN.md, branch hm5):
+  T7 track (the removed site edge is held by no obliged activation: AR + acts-parked), take and T17 arm (a new activation
+  whose member is exempt until its wait edge exists), T14's cancel-acts, T10 finalize and its callers (with marks-waiting),
+  T13's run-pointer clears. The step theorem for current-members is still open; the tripwire is hm3_test."
   (:require [clojure.test :refer [deftest is]]
             [ansatz.core :as a]
             [spindel.v2.inv.members.track-take]))
 
 (def theorems
-  '[h3-free-by h3-ob-has h3-free-noedge h3-free-ins-fresh h3-free-edge-upd h3-site-p h3-track-fin h3-track-raw h3-ga-good h3-good-alive h3-ar-run h3-tok-alive h3-t7-free t7-h3 h3-g10-run h3-gd-cs h3-r-new h3-r-acts-g h3-a-acts-g h3r-act-ins h3-undo-g h3-src-not-task h3-fa-congr h3-fa-use h3-fa-run-upd h3-r-new2 h3-mem-single h3-rm-head2 h3-take-a h3-take-eok h3-take-park h3-take-a-g h3-take-park-g h3-task-next h3-rk3-eq h3-run-uniq t-take-h3 h3-arm-eok h3-arm-park t17-h3 h3-fold-noc h3-drop-act-nc h3-cancel-acts h3-finalize-one h3-fin-loop h3-finalize-debtor h3-close-source h3-fold-noc2 h3-close-local h3-fire-task-cancelled h3-fin-if-final t-deliver-h3 h3-clear-task-run h3-clear-comp-run ])
+  '[current-members-free-by current-members-ob-has current-members-free-noedge current-members-free-ins-fresh current-members-free-edge-upd current-members-site-p current-members-track-fin current-members-track-raw current-members-acts-parked-good current-members-good-alive current-members-alive-run-latest-run current-members-tok-alive current-members-t7-track-free current-members-t7-track current-members-i10-current-run current-members-comp-facts-cs current-members-r-new current-members-r-acts-g current-members-a-acts-g current-members-rest-act-ins current-members-undo-g current-members-source-not-task current-members-fa-congr current-members-fa-use current-members-fa-run-upd current-members-r-new2 current-members-mem-single current-members-rm-head2 current-members-take-a current-members-take-eok current-members-take-park current-members-take-a-g current-members-take-park-g current-members-task-next current-members-current-members-run-key-eq current-members-run-uniq current-members-t-take current-members-arm-eok current-members-arm-park current-members-t17-arm current-members-fold-noc current-members-drop-act-nc current-members-cancel-acts current-members-finalize-one current-members-finalize-loop current-members-t10-finalize-debtor current-members-close-source current-members-fold-noc2 current-members-close-local current-members-fire-task-cancelled current-members-finalize-if-final current-members-t-deliver current-members-clear-task-run current-members-clear-comp-run ])
 
 (deftest theorems-kernel-checked
   (doseq [t theorems]

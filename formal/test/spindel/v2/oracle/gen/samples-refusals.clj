@@ -52,7 +52,7 @@
 ;;     publication); the engine projection has `:pubs {}` and `:pending-act nil`.
 ;;
 ;; Sidecar (every sample, `log-sample-N-observations.edn`): a vector of checkpoints
-;;   {:step kw :log-length {world n} :obs {world obs}}; each world is read under its gate without a
+;;   {:step i10-task-view :log-length {world n} :obs {world obs}}; each world is read under its gate without a
 ;;   turn (as samples-c1c-b.clj). Per world, obs:
 ;;     :complete? :released? :runs :kids :token   as samples-c1c-b.clj (C1)
 ;;     :tasks :scopes :pending-joins             as samples-c1c-b.clj (C1c stage A; every task and

@@ -1,5 +1,5 @@
 (ns spindel.v2.progress.l5-test
-  "Loading spindel.v2.progress.l5 kernel-checks the discharge of L5's state facts (h-cur from g10r, ...).
+  "Loading spindel.v2.progress.l5 kernel-checks the discharge of L5's state facts (h-cur from i10-current, ...).
   Here: the settle worklist's fuel regression (found by branch l5), the former h-mark
   counterexample (resolved by Z#59), and the state facts (h-cur, h-mark at every step; h-mem at
   quiescent points is in progress_test) plus I5's dep-final clause as the model has it
@@ -14,7 +14,7 @@
             [spindel.v2.inv-test :as it]
             [spindel.v2.oracle :as o]))
 
-(def theorems '[l5-cur-ok l5-h-cur l5-safety-p3c l5-step-p3c task-base-q mem-y-q h-mem-of2 l5-safety-inv es-nm-upd nm-settle-edge sd-settle-edge sd-pop settle-loop-done settle-done-ok])
+(def theorems '[l5-cur-ok l5-h-cur l5-safety-chain-to-i10-current l5-step-chain-to-i10-current task-base-q mem-y-q h-mem-of2 l5-safety-inv es-nm-upd nm-settle-edge sd-settle-edge sd-pop settle-loop-done settle-done-ok])
 
 (deftest theorems-kernel-checked
   (doseq [t theorems]
@@ -113,7 +113,7 @@
   (let [bl (set (en/blocked-set w)) cn (cone w c0)]
     (boolean (or (some bl cn)
                  (some (fn [x] (when-let [c (find-row w :comps x)] (and (not (:idle c)) (en/needs-run w c) (en/eligible w c)))) cn)
-                 (some (fn [x] (and (some? (find-row w :tasks x)) (en/blk-base w x) (not (bl x)))) cn)))))
+                 (some (fn [x] (and (some? (find-row w :tasks x)) (en/blocked-base w x) (not (bl x)))) cn)))))
 (defn- live? [c] (and (not (:idle c)) (= (:epoch c) (:done-epoch c)) (zero? (:pending c))))
 
 (deftest h-mark-fired-sibling-resolved

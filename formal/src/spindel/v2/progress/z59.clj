@@ -5,7 +5,7 @@
     (b) T11's entry E is the earliest fired dep edge of C in CREATION order (the least id: one
         allocator, an edge keeps its id) and every dep edge of C created after E is cut, the
         siblings at E's own site included; E is consumed (re-armed, or removed on a final debtor).
-        `z59-t11-no-fired`: after the cut and the consumption of E, C has NO fired dep edge left:
+        `z59-t11-dispatch-no-fired`: after the cut and the consumption of E, C has NO fired dep edge left:
         every fired one was created after E (E is the least) and is cut, E itself is armed or gone.
         So no fired edge outlives a re-entry, and a later write can no longer reach C through a
         leftover fired edge.
@@ -171,7 +171,7 @@
       (simp only [tbl-all a1 (ih h1 (And.right h2)) Bool.and_self]))))
 
 ;; Z#59 (b): after T11's cut and the consumption of E, the computation has no fired dep edge
-(a/theorem z59-t11-no-fired [w :- World, c :- Nat, k :- Nat, e :- EdgeRow]
+(a/theorem z59-t11-dispatch-no-fired [w :- World, c :- Nat, k :- Nat, e :- EdgeRow]
   (=> (= (entry-edge w c) (Option.some EdgeRow e))
       (= (tbl-all (z59-nf c) (:edges (consume-entry (cut-suffix w c true k (:id e)) e))) true))
   (intro h)

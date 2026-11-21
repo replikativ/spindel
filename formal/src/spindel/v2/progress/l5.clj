@@ -2,12 +2,12 @@
   "L5 (safety half) without hypotheses on the step's worlds, kernel-checked (Init only).
 
   spindel.v2.progress.measures proves `l5-safety` under three state facts (h-cur, h-mark, h-mem).
-    h-cur  follows from i10's bundle g10r (E2: a current run of C is C.run and is alive or
-           C.done-epoch = C.epoch; rof: C.run names a run of C): `l5-h-cur`; `l5-safety-p3c`,
-           `l5-step-p3c` state L5 on p3c worlds with h-mark and h-mem as the remaining hypotheses.
+    h-cur  follows from i10's bundle i10-current (E2: a current run of C is C.run and is alive or
+           C.done-epoch = C.epoch; rof: C.run names a run of C): `l5-h-cur`; `l5-safety-chain-to-i10-current`,
+           `l5-step-chain-to-i10-current` state L5 on chain-to-i10-current worlds with h-mark and h-mem as the remaining hypotheses.
     h-mem  is not a step invariant (a task member's run may be running); `h-mem2` (the task's
            run is alive) is, on every tripwire, and gives h-mem at a quiescent point
-           (`h-mem-of2`). `l5-safety-inv`: L5 from p3c, h-mark and h-mem2. Both are proved
+           (`h-mem-of2`). `l5-safety-inv`: L5 from chain-to-i10-current, h-mark and h-mem2. Both are proved
            through the step since: h-mark in spindel.v2.inv.marks-step (`step-h-mark-total`), h-mem2 in
            spindel.v2.inv.members.step (`step-h-mem2-total`); `l5-safety-total` (hm18) has no hypothesis.
   Part B: I5's dep-final clause with the unfilled-member exemption (`i5-dep-final-mem`, tripwire); since
@@ -42,13 +42,13 @@
             [spindel.v2.progress.measures :refer :all]))
 
 ;; ===========================================================================
-;; Part A. h-cur from g10r
+;; Part A. h-cur from i10-current
 ;; ===========================================================================
 
 (a/theorem l5-cur-ok [w :- World, c :- CompRow]
-  (=> (= (g10r w) true) (List.Mem c (:comps w)) (= (cur-ok w c) true))
+  (=> (= (i10-current w) true) (List.Mem c (:comps w)) (= (cur-ok w c) true))
   (intros h mc)
-  (have hs := (g10-sample _ _ w h))
+  (have hs := (i10-current-exempt-well-formed _ _ w h))
   (cases hrf (run-find w (:run c)))
   (case [none] (simp only [cur-ok hrf]))
   (case [some r]
@@ -56,44 +56,44 @@
     (have hid := (tbl-find-id RunRow run-id (:run c) r (:runs w) hrf))
     (have hid2 (= (:id r) (:run c))) (exact hid)
     (have hz := (run-id-pos w r hs mr))
-    (have hk0 (= (reach-mem (:id (rk10 r)) (List.nil Nat)) false)) (rfl)
-    (have pc := (rc-parts _ _ (rk10 r) (ck10 c) (g10-rc _ _ w r c h mr mc) hk0))
-    (have ho := (rof-is (rk10 r) (ck10 c) (And.right pc) hz hid2))
-    (have ho2 (= (Nat.beq (:of (rk10 r)) (:id (ck10 c))) true)) (rw [ho]) (exact (Nat.beq_refl _))
+    (have hk0 (= (reach-mem (:id (i10-current-run-key r)) (List.nil Nat)) false)) (rfl)
+    (have pc := (rc-parts _ _ (i10-current-run-key r) (i10-current-comp-key c) (i10-current-exempt-rc _ _ w r c h mr mc) hk0))
+    (have ho := (rof-is (i10-current-run-key r) (i10-current-comp-key c) (And.right pc) hz hid2))
+    (have ho2 (= (Nat.beq (:of (i10-current-run-key r)) (:id (i10-current-comp-key c))) true)) (rw [ho]) (exact (Nat.beq_refl _))
     (cases he (Nat.beq (:epoch r) (:epoch c)))
     (case [false] (simp only [cur-ok hrf he Bool.not_false Bool.true_or]))
     (case [true]
-      (have he2 (= (Nat.beq (:epoch (rk10 r)) (:epoch (ck10 c))) true)) (exact he)
-      (have ce := (cur-eq _ (rk10 r) (ck10 c) (And.left pc) ho2 he2))
+      (have he2 (= (Nat.beq (:epoch (i10-current-run-key r)) (:epoch (i10-current-comp-key c))) true)) (exact he)
+      (have ce := (cur-eq _ (i10-current-run-key r) (i10-current-comp-key c) (And.left pc) ho2 he2))
       (have cf := (And.right (And.right ce)))
-      (simp only [cur-fin rk10 ck10 reach-mem run-alive Bool.false_or] at cf)
+      (simp only [cur-fin i10-current-run-key i10-current-comp-key reach-mem run-alive Bool.false_or] at cf)
       (simp only [cur-ok hrf he Bool.not_true Bool.false_or])
       (exact cf))))
 
-(a/theorem l5-h-cur [w :- World] (=> (= (g10r w) true) (= (h-cur w) true))
+(a/theorem l5-h-cur [w :- World] (=> (= (i10-current w) true) (= (h-cur w) true))
   (intro h)
   (simp only [h-cur])
   (exact (all-of-mem CompRow _ (:comps w) (fn [c :- CompRow, mc :- (List.Mem c (:comps w))] (l5-cur-ok w c h mc)))))
 
-;; L5 (safety half) on every world the step reaches from p3c: h-cur is discharged, h-mark and
+;; L5 (safety half) on every world the step reaches from chain-to-i10-current: h-cur is discharged, h-mark and
 ;; h-mem remain hypotheses (tripwire-checked; see notes/history/PLAN.md, branch l5, for their proof plan)
-(a/theorem l5-safety-p3c [w :- World, c0 :- Nat, c :- CompRow]
-  (=> (= (p3c w) true) (= (quiescent w) true) (= (h-mark w) true) (= (h-mem w) true)
+(a/theorem l5-safety-chain-to-i10-current [w :- World, c0 :- Nat, c :- CompRow]
+  (=> (= (chain-to-i10-current w) true) (= (quiescent w) true) (= (h-mark w) true) (= (h-mem w) true)
       (= (comp-find w c0) (Option.some CompRow c)) (= (comp-waiting c) true)
       (none-blocked w c0) (none-eligible w c0) (tasks-blocked w c0) False)
   (intros h hq hk hme hf hw n1 n2 n3)
-  (have p := (p3c-parts w h))
+  (have p := (chain-to-i10-current-parts w h))
   (exact (l5-safety w c0 c (And.left p) hq (l5-h-cur w (And.right p)) hk hme hf hw n1 n2 n3)))
 
-(a/theorem l5-step-p3c [w :- World, it :- Item, c0 :- Nat, c :- CompRow]
-  (=> (= (p3c w) true)
+(a/theorem l5-step-chain-to-i10-current [w :- World, it :- Item, c0 :- Nat, c :- CompRow]
+  (=> (= (chain-to-i10-current w) true)
       (= (quiescent (:world (world-step w it))) true) (= (h-mark (:world (world-step w it))) true)
       (= (h-mem (:world (world-step w it))) true)
       (= (comp-find (:world (world-step w it)) c0) (Option.some CompRow c)) (= (comp-waiting c) true)
       (none-blocked (:world (world-step w it)) c0) (none-eligible (:world (world-step w it)) c0)
       (tasks-blocked (:world (world-step w it)) c0) False)
   (intros h hq hk hme hf hw n1 n2 n3)
-  (exact (l5-safety-p3c (:world (world-step w it)) c0 c (step-p3c w it h) hq hk hme hf hw n1 n2 n3)))
+  (exact (l5-safety-chain-to-i10-current (:world (world-step w it)) c0 c (step-chain-to-i10-current w it h) hq hk hme hf hw n1 n2 n3)))
 
 ;; ---- h-mem as a step invariant: at a non-quiescent point a task member's run may be running,
 ;; so the fact the step keeps says "alive"; at a quiescent point alive means parked
@@ -101,16 +101,16 @@
 (a/defn task-alive-at [w :- World, y :- Nat] Bool
   (match (task-find w y) [none false] [(some t) (opt-test run-alive (run-find w (:run t)))]))
 (a/defn mem-y-ok2 [w :- World, x :- Nat, y :- Nat] Bool
-  (Bool.or (blk-leaf w y)
+  (Bool.or (blocked-leaf w y)
    (Bool.or (Bool.and (task-has w y) (task-alive-at w y))
             (Bool.and (waiting-at w y) (reach-mem y (dep-debtors (:edges w) x))))))
 (a/defn mem-ok2 [w :- World, c :- CompRow] Bool
-  (Bool.or (Bool.not (blk-base w (:id c))) (tbl-all (mem-y-ok2 w (:id c)) (blk-deps w (:id c)))))
+  (Bool.or (Bool.not (blocked-base w (:id c))) (tbl-all (mem-y-ok2 w (:id c)) (blocked-deps w (:id c)))))
 (a/defn h-mem2 [w :- World] Bool (tbl-all (mem-ok2 w) (:comps w)))
 
 (a/theorem task-base-q [w :- World, y :- Nat]
-  (=> (= (inv-sample w) true) (= (quiescent w) true) (= (task-has w y) true) (= (task-alive-at w y) true)
-      (= (blk-base w y) true))
+  (=> (= (well-formed w) true) (= (quiescent w) true) (= (task-has w y) true) (= (task-alive-at w y) true)
+      (= (blocked-base w y) true))
   (intros hs hq tk al)
   (cases hc (comp-find w y))
   (case [some c]
@@ -134,11 +134,11 @@
         (simp only [run-quiet Bool.and_eq_true Bool.or_eq_true] at qr)
         (have qo := (And.right qr))
         (cases qo)
-        (case [inl hp] (simp only [blk-base hc ht hr opt-test run-parked hp]))
+        (case [inl hp] (simp only [blocked-base hc ht hr opt-test run-parked hp]))
         (case [inr hd] (have z := (bnot-true _ al)) (rw [hd] at z) (simp at z))))))
 
 (a/theorem mem-y-q [w :- World, x :- Nat, y :- Nat]
-  (=> (= (inv-sample w) true) (= (quiescent w) true) (= (mem-y-ok2 w x y) true) (= (mem-y-ok w x y) true))
+  (=> (= (well-formed w) true) (= (quiescent w) true) (= (mem-y-ok2 w x y) true) (= (mem-y-ok w x y) true))
   (intros hs hq h)
   (simp only [mem-y-ok2 Bool.or_eq_true] at h)
   (cases h)
@@ -152,7 +152,7 @@
     (case [inr c] (simp only [mem-y-ok c Bool.or_true]))))
 
 ;; at a quiescent point, h-mem2 gives h-mem
-(a/theorem h-mem-of2 [w :- World] (=> (= (inv-sample w) true) (= (quiescent w) true) (= (h-mem2 w) true) (= (h-mem w) true))
+(a/theorem h-mem-of2 [w :- World] (=> (= (well-formed w) true) (= (quiescent w) true) (= (h-mem2 w) true) (= (h-mem w) true))
   (intros hs hq h)
   (simp only [h-mem2] at h)
   (simp only [h-mem])
@@ -164,18 +164,18 @@
   (case [inl a] (exact (Or.inl a)))
   (case [inr b]
     (apply Or.inr)
-    (exact (tbl-all-mem-mono Nat (mem-y-ok2 w (:id c)) (mem-y-ok w (:id c)) (blk-deps w (:id c))
-             (fn [y :- Nat, my :- (List.Mem y (blk-deps w (:id c))), hy :- (= (mem-y-ok2 w (:id c) y) true)] (mem-y-q w (:id c) y hs hq hy))
+    (exact (tbl-all-mem-mono Nat (mem-y-ok2 w (:id c)) (mem-y-ok w (:id c)) (blocked-deps w (:id c))
+             (fn [y :- Nat, my :- (List.Mem y (blocked-deps w (:id c))), hy :- (= (mem-y-ok2 w (:id c) y) true)] (mem-y-q w (:id c) y hs hq hy))
              b))))
 
-;; L5 from p3c and the two step invariants h-mark and h-mem2 (both tripwire-checked at every step)
+;; L5 from chain-to-i10-current and the two step invariants h-mark and h-mem2 (both tripwire-checked at every step)
 (a/theorem l5-safety-inv [w :- World, c0 :- Nat, c :- CompRow]
-  (=> (= (p3c w) true) (= (quiescent w) true) (= (h-mark w) true) (= (h-mem2 w) true)
+  (=> (= (chain-to-i10-current w) true) (= (quiescent w) true) (= (h-mark w) true) (= (h-mem2 w) true)
       (= (comp-find w c0) (Option.some CompRow c)) (= (comp-waiting c) true)
       (none-blocked w c0) (none-eligible w c0) (tasks-blocked w c0) False)
   (intros h hq hk hme hf hw n1 n2 n3)
-  (have hs := (ga-sample w (And.left (p3b-parts w (And.left (p3c-parts w h))))))
-  (exact (l5-safety-p3c w c0 c h hq hk (h-mem-of2 w hs hq hme) hf hw n1 n2 n3)))
+  (have hs := (acts-parked-well-formed w (And.left (chain-start-parts w (And.left (chain-to-i10-current-parts w h))))))
+  (exact (l5-safety-chain-to-i10-current w c0 c h hq hk (h-mem-of2 w hs hq hme) hf hw n1 n2 n3)))
 
 ;; ===========================================================================
 ;; Part B. I5's dep-final clause as the model has it (tripwire)
@@ -421,15 +421,15 @@
     (cases hc (Bool.or (edge-behind ver e) (member-current w e)))
     (case [false] (simp only [settle-fire hp hc]) (exact (es-nm-refl _)))
     (case [true] (simp only [settle-fire hp hc]) (exact (nm-fire-dep w e)))))
-(a/theorem inv-settle-fire [ver :- Nat, w :- World, e :- EdgeRow]
-  (=> (= (inv-sample w) true) (= (inv-sample (settle-fire ver w e)) true))
+(a/theorem well-formed-settle-fire [ver :- Nat, w :- World, e :- EdgeRow]
+  (=> (= (well-formed w) true) (= (well-formed (settle-fire ver w e)) true))
   (intro h)
   (cases hp (Nat.beq (:phase e) ph-armed))
   (case [false] (simp only [settle-fire hp]) (exact h))
   (case [true]
     (cases hc (Bool.or (edge-behind ver e) (member-current w e)))
     (case [false] (simp only [settle-fire hp hc]) (exact h))
-    (case [true] (simp only [settle-fire hp hc]) (exact (inv-fire-dep w e h)))))
+    (case [true] (simp only [settle-fire hp hc]) (exact (well-formed-fire-dep w e h)))))
 (a/theorem settle-edge-eq [changed :- Bool, ver :- Nat, w :- World, x :- Nat, e :- EdgeRow]
   (=> (= (edge-find w x) (Option.some EdgeRow e)) (= (settle-edge changed ver w x) (unmark-edge (settle-fire ver w e) x)))
   (intro hf) (simp only [settle-edge hf settle-fire]))
@@ -464,16 +464,16 @@
       (case [head] (exact hx))
       (case [tail m2] (exact (ih hf m2))))))
 
-(a/theorem l5-edge-nodup [w :- World] (=> (= (inv-sample w) true) (= (nat-nodup (tbl-ids edge-id (:edges w))) true))
+(a/theorem l5-edge-nodup [w :- World] (=> (= (well-formed w) true) (= (nat-nodup (tbl-ids edge-id (:edges w))) true))
   (intro h)
-  (have p := (And.right (And.right (inv-parts w h))))
+  (have p := (And.right (And.right (well-formed-parts w h))))
   (simp only [ids-ok Bool.and_eq_true] at p)
   (have q := (ids-unique-edges w (And.left p)))
   (simp only [edge-ids-nodup] at q)
   (exact q))
 
 (a/theorem sd-unmark [w :- World, x :- Nat, d :- Nat, ys :- (List Nat)]
-  (=> (= (inv-sample w) true) (= (tbl-all (sd-row d (List.cons Nat x ys)) (:edges w)) true)
+  (=> (= (well-formed w) true) (= (tbl-all (sd-row d (List.cons Nat x ys)) (:edges w)) true)
       (= (tbl-all (sd-row d ys) (:edges (unmark-edge w x))) true))
   (intros hs h)
   (cases hf (edge-find w x))
@@ -508,7 +508,7 @@
       (case [inr b] (exact (sd-row-unm d ys e (bnot-true _ b)))))))
 
 (a/theorem sd-settle-edge [changed :- Bool, ver :- Nat, w :- World, x :- Nat, d :- Nat, ys :- (List Nat)]
-  (=> (= (inv-sample w) true) (= (tbl-all (sd-row d (List.cons Nat x ys)) (:edges w)) true)
+  (=> (= (well-formed w) true) (= (tbl-all (sd-row d (List.cons Nat x ys)) (:edges w)) true)
       (= (tbl-all (sd-row d ys) (:edges (settle-edge changed ver w x))) true))
   (intros hs h)
   (cases hf (edge-find w x))
@@ -521,17 +521,17 @@
     (have se := (settle-edge-eq changed ver w x e hf)) (simp only [se])
     (have n := (nm-settle-fire ver w e))
     (simp only [es-nm] at n)
-    (exact (sd-unmark (settle-fire ver w e) x d ys (inv-settle-fire ver w e hs) ((And.left (n d (List.cons Nat x ys))) h)))))
+    (exact (sd-unmark (settle-fire ver w e) x d ys (well-formed-settle-fire ver w e hs) ((And.left (n d (List.cons Nat x ys))) h)))))
 
 (a/theorem sd-fold [changed :- Bool, ver :- Nat, d :- Nat, xs :- (List Nat)]
-  (forall [w :- World] (=> (= (inv-sample w) true) (= (tbl-all (sd-row d xs) (:edges w)) true)
+  (forall [w :- World] (=> (= (well-formed w) true) (= (tbl-all (sd-row d xs) (:edges w)) true)
                            (= (tbl-all (sd-row d (List.nil Nat)) (:edges (nat-fold (settle-edge changed ver) w xs))) true)))
   (induction xs)
   (case [nil] (intros w hs h) (simp only [nat-fold]) (exact h))
   (case [cons x t ih]
     (intros w hs h)
     (simp only [nat-fold])
-    (exact (ih (settle-edge changed ver w x) (inv-settle-edge changed ver w x hs) (sd-settle-edge changed ver w x d t hs h)))))
+    (exact (ih (settle-edge changed ver w x) (well-formed-settle-edge changed ver w x hs) (sd-settle-edge changed ver w x d t hs h)))))
 
 (a/theorem scan-mem-dep [d :- Nat, es :- (List EdgeRow), e :- EdgeRow]
   (=> (List.Mem e es) (= (out-dep d e) true) (= (reach-mem (:id e) (tbl-scan edge-id (out-dep d) es)) true))
@@ -579,7 +579,7 @@
 ;; ---- the potential drops with every pop
 
 (a/theorem sd-pop [w :- World, d :- Nat, changed :- Bool]
-  (=> (= (inv-sample w) true)
+  (=> (= (well-formed w) true)
       (<= (+ (tbl-count sd-marked (:edges (settle-one w d changed))) (tbl-count (out-marked d) (:edges w)))
           (tbl-count sd-marked (:edges w))))
   (intro hs)
@@ -621,7 +621,7 @@
 
 (a/theorem settle-loop-done [fuel :- (List Nat)]
   (forall [w :- World, q :- (List Nat)]
-    (=> (= (inv-sample w) true) (< (+ (List.length q) (tbl-count sd-marked (:edges w))) (List.length fuel))
+    (=> (= (well-formed w) true) (< (+ (List.length q) (tbl-count sd-marked (:edges w))) (List.length fuel))
         (= (:rest (settle-loop fuel w q)) (List.nil Nat))))
   (induction fuel)
   (case [nil] (intros w q hs hl) (simp only [List.length] at hl) (omega))
@@ -635,7 +635,7 @@
       (have n := (next-len w (settle-one w d false) d))
       (have l1 := (list-length-append t (settle-next w (settle-one w d false) d)))
       (simp only [List.length] at hl)
-      (apply (ih (settle-one w d false) (List.append Nat t (settle-next w (settle-one w d false) d)) (inv-settle-one w d false hs)))
+      (apply (ih (settle-one w d false) (List.append Nat t (settle-next w (settle-one w d false) d)) (well-formed-settle-one w d false hs)))
       (omega))))
 
 (a/theorem by-settle-bound [w :- World, d :- Nat, changed :- Bool]
@@ -649,13 +649,13 @@
 
 ;; Theorem: the settle worklist empties within its fuel (the former honest flag `settle-done`)
 (a/theorem settle-done-ok [w :- World, d :- Nat, changed :- Bool]
-  (=> (= (inv-sample w) true) (= (settle-done w d changed) true))
+  (=> (= (well-formed w) true) (= (settle-done w d changed) true))
   (intro hs)
   (have p := (sd-pop w d changed hs))
   (have n := (next-len w (settle-one w d changed) d))
   (have c := (count-le-len EdgeRow sd-marked (:edges w)))
   (have i := (ids-len EdgeRow edge-id (:edges w)))
   (have L := (settle-loop-done (settle-fuel w) (settle-one w d changed) (settle-next w (settle-one w d changed) d)
-               (inv-settle-one w d changed hs)
+               (well-formed-settle-one w d changed hs)
                (by-settle-bound w d changed p n c i)))
   (simp only [settle-done settle-res L]))

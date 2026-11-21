@@ -1,7 +1,7 @@
 (ns spindel.v2.inv.i10-test
   "Loading spindel.v2.inv.i10 kernel-checks literal I10 (one current run per computation) through the
-  step: the bundle g10r (with the transport bundle nq and the exemption parameters of g10) is
-  preserved by every step with no honest hypothesis beyond P3's p3b (`step-p3c`). The bundle runs as
+  step: the bundle i10-current (with the transport bundle i10-current-transport and the exemption parameters of i10-current-exempt) is
+  preserved by every step with no honest hypothesis beyond P3's chain-start (`step-chain-to-i10-current`). The bundle runs as
   a tripwire on the random drivers of engine-test."
   (:require [clojure.test :refer [deftest is]]
             [ansatz.core :as a]
@@ -12,10 +12,10 @@
             [spindel.v2.inv-test :as it]))
 
 (def theorems
-  '[g10-cascade g10-run-cascade g10-job-apply g10-cancel-run-local g10-retire-with g10-cancel-pred g10-dispatch-raw
-    t11-g10 g10-spawn-rows g10-complete-raw t12-g10 g10-new-run-of g10r-start-raw t5-g10r raw0-g10r raw-g10r
-    g10-demote g10-norm-round g10-normalize g10-rule-r step-g10 g10r-empty g10r-lit-i10 step-lit-i10-current
-    p3c-empty step-p3c step-lit-i10-current-total])
+  '[i10-current-exempt-cascade i10-current-exempt-run-cascade i10-current-exempt-job-apply i10-current-exempt-cancel-run-local i10-current-exempt-t13-retire-with-subtree i10-current-exempt-cancel-pred i10-current-exempt-dispatch-raw
+    i10-current-exempt-t11-dispatch i10-current-exempt-spawn-rows i10-current-exempt-complete-raw i10-current-exempt-t12-complete i10-current-exempt-new-run-of i10-current-start-raw i10-current-t5-start i10-current-transition i10-current-raw
+    i10-current-exempt-demote i10-current-exempt-normalize-round i10-current-exempt-normalize i10-current-exempt-rule-r step-i10-current i10-current-empty i10-current-lit-i10 step-lit-i10-current
+    chain-to-i10-current-empty step-chain-to-i10-current step-lit-i10-current-total])
 
 (deftest theorems-kernel-checked
   (doseq [t theorems]
@@ -30,11 +30,11 @@
                        (let [x (et/random-item rng w)]
                          (if (or (not d0?) (it/d0-ok? w x) (> k 50)) x (recur (inc k)))))
                 w2 (:world (en/world-step w item))]
-            (is (true? (i10/g10r w2)) (str "g10r seed " seed " run " run " step " i " " (pr-str item)))
+            (is (true? (i10/i10-current w2)) (str "i10-current seed " seed " run " run " step " i " " (pr-str item)))
             (is (true? (inv/lit-i10-current w2)) (str "lit-i10-current seed " seed " run " run " step " i " " (pr-str item)))
             (recur (inc i) w2)))))))
 
 (deftest bundle-random
-  (is (true? (i10/g10r (et/prefix-world))))
+  (is (true? (i10/i10-current (et/prefix-world))))
   (drive 20261121 20 60 false)
   (drive 20261122 20 60 true))

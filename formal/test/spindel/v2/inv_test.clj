@@ -19,11 +19,11 @@
   '[i13-fire-dep-live i13-fire-dep-stale i13-fire-wait-stale i13-complete-stale i13-complete-raw-stale
     step-l1 step-l1-comp step-l1-run
     ;; I10 D0
-    sl-rule-r i10-raw0 i10-raw step-i10-slice i10-slice-empty i10-slice-count step-d0
+    sl-rule-r i10-transition i10-raw step-i10-slice i10-slice-empty i10-slice-count step-d0
     ;; I9
-    s9-cancel-acts s9-rule-r i9-raw0 i9-raw step-i9 i9-empty
+    s9-cancel-acts s9-rule-r i9-transition i9-raw step-i9 i9-empty
     ;; I5 (wait half)
-    i5-wait-of-sample step-i5-wait])
+    i5-wait-of-well-formed step-i5-wait])
 
 (deftest theorems-kernel-checked
   (doseq [t theorems]

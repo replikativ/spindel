@@ -14,43 +14,43 @@
   (:import [ansatz.kernel Expr ConstantInfo]))
 
 (def contracts
-  '{h3-comp-react
+  '{current-members-comp-react
     (forall [xm :- (List Nat), w :- World, c :- CompRow]
-      (=> (List.Mem c (:comps w)) (= (:idle c) true) (= (g7 w) true) (= (aha w) true)
-          (= (h3 xm w) true) (= (h3 xm (comp-upd w (:id c) comp-react-row)) true)))
-    h3-react-add
+      (=> (List.Mem c (:comps w)) (= (:idle c) true) (= (i7-idle w) true) (= (act-runs-alive w) true)
+          (= (current-members xm w) true) (= (current-members xm (comp-upd w (:id c) comp-react-row)) true)))
+    current-members-react-add
     (forall [xm :- (List Nat), w :- World, c :- Nat, v :- Valid]
-      (=> (= (h3 xm w) true) (= (h3 xm (react-add w c v)) true)))
-    h3-react-edges
+      (=> (= (current-members xm w) true) (= (current-members xm (react-add w c v)) true)))
+    current-members-react-edges
     (forall [xm :- (List Nat), vs :- (List Valid), w :- World, c :- Nat]
-      (=> (= (h3 xm w) true) (= (h3 xm (react-edges w c vs)) true)))
-    h3-react-one
+      (=> (= (current-members xm w) true) (= (current-members xm (react-edges w c vs)) true)))
+    current-members-react-one
     (forall [xm :- (List Nat), w :- World, c :- CompRow]
-      (=> (List.Mem c (:comps w)) (= (:idle c) true) (= (g7 w) true) (= (aha w) true)
-          (= (h3 xm w) true) (= (h3 xm (react-one w c)) true)))
-    h3-react-loop
+      (=> (List.Mem c (:comps w)) (= (:idle c) true) (= (i7-idle w) true) (= (act-runs-alive w) true)
+          (= (current-members xm w) true) (= (current-members xm (react-one w c)) true)))
+    current-members-react-loop
     (forall [xm :- (List Nat), fuel :- (List Nat), w :- World, q :- (List Nat)]
-      (=> (= (g7 w) true) (= (aha w) true) (= (h3 xm w) true) (= (h3 xm (react-loop fuel w q)) true)))
-    h3-react-loop-p3la
+      (=> (= (i7-idle w) true) (= (act-runs-alive w) true) (= (current-members xm w) true) (= (current-members xm (react-loop fuel w q)) true)))
+    current-members-react-loop-chain-to-edge-kinds
     (forall [xm :- (List Nat), fuel :- (List Nat), w :- World, q :- (List Nat)]
-      (=> (= (p3la w) true) (= (h3 xm w) true) (= (h3 xm (react-loop fuel w q)) true)))
-    p3la-aha
-    (forall [w :- World] (=> (= (p3la w) true) (= (aha w) true)))
-    hm3-insert-edge-checked
+      (=> (= (chain-to-edge-kinds w) true) (= (current-members xm w) true) (= (current-members xm (react-loop fuel w q)) true)))
+    chain-to-edge-kinds-act-runs-alive
+    (forall [w :- World] (=> (= (chain-to-edge-kinds w) true) (= (act-runs-alive w) true)))
+    current-members-insert-edge-checked
     (forall [xm :- (List Nat), w :- World, e :- EdgeRow]
-      (=> (= (h3 xm w) true) (= (h3 xm (insert-edge-checked w e)) true)))
-    hm3-raise-for
+      (=> (= (current-members xm w) true) (= (current-members xm (insert-edge-checked w e)) true)))
+    current-members-raise-for
     (forall [xm :- (List Nat), w :- World, c :- Nat, d :- Nat]
-      (=> (= (h3 xm w) true) (= (h3 xm (raise-for w c d)) true)))
-    aha-react-one
+      (=> (= (current-members xm w) true) (= (current-members xm (raise-for w c d)) true)))
+    act-runs-alive-react-one
     (forall [w :- World, c :- CompRow]
-      (=> (= (aha w) true) (= (aha (react-one w c)) true)))
-    g7-react-one
+      (=> (= (act-runs-alive w) true) (= (act-runs-alive (react-one w c)) true)))
+    i7-idle-react-one
     (forall [w :- World, c :- CompRow]
-      (=> (= (g7 w) true) (= (g7 (react-one w c)) true)))})
+      (=> (= (i7-idle w) true) (= (i7-idle (react-one w c)) true)))})
 
 (def theorems
-  (concat (keys contracts) '[h3-react-act-off h3-react-wif h3-react-cs-off h3-react-r]))
+  (concat (keys contracts) '[current-members-react-act-off current-members-react-wif current-members-react-cs-off current-members-react-r]))
 
 (defn type-form
   "Closed structural kernel type; binder names are discarded for alpha equality.
@@ -160,16 +160,16 @@
            :edges [(s/->EdgeRow 9 s/ek-dep 4 10 77 0 s/ph-armed false false 0 false 0 0)])))
 
 (defn check-world [w]
-  (is (true? (edits/inv-sample w)))
+  (is (true? (edits/well-formed w)))
   (is (true? (awake-fields? w)))
-  (is (= (awake-fields? w) (idle/g7-rest w)))
+  (is (= (awake-fields? w) (idle/i7-idle-rest w)))
   (is (true? (activation-runs? w)))
-  (is (= (activation-runs? w) (p3/aha-rest w)))
+  (is (= (activation-runs? w) (p3/act-runs-alive-rest w)))
   (is (true? (member-fields? [] w)))
-  (is (= (boolean (member-fields? [] w)) (hm3/h3-rest [] w)))
-  (is (true? (idle/g7 w)))
-  (is (true? (p3/aha w)))
-  (is (true? (hm3/h3 [] w))))
+  (is (= (boolean (member-fields? [] w)) (hm3/current-members-rest [] w)))
+  (is (true? (idle/i7-idle w)))
+  (is (true? (p3/act-runs-alive w)))
+  (is (true? (hm3/current-members [] w))))
 
 (defn check-held-member [before after]
   (is (= (:acts before) (:acts after)))
@@ -253,17 +253,17 @@
     (testing "an idle owner of an alive activation run violates G7"
       (let [bad (s/comp-upd w 4 #(assoc % :idle true :run 0))]
         (is (false? (awake-fields? bad)))
-        (is (false? (idle/g7 bad)))
+        (is (false? (idle/i7-idle bad)))
         (is (activation-runs? bad))
-        (is (true? (p3/aha bad)))))
+        (is (true? (p3/act-runs-alive bad)))))
     (testing "a dead matching run violates AHA"
       (let [bad (update w :runs #(mapv (fn [r] (assoc r :act s/act-done)) %))]
         (is (not (activation-runs? bad)))
-        (is (false? (p3/aha bad)))))
+        (is (false? (p3/act-runs-alive bad)))))
     (testing "held-member phase, creditor, debtor and first holder are actual obligations"
       (doseq [bad [(update w :edges #(mapv (fn [e] (assoc e :phase s/ph-fired)) %))
                    (update w :edges #(mapv (fn [e] (assoc e :creditor 6)) %))
                    (update w :edges #(mapv (fn [e] (assoc e :debtor 6)) %))
                    (assoc w :next-id 12 :acts [(assoc (row w :acts 8) :id 11) (row w :acts 8)])]]
         (is (not (member-fields? [] bad)))
-        (is (false? (hm3/h3-rest [] bad)))))))
+        (is (false? (hm3/current-members-rest [] bad)))))))

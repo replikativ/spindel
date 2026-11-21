@@ -5,7 +5,7 @@
   inherited armed resources are recorded as dormant and settled by `wake`, which is a sequence of
   layer-1 items (a timer stays armed; any other resource fires `err ::forked` and is acknowledged).
   So every world of every reachable system satisfies the layer-1 top invariant `inv` (F5,
-  spindel.v2.top: p3m, I5 observe, I9, I10 slice, I3), by `inv-step`; the system reachability
+  spindel.v2.top: chain, I5 observe, I9, I10 slice, I3), by `inv-step`; the system reachability
   `SysReach` and `sys-reach-inv` are in spindel.v2.layer2.top.
 
   The marker of a fork (spec §8.1: `{child, owner}` in the parent, retained by its owner scope) is
@@ -39,8 +39,8 @@
             accepted; by step, wake, resume, merge, publish, abandon (`cinv-step-q`, `cinv-wake-q`,
             `cinv-resume-q`, `cinv-merge-q`, `cinv-publish-q`, `cinv-abandon-q`; their earlier forms
             under the premise HQ were vacuous, HQ being false, and are deleted): under `qsinv` (every
-            live cell is an E4-released unborn instance or holds spindel.v2.completion.quiet-world's `qinv`) and
-            `qpinv` (every live publication's basis is released or holds qinv), both kept by every
+            live cell is an E4-released unborn instance or holds spindel.v2.completion.quiet-world's `quiet-world-inv`) and
+            `qpinv` (every live publication's basis is released or holds quiet-world-inv), both kept by every
             operation (`qsinv-*`, `qpinv-*`). A fork or fork effect of an unborn cell (E4-released
             or not) is refused (`fork-refused`, `fork-effect-refused`): question 9, engine 54e3df1.
 
@@ -66,7 +66,7 @@
             [spindel.v2.state :refer :all]
             [spindel.v2.step :refer :all]
             [spindel.v2.engine :refer :all]
-            [spindel.v2.inv.marks-step :refer [p3l]]
+            [spindel.v2.inv.marks-step :refer [chain-to-marks-waiting]]
             [spindel.v2.progress.measures :refer [quiescent]]
             [spindel.v2.util :refer [fupd]]
             [spindel.v2.completion.quiet]
@@ -118,7 +118,7 @@
 (a/structure Pub [] (cell Nat) (res Nat) (run Nat) (basis World) (live Bool))
 
 ;; every live world satisfies the layer-1 bundle; so does every live publication's basis
-;; (the top invariant `inv` of spindel.v2.top: p3m, I5 observe, I9, I10 slice, I3)
+;; (the top invariant `inv` of spindel.v2.top: chain, I5 observe, I9, I10 slice, I3)
 (a/defn sinv [cells :- (=> Nat Cell)] Prop
   (forall [k :- Nat] (=> (= (:live (cells k)) true) (= (inv (:world (cells k))) true))))
 
@@ -148,8 +148,8 @@
   (=> (sinv cells) (= (:live (cells k)) true) (= (inv (:world (cells k))) true))
   (intros hs hl) (simp only [sinv] at hs) (exact (hs k hl)))
 (a/theorem sinv-live [cells :- (=> Nat Cell), k :- Nat]
-  (=> (sinv cells) (= (:live (cells k)) true) (= (p3l (:world (cells k))) true))
-  (intros hs hl) (exact (inv-p3l _ (sinv-live-inv cells k hs hl))))
+  (=> (sinv cells) (= (:live (cells k)) true) (= (chain-to-marks-waiting (:world (cells k))) true))
+  (intros hs hl) (exact (inv-chain-to-marks-waiting _ (sinv-live-inv cells k hs hl))))
 
 ;; ---------------------------------------------------------------------------
 ;; L1: a layer-1 item in world k
@@ -159,7 +159,7 @@
 ;; that its diff stays as sealed. The admissions (spawn-top, create-comp-top, observe) are refused at admission (a
 ;; throw, no item), which this layer does not see: an admission taken before the seal is processed as usual, and
 ;; the §9 guard of merge waits for its work. Propagation continues: a body's items (a slice is held, as for
-;; `host-shut`) and the internal items are not refused, nor are withdrawals, handles, pins, cancel and release.
+;; `host-item-refused`) and the internal items are not refused, nor are withdrawals, handles, pins, cancel and release.
 (a/defn seal-item [it :- Item] Bool
   (match it
     [(create-source st kind v fresh) false]
@@ -217,11 +217,11 @@
 (a/defn cstep [sealed :- Bool, w :- World, it :- Item] World
   (if (seal-shut sealed w it) w (:world (world-step w it))))
 
-(a/theorem p3l-cstep [sealed :- Bool, w :- World, it :- Item]
-  (=> (= (p3l w) true) (= (p3l (cstep sealed w it)) true))
+(a/theorem chain-to-marks-waiting-cstep [sealed :- Bool, w :- World, it :- Item]
+  (=> (= (chain-to-marks-waiting w) true) (= (chain-to-marks-waiting (cstep sealed w it)) true))
   (intro h)
   (cases hs (seal-shut sealed w it))
-  (case [false] (simp only [cstep hs]) (exact (step-p3l w it h)))
+  (case [false] (simp only [cstep hs]) (exact (step-chain-to-marks-waiting w it h)))
   (case [true] (simp only [cstep hs]) (exact h)))
 (a/theorem inv-cstep [sealed :- Bool, w :- World, it :- Item]
   (=> (= (inv w) true) (= (inv (cstep sealed w it)) true))
@@ -313,11 +313,11 @@
 (a/defn fire-ack [w :- World, z :- Nat, tag :- Nat, v :- Nat] World
   (:world (world-step (:world (world-step w (Item.resource-fire z tag v))) (Item.resource-ack z))))
 
-(a/theorem p3l-fire-ack [w :- World, z :- Nat, tag :- Nat, v :- Nat]
-  (=> (= (p3l w) true) (= (p3l (fire-ack w z tag v)) true))
+(a/theorem chain-to-marks-waiting-fire-ack [w :- World, z :- Nat, tag :- Nat, v :- Nat]
+  (=> (= (chain-to-marks-waiting w) true) (= (chain-to-marks-waiting (fire-ack w z tag v)) true))
   (intro h)
   (simp only [fire-ack])
-  (exact (step-p3l _ (Item.resource-ack z) (step-p3l w (Item.resource-fire z tag v) h))))
+  (exact (step-chain-to-marks-waiting _ (Item.resource-ack z) (step-chain-to-marks-waiting w (Item.resource-fire z tag v) h))))
 (a/theorem inv-fire-ack [w :- World, z :- Nat, tag :- Nat, v :- Nat]
   (=> (= (inv w) true) (= (inv (fire-ack w z tag v)) true))
   (intro h)
@@ -336,8 +336,8 @@
 (a/defn wake-all [w :- World, zs :- (List Nat)] World
   (match zs [nil w] [(cons z t) (wake-all (wake-one w z) t)]))
 
-(a/theorem p3l-wake-one [w :- World, z :- Nat]
-  (=> (= (p3l w) true) (= (p3l (wake-one w z)) true))
+(a/theorem chain-to-marks-waiting-wake-one [w :- World, z :- Nat]
+  (=> (= (chain-to-marks-waiting w) true) (= (chain-to-marks-waiting (wake-one w z)) true))
   (intro h)
   (cases hf (resource-find w z))
   (case [none] (simp only [wake-one hf]) (exact h))
@@ -346,7 +346,7 @@
     (case [true] (simp only [wake-one hf hk]) (exact h))
     (case [false]
       (simp only [wake-one hf hk])
-      (exact (p3l-fire-ack w z res-err err-forked h)))))
+      (exact (chain-to-marks-waiting-fire-ack w z res-err err-forked h)))))
 (a/theorem inv-wake-one [w :- World, z :- Nat]
   (=> (= (inv w) true) (= (inv (wake-one w z)) true))
   (intro h)
@@ -359,11 +359,11 @@
       (simp only [wake-one hf hk])
       (exact (inv-fire-ack w z res-err err-forked h)))))
 
-(a/theorem p3l-wake-all [zs :- (List Nat)]
-  (forall [w :- World] (=> (= (p3l w) true) (= (p3l (wake-all w zs)) true)))
+(a/theorem chain-to-marks-waiting-wake-all [zs :- (List Nat)]
+  (forall [w :- World] (=> (= (chain-to-marks-waiting w) true) (= (chain-to-marks-waiting (wake-all w zs)) true)))
   (induction zs)
   (case [nil] (intros w h) (simp only [wake-all]) (exact h))
-  (case [cons z t ih] (intros w h) (simp only [wake-all]) (exact (ih (wake-one w z) (p3l-wake-one w z h)))))
+  (case [cons z t ih] (intros w h) (simp only [wake-all]) (exact (ih (wake-one w z) (chain-to-marks-waiting-wake-one w z h)))))
 (a/theorem inv-wake-all [zs :- (List Nat)]
   (forall [w :- World] (=> (= (inv w) true) (= (inv (wake-all w zs)) true)))
   (induction zs)
@@ -553,11 +553,11 @@
 (a/defn fork-effect-world [w :- World, st :- Nat, kont :- Nat, v :- Nat] World
   (fire-ack (:world (world-step w (Item.arm st rk-offload kont (:next-id w)))) (:next-id w) res-ok v))
 
-(a/theorem p3l-fork-effect-world [w :- World, st :- Nat, kont :- Nat, v :- Nat]
-  (=> (= (p3l w) true) (= (p3l (fork-effect-world w st kont v)) true))
+(a/theorem chain-to-marks-waiting-fork-effect-world [w :- World, st :- Nat, kont :- Nat, v :- Nat]
+  (=> (= (chain-to-marks-waiting w) true) (= (chain-to-marks-waiting (fork-effect-world w st kont v)) true))
   (intro h)
   (simp only [fork-effect-world])
-  (exact (p3l-fire-ack _ (:next-id w) res-ok v (step-p3l w (Item.arm st rk-offload kont (:next-id w)) h))))
+  (exact (chain-to-marks-waiting-fire-ack _ (:next-id w) res-ok v (step-chain-to-marks-waiting w (Item.arm st rk-offload kont (:next-id w)) h))))
 (a/theorem inv-fork-effect-world [w :- World, st :- Nat, kont :- Nat, v :- Nat]
   (=> (= (inv w) true) (= (inv (fork-effect-world w st kont v)) true))
   (intro h)
@@ -854,15 +854,15 @@
     (case [none] (simp only [merge-out merge-its hg hw items-run]))
     (case [some its] (simp only [merge-out merge-its hg hw]))))
 
-(a/theorem p3l-items-run [its :- (List Item)]
-  (forall [p :- World] (=> (= (p3l p) true) (= (p3l (:world (items-run p its))) true)))
+(a/theorem chain-to-marks-waiting-items-run [its :- (List Item)]
+  (forall [p :- World] (=> (= (chain-to-marks-waiting p) true) (= (chain-to-marks-waiting (:world (items-run p its))) true)))
   (induction its)
   (case [nil] (intros p h) (simp only [items-run]) (exact h))
   (case [cons it t ih]
     (intros p h)
     (cases ha (:accepted (world-step p it)))
     (case [false] (simp only [items-run ha]) (exact h))
-    (case [true] (simp only [items-run ha]) (exact (ih _ (step-p3l p it h))))))
+    (case [true] (simp only [items-run ha]) (exact (ih _ (step-chain-to-marks-waiting p it h))))))
 (a/theorem inv-items-run [its :- (List Item)]
   (forall [p :- World] (=> (= (inv p) true) (= (inv (:world (items-run p its))) true)))
   (induction its)
@@ -873,12 +873,12 @@
     (case [false] (simp only [items-run ha]) (exact h))
     (case [true] (simp only [items-run ha]) (exact (ih _ (inv-step p it h))))))
 
-(a/theorem p3l-merge-world [p :- World, c :- World, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat)), sealed :- Bool]
-  (=> (= (p3l p) true) (= (p3l (merge-world p c b rv sealed)) true))
+(a/theorem chain-to-marks-waiting-merge-world [p :- World, c :- World, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat)), sealed :- Bool]
+  (=> (= (chain-to-marks-waiting p) true) (= (chain-to-marks-waiting (merge-world p c b rv sealed)) true))
   (intro h)
   (cases hm (merge-ok p c b rv sealed))
   (case [false] (simp only [merge-world hm]) (exact h))
-  (case [true] (simp only [merge-world hm merge-out-world]) (exact (p3l-items-run _ p h))))
+  (case [true] (simp only [merge-world hm merge-out-world]) (exact (chain-to-marks-waiting-items-run _ p h))))
 (a/theorem inv-merge-world [p :- World, c :- World, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat)), sealed :- Bool]
   (=> (= (inv p) true) (= (inv (merge-world p c b rv sealed)) true))
   (intro h)
@@ -1231,7 +1231,7 @@
 
 ;; ---- cinv through the operations that need no layer-1 fact (fork, fork effect and instance take an id no
 ;; cell has accepted). The step, wake, resume, merge, publish and abandon are the `-q` theorems below, under
-;; qsinv/qpinv: their earlier forms under the premise HQ ("a p3l step keeps a quiet world quiet") were vacuous,
+;; qsinv/qpinv: their earlier forms under the premise HQ ("a chain-to-marks-waiting step keeps a quiet world quiet") were vacuous,
 ;; HQ being false (notes/history/PLAN.md, C1 quiet half), and are deleted.
 (a/theorem cinv-drop [cells :- (=> Nat Cell), k :- Nat]
   (=> (cinv cells) (cinv (sys-drop cells k)))
@@ -1340,9 +1340,9 @@
   (=> (forall [k :- Nat] (= (:complete (cells k)) false)) (cinv cells))
   (intro h) (simp only [cinv]) (intros k hl hk) (rw [(h k)] at hk) (cases hk))
 
-;; ---- E4: the release of an unborn instance keeps the system invariant. `p3l` reads no `released`
-;; flag (it is checked definitionally: every bundle of p3l is a function of the other tables).
-(a/theorem p3l-release-unborn [w :- World] (= (p3l (release-unborn w)) (p3l w)) (rfl))
+;; ---- E4: the release of an unborn instance keeps the system invariant. `chain-to-marks-waiting` reads no `released`
+;; flag (it is checked definitionally: every bundle of chain-to-marks-waiting is a function of the other tables).
+(a/theorem chain-to-marks-waiting-release-unborn [w :- World] (= (chain-to-marks-waiting (release-unborn w)) (chain-to-marks-waiting w)) (rfl))
 (a/theorem top-inv-release-unborn [w :- World] (= (inv (release-unborn w)) (inv w)) (rfl))
 
 (a/theorem sinv-release-unborn [cells :- (=> Nat Cell), k :- Nat]
@@ -1361,16 +1361,16 @@
 
 ;; ---------------------------------------------------------------------------
 ;; C1 completion stability without `hq` (spindel.v2.completion.quiet, spindel.v2.completion.quiet-world): every live cell is an
-;; E4-released unborn instance or holds `qinv` (K, gc, I3 besides p3l), and every live publication's
-;; basis is released or holds qinv. A layer-1 step (and every composite of steps) keeps a released
-;; world released (`step-released`) and leaves a quiet qinv world as it is (`quiet-step`); an unborn
+;; E4-released unborn instance or holds `quiet-world-inv` (K, cleanup-runs-exist, I3 besides chain-to-marks-waiting), and every live publication's
+;; basis is released or holds quiet-world-inv. A layer-1 step (and every composite of steps) keeps a released
+;; world released (`step-released`) and leaves a quiet quiet-world-inv world as it is (`quiet-step`); an unborn
 ;; cell is ready by its flag, so it needs only the released half (`wqc`).
 
-(a/defn cq [c :- Cell] Bool (Bool.or (Bool.and (:unborn c) (:released (:world c))) (qinv (:world c))))
+(a/defn cq [c :- Cell] Bool (Bool.or (Bool.and (:unborn c) (:released (:world c))) (quiet-world-inv (:world c))))
 (a/defn qsinv [cells :- (=> Nat Cell)] Prop
   (forall [k :- Nat] (=> (= (:live (cells k)) true) (= (cq (cells k)) true))))
 (a/defn qpinv [pubs :- (=> Nat Pub)] Prop
-  (forall [p :- Nat] (=> (= (:live (pubs p)) true) (= (Bool.or (:released (:basis (pubs p))) (qinv (:basis (pubs p)))) true))))
+  (forall [p :- Nat] (=> (= (:live (pubs p)) true) (= (Bool.or (:released (:basis (pubs p))) (quiet-world-inv (:basis (pubs p)))) true))))
 
 (a/theorem qsinv-live [cells :- (=> Nat Cell), k :- Nat]
   (=> (qsinv cells) (= (:live (cells k)) true) (= (cq (cells k)) true))
@@ -1385,11 +1385,11 @@
   (case [true]
     (have e (= j k)) (exact (Nat.eq_of_beq_eq_true hjk))
     (rw [e] at hl) (rw [e]) (simp only [fupd-same] at hl) (simp only [fupd-same]) (exact (hc hl))))
-(a/theorem cq-born [c :- Cell] (=> (= (cq c) true) (= (:unborn c) false) (= (qinv (:world c)) true))
+(a/theorem cq-born [c :- Cell] (=> (= (cq c) true) (= (:unborn c) false) (= (quiet-world-inv (:world c)) true))
   (intros h hu) (simp only [cq hu Bool.false_and Bool.false_or] at h) (exact h))
 (a/theorem cq-trans [c :- Cell, c2 :- Cell]
   (=> (= (:unborn c2) (:unborn c)) (=> (= (:released (:world c)) true) (= (:released (:world c2)) true))
-      (=> (= (qinv (:world c)) true) (= (qinv (:world c2)) true)) (= (cq c) true) (= (cq c2) true))
+      (=> (= (quiet-world-inv (:world c)) true) (= (quiet-world-inv (:world c2)) true)) (= (cq c) true) (= (cq c2) true))
   (intros hu hr hq h)
   (simp only [cq Bool.or_eq_true Bool.and_eq_true] at h)
   (cases h)
@@ -1400,14 +1400,14 @@
 
 ;; ---- released stays through the composites
 (a/theorem rel-step [w :- World, it :- Item]
-  (=> (= (p3l w) true) (= (:released w) true) (= (:released (:world (world-step w it))) true))
-  (intros h hr) (exact (step-released w it (p3l-p3b w h) hr)))
+  (=> (= (chain-to-marks-waiting w) true) (= (:released w) true) (= (:released (:world (world-step w it))) true))
+  (intros h hr) (exact (step-released w it (chain-to-marks-waiting-implies-chain-start w h) hr)))
 (a/theorem rel-fire-ack [w :- World, z :- Nat, tag :- Nat, v :- Nat]
-  (=> (= (p3l w) true) (= (:released w) true) (= (:released (fire-ack w z tag v)) true))
+  (=> (= (chain-to-marks-waiting w) true) (= (:released w) true) (= (:released (fire-ack w z tag v)) true))
   (intros h hr) (simp only [fire-ack])
-  (exact (rel-step _ (Item.resource-ack z) (step-p3l w (Item.resource-fire z tag v) h) (rel-step w (Item.resource-fire z tag v) h hr))))
+  (exact (rel-step _ (Item.resource-ack z) (step-chain-to-marks-waiting w (Item.resource-fire z tag v) h) (rel-step w (Item.resource-fire z tag v) h hr))))
 (a/theorem rel-wake-one [w :- World, z :- Nat]
-  (=> (= (p3l w) true) (= (:released w) true) (= (:released (wake-one w z)) true))
+  (=> (= (chain-to-marks-waiting w) true) (= (:released w) true) (= (:released (wake-one w z)) true))
   (intros h hr)
   (cases hf (resource-find w z))
   (case [none] (simp only [wake-one hf]) (exact hr))
@@ -1416,18 +1416,18 @@
     (case [true] (simp only [wake-one hf hk]) (exact hr))
     (case [false] (simp only [wake-one hf hk]) (exact (rel-fire-ack w z res-err err-forked h hr)))))
 (a/theorem rel-wake-all [zs :- (List Nat)]
-  (forall [w :- World] (=> (= (p3l w) true) (= (:released w) true) (= (:released (wake-all w zs)) true)))
+  (forall [w :- World] (=> (= (chain-to-marks-waiting w) true) (= (:released w) true) (= (:released (wake-all w zs)) true)))
   (induction zs)
   (case [nil] (intros w h hr) (simp only [wake-all]) (exact hr))
-  (case [cons z t ih] (intros w h hr) (simp only [wake-all]) (exact (ih (wake-one w z) (p3l-wake-one w z h) (rel-wake-one w z h hr)))))
+  (case [cons z t ih] (intros w h hr) (simp only [wake-all]) (exact (ih (wake-one w z) (chain-to-marks-waiting-wake-one w z h) (rel-wake-one w z h hr)))))
 (a/theorem rel-cstep [sealed :- Bool, w :- World, it :- Item]
-  (=> (= (p3l w) true) (= (:released w) true) (= (:released (cstep sealed w it)) true))
+  (=> (= (chain-to-marks-waiting w) true) (= (:released w) true) (= (:released (cstep sealed w it)) true))
   (intros h hr)
   (cases hs (seal-shut sealed w it))
   (case [false] (simp only [cstep hs]) (exact (rel-step w it h hr)))
   (case [true] (simp only [cstep hs]) (exact hr)))
 (a/theorem rel-items-run [its :- (List Item)]
-  (forall [p :- World] (=> (= (p3l p) true) (= (:released p) true) (= (:released (:world (items-run p its))) true)))
+  (forall [p :- World] (=> (= (chain-to-marks-waiting p) true) (= (:released p) true) (= (:released (:world (items-run p its))) true)))
   (induction its)
   (case [nil] (intros p h hr) (simp only [items-run]) (exact hr))
   (case [cons it t ih]
@@ -1436,15 +1436,15 @@
     (case [false] (simp only [items-run ha]) (exact hr))
     (case [true]
       (simp only [items-run ha])
-      (exact (ih _ (step-p3l p it h) (rel-step p it h hr))))))
+      (exact (ih _ (step-chain-to-marks-waiting p it h) (rel-step p it h hr))))))
 (a/theorem rel-merge-world [p :- World, c :- World, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat)), sealed :- Bool]
-  (=> (= (p3l p) true) (= (:released p) true) (= (:released (merge-world p c b rv sealed)) true))
+  (=> (= (chain-to-marks-waiting p) true) (= (:released p) true) (= (:released (merge-world p c b rv sealed)) true))
   (intros h hr)
   (cases hm (merge-ok p c b rv sealed))
   (case [false] (simp only [merge-world hm]) (exact hr))
   (case [true] (simp only [merge-world hm merge-out-world]) (exact (rel-items-run _ p h hr))))
 
-;; ---- a quiet qinv world: every composite is the identity
+;; ---- a quiet quiet-world-inv world: every composite is the identity
 (a/theorem qid-fire-ack [w :- World, z :- Nat, tag :- Nat, v :- Nat] (=> (= (qh w) true) (= (fire-ack w z tag v) w))
   (intro h) (simp only [fire-ack])
   (rw [(quiet-step w (Item.resource-fire z tag v) h)]) (exact (quiet-step w (Item.resource-ack z) h)))
@@ -1476,44 +1476,44 @@
   (case [false] (simp only [merge-world hm]))
   (case [true] (simp only [merge-world hm merge-out-world]) (exact (qid-items-run p _ h))))
 
-;; ---- qinv through the composites
-(a/theorem qinv-fire-ack [w :- World, z :- Nat, tag :- Nat, v :- Nat] (=> (= (qinv w) true) (= (qinv (fire-ack w z tag v)) true))
-  (intro h) (simp only [fire-ack]) (exact (step-qinv _ (Item.resource-ack z) (step-qinv w (Item.resource-fire z tag v) h))))
-(a/theorem qinv-wake-one [w :- World, z :- Nat] (=> (= (qinv w) true) (= (qinv (wake-one w z)) true))
+;; ---- quiet-world-inv through the composites
+(a/theorem quiet-world-inv-fire-ack [w :- World, z :- Nat, tag :- Nat, v :- Nat] (=> (= (quiet-world-inv w) true) (= (quiet-world-inv (fire-ack w z tag v)) true))
+  (intro h) (simp only [fire-ack]) (exact (step-quiet-world-inv _ (Item.resource-ack z) (step-quiet-world-inv w (Item.resource-fire z tag v) h))))
+(a/theorem quiet-world-inv-wake-one [w :- World, z :- Nat] (=> (= (quiet-world-inv w) true) (= (quiet-world-inv (wake-one w z)) true))
   (intro h)
   (cases hf (resource-find w z))
   (case [none] (simp only [wake-one hf]) (exact h))
   (case [some r]
     (cases hk (timer-kept r))
     (case [true] (simp only [wake-one hf hk]) (exact h))
-    (case [false] (simp only [wake-one hf hk]) (exact (qinv-fire-ack w z res-err err-forked h)))))
-(a/theorem qinv-wake-all [zs :- (List Nat)] (forall [w :- World] (=> (= (qinv w) true) (= (qinv (wake-all w zs)) true)))
+    (case [false] (simp only [wake-one hf hk]) (exact (quiet-world-inv-fire-ack w z res-err err-forked h)))))
+(a/theorem quiet-world-inv-wake-all [zs :- (List Nat)] (forall [w :- World] (=> (= (quiet-world-inv w) true) (= (quiet-world-inv (wake-all w zs)) true)))
   (induction zs)
   (case [nil] (intros w h) (simp only [wake-all]) (exact h))
-  (case [cons z t ih] (intros w h) (simp only [wake-all]) (exact (ih (wake-one w z) (qinv-wake-one w z h)))))
-(a/theorem qinv-cstep [sealed :- Bool, w :- World, it :- Item] (=> (= (qinv w) true) (= (qinv (cstep sealed w it)) true))
+  (case [cons z t ih] (intros w h) (simp only [wake-all]) (exact (ih (wake-one w z) (quiet-world-inv-wake-one w z h)))))
+(a/theorem quiet-world-inv-cstep [sealed :- Bool, w :- World, it :- Item] (=> (= (quiet-world-inv w) true) (= (quiet-world-inv (cstep sealed w it)) true))
   (intro h)
   (cases hs (seal-shut sealed w it))
-  (case [false] (simp only [cstep hs]) (exact (step-qinv w it h)))
+  (case [false] (simp only [cstep hs]) (exact (step-quiet-world-inv w it h)))
   (case [true] (simp only [cstep hs]) (exact h)))
-(a/theorem qinv-items-run [its :- (List Item)]
-  (forall [p :- World] (=> (= (qinv p) true) (= (qinv (:world (items-run p its))) true)))
+(a/theorem quiet-world-inv-items-run [its :- (List Item)]
+  (forall [p :- World] (=> (= (quiet-world-inv p) true) (= (quiet-world-inv (:world (items-run p its))) true)))
   (induction its)
   (case [nil] (intros p h) (simp only [items-run]) (exact h))
   (case [cons it t ih]
     (intros p h)
     (cases ha (:accepted (world-step p it)))
     (case [false] (simp only [items-run ha]) (exact h))
-    (case [true] (simp only [items-run ha]) (exact (ih _ (step-qinv p it h))))))
-(a/theorem qinv-merge-world [p :- World, c :- World, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat)), sealed :- Bool] (=> (= (qinv p) true) (= (qinv (merge-world p c b rv sealed)) true))
+    (case [true] (simp only [items-run ha]) (exact (ih _ (step-quiet-world-inv p it h))))))
+(a/theorem quiet-world-inv-merge-world [p :- World, c :- World, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat)), sealed :- Bool] (=> (= (quiet-world-inv p) true) (= (quiet-world-inv (merge-world p c b rv sealed)) true))
   (intro h)
   (cases hm (merge-ok p c b rv sealed))
   (case [false] (simp only [merge-world hm]) (exact h))
-  (case [true] (simp only [merge-world hm merge-out-world]) (exact (qinv-items-run _ p h))))
-(a/theorem qinv-fork-effect-world [w :- World, st :- Nat, kont :- Nat, v :- Nat]
-  (=> (= (qinv w) true) (= (qinv (fork-effect-world w st kont v)) true))
+  (case [true] (simp only [merge-world hm merge-out-world]) (exact (quiet-world-inv-items-run _ p h))))
+(a/theorem quiet-world-inv-fork-effect-world [w :- World, st :- Nat, kont :- Nat, v :- Nat]
+  (=> (= (quiet-world-inv w) true) (= (quiet-world-inv (fork-effect-world w st kont v)) true))
   (intro h) (simp only [fork-effect-world])
-  (exact (qinv-fire-ack _ (:next-id w) res-ok v (step-qinv w (Item.arm st rk-offload kont (:next-id w)) h))))
+  (exact (quiet-world-inv-fire-ack _ (:next-id w) res-ok v (step-quiet-world-inv w (Item.arm st rk-offload kont (:next-id w)) h))))
 
 ;; ---- the cell-level relation: released stays; a born cell's quiet world stays quiet
 (a/defn wqc [c :- Cell, w2 :- World] Prop
@@ -1620,7 +1620,7 @@
 ;; ---- qsinv and qpinv are system invariants
 (a/theorem qsinv-init [cells :- (=> Nat Cell)]
   (=> (forall [k :- Nat] (=> (= (:live (cells k)) true) (= (:world (cells k)) empty-world))) (qsinv cells))
-  (intro h0) (simp only [qsinv]) (intros k hl) (simp only [cq (h0 k hl) qinv-empty Bool.or_true]))
+  (intro h0) (simp only [qsinv]) (intros k hl) (simp only [cq (h0 k hl) quiet-world-inv-empty Bool.or_true]))
 (a/theorem qpinv-none [pubs :- (=> Nat Pub)] (=> (forall [p :- Nat] (= (:live (pubs p)) false)) (qpinv pubs))
   (intro h) (simp only [qpinv]) (intros p hl) (rw [(h p)] at hl) (cases hl))
 
@@ -1632,7 +1632,7 @@
   (intro hl) (simp only [cell-step] at hl)
   (exact (cq-trans (cells k) (cell-step (cells k) it) (rfl)
            (fn [r :- (= (:released (:world (cells k))) true)] (rel-cstep (:sealed (cells k)) (:world (cells k)) it (sinv-live cells k hs hl) r))
-           (fn [q :- (= (qinv (:world (cells k))) true)] (qinv-cstep (:sealed (cells k)) (:world (cells k)) it q)) (qsinv-live cells k hq hl))))
+           (fn [q :- (= (quiet-world-inv (:world (cells k))) true)] (quiet-world-inv-cstep (:sealed (cells k)) (:world (cells k)) it q)) (qsinv-live cells k hq hl))))
 
 (a/theorem qsinv-wake [cells :- (=> Nat Cell), k :- Nat]
   (=> (sinv cells) (qsinv cells) (qsinv (sys-wake cells k)))
@@ -1645,7 +1645,7 @@
     (intro hl) (simp only [wake-cell] at hl)
     (exact (cq-trans (cells k) (wake-cell (cells k)) (rfl)
              (fn [r :- (= (:released (:world (cells k))) true)] (rel-wake-all (:dormant (cells k)) (:world (cells k)) (sinv-live cells k hs hl) r))
-             (fn [q :- (= (qinv (:world (cells k))) true)] (qinv-wake-all (:dormant (cells k)) (:world (cells k)) q)) (qsinv-live cells k hq hl)))))
+             (fn [q :- (= (quiet-world-inv (:world (cells k))) true)] (quiet-world-inv-wake-all (:dormant (cells k)) (:world (cells k)) q)) (qsinv-live cells k hq hl)))))
 
 (a/theorem qsinv-resume [cells :- (=> Nat Cell), pubs :- (=> Nat Pub), p :- Nat, v :- Nat]
   (=> (sinv cells) (qsinv cells) (qsinv (sys-resume cells pubs p v)))
@@ -1656,7 +1656,7 @@
   (exact (cq-trans (cells (:cell (pubs p))) (resume-cell (cells (:cell (pubs p))) (:res (pubs p)) v) (rfl)
            (fn [r :- (= (:released (:world (cells (:cell (pubs p))))) true)]
              (rel-fire-ack (:world (cells (:cell (pubs p)))) (:res (pubs p)) res-ok v (sinv-live cells (:cell (pubs p)) hs hl) r))
-           (fn [q :- (= (qinv (:world (cells (:cell (pubs p))))) true)] (qinv-fire-ack (:world (cells (:cell (pubs p)))) (:res (pubs p)) res-ok v q))
+           (fn [q :- (= (quiet-world-inv (:world (cells (:cell (pubs p))))) true)] (quiet-world-inv-fire-ack (:world (cells (:cell (pubs p)))) (:res (pubs p)) res-ok v q))
            (qsinv-live cells (:cell (pubs p)) hq hl))))
 
 (a/theorem qsinv-merge [cells :- (=> Nat Cell), k :- Nat, m :- Nat, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat))]
@@ -1667,7 +1667,7 @@
   (intro hl) (simp only [merge-cell] at hl)
   (exact (cq-trans (cells k) (merge-cell (cells k) (merge-world (:world (cells k)) (:world (cells m)) b rv (seals-ok (cells k) (cells m)))) (rfl)
            (fn [r :- (= (:released (:world (cells k))) true)] (rel-merge-world (:world (cells k)) (:world (cells m)) b rv (seals-ok (cells k) (cells m)) (sinv-live cells k hs hl) r))
-           (fn [q :- (= (qinv (:world (cells k))) true)] (qinv-merge-world (:world (cells k)) (:world (cells m)) b rv (seals-ok (cells k) (cells m)) q)) (qsinv-live cells k hq hl))))
+           (fn [q :- (= (quiet-world-inv (:world (cells k))) true)] (quiet-world-inv-merge-world (:world (cells k)) (:world (cells m)) b rv (seals-ok (cells k) (cells m)) q)) (qsinv-live cells k hq hl))))
 
 (a/theorem qsinv-publish [cells :- (=> Nat Cell), k :- Nat, st :- Nat, kont :- Nat, fresh :- Nat]
   (=> (sinv cells) (qsinv cells) (qsinv (sys-publish cells k st kont fresh)))
@@ -1718,7 +1718,7 @@
     (intro hl)
     (have e (= (:released (release-unborn (:world (cells k)))) true)) (simp only [release-unborn set-released])
     (simp only [cq release-unborn-cell (And.left hg) e Bool.and_self Bool.true_or])))
-;; activation: the instance is not released (act-ok), so it holds qinv; it is born after
+;; activation: the instance is not released (act-ok), so it holds quiet-world-inv; it is born after
 (a/theorem qsinv-activate [cells :- (=> Nat Cell), m :- Nat, v :- Nat]
   (=> (qsinv cells) (qsinv (sys-activate cells m v)))
   (intro hq)
@@ -1733,9 +1733,9 @@
     (have c := (qsinv-live cells m hq hl))
     (simp only [cq nr Bool.and_false Bool.false_or] at c)
     (simp only [cq act-cell Bool.false_and Bool.false_or])
-    (exact (qinv-wake-all (:dormant (cells m)) _ (qinv-fire-ack (:world (cells m)) (:pending (cells m)) res-ok v c)))))
+    (exact (quiet-world-inv-wake-all (:dormant (cells m)) _ (quiet-world-inv-fire-ack (:world (cells m)) (:pending (cells m)) res-ok v c)))))
 ;; a fork (value copy) or a fork effect: refused from an unborn cell (the guard), so the source is
-;; born and its cq is qinv (`cq-born`)
+;; born and its cq is quiet-world-inv (`cq-born`)
 (a/theorem qsinv-fork [cells :- (=> Nat Cell), k :- Nat, m :- Nat, owner :- Nat]
   (=> (qsinv cells) (= (:live (cells k)) true) (qsinv (sys-fork cells k m owner)))
   (intros hq hlk)
@@ -1758,7 +1758,7 @@
     (intro hl)
     (have c := (cq-born (cells k) (qsinv-live cells k hq hlk) hu))
     (simp only [cq fork-effect-cell Bool.false_and Bool.false_or])
-    (exact (qinv-fork-effect-world (:world (cells k)) st kont v c))))
+    (exact (quiet-world-inv-fork-effect-world (:world (cells k)) st kont v c))))
 (a/theorem qsinv-instantiate [cells :- (=> Nat Cell), pubs :- (=> Nat Pub), p :- Nat, m :- Nat, owner :- Nat]
   (=> (qsinv cells) (qpinv pubs) (= (:live (pubs p)) true) (qsinv (sys-instantiate cells pubs p m owner)))
   (intros hq hp hlp)
@@ -1784,7 +1784,7 @@
     (case [inl a]
       (simp only [(rel-step (:world (cells k)) (publish-item st kont fresh) (sinv-live cells k hs hlk) (And.right a)) Bool.true_or]))
     (case [inr b]
-      (simp only [(step-qinv (:world (cells k)) (publish-item st kont fresh) b) Bool.or_true]))))
+      (simp only [(step-quiet-world-inv (:world (cells k)) (publish-item st kont fresh) b) Bool.or_true]))))
 (a/theorem qpinv-abandon [pubs :- (=> Nat Pub), p :- Nat]
   (=> (qpinv pubs) (qpinv (pubs-abandon pubs p)))
   (intro hp)
@@ -2240,18 +2240,18 @@
 
 ;; ---------------------------------------------------------------------------
 ;; C1c stage B, proof stage: the owned-fork operations at layer 2. They are layer-1 items (spindel.v2.owned), so the
-;; layer-1 facts (`hb-world`: p3l, qinv and released kept) are those of every step: step-p3l, step-qinv, step-released.
+;; layer-1 facts (`hb-world`: chain-to-marks-waiting, quiet-world-inv and released kept) are those of every step: step-chain-to-marks-waiting, step-quiet-world-inv, step-released.
 
 (a/defn hb-world [w :- World, w2 :- World] Prop
-  (And (=> (= (p3l w) true) (= (p3l w2) true))
-       (And (=> (= (qinv w) true) (= (qinv w2) true))
-            (=> (= (p3l w) true) (= (:released w) true) (= (:released w2) true)))))
+  (And (=> (= (chain-to-marks-waiting w) true) (= (chain-to-marks-waiting w2) true))
+       (And (=> (= (quiet-world-inv w) true) (= (quiet-world-inv w2) true))
+            (=> (= (chain-to-marks-waiting w) true) (= (:released w) true) (= (:released w2) true)))))
 (a/theorem hb-step [w :- World, it :- Item] (hb-world w (:world (world-step w it)))
   (simp only [hb-world]) (apply And.intro)
-  (intro h) (exact (step-p3l w it h))
+  (intro h) (exact (step-chain-to-marks-waiting w it h))
   (apply And.intro)
-  (intro h) (exact (step-qinv w it h))
-  (intros h r) (exact (step-released w it (p3l-p3b w h) r)))
+  (intro h) (exact (step-quiet-world-inv w it h))
+  (intros h r) (exact (step-released w it (chain-to-marks-waiting-implies-chain-start w h) r)))
 (a/theorem hb-own [w :- World, s :- Nat, m :- Nat] (hb-world w (own-world w s m))
   (simp only [own-world]) (exact (hb-step w (Item.own s m))))
 (a/theorem hb-owned-done [w :- World, s :- Nat, c :- Nat] (hb-world w (owned-done-world w s c))
@@ -2265,11 +2265,11 @@
 (a/theorem owned-done-is-step [cells :- (=> Nat Cell), k :- Nat, s :- Nat, c :- Nat]
   (= (sys-owned-done cells k s c) (sys-complete (sys-step cells k (Item.owned-done s c)) k))
   (simp only [sys-owned-done sys-step cell-step cstep seal-shut seal-item Bool.false_and Bool.and_false world-cell owned-done-world]))
-(a/theorem hbw-p3l [w :- World, w2 :- World] (=> (hb-world w w2) (= (p3l w) true) (= (p3l w2) true))
+(a/theorem hbw-chain-to-marks-waiting [w :- World, w2 :- World] (=> (hb-world w w2) (= (chain-to-marks-waiting w) true) (= (chain-to-marks-waiting w2) true))
   (intros h p) (simp only [hb-world] at h) (exact ((And.left h) p)))
-(a/theorem hbw-qinv [w :- World, w2 :- World] (=> (hb-world w w2) (= (qinv w) true) (= (qinv w2) true))
+(a/theorem hbw-quiet-world-inv [w :- World, w2 :- World] (=> (hb-world w w2) (= (quiet-world-inv w) true) (= (quiet-world-inv w2) true))
   (intros h p) (simp only [hb-world] at h) (exact ((And.left (And.right h)) p)))
-(a/theorem hbw-released [w :- World, w2 :- World] (=> (hb-world w w2) (= (p3l w) true) (= (:released w) true) (= (:released w2) true))
+(a/theorem hbw-released [w :- World, w2 :- World] (=> (hb-world w w2) (= (chain-to-marks-waiting w) true) (= (:released w) true) (= (:released w2) true))
   (intros h p r) (simp only [hb-world] at h) (exact ((And.right (And.right h)) p r)))
 
 ;; a quiet world (no marker) is left as it is
@@ -2313,13 +2313,13 @@
 
 ;; ---- qsinv (with sinv: an unborn released cell's world stays released)
 (a/theorem cq-world [c :- Cell, c2 :- Cell]
-  (=> (= (p3l (:world c)) true) (= (cq c) true) (= (:unborn c2) (:unborn c)) (hb-world (:world c) (:world c2)) (= (cq c2) true))
+  (=> (= (chain-to-marks-waiting (:world c)) true) (= (cq c) true) (= (:unborn c2) (:unborn c)) (hb-world (:world c) (:world c2)) (= (cq c2) true))
   (intros hs hq hu hw)
   (simp only [cq Bool.or_eq_true Bool.and_eq_true] at hq)
   (simp only [cq Bool.or_eq_true Bool.and_eq_true hu])
   (cases hq)
   (case [inl a] (exact (Or.inl (And.intro (And.left a) (hbw-released _ _ hw hs (And.right a))))))
-  (case [inr b] (exact (Or.inr (hbw-qinv _ _ hw b)))))
+  (case [inr b] (exact (Or.inr (hbw-quiet-world-inv _ _ hw b)))))
 (a/theorem qsinv-own [cells :- (=> Nat Cell), k :- Nat, s :- Nat, m :- Nat]
   (=> (sinv cells) (qsinv cells) (qsinv (sys-own cells k s m)))
   (intros hs hq) (simp only [sys-own])
@@ -2351,11 +2351,11 @@
   (simp only [wq]) (apply And.intro)
   (intro h) (rw [(own-released w s m h)]) (exact h)
   (intro h) (rw [(own-released w s m (quiet-released w h))]) (exact h))
-(a/theorem wq-owned-done [w :- World, s :- Nat, c :- Nat] (=> (= (p3l w) true) (wq w (owned-done-world w s c)))
+(a/theorem wq-owned-done [w :- World, s :- Nat, c :- Nat] (=> (= (chain-to-marks-waiting w) true) (wq w (owned-done-world w s c)))
   (intro hp) (simp only [wq]) (apply And.intro)
   (intro h) (exact (hbw-released _ _ (hb-owned-done w s c) hp h))
   (intro h) (rw [(owned-done-none w s c (quiet-forks-nil w h))]) (exact h))
-(a/theorem wq-drain [w :- World, ids :- (List Nat)] (=> (= (p3l w) true) (wq w (drain-world w ids)))
+(a/theorem wq-drain [w :- World, ids :- (List Nat)] (=> (= (chain-to-marks-waiting w) true) (wq w (drain-world w ids)))
   (intro hp) (simp only [wq]) (apply And.intro)
   (intro h) (exact (hbw-released _ _ (hb-drain w ids) hp h))
   (intro h) (rw [(drain-none w ids (quiet-forks-nil w h))]) (exact h))
@@ -2802,7 +2802,7 @@
     (intro hl) (simp only [retire-cell] at hl)
     (exact (cq-trans (cells k) (retire-cell (cells k) v) (rfl)
              (fn [r :- (= (:released (:world (cells k))) true)] (rel-cstep (:sealed (cells k)) (:world (cells k)) (Item.retire-local v) (sinv-live cells k hs hl) r))
-             (fn [q :- (= (qinv (:world (cells k))) true)] (qinv-cstep (:sealed (cells k)) (:world (cells k)) (Item.retire-local v) q)) (qsinv-live cells k hq hl)))))
+             (fn [q :- (= (quiet-world-inv (:world (cells k))) true)] (quiet-world-inv-cstep (:sealed (cells k)) (:world (cells k)) (Item.retire-local v) q)) (qsinv-live cells k hq hl)))))
 (a/theorem jinv-retire [cells :- (=> Nat Cell), k :- Nat, v :- Nat] (=> (jinv cells) (jinv (sys-retire cells k v)))
   (intro h)
   (cases hr (:rpend (cells k)))

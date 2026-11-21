@@ -3,7 +3,7 @@
             [ansatz.core :as a]
             [spindel.v2.completion.quiet]))
 
-(def theorems '[step-grel step-released step-gk step-k k-empty zero-handles-hz t-release-world-gk raw0-gk])
+(def theorems '[step-stays-released step-released step-host-roots-revoked step-k k-empty zero-handles-hz host-roots-revoked-t21-release-world host-roots-revoked-transition])
 
 (deftest theorems-kernel-checked
   (doseq [t theorems]

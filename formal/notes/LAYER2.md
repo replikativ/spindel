@@ -70,7 +70,7 @@ L11 replaces "collected by the garbage collector": the collector is one schedule
 
 Semantic:
 - **S-inv (F5):** every cell's world satisfies the layer-1 bundle. Needs (a) `copy` keeps the bundle,
-  (b) L4/L6/L8/L9/L12 are layer-1 items, so `step-p3l` applies.
+  (b) L4/L6/L8/L9/L12 are layer-1 items, so `step-chain-to-marks-waiting` applies.
 - **S-frame:** a step in one cell leaves every other cell and pub unchanged (L1 by definition).
 - **S-closed (F1):** no row of a cell names another cell except marker `child` and `parent`.
 - **S-release (F2):** after L10/L11 no marker, pub or cell names the released wid.
@@ -90,7 +90,7 @@ Physical:
 
 ## 6. Prerequisite in layer 1
 
-The proved bundle excludes two things layer 2 needs: `ekb` (no savepoint edges) and `gw` (no fork
+The proved bundle excludes two things layer 2 needs: `edge-kinds` (no savepoint edges) and `root-scope-reserved` (no fork
 markers). Both must be lifted first: savepoint edges as a fourth edge kind through the step
 (S1, S2, T14's removal), and markers as rows retained by their owner scope.
 
@@ -98,13 +98,13 @@ markers). Both must be lifted first: savepoint edges as a fourth edge kind throu
 
 1. `spindel.v2.cow`: physical model. **Done** (views, fast and slow path of `rv`, family invariants kept by
    copy/write/fork/alloc/release).
-2. Layer 1 lift of `ekb`/`gw`: **not needed.** Fork markers live on the child cell (a marker retains nothing in
+2. Layer 1 lift of `edge-kinds`/`root-scope-reserved`: **not needed.** Fork markers live on the child cell (a marker retains nothing in
    the parent); a savepoint is a resource of kind `rk-savepoint`, so S1/S2/S7 are T17/T18+T15/T14.
 3. `spindel.v2.layer2.sys`: **done** for L1 step, L2/L3 fork, L4 wake, L5 publish, L6 resume, L7 instantiate, L8 activate,
-   L9 abandon, L10 drop, L11 idle release, L12 merge. Proved: every live world and every live basis keeps `p3l`
+   L9 abandon, L10 drop, L11 idle release, L12 merge. Proved: every live world and every live basis keeps `chain-to-marks-waiting`
    (F5); frames; fork and instance start from the parent's world / the basis; a second activation changes nothing;
    a refused merge changes nothing; a merge without child writes changes nothing; a drop commutes with steps elsewhere.
-   `spindel.v2.layer2.skip`: skipping ids keeps `p3l` (`p3l-skip`, `p3l-skip-ids`). The worlds of a family share one
+   `spindel.v2.layer2.skip`: skipping ids keeps `chain-to-marks-waiting` (`chain-to-marks-waiting-skip`, `chain-to-marks-waiting-skip-ids`). The worlds of a family share one
    allocator in the engine; a world's log replays in the model with `skip-ids` between items.
    **Correction (2026-11-13):** the first version armed savepoints with a resource kind of their own (4). Layer 1
    arms timers and offloads only, so every publish was refused and the savepoint theorems held of nothing. A

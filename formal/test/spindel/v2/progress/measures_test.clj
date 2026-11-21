@@ -14,9 +14,9 @@
             [spindel.v2.inv-test :as it]))
 
 (def theorems
-  '[mb-run-upd mb-run-upd-ne mb-run-upd-q mb-run-ins raw-mb mb-normalize mb-rule-r step-mb step-mb-total
-    sok-empty step-sok mb-of-done step-mu-le finally-exit-dec finally-leave-dec slice-exit-dec slice-exit-retires ack-dec ack-retires
-    mb-retire-gone l5-step l5-core l5-safety l5-dirty])
+  '[l2-measure-run-upd l2-measure-run-upd-ne l2-measure-run-upd-q l2-measure-run-ins l2-measure-raw l2-measure-normalize l2-measure-rule-r step-l2-measure step-l2-measure-total
+    slice-holder-ok-empty step-slice-holder-ok l2-measure-of-done step-mu-le finally-exit-dec finally-leave-dec slice-exit-dec slice-exit-retires ack-dec ack-retires
+    l2-measure-retire-gone l5-step l5-core l5-safety l5-dirty])
 
 (deftest theorems-kernel-checked
   (doseq [t theorems]
@@ -95,12 +95,12 @@
     (or (some bl cn)
         (some (fn [x] (when-let [c (find-row w :comps x)]
                         (and (not (:idle c)) (en/needs-run w c) (en/eligible w c)))) cn)
-        (some (fn [x] (and (some? (find-row w :tasks x)) (en/blk-base w x) (not (bl x)))) cn))))
+        (some (fn [x] (and (some? (find-row w :tasks x)) (en/blocked-base w x) (not (bl x)))) cn))))
 
 (def l5-stats (atom {:quiescent 0 :waiting 0}))
 
 (defn check-step [w item w2 tag]
-  (is (true? (pr/sok w2)) (str "sok " tag " " (pr-str item)))
+  (is (true? (pr/slice-holder-ok w2)) (str "slice-holder-ok " tag " " (pr-str item)))
   (is (mu-ok? w w2) (str "mu non-increase " tag " " (pr-str item)))
   (when (pr/quiescent w2)
     (swap! l5-stats update :quiescent inc)
@@ -125,7 +125,7 @@
             (recur (inc i) w2)))))))
 
 (deftest progress-random
-  (is (true? (pr/sok (et/prefix-world))))
+  (is (true? (pr/slice-holder-ok (et/prefix-world))))
   (reset! l5-stats {:quiescent 0 :waiting 0})
   (drive 20261121 20 60 false)
   (drive 20261122 20 60 true)

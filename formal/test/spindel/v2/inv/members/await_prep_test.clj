@@ -22,74 +22,74 @@
   (:import [ansatz.kernel ConstantInfo]))
 
 (def contracts
-  '{h3-demand-reactive
+  '{current-members-demand-reactive
     (forall [xm :- (List Nat), w :- World, d :- Nat]
-      (=> (= (g7 w) true) (= (aha w) true) (= (h3 xm w) true)
-          (= (h3 xm (demand-reactive w d)) true)))
-    h3-demand-fold
+      (=> (= (i7-idle w) true) (= (act-runs-alive w) true) (= (current-members xm w) true)
+          (= (current-members xm (demand-reactive w d)) true)))
+    current-members-demand-fold
     (forall [xm :- (List Nat), ds :- (List Nat), w :- World]
-      (=> (= (g7 w) true) (= (aha w) true) (= (h3 xm w) true)
-          (= (h3 xm (nat-fold demand-reactive w ds)) true)))
-    h3-await-pre
+      (=> (= (i7-idle w) true) (= (act-runs-alive w) true) (= (current-members xm w) true)
+          (= (current-members xm (nat-fold demand-reactive w ds)) true)))
+    current-members-await-pre
     (forall [xm :- (List Nat), w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
-      (=> (= (g10r w) true) (= (gd w) true) (= (g7 w) true) (= (aha w) true) (= (h3 xm w) true)
-          (List.Mem r (:runs w)) (= (run-alive r) true) (= (h3 xm (await-pre w r ds mode k mine)) true)))
-    h3-await-pre-p3la
+      (=> (= (i10-current w) true) (= (comp-facts w) true) (= (i7-idle w) true) (= (act-runs-alive w) true) (= (current-members xm w) true)
+          (List.Mem r (:runs w)) (= (run-alive r) true) (= (current-members xm (await-pre w r ds mode k mine)) true)))
+    current-members-await-pre-chain-to-edge-kinds
     (forall [xm :- (List Nat), w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
-      (=> (= (p3la w) true) (= (h3 xm w) true) (List.Mem r (:runs w)) (= (run-alive r) true)
-          (= (h3 xm (await-pre w r ds mode k mine)) true)))
-    h3-await-pre-token
+      (=> (= (chain-to-edge-kinds w) true) (= (current-members xm w) true) (List.Mem r (:runs w)) (= (run-alive r) true)
+          (= (current-members xm (await-pre w r ds mode k mine)) true)))
+    current-members-await-pre-token
     (forall [xm :- (List Nat), w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat), st :- Nat, fresh :- Nat]
-      (=> (= (p3la w) true) (= (h3 xm w) true) (= (tok-run w st) (Option.some RunRow r))
-          (= (await-ok w r ds mode fresh) true) (= (h3 xm (await-pre w r ds mode k mine)) true)))
-    g7-await-pre-p3la
+      (=> (= (chain-to-edge-kinds w) true) (= (current-members xm w) true) (= (tok-run w st) (Option.some RunRow r))
+          (= (await-ok w r ds mode fresh) true) (= (current-members xm (await-pre w r ds mode k mine)) true)))
+    i7-idle-await-pre-chain-to-edge-kinds
     (forall [w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
-      (=> (= (p3la w) true) (List.Mem r (:runs w)) (= (run-alive r) true) (= (g7 (await-pre w r ds mode k mine)) true)))
-    aha-await-pre-p3la
+      (=> (= (chain-to-edge-kinds w) true) (List.Mem r (:runs w)) (= (run-alive r) true) (= (i7-idle (await-pre w r ds mode k mine)) true)))
+    act-runs-alive-await-pre-chain-to-edge-kinds
     (forall [w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
-      (=> (= (p3la w) true) (List.Mem r (:runs w)) (= (run-alive r) true) (= (aha (await-pre w r ds mode k mine)) true)))
-    gd-await-pre-p3la
+      (=> (= (chain-to-edge-kinds w) true) (List.Mem r (:runs w)) (= (run-alive r) true) (= (act-runs-alive (await-pre w r ds mode k mine)) true)))
+    comp-facts-await-pre-chain-to-edge-kinds
     (forall [w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
-      (=> (= (p3la w) true) (List.Mem r (:runs w)) (= (run-alive r) true) (= (gd (await-pre w r ds mode k mine)) true)))
-    ar-await-pre-p3la
+      (=> (= (chain-to-edge-kinds w) true) (List.Mem r (:runs w)) (= (run-alive r) true) (= (comp-facts (await-pre w r ds mode k mine)) true)))
+    alive-run-latest-await-pre-chain-to-edge-kinds
     (forall [w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
-      (=> (= (p3la w) true) (List.Mem r (:runs w)) (= (run-alive r) true) (= (ar (await-pre w r ds mode k mine)) true)))
-    hmk-await-pre-p3la
+      (=> (= (chain-to-edge-kinds w) true) (List.Mem r (:runs w)) (= (run-alive r) true) (= (alive-run-latest (await-pre w r ds mode k mine)) true)))
+    marks-waiting-await-pre-chain-to-edge-kinds
     (forall [w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
-      (=> (= (p3la w) true) (List.Mem r (:runs w)) (= (run-alive r) true) (= (hmk (List.nil Nat) (await-pre w r ds mode k mine)) true)))
-    ekb-await-pre-p3la
+      (=> (= (chain-to-edge-kinds w) true) (List.Mem r (:runs w)) (= (run-alive r) true) (= (marks-waiting (List.nil Nat) (await-pre w r ds mode k mine)) true)))
+    edge-kinds-await-pre-chain-to-edge-kinds
     (forall [w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
-      (=> (= (p3la w) true) (List.Mem r (:runs w)) (= (run-alive r) true) (= (ekb (await-pre w r ds mode k mine)) true)))})
+      (=> (= (chain-to-edge-kinds w) true) (List.Mem r (:runs w)) (= (run-alive r) true) (= (edge-kinds (await-pre w r ds mode k mine)) true)))})
 
 (def generated-contracts
-  '{g7-demand-reactive (forall [w :- World, d :- Nat] (=> (= (g7 w) true) (= (g7 (demand-reactive w d)) true)))
-    aha-demand-reactive (forall [w :- World, d :- Nat] (=> (= (aha w) true) (= (aha (demand-reactive w d)) true)))
-    g7-await-pre
+  '{i7-idle-demand-reactive (forall [w :- World, d :- Nat] (=> (= (i7-idle w) true) (= (i7-idle (demand-reactive w d)) true)))
+    act-runs-alive-demand-reactive (forall [w :- World, d :- Nat] (=> (= (act-runs-alive w) true) (= (act-runs-alive (demand-reactive w d)) true)))
+    i7-idle-await-pre
     (forall [w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
-      (=> (= (g7 w) true) (= (g7 (await-pre w r ds mode k mine)) true)))
-    aha-await-pre
+      (=> (= (i7-idle w) true) (= (i7-idle (await-pre w r ds mode k mine)) true)))
+    act-runs-alive-await-pre
     (forall [w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
-      (=> (List.Mem r (:runs w)) (= (run-alive r) true) (= (aha w) true) (= (aha (await-pre w r ds mode k mine)) true)))
-    gd-await-pre
+      (=> (List.Mem r (:runs w)) (= (run-alive r) true) (= (act-runs-alive w) true) (= (act-runs-alive (await-pre w r ds mode k mine)) true)))
+    comp-facts-await-pre
     (forall [w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
-      (=> (= (g7 w) true) (= (gd w) true) (= (gd (await-pre w r ds mode k mine)) true)))
-    ar-await-pre
+      (=> (= (i7-idle w) true) (= (comp-facts w) true) (= (comp-facts (await-pre w r ds mode k mine)) true)))
+    alive-run-latest-await-pre
     (forall [w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
-      (=> (= (ar w) true) (= (ar (await-pre w r ds mode k mine)) true)))
-    hmk-await-pre
+      (=> (= (alive-run-latest w) true) (= (alive-run-latest (await-pre w r ds mode k mine)) true)))
+    marks-waiting-await-pre
     (forall [hxm :- (List Nat), w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
-      (=> (= (hmk hxm w) true) (= (hmk hxm (await-pre w r ds mode k mine)) true)))
-    ekb-await-pre
+      (=> (= (marks-waiting hxm w) true) (= (marks-waiting hxm (await-pre w r ds mode k mine)) true)))
+    edge-kinds-await-pre
     (forall [w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
-      (=> (= (ekb w) true) (= (ekb (await-pre w r ds mode k mine)) true)))})
+      (=> (= (edge-kinds w) true) (= (edge-kinds (await-pre w r ds mode k mine)) true)))})
 
 (def extraction-contracts
-  '{p3la-g10r (forall [w :- World] (=> (= (p3la w) true) (= (g10r w) true)))
-    p3la-gd (forall [w :- World] (=> (= (p3la w) true) (= (gd w) true)))
-    p3la-hmk (forall [w :- World] (=> (= (p3la w) true) (= (hmk (List.nil Nat) w) true)))})
+  '{chain-to-edge-kinds-i10-current (forall [w :- World] (=> (= (chain-to-edge-kinds w) true) (= (i10-current w) true)))
+    chain-to-edge-kinds-comp-facts (forall [w :- World] (=> (= (chain-to-edge-kinds w) true) (= (comp-facts w) true)))
+    chain-to-edge-kinds-marks-waiting (forall [w :- World] (=> (= (chain-to-edge-kinds w) true) (= (marks-waiting (List.nil Nat) w) true)))})
 
 (def theorems (concat (keys contracts) (keys generated-contracts)
-                     '[h3-await-empty-act h3-await-allocate p3la-g10r p3la-gd p3la-hmk]))
+                     '[current-members-await-empty-act current-members-await-allocate chain-to-edge-kinds-i10-current chain-to-edge-kinds-comp-facts chain-to-edge-kinds-marks-waiting]))
 
 (deftest exact-safe-closed-kernel-contracts
   (is (= 11 (count contracts)))
@@ -104,11 +104,11 @@
 (defn row [w table id] (fields/row w table id))
 
 (defn accepted-step
-  "Deterministic accepted world-step trace; every resulting p3la premise is checked."
+  "Deterministic accepted world-step trace; every resulting chain-to-edge-kinds premise is checked."
   [w item]
   (let [out (engine/world-step w item)]
     (is (true? (:accepted out)) (str "accepted trace item " item))
-    (is (true? (base/p3la (:world out))) (str "reachable p3la after " item))
+    (is (true? (base/chain-to-edge-kinds (:world out))) (str "reachable chain-to-edge-kinds after " item))
     (:world out)))
 
 (defn source [w kind value]
@@ -146,26 +146,26 @@
      :old-owner (:c parked) :old-run (:rid parked) :old-act act :old-edge (inc act) :fresh fresh}))
 
 (defn check-h3-fields [w]
-  (is (true? (edits/inv-sample w)))
+  (is (true? (edits/well-formed w)))
   (is (true? (fields/awake-fields? w)))
-  (is (= (fields/awake-fields? w) (idle/g7-rest w)))
+  (is (= (fields/awake-fields? w) (idle/i7-idle-rest w)))
   (is (true? (fields/activation-runs? w)))
-  (is (= (boolean (fields/activation-runs? w)) (p3/aha-rest w)))
+  (is (= (boolean (fields/activation-runs? w)) (p3/act-runs-alive-rest w)))
   (is (true? (fields/member-fields? [] w)))
-  (is (= (boolean (fields/member-fields? [] w)) (hm3/h3-rest [] w)))
-  (is (true? (hm3/h3 [] w)))
-  (is (true? (idle/g7 w)))
-  (is (true? (p3/aha w))))
+  (is (= (boolean (fields/member-fields? [] w)) (hm3/current-members-rest [] w)))
+  (is (true? (hm3/current-members [] w)))
+  (is (true? (idle/i7-idle w)))
+  (is (true? (p3/act-runs-alive w))))
 
 (defn check-supports [w]
-  (doseq [[label predicate] [[:g7 idle/g7] [:aha p3/aha] [:gd hm/gd]
-                            [:ar ar/ar] [:hmk #(hmk/hmk [] %)] [:ekb hm6/ekb]]]
+  (doseq [[label predicate] [[:g7 idle/i7-idle] [:aha p3/act-runs-alive] [:gd hm/comp-facts]
+                            [:ar ar/alive-run-latest] [:hmk #(hmk/marks-waiting [] %)] [:ekb hm6/edge-kinds]]]
     (is (true? (predicate w)) (str label " exported preparation support"))))
 
 (defn check-input [fixture]
   (let [{:keys [w rid owner kind]} fixture, r (row w :runs rid)
         entity (row w (if (= kind :comp) :comps :tasks) owner)]
-    (is (true? (base/p3la w)))
+    (is (true? (base/chain-to-edge-kinds w)))
     (is (some #{r} (:runs w)))
     (is (fields/alive? r))
     (is (true? (engine/run-normal r)))
@@ -173,8 +173,8 @@
     (when (= kind :comp)
       (is (= (:epoch r) (:epoch entity)))
       (is (< (:done-epoch entity) (:epoch entity))))
-    (is (true? (i10/g10r w)))
-    (is (true? (hm/gd w)))
+    (is (true? (i10/i10-current w)))
+    (is (true? (hm/comp-facts w)))
     (check-h3-fields w)))
 
 (defn check-old-obligation [fixture after]
@@ -222,8 +222,8 @@
       (is (every? #(= s/res-none (:tag %)) (:slots (first (:acts after)))))
       (is (= (inc aid) (:next-id bumped)) "activation allocation is separate from reactive edges")
       (is (= (+ aid 3) (:next-id after)) "one activation plus two reconstructed dependency edges")
-      (is (false? (edits/inv-sample inserted)) "pre-bump insertion does not have full inv-sample")
-      (is (true? (hm3/h3-rest [] inserted)))
+      (is (false? (edits/well-formed inserted)) "pre-bump insertion does not have full well-formed")
+      (is (true? (hm3/current-members-rest [] inserted)))
       (doseq [boundary [ticked bumped after]]
         (check-h3-fields boundary) (check-supports boundary) (check-old-obligation fixture boundary))
       (let [prefix (engine/react-loop [0] bumped [top])
@@ -260,7 +260,7 @@
         changed (accepted-step w [2 leaf 31]), invalid (row changed :comps top)
         demanded (engine/demand-reactive changed top)]
     (check-input fixture)
-    (is (true? (base/p3la changed)))
+    (is (true? (base/chain-to-edge-kinds changed)))
     (check-h3-fields changed)
     (is (:idle invalid))
     (is (not= s/res-none (:tag (:result invalid))))
@@ -287,15 +287,15 @@
         (is (= (count ds) (:remaining (first (:acts result)))))))))
 
 (defn refused-raw [w item]
-  (let [out (engine/raw0 w item)]
-    (is (false? (:accepted out)) (str "raw0 refuses " item))
-    (is (= w (:world out)) (str "raw0 refusal is identity " item))))
+  (let [out (engine/transition w item)]
+    (is (false? (:accepted out)) (str "transition refuses " item))
+    (is (= w (:world out)) (str "transition refusal is identity " item))))
 
 (deftest actual-guarded-await-acceptance-and-refusals
   (let [{:keys [w rid deferred consuming] :as fixture} (fixture :task)
         r (row w :runs rid), st (:stamp r), fresh (:next-id w)
         item [18 st [deferred] s/am-one 7 fresh []]
-        accepted (engine/raw0 w item)]
+        accepted (engine/transition w item)]
     (check-input fixture)
     (is (true? (engine/await-ok w r [deferred] s/am-one fresh)))
     (is (true? (:accepted accepted)) "finite accepted T6 positive control, distinct from await-pre proof")
@@ -308,7 +308,7 @@
     (refused-raw w [18 st [deferred] 99 7 fresh []])
     (refused-raw w [18 st [] s/am-one 7 fresh []])
     (is (true? (engine/await-ok w r [consuming] s/am-one fresh)) "local await-ok omits outer D0 source-kind guard")
-    (is (true? (engine/await-kind-bad w [consuming])))
+    (is (true? (engine/await-kind-refused w [consuming])))
     (refused-raw w [18 st [consuming] s/am-one 7 fresh []])
     (testing "a real cancellation cleanup slice is non-normal and cannot await"
       (let [w1 (accepted-step w [35 st])

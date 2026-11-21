@@ -7,7 +7,7 @@
 
 (def theorems
   '[tbl-all-mem-mono tbl-any-app tbl-any-mono tbl-find-upd-ne comp-rank-set-ne crank-upd-eq comp-rank-set-eq
-    comp-has-set-rank raise-inv-done rank-edge-ok-of-lt pend-skip raise-inv-skip dep-cred-mem rjobs-covers
+    comp-has-set-rank raise-inv-done rank-edge-ok-of-lt pend-skip raise-inv-skip dep-cred-mem raise-jobs-covers
     covers-transfer lt-of-ble-false pend-raise raise-inv-raise raise-loop-ranks pend-of-ranks raise-inv-start
     ranks-ins-noncomp raise-run-ranks await-new-dep-ranks react-add-ranks])
 

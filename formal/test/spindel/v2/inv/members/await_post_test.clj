@@ -26,58 +26,58 @@
 
 (def helper-definitions
   '[
-(a/defn h11-parked [a :- Nat, rid :- Nat, ds :- (List Nat),
+(a/defn current-members-parked [a :- Nat, rid :- Nat, ds :- (List Nat),
                     acc :- AwAcc] World
-  (park-if (h10-fill-prefix a ds acc (nat-distinct ds)) a rid))
+  (park-if (current-members-fill-prefix a ds acc (nat-distinct ds)) a rid))
 
-(a/defn h11-final-prefix [a :- Nat, rid :- Nat, ds :- (List Nat),
+(a/defn current-members-final-prefix [a :- Nat, rid :- Nat, ds :- (List Nat),
                          acc :- AwAcc, pre :- (List Nat)] World
-  (nat-fold fin-if-final (h11-parked a rid ds acc) pre))
+  (nat-fold finalize-if-final (current-members-parked a rid ds acc) pre))
 ])
 
 (def public-contracts
   '[
-{:name h11-park-hmk
+{:name current-members-park-marks-waiting
  :type (forall [xm :- (List Nat), w :- World, r :- RunRow,
          ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat),
          st :- Nat, fresh :- Nat]
-  (=> (h9-entry xm w r ds mode st fresh)
-      (= (hmk (List.nil Nat)
-           (h11-parked (:next-id w) (:id r) ds
+  (=> (current-members-entry xm w r ds mode st fresh)
+      (= (marks-waiting (List.nil Nat)
+           (current-members-parked (:next-id w) (:id r) ds
              (await-acc w r ds mode k mine))) true)))}
 
-{:name h11-fin-fold
+{:name current-members-fin-fold
  :type (forall [xm :- (List Nat), hx :- (List Nat), w :- World,
          ds :- (List Nat)]
-  (=> (= (hmk hx w) true)
-      (= (h3 xm w) true)
-      (And (= (hmk hx (nat-fold fin-if-final w ds)) true)
-           (= (h3 xm (nat-fold fin-if-final w ds)) true))))}
+  (=> (= (marks-waiting hx w) true)
+      (= (current-members xm w) true)
+      (And (= (marks-waiting hx (nat-fold finalize-if-final w ds)) true)
+           (= (current-members xm (nat-fold finalize-if-final w ds)) true))))}
 
-{:name h11-final-prefix-invariants
+{:name current-members-final-prefix-invariants
  :type (forall [xm :- (List Nat), w :- World, r :- RunRow,
          ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat),
          st :- Nat, fresh :- Nat, pre :- (List Nat), tail :- (List Nat)]
-  (=> (h9-entry xm w r ds mode st fresh)
+  (=> (current-members-entry xm w r ds mode st fresh)
       (= (List.append Nat pre tail) (nat-distinct ds))
-      (let [W (h11-final-prefix (:next-id w) (:id r) ds
+      (let [W (current-members-final-prefix (:next-id w) (:id r) ds
                 (await-acc w r ds mode k mine) pre)]
-        (And (= (hmk (List.nil Nat) W) true)
-             (= (h3 xm W) true)))))}
+        (And (= (marks-waiting (List.nil Nat) W) true)
+             (= (current-members xm W) true)))))}
 
-{:name h11-await-post-h3
+{:name current-members-await-post
  :type (forall [xm :- (List Nat), w :- World, r :- RunRow,
          ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat),
          st :- Nat, fresh :- Nat]
-  (=> (h9-entry xm w r ds mode st fresh)
-      (= (h3 xm
+  (=> (current-members-entry xm w r ds mode st fresh)
+      (= (current-members xm
            (await-post (:next-id w) (:id r) ds
              (await-acc w r ds mode k mine))) true)))}])
 
 (deftest frozen-hm11-manifest
   (is (= 2 (count helper-definitions)))
   (is (= 4 (count public-contracts)))
-  (is (= '[h11-park-hmk h11-fin-fold h11-final-prefix-invariants h11-await-post-h3]
+  (is (= '[current-members-park-marks-waiting current-members-fin-fold current-members-final-prefix-invariants current-members-await-post]
          (mapv :name public-contracts))))
 
 
@@ -120,39 +120,39 @@
         (is (tc/is-def-eq (tc/mk-tc-state @a/ansatz-env) (.value d) expected))))))
 
 (def helper-equations
-  '{h11-parked.eq_1
+  '{current-members-parked.eq_1
     (forall [a :- Nat rid :- Nat ds :- (List Nat) acc :- AwAcc]
-      (= (h11-parked a rid ds acc)
-         (park-if (h10-fill-prefix a ds acc (nat-distinct ds)) a rid)))
-    h11-final-prefix.eq_1
+      (= (current-members-parked a rid ds acc)
+         (park-if (current-members-fill-prefix a ds acc (nat-distinct ds)) a rid)))
+    current-members-final-prefix.eq_1
     (forall [a :- Nat rid :- Nat ds :- (List Nat) acc :- AwAcc pre :- (List Nat)]
-      (= (h11-final-prefix a rid ds acc pre)
-         (nat-fold fin-if-final (h11-parked a rid ds acc) pre)))})
+      (= (current-members-final-prefix a rid ds acc pre)
+         (nat-fold finalize-if-final (current-members-parked a rid ds acc) pre)))})
 
 (def dependency-contracts
-  '{hmk-act-upd
+  '{marks-waiting-act-upd
     (forall [hxm :- (List Nat) w :- World x :- Nat f :- (=> ActRow ActRow)
              hf :- (forall [r :- ActRow] (= (act-id (f r)) (act-id r)))]
-      (=> (= (hmk hxm w) true) (= (hmk hxm (act-upd w x f)) true)))
-    hmk-fast-fill
+      (=> (= (marks-waiting hxm w) true) (= (marks-waiting hxm (act-upd w x f)) true)))
+    marks-waiting-fast-fill
     (forall [hxm :- (List Nat) ps :- (List DE) w :- World d :- Nat]
-      (=> (= (hmk hxm w) true) (= (hmk hxm (fast-fill ps w d)) true)))
-    nat-fold-hmk
+      (=> (= (marks-waiting hxm w) true) (= (marks-waiting hxm (fast-fill ps w d)) true)))
+    marks-waiting-nat-fold
     (forall [hxm :- (List Nat) f :- (=> World Nat World)
-             hf :- (forall [w :- World x :- Nat] (=> (= (hmk hxm w) true) (= (hmk hxm (f w x)) true)))
+             hf :- (forall [w :- World x :- Nat] (=> (= (marks-waiting hxm w) true) (= (marks-waiting hxm (f w x)) true)))
              xs :- (List Nat) w :- World]
-      (=> (= (hmk hxm w) true) (= (hmk hxm (nat-fold f w xs)) true)))
-    hmk-park-if
+      (=> (= (marks-waiting hxm w) true) (= (marks-waiting hxm (nat-fold f w xs)) true)))
+    marks-waiting-park-if
     (forall [hxm :- (List Nat) w :- World a :- Nat rid :- Nat]
-      (=> (= (hmk hxm w) true) (= (hmk hxm (park-if w a rid)) true)))
-    hmk-fin-if-final
+      (=> (= (marks-waiting hxm w) true) (= (marks-waiting hxm (park-if w a rid)) true)))
+    marks-waiting-finalize-if-final
     (forall [hxm :- (List Nat) w :- World d :- Nat]
-      (=> (= (hmk hxm w) true) (= (hmk hxm (fin-if-final w d)) true)))
-    h3-fin-if-final
+      (=> (= (marks-waiting hxm w) true) (= (marks-waiting hxm (finalize-if-final w d)) true)))
+    current-members-finalize-if-final
     (forall [xm :- (List Nat) hx :- (List Nat) w :- World d :- Nat]
-      (=> (= (hmk hx w) true) (= (h3 xm w) true) (= (h3 xm (fin-if-final w d)) true)))})
+      (=> (= (marks-waiting hx w) true) (= (current-members xm w) true) (= (current-members xm (finalize-if-final w d)) true)))})
 
-(def generated-contracts (dissoc dependency-contracts 'h3-fin-if-final))
+(def generated-contracts (dissoc dependency-contracts 'current-members-finalize-if-final))
 
 (deftest exact-safe-equations-and-existing-dependencies
   (is (= 2 (count helper-equations)))
@@ -171,26 +171,26 @@
     (if-let [task (row w :tasks d)] (not= s/res-none (:tag (:result task))) false)))
 
 (defn final-step-fields
-  "Independent physical-membership filter for actual fin-if-final. Does not use
-   fin-drop/fin-keep or H3 freeness as its deletion oracle."
+  "Independent physical-membership filter for actual finalize-if-final. Does not use
+   finalize-drops/finalize-keeps or H3 freeness as its deletion oracle."
   [f W d xm hx]
   (let [final? (final-debtor? W d)
         doomed (set (for [e (:edges W)
                           :when (and final? (= s/ek-dep (:kind e)) (= s/ph-armed (:phase e))
                                      (= d (:debtor e)) (not (physical-holder? W (:id e))))] (:id e)))
         expected (vec (remove #(contains? doomed (:id %)) (:edges W)))
-        after (engine/fin-if-final W d)]
+        after (engine/finalize-if-final W d)]
     (is (= final? (step/deb-final W d)))
     (is (= expected (vec (:edges after))))
     (is (= doomed (set/difference (set (map :id (:edges W))) (set (map :id (:edges after))))))
     (is (= (dissoc W :edges) (dissoc after :edges)) "layer-1 finalization has no final computation worklist")
     (is (every? #(not (:marked %)) (filter #(contains? doomed (:id %)) (:edges W))))
     (when-not final? (is (= W after) "ready and final are different"))
-    (is (true? (hmk/hmk hx W)))
-    (is (true? (hm3/h3 xm W)))
+    (is (true? (hmk/marks-waiting hx W)))
+    (is (true? (hm3/current-members xm W)))
     (is (true? (closed/member-fields? xm W)))
-    (is (true? (hmk/hmk hx after)))
-    (is (true? (hm3/h3 xm after)))
+    (is (true? (hmk/marks-waiting hx after)))
+    (is (true? (hm3/current-members xm after)))
     (is (true? (closed/member-fields? xm after)))
     (fill/check-old-unexempt f after xm)
     after))
@@ -199,22 +199,22 @@
   (let [{:keys [w rid]} f, a (:next-id w), r (row w :runs rid)
         filled (fill/checkpoint f ds mode k mine xm), acc (:acc filled)
         parked (:parked filled), debtors (vec (distinct ds))]
-    (is (= parked (h11/h11-parked a rid ds acc)))
-    (is (true? (hmk/hmk [] parked)))
-    (is (true? (hm3/h3 xm parked)))
+    (is (= parked (h11/current-members-parked a rid ds acc)))
+    (is (true? (hmk/marks-waiting [] parked)))
+    (is (true? (hm3/current-members xm parked)))
     (loop [i 0, W parked]
       (let [pre (subvec debtors 0 i), tail (subvec debtors i)]
         (is (= debtors (vec (concat pre tail))))
-        (is (= W (h11/h11-final-prefix a rid ds acc pre)))
-        (is (true? (hmk/hmk [] W)))
-        (is (true? (hm3/h3 xm W)))
+        (is (= W (h11/current-members-final-prefix a rid ds acc pre)))
+        (is (true? (hmk/marks-waiting [] W)))
+        (is (true? (hm3/current-members xm W)))
         (is (true? (closed/member-fields? xm W)))
         (fill/check-old-unexempt f W xm)
         (if-let [d (first tail)]
           (recur (inc i) (final-step-fields f W d xm []))
           (do (is (= W (engine/await-post a rid ds acc)))
-              (is (= W (h11/h11-final-prefix a rid ds acc debtors)))
-              (is (true? (hm3/h3 xm W)))
+              (is (= W (h11/current-members-final-prefix a rid ds acc debtors)))
+              (is (true? (hm3/current-members xm W)))
               (assoc filled :final W)))))))
 
 (deftest accepted-full-await-post-prefixes-and-final-debtor-kinds
@@ -233,7 +233,7 @@
       (doseq [d [ready-comp pending-task signal cell pending-resource ready-resource fresh top deferred]]
         (is (false? (final-debtor? parked d))))
       (is (true? (engine/fast-ready parked ready-comp)))
-      (is (= parked (engine/fin-if-final parked ready-comp)))
+      (is (= parked (engine/finalize-if-final parked ready-comp)))
       (is (= parked (:final out)) "accepted case needs no remaining final-debtor edge removal"))))
 
 (deftest accepted-all-modes-and-early-resume-later-final-invalidation
@@ -286,10 +286,10 @@
     (is (= s/ph-fired (:phase (row generic :edges fired))))
     (is (= other (:debtor (row generic :edges wrong))))
     (is (= s/ek-observe (:kind (row generic :edges observer))))
-    (is (= generic (edits/nat-fold engine/fin-if-final generic [])))
-    (is (= after (edits/nat-fold engine/fin-if-final generic [leaf leaf])))
+    (is (= generic (edits/nat-fold engine/finalize-if-final generic [])))
+    (is (= after (edits/nat-fold engine/finalize-if-final generic [leaf leaf])))
     (doseq [W [generic after]]
-      (is (true? (hmk/hmk hx W))) (is (true? (hm3/h3 xm W))))))
+      (is (true? (hmk/marks-waiting hx W))) (is (true? (hm3/current-members xm W))))))
 
 (deftest generic-pre-t10-retains-physical-held-stale-and-exempt-edges
   ;; The pending holder itself comes from an accepted await. Only source-close-row
@@ -305,12 +305,12 @@
     (doseq [[W xm] [[generic []] [generic [eid]] [stale []] [stale [eid]]]]
       (is (true? (physical-holder? W eid)))
       (is (= (boolean (or (not (fill/current-run? W rid)) (some #{eid} xm)))
-             (hm3/h3-free xm W eid)) "currency/exemption changes freeness, while physical membership remains")
+             (hm3/current-members-free xm W eid)) "currency/exemption changes freeness, while physical membership remains")
       (is (= s/ph-armed (:phase (row W :edges eid))))
       (is (true? (final-debtor? W d)))
       (let [after (final-step-fields f W d xm [(:fresh f)])]
         (is (= W after))
         (is (= (row W :edges eid) (row after :edges eid)))
         (is (= (row W :acts aid) (row after :acts aid)))
-        (is (= after (edits/nat-fold engine/fin-if-final W [d d])))))
+        (is (= after (edits/nat-fold engine/finalize-if-final W [d d])))))
     (is (false? (fill/current-run? stale rid)))))

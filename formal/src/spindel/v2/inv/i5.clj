@@ -2,34 +2,34 @@
   "Literal I5, dep-final clause (§6: no armed dep edge has a final debtor, `lit-i5-dep-final`)
   through `world-step`, kernel-checked (Init only).
 
-  Bundle g5 xd w = inv-sample w && every armed dep edge has a non-final debtor or one in the
+  Bundle i5-dep-final xd w = well-formed w && every armed dep edge has a non-final debtor or one in the
   exempt list xd (`dfk`, finality read from the source and task tables: `fin-st`, equal to
   `deb-final`). The bundle goes through the generic step tree (spindel.v2.pres.tree) by its table.
   Primitive edits: an edge edit that keeps (kind, phase, debtor) (`ek5`), a source/task edit that
   keeps the row's finality (`sfin`, `task-done`), new sources/tasks are not final, a new edge is
   fine (`dfk`, given at the call site), edge removals and filters only drop rows. Arming sites
   with a guard: `dep-consumed`/`consume-entry` (re-arm only a non-final debtor, Z#39; the rows
-  with that id share its debtor: p3's `kx`), T7 (`track-fin`: an open trackable source is not
+  with that id share its debtor: p3's `edge-debtor-kept`), T7 (`track-fin`: an open trackable source is not
   final; a closed one consumes the edge, Z#48), reactivation (`react-ok`, Z#51). Writes, post,
   release and take keep the source's finality (signal/cell, mailbox, semaphore).
 
   Finality sites discharge in the same commit (the crux): the escape predicate `jw xd esc w`
   (every edge is fine or escapes by `esc`) and `jw-fire-edge` (T9 on edge y discharges y: a fire
   removes it, marks it fired, or re-arms it only on a non-final debtor; memberships only shrink)
-    close/detach (Z#53)  `g5-wake-final`: after `wake-closed` every armed dep edge on the closed
+    close/detach (Z#53)  `i5-dep-final-wake-final`: after `wake-closed` every armed dep edge on the closed
                          source is a non-member (members were listed and fired), so T10's
                          `finalize-one` removes it (`close-end`)
-    T14, T12, deliver    `g5-fold-all`: the fired list holds every dep edge on the debtor
-    T6 (await)           `g5-await-raw`: an armed member edge on a final debtor is its debtor's
+    T14, T12, deliver    `i5-dep-final-fold-all`: the fired list holds every dep edge on the debtor
+    T6 (await)           `i5-dep-final-await-raw`: an armed member edge on a final debtor is its debtor's
                          recorded pair (`esc6`), and the fast path fires it (a final debtor is
                          fast-ready: `fast-not-final`) while it is a member; after the activation
                          resolved (Z#61) it stays exempt as a non-member pair (`escn`) until the T10
                          of await-post removes it (`jw-fin-fold`)
 
   Theorems:
-    step-g5                      g5 xd w, rule-r-safe raw -> g5 xd (world-step w it)
-    p3f = p3e && g5 []           step-p3f, p3f-empty
-    step-lit-i5-dep-final-total  p3f w -> lit-i5-dep-final (world-step w it)   (literal I5, dep-final)"
+    step-i5-dep-final                      i5-dep-final xd w, rule-r-safe raw -> i5-dep-final xd (world-step w it)
+    chain-to-i5-dep-final = chain-to-i1-scopes && i5-dep-final []           step-chain-to-i5-dep-final, chain-to-i5-dep-final-empty
+    step-lit-i5-dep-final-total  chain-to-i5-dep-final w -> lit-i5-dep-final (world-step w it)   (literal I5, dep-final)"
   (:require [ansatz.core :as a]
             [spindel.v2.pres.exempt :as exempt]
             [spindel.v2.state :refer :all]
@@ -58,7 +58,7 @@
 ;; ===========================================================================
 
 ;; ---- finality of a debtor read from the source and task tables
-(a/defn sfin [s :- SourceRow] Bool (Bool.or (Bool.not (:open s)) (src-delivered s)))
+(a/defn sfin [s :- SourceRow] Bool (Bool.or (Bool.not (:open s)) (source-delivered s)))
 (a/defn find-or [A :- Type :implicit, g :- (=> A Bool), k :- Bool, o :- (Option A)] Bool
   (match o [none k] [(some r) (g r)]))
 (a/defn fin-st [xs :- (List SourceRow), ts :- (List TaskRow), d :- Nat] Bool
@@ -78,29 +78,29 @@
   (Bool.or (Bool.or (Bool.not (Nat.beq (:kind e) ek-dep))
                     (Bool.or (Bool.not (Nat.beq (:phase e) ph-armed)) (Bool.not (F (:debtor e)))))
            (reach-mem (:debtor e) xd)))
-(a/defn g5-rest [xd :- (List Nat), w :- World] Bool (tbl-all (dfk xd (fin-st (:sources w) (:tasks w))) (:edges w)))
-(a/defn g5 [xd :- (List Nat), w :- World] Bool (Bool.and (inv-sample w) (g5-rest xd w)))
+(a/defn i5-dep-final-rest [xd :- (List Nat), w :- World] Bool (tbl-all (dfk xd (fin-st (:sources w) (:tasks w))) (:edges w)))
+(a/defn i5-dep-final [xd :- (List Nat), w :- World] Bool (Bool.and (well-formed w) (i5-dep-final-rest xd w)))
 
-(a/theorem g5-sample [xd :- (List Nat), w :- World] (=> (= (g5 xd w) true) (= (inv-sample w) true))
-  (intro h) (simp only [g5 Bool.and_eq_true] at h) (exact (And.left h)))
-(a/theorem g5-rest-of [xd :- (List Nat), w :- World] (=> (= (g5 xd w) true) (= (g5-rest xd w) true))
-  (intro h) (simp only [g5 Bool.and_eq_true] at h) (exact (And.right h)))
-(a/theorem g5-intro [xd :- (List Nat), w :- World]
-  (=> (= (inv-sample w) true) (= (g5-rest xd w) true) (= (g5 xd w) true))
-  (intros h1 h2) (simp only [g5 h1 h2 Bool.and_self]))
-(a/theorem g5-parts [xd :- (List Nat), w :- World]
-  (=> (= (g5 xd w) true)
+(a/theorem i5-dep-final-well-formed [xd :- (List Nat), w :- World] (=> (= (i5-dep-final xd w) true) (= (well-formed w) true))
+  (intro h) (simp only [i5-dep-final Bool.and_eq_true] at h) (exact (And.left h)))
+(a/theorem i5-dep-final-rest-of [xd :- (List Nat), w :- World] (=> (= (i5-dep-final xd w) true) (= (i5-dep-final-rest xd w) true))
+  (intro h) (simp only [i5-dep-final Bool.and_eq_true] at h) (exact (And.right h)))
+(a/theorem i5-dep-final-intro [xd :- (List Nat), w :- World]
+  (=> (= (well-formed w) true) (= (i5-dep-final-rest xd w) true) (= (i5-dep-final xd w) true))
+  (intros h1 h2) (simp only [i5-dep-final h1 h2 Bool.and_self]))
+(a/theorem i5-dep-final-parts [xd :- (List Nat), w :- World]
+  (=> (= (i5-dep-final xd w) true)
       (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
-  (intro h) (exact (inv-parts w (g5-sample xd w h))))
+  (intro h) (exact (well-formed-parts w (i5-dep-final-well-formed xd w h))))
 
 ;; with no exemption, the rest is literal I5's dep-final clause
 (a/theorem dfk-nil [F :- (=> Nat Bool), e :- EdgeRow]
   (= (dfk (List.nil Nat) F e) (Bool.or (Bool.not (Nat.beq (:kind e) ek-dep))
                                        (Bool.or (Bool.not (Nat.beq (:phase e) ph-armed)) (Bool.not (F (:debtor e))))))
   (simp only [dfk reach-mem Bool.or_false]))
-(a/theorem g5-lit [w :- World] (=> (= (g5-rest (List.nil Nat) w) true) (= (lit-i5-dep-final w) true))
+(a/theorem i5-dep-final-lit [w :- World] (=> (= (i5-dep-final-rest (List.nil Nat) w) true) (= (lit-i5-dep-final w) true))
   (intro h)
-  (simp only [g5-rest] at h)
+  (simp only [i5-dep-final-rest] at h)
   (simp only [lit-i5-dep-final])
   (apply (tbl-all-mono EdgeRow _ _ _ (:edges w) h))
   (intros e he)
@@ -233,9 +233,9 @@
 
 (a/theorem g5r-gen [xd :- (List Nat), w :- World, w2 :- World]
   (=> (forall [d :- Nat] (=> (= (fin-st (:sources w2) (:tasks w2) d) true) (= (fin-st (:sources w) (:tasks w) d) true)))
-      (= (tbl-all (dfk xd (fin-st (:sources w) (:tasks w))) (:edges w2)) true) (= (g5-rest xd w2) true))
+      (= (tbl-all (dfk xd (fin-st (:sources w) (:tasks w))) (:edges w2)) true) (= (i5-dep-final-rest xd w2) true))
   (intros hd h)
-  (simp only [g5-rest])
+  (simp only [i5-dep-final-rest])
   (exact (tbl-all-mono EdgeRow _ _
            (fn [e :- EdgeRow, h1 :- (= (dfk xd (fin-st (:sources w) (:tasks w)) e) true)]
              (dfk-mono xd xd _ _ e hd (fn [d :- Nat, hx :- (= (reach-mem d xd) true)] hx) h1))
@@ -243,14 +243,14 @@
 
 (a/theorem g5r-same [xd :- (List Nat), w :- World, w2 :- World]
   (=> (= (:sources w2) (:sources w)) (= (:tasks w2) (:tasks w))
-      (= (tbl-all (dfk xd (fin-st (:sources w) (:tasks w))) (:edges w2)) true) (= (g5-rest xd w2) true))
+      (= (tbl-all (dfk xd (fin-st (:sources w) (:tasks w))) (:edges w2)) true) (= (i5-dep-final-rest xd w2) true))
   (intros h1 h2 h) (exact (g5r-gen xd w w2 (fin-same w w2 h1 h2) h)))
 
-(a/theorem g5r-remove-edge [xd :- (List Nat), w :- World, x :- Nat] (=> (= (g5-rest xd w) true) (= (g5-rest xd (remove-edge w x)) true))
+(a/theorem g5r-remove-edge [xd :- (List Nat), w :- World, x :- Nat] (=> (= (i5-dep-final-rest xd w) true) (= (i5-dep-final-rest xd (remove-edge w x)) true))
   (intro h)
-  (simp only [g5-rest] at h)
+  (simp only [i5-dep-final-rest] at h)
   (cases hf (edge-find w x))
-  (case [none] (simp only [remove-edge hf]) (simp only [g5-rest]) (exact h))
+  (case [none] (simp only [remove-edge hf]) (simp only [i5-dep-final-rest]) (exact h))
   (case [some e]
     (cases hm (:marked e))
     (case [false] (simp only [remove-edge hf hm])
@@ -261,9 +261,9 @@
 
 (a/theorem g5r-edge-upd [xd :- (List Nat), w :- World, x :- Nat, f :- (=> EdgeRow EdgeRow),
                          hk :- (forall [e :- EdgeRow] (= (ek5 (f e)) (ek5 e)))]
-  (=> (= (g5-rest xd w) true) (= (g5-rest xd (edge-upd w x f)) true))
+  (=> (= (i5-dep-final-rest xd w) true) (= (i5-dep-final-rest xd (edge-upd w x f)) true))
   (intro h)
-  (simp only [g5-rest] at h)
+  (simp only [i5-dep-final-rest] at h)
   (exact (g5r-same xd w (edge-upd w x f) (rfl) (rfl)
            (tbl-all-upd EdgeRow edge-id x f _ _
              (fn [d :- EdgeRow, hd :- (= (dfk xd (fin-st (:sources w) (:tasks w)) d) true), hx :- (= (Nat.beq (edge-id d) x) true)]
@@ -271,7 +271,7 @@
              (fn [d :- EdgeRow, hd :- (= (dfk xd (fin-st (:sources w) (:tasks w)) d) true), hx :- (= (Nat.beq (edge-id d) x) false)] hd)
              (:edges w) h))))
 
-(a/theorem g5r-mark-edge [xd :- (List Nat), w :- World, x :- Nat] (=> (= (g5-rest xd w) true) (= (g5-rest xd (mark-edge w x)) true))
+(a/theorem g5r-mark-edge [xd :- (List Nat), w :- World, x :- Nat] (=> (= (i5-dep-final-rest xd w) true) (= (i5-dep-final-rest xd (mark-edge w x)) true))
   (intro h)
   (cases hf (edge-find w x))
   (case [none] (simp only [mark-edge hf]) (exact h))
@@ -280,11 +280,11 @@
     (case [true] (simp only [mark-edge hf hm]) (exact h))
     (case [false] (simp only [mark-edge hf hm])
       (have h1 := (g5r-edge-upd xd w x (edge-set-marked true) (fn [q :- EdgeRow] (Eq.refl (ek5 q))) h))
-      (simp only [g5-rest] at h1)
+      (simp only [i5-dep-final-rest] at h1)
       (exact (g5r-same xd (edge-upd w x (edge-set-marked true)) (comp-upd (edge-upd w x (edge-set-marked true)) (:creditor e) comp-inc-pending)
                (rfl) (rfl) h1)))))
 
-(a/theorem g5r-unmark-edge [xd :- (List Nat), w :- World, x :- Nat] (=> (= (g5-rest xd w) true) (= (g5-rest xd (unmark-edge w x)) true))
+(a/theorem g5r-unmark-edge [xd :- (List Nat), w :- World, x :- Nat] (=> (= (i5-dep-final-rest xd w) true) (= (i5-dep-final-rest xd (unmark-edge w x)) true))
   (intro h)
   (cases hf (edge-find w x))
   (case [none] (simp only [unmark-edge hf]) (exact h))
@@ -293,42 +293,42 @@
     (case [false] (simp only [unmark-edge hf hm]) (exact h))
     (case [true] (simp only [unmark-edge hf hm])
       (have h1 := (g5r-edge-upd xd w x (edge-set-marked false) (fn [q :- EdgeRow] (Eq.refl (ek5 q))) h))
-      (simp only [g5-rest] at h1)
+      (simp only [i5-dep-final-rest] at h1)
       (exact (g5r-same xd (edge-upd w x (edge-set-marked false)) (comp-upd (edge-upd w x (edge-set-marked false)) (:creditor e) comp-dec-pending)
                (rfl) (rfl) h1)))))
 
-(a/theorem g5r-drop-cred [xd :- (List Nat), w :- World, a :- Nat] (=> (= (g5-rest xd w) true) (= (g5-rest xd (drop-cred-edges w a)) true))
-  (intro h) (simp only [g5-rest] at h)
+(a/theorem g5r-drop-cred [xd :- (List Nat), w :- World, a :- Nat] (=> (= (i5-dep-final-rest xd w) true) (= (i5-dep-final-rest xd (drop-cred-edges w a)) true))
+  (intro h) (simp only [i5-dep-final-rest] at h)
   (exact (g5r-same xd w (drop-cred-edges w a) (rfl) (rfl) (tbl-all-filter EdgeRow _ (cred-ne a) (:edges w) h))))
-(a/theorem g5r-drop-act [xd :- (List Nat), w :- World, a :- Nat] (=> (= (g5-rest xd w) true) (= (g5-rest xd (drop-act w a)) true))
+(a/theorem g5r-drop-act [xd :- (List Nat), w :- World, a :- Nat] (=> (= (i5-dep-final-rest xd w) true) (= (i5-dep-final-rest xd (drop-act w a)) true))
   (intro h) (exact (g5r-drop-cred xd w a h)))
-(a/theorem g5r-drop-edges [xd :- (List Nat), w :- World, p :- (=> EdgeRow Bool)] (=> (= (g5-rest xd w) true) (= (g5-rest xd (drop-edges w p)) true))
-  (intro h) (simp only [g5-rest] at h)
+(a/theorem g5r-drop-edges [xd :- (List Nat), w :- World, p :- (=> EdgeRow Bool)] (=> (= (i5-dep-final-rest xd w) true) (= (i5-dep-final-rest xd (drop-edges w p)) true))
+  (intro h) (simp only [i5-dep-final-rest] at h)
   (exact (g5r-same xd w (drop-edges w p) (rfl) (rfl) (tbl-all-filter EdgeRow _ p (:edges w) h))))
 
 ;; ---- the bundle's primitives with an extra fact
 
-(a/theorem g5-edge-upd [xd :- (List Nat), w :- World, x :- Nat, f :- (=> EdgeRow EdgeRow),
+(a/theorem i5-dep-final-edge-upd [xd :- (List Nat), w :- World, x :- Nat, f :- (=> EdgeRow EdgeRow),
                         hid :- (forall [e :- EdgeRow] (= (edge-id (f e)) (edge-id e))),
                         hk :- (forall [e :- EdgeRow] (= (:kind (f e)) (:kind e))),
                         hc :- (forall [e :- EdgeRow] (= (:creditor (f e)) (:creditor e))),
                         hd :- (forall [e :- EdgeRow] (= (:debtor (f e)) (:debtor e))),
                         hm :- (forall [e :- EdgeRow] (= (:marked (f e)) (:marked e))),
                         hk5 :- (forall [e :- EdgeRow] (= (ek5 (f e)) (ek5 e)))]
-  (=> (= (g5 xd w) true) (= (g5 xd (edge-upd w x f)) true))
+  (=> (= (i5-dep-final xd w) true) (= (i5-dep-final xd (edge-upd w x f)) true))
   (intro h)
-  (exact (g5-intro xd _ (inv-edge-upd w x f hid hk hc hd hm (g5-sample xd w h)) (g5r-edge-upd xd w x f hk5 (g5-rest-of xd w h)))))
+  (exact (i5-dep-final-intro xd _ (well-formed-edge-upd w x f hid hk hc hd hm (i5-dep-final-well-formed xd w h)) (g5r-edge-upd xd w x f hk5 (i5-dep-final-rest-of xd w h)))))
 
 (a/theorem edge-set-phase-dfk [xd :- (List Nat), F :- (=> Nat Bool), p :- Nat, e :- EdgeRow]
   (=> (= (Nat.beq p ph-armed) false) (= (dfk xd F (edge-set-phase p e)) true))
   (intro hp) (simp only [dfk edge-set-phase hp Bool.not_false Bool.true_or Bool.or_true]))
 
-(a/theorem g5-edge-set-phase [xd :- (List Nat), w :- World, x :- Nat, p :- Nat, hp :- (= (Nat.beq p ph-armed) false)]
-  (=> (= (g5 xd w) true) (= (g5 xd (edge-upd w x (edge-set-phase p))) true))
+(a/theorem i5-dep-final-edge-set-phase [xd :- (List Nat), w :- World, x :- Nat, p :- Nat, hp :- (= (Nat.beq p ph-armed) false)]
+  (=> (= (i5-dep-final xd w) true) (= (i5-dep-final xd (edge-upd w x (edge-set-phase p))) true))
   (intro h)
-  (have r := (g5-rest-of xd w h))
-  (simp only [g5-rest] at r)
-  (exact (g5-intro xd _ (inv-edge-set-phase w x p (g5-sample xd w h))
+  (have r := (i5-dep-final-rest-of xd w h))
+  (simp only [i5-dep-final-rest] at r)
+  (exact (i5-dep-final-intro xd _ (well-formed-edge-set-phase w x p (i5-dep-final-well-formed xd w h))
            (g5r-same xd w (edge-upd w x (edge-set-phase p)) (rfl) (rfl)
              (tbl-all-upd EdgeRow edge-id x (edge-set-phase p) (dfk xd (fin-st (:sources w) (:tasks w))) (dfk xd (fin-st (:sources w) (:tasks w)))
                (fn [d :- EdgeRow, h1 :- (= (dfk xd (fin-st (:sources w) (:tasks w)) d) true), hx :- (= (Nat.beq (edge-id d) x) true)]
@@ -336,162 +336,162 @@
                (fn [d :- EdgeRow, h1 :- (= (dfk xd (fin-st (:sources w) (:tasks w)) d) true), hx :- (= (Nat.beq (edge-id d) x) false)] h1)
                (:edges w) r)))))
 
-(a/theorem g5-source-upd [xd :- (List Nat), w :- World, x :- Nat, f :- (=> SourceRow SourceRow),
+(a/theorem i5-dep-final-source-upd [xd :- (List Nat), w :- World, x :- Nat, f :- (=> SourceRow SourceRow),
                           hid :- (forall [s :- SourceRow] (= (source-id (f s)) (source-id s))),
                           hg :- (forall [s :- SourceRow] (= (sfin (f s)) (sfin s)))]
-  (=> (= (g5 xd w) true) (= (g5 xd (source-upd w x f)) true))
+  (=> (= (i5-dep-final xd w) true) (= (i5-dep-final xd (source-upd w x f)) true))
   (intro h)
-  (have r := (g5-rest-of xd w h))
-  (simp only [g5-rest] at r)
+  (have r := (i5-dep-final-rest-of xd w h))
+  (simp only [i5-dep-final-rest] at r)
   (have e (forall [d :- Nat] (=> (= (fin-st (:sources (source-upd w x f)) (:tasks (source-upd w x f)) d) true)
                                  (= (fin-st (:sources w) (:tasks w) d) true))))
   (intros d hd) (simp only [source-upd set-sources fin-st-supd x f hid hg] at hd) (exact hd)
-  (exact (g5-intro xd _ (inv-source-upd w x f hid (g5-sample xd w h)) (g5r-gen xd w (source-upd w x f) e r))))
+  (exact (i5-dep-final-intro xd _ (well-formed-source-upd w x f hid (i5-dep-final-well-formed xd w h)) (g5r-gen xd w (source-upd w x f) e r))))
 
-(a/theorem g5-task-upd [xd :- (List Nat), w :- World, x :- Nat, f :- (=> TaskRow TaskRow),
+(a/theorem i5-dep-final-task-upd [xd :- (List Nat), w :- World, x :- Nat, f :- (=> TaskRow TaskRow),
                         hid :- (forall [t :- TaskRow] (= (task-id (f t)) (task-id t))),
                         hg :- (forall [t :- TaskRow] (= (task-done (f t)) (task-done t)))]
-  (=> (= (g5 xd w) true) (= (g5 xd (task-upd w x f)) true))
+  (=> (= (i5-dep-final xd w) true) (= (i5-dep-final xd (task-upd w x f)) true))
   (intro h)
-  (have r := (g5-rest-of xd w h))
-  (simp only [g5-rest] at r)
+  (have r := (i5-dep-final-rest-of xd w h))
+  (simp only [i5-dep-final-rest] at r)
   (have e (forall [d :- Nat] (=> (= (fin-st (:sources (task-upd w x f)) (:tasks (task-upd w x f)) d) true)
                                  (= (fin-st (:sources w) (:tasks w) d) true))))
   (intros d hd) (simp only [task-upd set-tasks fin-st-tupd x f hid hg] at hd) (exact hd)
-  (exact (g5-intro xd _ (inv-task-upd w x f hid (g5-sample xd w h)) (g5r-gen xd w (task-upd w x f) e r))))
+  (exact (i5-dep-final-intro xd _ (well-formed-task-upd w x f hid (i5-dep-final-well-formed xd w h)) (g5r-gen xd w (task-upd w x f) e r))))
 
 (a/theorem sfin-new-source [id :- Nat, o :- Nat, k :- Nat, v :- Nat] (= (sfin (new-source id o k v)) false)
-  (simp only [sfin new-source src-delivered Bool.not_true Bool.false_or])
+  (simp only [sfin new-source source-delivered Bool.not_true Bool.false_or])
   (have z (= (Nat.blt 0 0) false)) (rfl)
   (simp only [z Bool.and_false]))
 
 ;; C0: every fresh source row (new-source, new-link, new-stream) is open with version 0
 (a/theorem sfin-mk [id :- Nat, o :- Nat, k :- Nat, v :- Nat, hd :- Nat, q :- (List Nat), rt :- Nat, n :- Nat, t :- Nat, fl :- Bool, mx :- Nat]
   (= (sfin (SourceRow.mk id o k v 0 true hd q rt n t fl mx)) false)
-  (simp only [sfin src-delivered Bool.not_true Bool.false_or])
+  (simp only [sfin source-delivered Bool.not_true Bool.false_or])
   (have z (= (Nat.blt 0 0) false)) (rfl)
   (simp only [z Bool.and_false]))
 
-(a/theorem g5-source-ins [xd :- (List Nat), w :- World, r :- SourceRow, hs :- (= (sfin r) false)]
-  (=> (= (source-id r) (:next-id w)) (= (g5 xd w) true) (= (g5 xd (bump (source-ins w r))) true))
+(a/theorem i5-dep-final-source-ins [xd :- (List Nat), w :- World, r :- SourceRow, hs :- (= (sfin r) false)]
+  (=> (= (source-id r) (:next-id w)) (= (i5-dep-final xd w) true) (= (i5-dep-final xd (bump (source-ins w r))) true))
   (intros hi h)
-  (have rr := (g5-rest-of xd w h))
-  (simp only [g5-rest] at rr)
+  (have rr := (i5-dep-final-rest-of xd w h))
+  (simp only [i5-dep-final-rest] at rr)
   (have e (forall [d :- Nat] (=> (= (fin-st (:sources (bump (source-ins w r))) (:tasks (bump (source-ins w r))) d) true)
                                  (= (fin-st (:sources w) (:tasks w) d) true))))
   (intros d hd) (simp only [bump set-next-id source-ins set-sources tbl-ins] at hd) (exact (fin-st-sins r _ _ d hs hd))
-  (exact (g5-intro xd _ (inv-source-ins-fresh w r hi (g5-sample xd w h)) (g5r-gen xd w (bump (source-ins w r)) e rr))))
+  (exact (i5-dep-final-intro xd _ (well-formed-source-ins-fresh w r hi (i5-dep-final-well-formed xd w h)) (g5r-gen xd w (bump (source-ins w r)) e rr))))
 
-(a/theorem g5-task-ins [xd :- (List Nat), w :- World, r :- TaskRow, hs :- (= (task-done r) false)]
-  (=> (= (task-id r) (:next-id w)) (= (g5 xd w) true) (= (g5 xd (bump (task-ins w r))) true))
+(a/theorem i5-dep-final-task-ins [xd :- (List Nat), w :- World, r :- TaskRow, hs :- (= (task-done r) false)]
+  (=> (= (task-id r) (:next-id w)) (= (i5-dep-final xd w) true) (= (i5-dep-final xd (bump (task-ins w r))) true))
   (intros hi h)
-  (have rr := (g5-rest-of xd w h))
-  (simp only [g5-rest] at rr)
+  (have rr := (i5-dep-final-rest-of xd w h))
+  (simp only [i5-dep-final-rest] at rr)
   (have e (forall [d :- Nat] (=> (= (fin-st (:sources (bump (task-ins w r))) (:tasks (bump (task-ins w r))) d) true)
                                  (= (fin-st (:sources w) (:tasks w) d) true))))
   (intros d hd) (simp only [bump set-next-id task-ins set-tasks tbl-ins] at hd) (exact (fin-st-tins r _ _ d hs hd))
-  (exact (g5-intro xd _ (inv-task-ins-fresh w r hi (g5-sample xd w h)) (g5r-gen xd w _ e rr))))
+  (exact (i5-dep-final-intro xd _ (well-formed-task-ins-fresh w r hi (i5-dep-final-well-formed xd w h)) (g5r-gen xd w _ e rr))))
 
-(a/theorem g5-insert-edge-fresh [xd :- (List Nat), w :- World, e :- EdgeRow, hd :- (= (dfk xd (fin-st (:sources w) (:tasks w)) e) true)]
-  (=> (= (edge-ok-in w e) true) (= (g5 xd w) true) (= (g5 xd (insert-edge-fresh w e)) true))
+(a/theorem i5-dep-final-insert-edge-fresh [xd :- (List Nat), w :- World, e :- EdgeRow, hd :- (= (dfk xd (fin-st (:sources w) (:tasks w)) e) true)]
+  (=> (= (edge-ok-in w e) true) (= (i5-dep-final xd w) true) (= (i5-dep-final xd (insert-edge-fresh w e)) true))
   (intros he h)
-  (have rr := (g5-rest-of xd w h))
-  (simp only [g5-rest] at rr)
+  (have rr := (i5-dep-final-rest-of xd w h))
+  (simp only [i5-dep-final-rest] at rr)
   (have r2 (= (tbl-all (dfk xd (fin-st (:sources w) (:tasks w))) (:edges (insert-edge-fresh w e))) true))
   (simp only [insert-edge-fresh bump set-next-id insert-edge edge-ins set-edges tbl-ins tbl-all rr Bool.and_true])
   (exact hd)
-  (exact (g5-intro xd _ (insert-edge-fresh-inv-sample w e he (g5-sample xd w h)) (g5r-same xd w (insert-edge-fresh w e) (rfl) (rfl) r2))))
+  (exact (i5-dep-final-intro xd _ (well-formed-insert-edge-fresh w e he (i5-dep-final-well-formed xd w h)) (g5r-same xd w (insert-edge-fresh w e) (rfl) (rfl) r2))))
 
-(a/theorem g5-insert-edge-checked [xd :- (List Nat), w :- World, e :- EdgeRow, hd :- (= (dfk xd (fin-st (:sources w) (:tasks w)) e) true)]
-  (=> (= (g5 xd w) true) (= (g5 xd (insert-edge-checked w e)) true))
+(a/theorem i5-dep-final-insert-edge-checked [xd :- (List Nat), w :- World, e :- EdgeRow, hd :- (= (dfk xd (fin-st (:sources w) (:tasks w)) e) true)]
+  (=> (= (i5-dep-final xd w) true) (= (i5-dep-final xd (insert-edge-checked w e)) true))
   (intro h)
   (cases hk (edge-ok-in w e))
   (simp only [insert-edge-checked hk]) (exact h)
-  (simp only [insert-edge-checked hk]) (exact (g5-insert-edge-fresh xd w e hd hk h)))
+  (simp only [insert-edge-checked hk]) (exact (i5-dep-final-insert-edge-fresh xd w e hd hk h)))
 
-(a/theorem g5-filter-world [xd :- (List Nat), w :- World, K :- (=> Nat Bool)]
-  (=> (= (g5 xd w) true) (= (filter-safe-k K w) true) (= (g5 xd (filter-world K w)) true))
+(a/theorem i5-dep-final-filter-world [xd :- (List Nat), w :- World, K :- (=> Nat Bool)]
+  (=> (= (i5-dep-final xd w) true) (= (filter-safe-for K w) true) (= (i5-dep-final xd (filter-world K w)) true))
   (intros h hf)
-  (have rr := (g5-rest-of xd w h))
-  (simp only [g5-rest] at rr)
+  (have rr := (i5-dep-final-rest-of xd w h))
+  (simp only [i5-dep-final-rest] at rr)
   (have e (forall [d :- Nat] (=> (= (fin-st (:sources (filter-world K w)) (:tasks (filter-world K w)) d) true)
                                  (= (fin-st (:sources w) (:tasks w) d) true))))
   (intros d hd) (simp only [filter-world] at hd) (exact (fin-st-keep K _ _ d hd))
   (have r2 (= (tbl-all (dfk xd (fin-st (:sources w) (:tasks w))) (:edges (filter-world K w))) true))
   (simp only [filter-world])
   (exact (tbl-all-keep EdgeRow K edge-id _ _ (fn [q :- EdgeRow, h1 :- (= (dfk xd (fin-st (:sources w) (:tasks w)) q) true), h2 :- (= (K (edge-id q)) true)] h1) (:edges w) rr))
-  (exact (g5-intro xd _ (inv-filter-world w K (g5-sample xd w h) hf) (g5r-gen xd w (filter-world K w) e r2))))
+  (exact (i5-dep-final-intro xd _ (well-formed-filter-world w K (i5-dep-final-well-formed xd w h) hf) (g5r-gen xd w (filter-world K w) e r2))))
 
 ;; g5's exempt form (spindel.v2.pres.exempt; recorded, no aliases yet): finality sites discharge in
 ;; the same commit through the escape predicate `jw` (see the namespace docstring)
-(exempt/defexempt 'g5
-  :form "g5 xd w" :ids "debtor ids: an armed dep edge on a final debtor in xd is allowed" :commit "g5 [] (p3f)")
-(def G5 (mk-bundle 'g5 '[x5d :- (List Nat)] "g5-"
-          {'inv-edge-upd ['(fn [e :- EdgeRow] (Eq.refl (ek5 e))) 8]
-           'inv-source-upd ['(fn [s :- SourceRow] (Eq.refl (sfin s))) 4]
-           'inv-task-upd ['(fn [t :- TaskRow] (Eq.refl (task-done t))) 4]
-           'inv-source-ins-fresh ['(sfin-mk _ _ _ _ _ _ _ _ _ _ _) 2]
-           'inv-task-ins-fresh ['(Eq.refl false) 2]
-           'insert-edge-fresh-inv-sample ['(Eq.refl true) 2]
-           'inv-insert-edge-checked ['(Eq.refl true) 2]
-           'inv-edge-set-phase ['(Eq.refl false) 3]
-           'inv-serve-or ['(fn [s :- SourceRow] (Eq.refl (sfin s))) 5]}))
-(swap! (:renames G5) assoc 'inv-parts 'g5-parts 'inv-edge-upd 'g5-edge-upd 'inv-source-upd 'g5-source-upd
-       'inv-task-upd 'g5-task-upd 'inv-source-ins-fresh 'g5-source-ins 'inv-task-ins-fresh 'g5-task-ins
-       'insert-edge-fresh-inv-sample 'g5-insert-edge-fresh 'inv-insert-edge-checked 'g5-insert-edge-checked
-       'inv-filter-world 'g5-filter-world 'inv-edge-set-phase 'g5-edge-set-phase)
+(exempt/defexempt 'i5-dep-final
+  :form "i5-dep-final xd w" :ids "debtor ids: an armed dep edge on a final debtor in xd is allowed" :commit "i5-dep-final [] (chain-to-i5-dep-final)")
+(def G5 (mk-bundle 'i5-dep-final '[x5d :- (List Nat)] "i5-dep-final-"
+          {'well-formed-edge-upd ['(fn [e :- EdgeRow] (Eq.refl (ek5 e))) 8]
+           'well-formed-source-upd ['(fn [s :- SourceRow] (Eq.refl (sfin s))) 4]
+           'well-formed-task-upd ['(fn [t :- TaskRow] (Eq.refl (task-done t))) 4]
+           'well-formed-source-ins-fresh ['(sfin-mk _ _ _ _ _ _ _ _ _ _ _) 2]
+           'well-formed-task-ins-fresh ['(Eq.refl false) 2]
+           'well-formed-insert-edge-fresh ['(Eq.refl true) 2]
+           'well-formed-insert-edge-checked ['(Eq.refl true) 2]
+           'well-formed-edge-set-phase ['(Eq.refl false) 3]
+           'well-formed-serve-or ['(fn [s :- SourceRow] (Eq.refl (sfin s))) 5]}))
+(swap! (:renames G5) assoc 'well-formed-parts 'i5-dep-final-parts 'well-formed-edge-upd 'i5-dep-final-edge-upd 'well-formed-source-upd 'i5-dep-final-source-upd
+       'well-formed-task-upd 'i5-dep-final-task-upd 'well-formed-source-ins-fresh 'i5-dep-final-source-ins 'well-formed-task-ins-fresh 'i5-dep-final-task-ins
+       'well-formed-insert-edge-fresh 'i5-dep-final-insert-edge-fresh 'well-formed-insert-edge-checked 'i5-dep-final-insert-edge-checked
+       'well-formed-filter-world 'i5-dep-final-filter-world 'well-formed-edge-set-phase 'i5-dep-final-edge-set-phase)
 (defpart G5 :reads '[edges sources tasks])
-(prim! G5 'inv-remove-edge '(g5r-remove-edge x5d w x R))
-(prim! G5 'mark-edge-inv-sample '(g5r-mark-edge x5d w x R))
-(prim! G5 'unmark-edge-inv-sample '(g5r-unmark-edge x5d w x R))
-(prim! G5 'inv-drop-cred '(g5r-drop-cred x5d w a R))
-(prim! G5 'inv-drop-act '(g5r-drop-act x5d w a R))
-(prim! G5 'inv-drop-edges '(g5r-drop-edges x5d w p R))
-;; g5 on the generic tree (spindel.v2.pres.tree): its table. Its own proofs follow.
+(prim! G5 'well-formed-remove-edge '(g5r-remove-edge x5d w x R))
+(prim! G5 'well-formed-mark-edge '(g5r-mark-edge x5d w x R))
+(prim! G5 'well-formed-unmark-edge '(g5r-unmark-edge x5d w x R))
+(prim! G5 'well-formed-drop-cred-edges '(g5r-drop-cred x5d w a R))
+(prim! G5 'well-formed-drop-act '(g5r-drop-act x5d w a R))
+(prim! G5 'well-formed-drop-edges '(g5r-drop-edges x5d w p R))
+;; i5-dep-final on the generic tree (spindel.v2.pres.tree): its table. Its own proofs follow.
 (tree/part! G5
-  :over '{inv-serve-or      g5-serve-or
-          inv-dep-consumed  g5-dep-consumed
-          inv-consume-entry g5-consume-entry
-          inv-dispatch-raw  g5-dispatch-raw
-          inv-write-raw     g5-write-raw
-          t-post-inv        t-post-g5
-          t-release-inv     t-release-g5
-          t-take-inv        t-take-g5
-          inv-deliver-res   g5-deliver-res
-          inv-append-raw    g5-append-raw
-          t-append-inv      t-append-g5
-          inv-close-source0 g5-close-source0
-          inv-detach-source g5-detach-source
-          inv-debtor-side   g5-debtor-side
-          inv-complete-body g5-complete-body
-          t-deliver-inv     t-deliver-g5
-          inv-react-add     g5-react-add
-          inv-track-raw     g5-track-raw
-          inv-await-raw     g5-await-raw
-          t2-inv            t2-g5}
-  ;; ---- facts from the path: the fired or consumed edge is the world's (the companion kx); T7's
+  :over '{well-formed-serve-or      i5-dep-final-serve-or
+          well-formed-dep-consumed  i5-dep-final-dep-consumed
+          well-formed-consume-entry i5-dep-final-consume-entry
+          well-formed-dispatch-raw  i5-dep-final-dispatch-raw
+          well-formed-write-raw     i5-dep-final-write-raw
+          well-formed-t-post        i5-dep-final-t-post
+          well-formed-t-release     i5-dep-final-t-release
+          well-formed-t-take        i5-dep-final-t-take
+          well-formed-deliver-res   i5-dep-final-deliver-res
+          well-formed-append-raw    i5-dep-final-append-raw
+          well-formed-t-append      i5-dep-final-t-append
+          well-formed-close-source-ended i5-dep-final-close-source-ended
+          well-formed-detach-source i5-dep-final-detach-source
+          well-formed-debtor-side   i5-dep-final-debtor-side
+          well-formed-complete-body i5-dep-final-complete-body
+          well-formed-t-deliver     i5-dep-final-t-deliver
+          well-formed-react-add     i5-dep-final-react-add
+          well-formed-track-raw     i5-dep-final-track-raw
+          well-formed-await-raw     i5-dep-final-await-raw
+          well-formed-t2-write            i5-dep-final-t2-write}
+  ;; ---- facts from the path: the fired or consumed edge is the world's (the companion edge-debtor-kept); T7's
   ;; source is trackable
-  :ctx '{inv-dep-consumed  [(= (kx (:id e) (:debtor e) w) true)]
-         inv-consume-entry [(= (kx (:id e) (:debtor e) w) true)]
-         inv-track-raw     [(= (trackable s) true)]}
-  :pass '{inv-fire-edge   {inv-fire-dep [(kx-of-mem w e (base-of w h) (tbl-find-mem EdgeRow edge-id x e (:edges w) hf))]}   ; edge-find found it
-          inv-settle-edge {inv-fire-dep [(kx-of-mem w e (base-of w h) (tbl-find-mem EdgeRow edge-id x e (:edges w) hf))]}
-          t7-inv          {inv-track-raw [hk]}})                                                                         ; T7's guard
+  :ctx '{well-formed-dep-consumed  [(= (edge-debtor-kept (:id e) (:debtor e) w) true)]
+         well-formed-consume-entry [(= (edge-debtor-kept (:id e) (:debtor e) w) true)]
+         well-formed-track-raw     [(= (trackable s) true)]}
+  :pass '{well-formed-fire-edge   {well-formed-fire-dep [(edge-debtor-kept-of-mem w e (base-of w h) (tbl-find-mem EdgeRow edge-id x e (:edges w) hf))]}   ; edge-find found it
+          well-formed-settle-edge {well-formed-fire-dep [(edge-debtor-kept-of-mem w e (base-of w h) (tbl-find-mem EdgeRow edge-id x e (:edges w) hf))]}
+          well-formed-t7-track          {well-formed-track-raw [hk]}})                                                                         ; T7's guard
 
 
-;; ---- an edit of edge id y whose new rows are fine (kx: the rows with id y have debtor d)
+;; ---- an edit of edge id y whose new rows are fine (edge-debtor-kept: the rows with id y have debtor d)
 
-(a/theorem g5-edge-upd-q [xd :- (List Nat), w :- World, x :- Nat, f :- (=> EdgeRow EdgeRow),
+(a/theorem i5-dep-final-edge-upd-q [xd :- (List Nat), w :- World, x :- Nat, f :- (=> EdgeRow EdgeRow),
                           hid :- (forall [e :- EdgeRow] (= (edge-id (f e)) (edge-id e))),
                           hk :- (forall [e :- EdgeRow] (= (:kind (f e)) (:kind e))),
                           hc :- (forall [e :- EdgeRow] (= (:creditor (f e)) (:creditor e))),
                           hd :- (forall [e :- EdgeRow] (= (:debtor (f e)) (:debtor e))),
                           hm :- (forall [e :- EdgeRow] (= (:marked (f e)) (:marked e))),
                           q :- (= (tbl-all (same-id-then edge-id x (fn [r :- EdgeRow] (dfk xd (fin-st (:sources w) (:tasks w)) (f r)))) (:edges w)) true)]
-  (=> (= (g5 xd w) true) (= (g5 xd (edge-upd w x f)) true))
+  (=> (= (i5-dep-final xd w) true) (= (i5-dep-final xd (edge-upd w x f)) true))
   (intro h)
-  (have r := (g5-rest-of xd w h))
-  (simp only [g5-rest] at r)
+  (have r := (i5-dep-final-rest-of xd w h))
+  (simp only [i5-dep-final-rest] at r)
   (have b := (tbl-all-mono2 EdgeRow (dfk xd (fin-st (:sources w) (:tasks w)))
                (same-id-then edge-id x (fn [r :- EdgeRow] (dfk xd (fin-st (:sources w) (:tasks w)) (f r))))
                (both (dfk xd (fin-st (:sources w) (:tasks w))) (same-id-then edge-id x (fn [r :- EdgeRow] (dfk xd (fin-st (:sources w) (:tasks w)) (f r)))))
@@ -508,14 +508,14 @@
   (exact s)
   (intros e hb hx)
   (exact (both-left EdgeRow _ _ e hb))
-  (exact (g5-intro xd _ (inv-edge-upd w x f hid hk hc hd hm (g5-sample xd w h)) (g5r-same xd w (edge-upd w x f) (rfl) (rfl) r2))))
+  (exact (i5-dep-final-intro xd _ (well-formed-edge-upd w x f hid hk hc hd hm (i5-dep-final-well-formed xd w h)) (g5r-same xd w (edge-upd w x f) (rfl) (rfl) r2))))
 
-(a/theorem g5-kx-q [xd :- (List Nat), kxy :- Nat, kxd :- Nat, w :- World, f :- (=> EdgeRow EdgeRow),
+(a/theorem i5-dep-final-edge-debtor-kept-q [xd :- (List Nat), kxy :- Nat, kxd :- Nat, w :- World, f :- (=> EdgeRow EdgeRow),
                     hf :- (forall [r :- EdgeRow] (=> (= (Nat.beq (:debtor r) kxd) true) (= (dfk xd (fin-st (:sources w) (:tasks w)) (f r)) true)))]
-  (=> (= (kx-rest kxy kxd w) true)
+  (=> (= (edge-debtor-kept-rest kxy kxd w) true)
       (= (tbl-all (same-id-then edge-id kxy (fn [r :- EdgeRow] (dfk xd (fin-st (:sources w) (:tasks w)) (f r)))) (:edges w)) true))
   (intro h)
-  (simp only [kx-rest Bool.and_eq_true] at h)
+  (simp only [edge-debtor-kept-rest Bool.and_eq_true] at h)
   (apply (tbl-all-mono EdgeRow (deb-at kxy kxd) _ _ (:edges w) (And.right h)))
   (intros r hr)
   (cases hx (Nat.beq (:id r) kxy))
@@ -550,42 +550,42 @@
   (exact (dfk-nonfinal xd _ _ f2)))
 
 
-(tree/restate! G5 '[inv-remove-edge])
-(a/theorem g5-dep-consumed [x5d :- (List Nat), w :- World, e :- EdgeRow]
-  (=> (= (kx (:id e) (:debtor e) w) true) (= (g5 x5d w) true) (= (g5 x5d (dep-consumed w e)) true))
+(tree/restate! G5 '[well-formed-remove-edge])
+(a/theorem i5-dep-final-dep-consumed [x5d :- (List Nat), w :- World, e :- EdgeRow]
+  (=> (= (edge-debtor-kept (:id e) (:debtor e) w) true) (= (i5-dep-final x5d w) true) (= (i5-dep-final x5d (dep-consumed w e)) true))
   (intros hx h)
   (cases hf (deb-final w (:debtor e)))
   (simp only [dep-consumed hf])
-  (exact (g5-edge-upd-q x5d w (:id e) (edge-rearm (deb-value w (:debtor e)) (deb-version w (:debtor e)))
+  (exact (i5-dep-final-edge-upd-q x5d w (:id e) (edge-rearm (deb-value w (:debtor e)) (deb-version w (:debtor e)))
            (edge-rearm-edge-id _ _) (edge-rearm-kind _ _) (edge-rearm-creditor _ _) (edge-rearm-debtor _ _) (edge-rearm-marked _ _)
-           (g5-kx-q x5d (:id e) (:debtor e) w _ (fn [r :- EdgeRow, hr :- (= (Nat.beq (:debtor r) (:debtor e)) true)] (rearm-ok x5d w (:debtor e) (deb-value w (:debtor e)) (deb-version w (:debtor e)) r hf hr)) (kx-rest-of _ _ w hx)) h))
-  (simp only [dep-consumed hf]) (exact (g5-remove-edge x5d w (:id e) h)))
+           (i5-dep-final-edge-debtor-kept-q x5d (:id e) (:debtor e) w _ (fn [r :- EdgeRow, hr :- (= (Nat.beq (:debtor r) (:debtor e)) true)] (rearm-ok x5d w (:debtor e) (deb-value w (:debtor e)) (deb-version w (:debtor e)) r hf hr)) (edge-debtor-kept-rest-of _ _ w hx)) h))
+  (simp only [dep-consumed hf]) (exact (i5-dep-final-remove-edge x5d w (:id e) h)))
 
-(tree/restate! G5 '[inv-fire-edge])
-(a/theorem g5-serve-or [x5d :- (List Nat), w :- World, x :- Nat, res :- RunResult, keep :- (=> SourceRow SourceRow),
+(tree/restate! G5 '[well-formed-fire-edge])
+(a/theorem i5-dep-final-serve-or [x5d :- (List Nat), w :- World, x :- Nat, res :- RunResult, keep :- (=> SourceRow SourceRow),
                         hk :- (forall [s :- SourceRow] (= (source-id (keep s)) (source-id s))),
                         hg :- (forall [s :- SourceRow] (= (sfin (keep s)) (sfin s)))]
-  (=> (= (g5 x5d w) true) (= (g5 x5d (serve-or w x res keep)) true))
+  (=> (= (i5-dep-final x5d w) true) (= (i5-dep-final x5d (serve-or w x res keep)) true))
   (intro h)
   (cases hz (Nat.beq (oldest-waiter w x) 0))
-  (simp only [serve-or hz]) (exact (g5-fire-edge x5d res w _ h))
-  (simp only [serve-or hz]) (exact (g5-source-upd x5d w x keep hk hg h)))
+  (simp only [serve-or hz]) (exact (i5-dep-final-fire-edge x5d res w _ h))
+  (simp only [serve-or hz]) (exact (i5-dep-final-source-upd x5d w x keep hk hg h)))
 
-(tree/restate! G5 '[inv-edge-set-phase inv-remove-edge])
-(a/theorem g5-consume-entry [x5d :- (List Nat), w :- World, e :- EdgeRow]
-  (=> (= (kx (:id e) (:debtor e) w) true) (= (g5 x5d w) true) (= (g5 x5d (consume-entry w e)) true))
+(tree/restate! G5 '[well-formed-edge-set-phase well-formed-remove-edge])
+(a/theorem i5-dep-final-consume-entry [x5d :- (List Nat), w :- World, e :- EdgeRow]
+  (=> (= (edge-debtor-kept (:id e) (:debtor e) w) true) (= (i5-dep-final x5d w) true) (= (i5-dep-final x5d (consume-entry w e)) true))
   (intros hx h)
   (cases hf (deb-final w (:debtor e)))
   (cases hr (Nat.beq (:cont e) cont-restart))
   (simp only [consume-entry hr hf])
-  (exact (g5-edge-upd-q x5d w (:id e) (edge-rearm (deb-value w (:debtor e)) (deb-version w (:debtor e)))
+  (exact (i5-dep-final-edge-upd-q x5d w (:id e) (edge-rearm (deb-value w (:debtor e)) (deb-version w (:debtor e)))
            (edge-rearm-edge-id _ _) (edge-rearm-kind _ _) (edge-rearm-creditor _ _) (edge-rearm-debtor _ _) (edge-rearm-marked _ _)
-           (g5-kx-q x5d (:id e) (:debtor e) w _ (fn [r :- EdgeRow, hr :- (= (Nat.beq (:debtor r) (:debtor e)) true)] (rearm-ok x5d w (:debtor e) (deb-value w (:debtor e)) (deb-version w (:debtor e)) r hf hr)) (kx-rest-of _ _ w hx)) h))
+           (i5-dep-final-edge-debtor-kept-q x5d (:id e) (:debtor e) w _ (fn [r :- EdgeRow, hr :- (= (Nat.beq (:debtor r) (:debtor e)) true)] (rearm-ok x5d w (:debtor e) (deb-value w (:debtor e)) (deb-version w (:debtor e)) r hf hr)) (edge-debtor-kept-rest-of _ _ w hx)) h))
   (simp only [consume-entry hr hf])
-  (exact (g5-edge-upd-q x5d w (:id e) (edge-set-phase ph-armed)
+  (exact (i5-dep-final-edge-upd-q x5d w (:id e) (edge-set-phase ph-armed)
            (edge-set-phase-edge-id _) (edge-set-phase-kind _) (edge-set-phase-creditor _) (edge-set-phase-debtor _) (edge-set-phase-marked _)
-           (g5-kx-q x5d (:id e) (:debtor e) w _ (fn [r :- EdgeRow, hr :- (= (Nat.beq (:debtor r) (:debtor e)) true)] (setarm-ok x5d w (:debtor e) r hf hr)) (kx-rest-of _ _ w hx)) h))
-  (simp only [consume-entry hf]) (exact (g5-remove-edge x5d w (:id e) h)))
+           (i5-dep-final-edge-debtor-kept-q x5d (:id e) (:debtor e) w _ (fn [r :- EdgeRow, hr :- (= (Nat.beq (:debtor r) (:debtor e)) true)] (setarm-ok x5d w (:debtor e) r hf hr)) (edge-debtor-kept-rest-of _ _ w hx)) h))
+  (simp only [consume-entry hf]) (exact (i5-dep-final-remove-edge x5d w (:id e) h)))
 
 (a/theorem find-or-upd-at [A :- Type, idf :- (=> A Nat), x :- Nat, f :- (=> A A), g :- (=> A Bool), k :- Bool, d :- Nat, s :- A,
                            hid :- (forall [r :- A] (= (idf (f r)) (idf r))), hg :- (= (g (f s)) (g s)), xs :- (List A)]
@@ -615,18 +615,18 @@
       (simp only [tbl-upd hx tbl-find hd2 hd (tbl-find-upd-ne A idf x d f hid t ne)])
       (simp only [tbl-upd hx tbl-find hd2 hd find-or hg]))))
 
-(a/theorem g5-source-upd-at [xd :- (List Nat), w :- World, x :- Nat, f :- (=> SourceRow SourceRow), s :- SourceRow,
+(a/theorem i5-dep-final-source-upd-at [xd :- (List Nat), w :- World, x :- Nat, f :- (=> SourceRow SourceRow), s :- SourceRow,
                              hid :- (forall [q :- SourceRow] (= (source-id (f q)) (source-id q))), hg :- (= (sfin (f s)) (sfin s))]
-  (=> (= (source-find w x) (Option.some SourceRow s)) (= (g5 xd w) true) (= (g5 xd (source-upd w x f)) true))
+  (=> (= (source-find w x) (Option.some SourceRow s)) (= (i5-dep-final xd w) true) (= (i5-dep-final xd (source-upd w x f)) true))
   (intros hs h)
-  (have r := (g5-rest-of xd w h))
-  (simp only [g5-rest] at r)
+  (have r := (i5-dep-final-rest-of xd w h))
+  (simp only [i5-dep-final-rest] at r)
   (have e (forall [d :- Nat] (=> (= (fin-st (:sources (source-upd w x f)) (:tasks (source-upd w x f)) d) true)
                                  (= (fin-st (:sources w) (:tasks w) d) true))))
   (intros d hd)
   (simp only [source-upd set-sources fin-st (find-or-upd-at SourceRow source-id x f sfin (find-or task-done false (tbl-find task-id d (:tasks w))) d s hid hg (:sources w) hs)] at hd)
   (simp only [fin-st]) (exact hd)
-  (exact (g5-intro xd _ (inv-source-upd w x f hid (g5-sample xd w h)) (g5r-gen xd w (source-upd w x f) e r))))
+  (exact (i5-dep-final-intro xd _ (well-formed-source-upd w x f hid (i5-dep-final-well-formed xd w h)) (g5r-gen xd w (source-upd w x f) e r))))
 
 (a/theorem sfin-write [v :- Nat, s :- SourceRow] (=> (= (writable s) true) (= (sfin (source-write v s)) (sfin s)))
   (intro h)
@@ -636,12 +636,12 @@
   (cases hk)
   (case [inl a] (have e (= (:kind s) sk-signal)) (exact (Nat.eq_of_beq_eq_true a)) (simp only [e once-kind]))
   (case [inr b] (have e (= (:kind s) sk-cell)) (exact (Nat.eq_of_beq_eq_true b)) (simp only [e once-kind]))
-  (simp only [sfin source-write src-delivered nd Bool.false_and]))
+  (simp only [sfin source-write source-delivered nd Bool.false_and]))
 (a/theorem sfin-bump [k :- Nat, s :- SourceRow] (=> (= (open-kind k s) true) (= (once-kind k) false) (= (sfin (source-bump s)) (sfin s)))
   (intros h hk)
   (simp only [open-kind Bool.and_eq_true] at h)
   (have e (= (:kind s) k)) (exact (Nat.eq_of_beq_eq_true (And.left h)))
-  (simp only [sfin source-bump src-delivered e hk Bool.false_and]))
+  (simp only [sfin source-bump source-delivered e hk Bool.false_and]))
 (a/theorem sfin-consume [s :- SourceRow] (=> (= (takeable s) true) (= (sfin (source-consume s)) (sfin s)))
   (intro h)
   (simp only [takeable Bool.or_eq_true] at h)
@@ -649,52 +649,52 @@
   (cases h)
   (case [inl a] (have e (= (:kind s) sk-mailbox)) (exact (Nat.eq_of_beq_eq_true a)) (simp only [e once-kind]))
   (case [inr b] (have e (= (:kind s) sk-semaphore)) (exact (Nat.eq_of_beq_eq_true b)) (simp only [e once-kind]))
-  (cases ha (src-available s)) (all_goals (cases hm (Nat.beq (:kind s) sk-mailbox)))
-  (all_goals (simp only [sfin source-consume ha hm src-delivered nd Bool.false_and])))
+  (cases ha (source-available s)) (all_goals (cases hm (Nat.beq (:kind s) sk-mailbox)))
+  (all_goals (simp only [sfin source-consume ha hm source-delivered nd Bool.false_and])))
 
-(tree/restate! G5 '[inv-fire-edge nat-fold-inv mark-edge-inv-sample])
-(a/theorem g5-write-raw [x5d :- (List Nat), w :- World, x :- Nat, v :- Nat, s :- SourceRow]
-  (=> (= (source-find w x) (Option.some SourceRow s)) (= (writable s) true) (= (g5 x5d w) true) (= (g5 x5d (write-raw w x v)) true))
+(tree/restate! G5 '[well-formed-fire-edge well-formed-nat-fold well-formed-mark-edge])
+(a/theorem i5-dep-final-write-raw [x5d :- (List Nat), w :- World, x :- Nat, v :- Nat, s :- SourceRow]
+  (=> (= (source-find w x) (Option.some SourceRow s)) (= (writable s) true) (= (i5-dep-final x5d w) true) (= (i5-dep-final x5d (write-raw w x v)) true))
   (intros hs hw h)
   (simp only [write-raw])
-  (exact (nat-fold-g5 x5d mark-edge (mark-edge-g5 x5d) (mark-targets (dirty-set w x) (:edges w)) _
-           (nat-fold-g5 x5d (fire-edge (RunResult.mk res-ok v)) (g5-fire-edge x5d (RunResult.mk res-ok v))
+  (exact (i5-dep-final-nat-fold x5d mark-edge (i5-dep-final-mark-edge x5d) (mark-targets (dirty-set w x) (:edges w)) _
+           (i5-dep-final-nat-fold x5d (fire-edge (RunResult.mk res-ok v)) (i5-dep-final-fire-edge x5d (RunResult.mk res-ok v))
              (edges-onto x (:edges w)) _
-             (g5-source-upd-at x5d w x (source-write v) s (source-write-source-id v) (sfin-write v s hw) hs h)))))
-(a/theorem t2-g5 [x5d :- (List Nat), w :- World, x :- Nat, v :- Nat]   ; T2 hands its guard's row to the write
-  (=> (= (g5 x5d w) true) (= (g5 x5d (:world (t2-write w x v))) true))
+             (i5-dep-final-source-upd-at x5d w x (source-write v) s (source-write-source-id v) (sfin-write v s hw) hs h)))))
+(a/theorem i5-dep-final-t2-write [x5d :- (List Nat), w :- World, x :- Nat, v :- Nat]   ; T2 hands its guard's row to the write
+  (=> (= (i5-dep-final x5d w) true) (= (i5-dep-final x5d (:world (t2-write w x v))) true))
   (intro h)
   (cases hs (source-find w x)) (case' [some s]) (case' [none])
   (simp only [t2-write hs refuse]) (exact h)
   (cases hg (writable s))
   (simp only [t2-write hs hg refuse]) (exact h)
-  (simp only [t2-write hs hg accept]) (exact (g5-write-raw x5d w x v s hs hg h)))
+  (simp only [t2-write hs hg accept]) (exact (i5-dep-final-write-raw x5d w x v s hs hg h)))
 
-(a/theorem t-post-g5 [x5d :- (List Nat), w :- World, x :- Nat, v :- Nat]
-  (=> (= (g5 x5d w) true) (= (g5 x5d (:world (t-post w x v))) true))
+(a/theorem i5-dep-final-t-post [x5d :- (List Nat), w :- World, x :- Nat, v :- Nat]
+  (=> (= (i5-dep-final x5d w) true) (= (i5-dep-final x5d (:world (t-post w x v))) true))
   (intro h)
   (cases hs (source-find w x)) (case' [some s]) (case' [none])
   (simp only [t-post hs refuse]) (exact h)
   (cases hg (open-kind sk-mailbox s))
   (simp only [t-post hs hg refuse]) (exact h)
   (simp only [t-post hs hg accept post-raw])
-  (exact (g5-serve-or x5d (source-upd w x source-bump) x _ (source-enqueue v) (source-enqueue-id v) (fn [q :- SourceRow] (Eq.refl (sfin q)))
-           (g5-source-upd-at x5d w x source-bump s source-bump-id (sfin-bump sk-mailbox s hg (rfl)) hs h))))
+  (exact (i5-dep-final-serve-or x5d (source-upd w x source-bump) x _ (source-enqueue v) (source-enqueue-id v) (fn [q :- SourceRow] (Eq.refl (sfin q)))
+           (i5-dep-final-source-upd-at x5d w x source-bump s source-bump-id (sfin-bump sk-mailbox s hg (rfl)) hs h))))
 
-(a/theorem t-release-g5 [x5d :- (List Nat), w :- World, x :- Nat]
-  (=> (= (g5 x5d w) true) (= (g5 x5d (:world (t-release w x))) true))
+(a/theorem i5-dep-final-t-release [x5d :- (List Nat), w :- World, x :- Nat]
+  (=> (= (i5-dep-final x5d w) true) (= (i5-dep-final x5d (:world (t-release w x))) true))
   (intro h)
   (cases hs (source-find w x)) (case' [some s]) (case' [none])
   (simp only [t-release hs refuse]) (exact h)
   (cases hg (releasable s))
   (simp only [t-release hs hg refuse]) (exact h)
   (simp only [t-release hs hg accept release-raw])
-  (exact (g5-serve-or x5d (source-upd w x source-bump) x _ source-permit source-permit-id (fn [q :- SourceRow] (Eq.refl (sfin q)))
-           (g5-source-upd-at x5d w x source-bump s source-bump-id (sfin-bump sk-semaphore s (releasable-open s hg) (rfl)) hs h))))
+  (exact (i5-dep-final-serve-or x5d (source-upd w x source-bump) x _ source-permit source-permit-id (fn [q :- SourceRow] (Eq.refl (sfin q)))
+           (i5-dep-final-source-upd-at x5d w x source-bump s source-bump-id (sfin-bump sk-semaphore s (releasable-open s hg) (rfl)) hs h))))
 
-(tree/restate! G5 '[inv-take-park inv-run-upd inv-bump])
-(a/theorem t-take-g5 [x5d :- (List Nat), w :- World, st :- Nat, x :- Nat, k :- Nat, fresh :- Nat]
-  (=> (= (g5 x5d w) true) (= (g5 x5d (:world (t-take w st x k fresh))) true))
+(tree/restate! G5 '[well-formed-take-park well-formed-run-upd well-formed-bump])
+(a/theorem i5-dep-final-t-take [x5d :- (List Nat), w :- World, st :- Nat, x :- Nat, k :- Nat, fresh :- Nat]
+  (=> (= (i5-dep-final x5d w) true) (= (i5-dep-final x5d (:world (t-take w st x k fresh))) true))
   (intro h)
   (cases ht (tok-run w st)) (case' [some r]) (case' [none])
   (simp only [t-take ht refuse]) (exact h)
@@ -704,10 +704,10 @@
   (simp only [t-take ht hs hg refuse]) (exact h)
   (have tk (= (takeable s) true)) (simp only [Bool.and_eq_true] at hg) (exact (And.right (And.right hg)))
   (cases hv (take-ready s))
-  (simp only [t-take ht hs hg hv accept]) (exact (g5-take-park x5d w r x k h))
+  (simp only [t-take ht hs hg hv accept]) (exact (i5-dep-final-take-park x5d w r x k h))
   (simp only [t-take ht hs hg hv accept take-now])
-  (exact (g5-bump x5d _ (g5-bump x5d _ (g5-run-upd x5d _ (:id r) run-tick run-tick-run-id
-           (g5-source-upd-at x5d w x source-consume s source-consume-id (sfin-consume s tk) hs h))))))
+  (exact (i5-dep-final-bump x5d _ (i5-dep-final-bump x5d _ (i5-dep-final-run-upd x5d _ (:id r) run-tick run-tick-run-id
+           (i5-dep-final-source-upd-at x5d w x source-consume s source-consume-id (sfin-consume s tk) hs h))))))
 
 ;; ===========================================================================
 ;; Part B. Fires discharge their edge (the escape predicate)
@@ -877,7 +877,7 @@
   (Bool.and (Nat.beq (:kind r) (:kind e0)) (Bool.and (Nat.beq (:phase r) (:phase e0)) (Nat.beq (:debtor r) (:debtor e0)))))
 (a/theorem ek-eq-refl [e0 :- EdgeRow] (= (ek-eq e0 e0) true) (simp only [ek-eq Nat.beq_refl Bool.and_self]))
 (a/theorem rows-same [w :- World, y :- Nat, e0 :- EdgeRow]
-  (=> (= (inv-sample w) true) (= (edge-find w y) (Option.some EdgeRow e0))
+  (=> (= (well-formed w) true) (= (edge-find w y) (Option.some EdgeRow e0))
       (= (tbl-all (same-id-then edge-id y (ek-eq e0)) (:edges w)) true))
   (intros h hf)
   (have m := (tbl-find-mem EdgeRow edge-id y e0 (:edges w) hf))
@@ -995,7 +995,7 @@
   (exact (jw-set-fired xd esc w (:id e0) h)))
 
 (a/theorem jw-dep-consumed [xd :- (List Nat), esc :- (=> (List ActRow) EdgeRow Bool), w :- World, e0 :- EdgeRow]
-  (=> (= (inv-sample w) true) (= (edge-find w (:id e0)) (Option.some EdgeRow e0)) (= (jwy xd esc (:id e0) w) true)
+  (=> (= (well-formed w) true) (= (edge-find w (:id e0)) (Option.some EdgeRow e0)) (= (jwy xd esc (:id e0) w) true)
       (= (jw xd esc (dep-consumed w e0)) true))
   (intros hs hf h)
   (cases hd (deb-final w (:debtor e0)))
@@ -1010,7 +1010,7 @@
     (exact (jwy-upd xd esc (:id e0) w _ q h))))
 
 (a/theorem jw-fire-dep [xd :- (List Nat), esc :- (=> (List ActRow) EdgeRow Bool), w :- World, e0 :- EdgeRow]
-  (=> (esc-mono esc) (= (inv-sample w) true) (= (edge-find w (:id e0)) (Option.some EdgeRow e0)) (= (jwy xd esc (:id e0) w) true)
+  (=> (esc-mono esc) (= (well-formed w) true) (= (edge-find w (:id e0)) (Option.some EdgeRow e0)) (= (jwy xd esc (:id e0) w) true)
       (= (jw xd esc (fire-dep w e0)) true))
   (intros hm hs hf h)
   (cases ha (act-with-member (:id e0) (:acts w))) (case' [some a]) (case' [none])
@@ -1036,7 +1036,7 @@
 
 (a/theorem jw-not-dep [xd :- (List Nat), esc :- (=> (List ActRow) EdgeRow Bool), w :- World, e0 :- EdgeRow, f :- (=> EdgeRow EdgeRow),
                        hk :- (forall [r :- EdgeRow] (= (:kind (f r)) (:kind r)))]
-  (=> (= (inv-sample w) true) (= (edge-find w (:id e0)) (Option.some EdgeRow e0)) (= (Nat.beq (:kind e0) ek-dep) false)
+  (=> (= (well-formed w) true) (= (edge-find w (:id e0)) (Option.some EdgeRow e0)) (= (Nat.beq (:kind e0) ek-dep) false)
       (= (tbl-all (same-id-then edge-id (:id e0) (fn [r :- EdgeRow] (dfk xd (fin-st (:sources w) (:tasks w)) (f r)))) (:edges w)) true))
   (intros hs hf hk0)
   (exact (same-id-mono (:id e0) (ek-eq e0) (fn [r :- EdgeRow] (dfk xd (fin-st (:sources w) (:tasks w)) (f r)))
@@ -1045,7 +1045,7 @@
            (:edges w) (rows-same w (:id e0) e0 hs hf))))
 
 (a/theorem jw-fire-observe [xd :- (List Nat), esc :- (=> (List ActRow) EdgeRow Bool), w :- World, e0 :- EdgeRow]
-  (=> (= (inv-sample w) true) (= (edge-find w (:id e0)) (Option.some EdgeRow e0)) (= (Nat.beq (:kind e0) ek-dep) false)
+  (=> (= (well-formed w) true) (= (edge-find w (:id e0)) (Option.some EdgeRow e0)) (= (Nat.beq (:kind e0) ek-dep) false)
       (= (jwy xd esc (:id e0) w) true) (= (jw xd esc (fire-observe w e0)) true))
   (intros hs hf hk h)
   (cases ho (observe-new e0 (deb-version w (:debtor e0))))
@@ -1055,7 +1055,7 @@
     (exact (jwy-upd xd esc (:id e0) w _ (jw-not-dep xd esc w e0 (edge-set-seen (deb-version w (:debtor e0))) (edge-set-seen-kind _) hs hf hk) h))))
 
 (a/theorem jw-fire-edge [xd :- (List Nat), esc :- (=> (List ActRow) EdgeRow Bool), res :- RunResult, w :- World, y :- Nat]
-  (=> (esc-mono esc) (= (inv-sample w) true) (= (jwy xd esc y w) true) (= (jw xd esc (fire-edge res w y)) true))
+  (=> (esc-mono esc) (= (well-formed w) true) (= (jwy xd esc y w) true) (= (jw xd esc (fire-edge res w y)) true))
   (intros hm hs h)
   (cases hf (edge-find w y)) (case' [some e]) (case' [none])
   (simp only [fire-edge hf])
@@ -1102,14 +1102,14 @@
   (=> (= (jw xd (esc-l (List.nil Nat) esc) w) true) (= (jw xd esc w) true))
   (intro h) (simp only [jw jn esc-l reach-mem Bool.false_or] at h) (simp only [jw jn]) (exact h))
 (a/theorem jw-fold [xd :- (List Nat), esc :- (=> (List ActRow) EdgeRow Bool), res :- RunResult, L :- (List Nat)]
-  (forall [w :- World] (=> (esc-mono esc) (= (inv-sample w) true) (= (jw xd (esc-l L esc) w) true)
+  (forall [w :- World] (=> (esc-mono esc) (= (well-formed w) true) (= (jw xd (esc-l L esc) w) true)
                            (= (jw xd esc (nat-fold (fire-edge res) w L)) true)))
   (induction L)
   (case [nil] (intros w hm hs h) (simp only [nat-fold]) (exact (jw-nil xd esc w h)))
   (case [cons y t ih]
     (intros w hm hs h)
     (simp only [nat-fold])
-    (exact (ih (fire-edge res w y) hm (inv-fire-edge res w y hs)
+    (exact (ih (fire-edge res w y) hm (well-formed-fire-edge res w y hs)
              (jw-fire-edge xd (esc-l t esc) res w y (esc-l-mono t esc hm) hs (jw-cons xd esc y t w h))))))
 
 ;; ---- a debtor made final: only x's finality is new
@@ -1174,9 +1174,9 @@
                              (Or (= (fin-st (:sources w) (:tasks w) d) true) (= (Nat.beq d x) true))))
       (= (:edges w1) (:edges w))
       (forall [e :- EdgeRow] (=> (List.Mem e (:edges w)) (= (armed-dep-on x e) true) (= (esc (:acts w1) e) true)))
-      (= (g5-rest xd w) true) (= (jw xd esc w1) true))
+      (= (i5-dep-final-rest xd w) true) (= (jw xd esc w1) true))
   (intros hf he hc h)
-  (simp only [g5-rest] at h)
+  (simp only [i5-dep-final-rest] at h)
   (simp only [jw he])
   (apply all-of-mem)
   (intros e hm)
@@ -1187,8 +1187,8 @@
   (case [inr b] (simp only [jn (hc e hm b) Bool.or_true])))
 
 (a/theorem jw-false-end [xd :- (List Nat), w :- World]
-  (=> (= (jw xd (fn [as :- (List ActRow), e :- EdgeRow] false) w) true) (= (g5-rest xd w) true))
-  (intro h) (simp only [jw] at h) (simp only [g5-rest])
+  (=> (= (jw xd (fn [as :- (List ActRow), e :- EdgeRow] false) w) true) (= (i5-dep-final-rest xd w) true))
+  (intro h) (simp only [jw] at h) (simp only [i5-dep-final-rest])
   (apply (tbl-all-mono EdgeRow _ _ _ (:edges w) h))
   (intros e he) (simp only [jn Bool.or_false] at he) (exact he))
 (a/theorem esc-false-mono [] (esc-mono (fn [as :- (List ActRow), e :- EdgeRow] false))
@@ -1216,8 +1216,8 @@
   (induction xs)
   (case [nil] (simp only [tbl-filter]))
   (case [cons h t ih] (simp only [tbl-filter (final-comp-false w h) ih])))
-(a/theorem fd-one [w :- World, x :- Nat] (= (finalize-debtor w x) (finalize-one w x))
-  (simp only [finalize-debtor fin-fuel fin-loop filter-final-nil List.nil_append]))
+(a/theorem fd-one [w :- World, x :- Nat] (= (t10-finalize-debtor w x) (finalize-one w x))
+  (simp only [t10-finalize-debtor finalize-fuel finalize-loop filter-final-nil List.nil_append]))
 
 (a/theorem tbl-all-filter-imp [A :- Type, P :- (=> A Bool), Q :- (=> A Bool), q :- (=> A Bool),
                                h :- (forall [a :- A] (=> (= (P a) true) (= (q a) true) (= (Q a) true))), xs :- (List A)]
@@ -1232,7 +1232,7 @@
     (case [true] (simp only [tbl-filter hq tbl-all (h hd (And.left hp) hq) (ih (And.right hp)) Bool.and_self]))))
 
 (a/theorem close-keep [xd :- (List Nat), F :- (=> Nat Bool), x :- Nat, as :- (List ActRow), e :- EdgeRow]
-  (=> (= (jn xd F (esc-cl x) as e) true) (= (fin-keep as x e) true) (= (dfk xd F e) true))
+  (=> (= (jn xd F (esc-cl x) as e) true) (= (finalize-keeps as x e) true) (= (dfk xd F e) true))
   (intros h hk)
   (simp only [jn Bool.or_eq_true] at h)
   (cases h)
@@ -1247,17 +1247,17 @@
       (case [false] (exact (dfk-phase xd F e hp)))
       (case [true]
         (have m (= (tbl-any (act-has-member (:id e)) as) false)) (simp only [mem-in] at b2) (exact (bnot-true _ b2))
-        (simp only [fin-keep fin-drop hd hp b1 m Bool.not_false Bool.and_self Bool.not_true] at hk)
+        (simp only [finalize-keeps finalize-drops hd hp b1 m Bool.not_false Bool.and_self Bool.not_true] at hk)
         (cases hk)))))
 
 (a/theorem close-end [xd :- (List Nat), x :- Nat, w :- World]
-  (=> (= (jw xd (esc-cl x) w) true) (= (g5-rest xd (finalize-debtor w x)) true))
+  (=> (= (jw xd (esc-cl x) w) true) (= (i5-dep-final-rest xd (t10-finalize-debtor w x)) true))
   (intro h)
   (rw [fd-one])
   (simp only [jw] at h)
-  (simp only [g5-rest finalize-one drop-edges set-comps set-edges])
-  (exact (tbl-all-filter-imp EdgeRow _ _ (fin-keep (:acts w) x)
-           (fn [e :- EdgeRow, h1 :- (= (jn xd (fin-st (:sources w) (:tasks w)) (esc-cl x) (:acts w) e) true), h2 :- (= (fin-keep (:acts w) x e) true)]
+  (simp only [i5-dep-final-rest finalize-one drop-edges set-comps set-edges])
+  (exact (tbl-all-filter-imp EdgeRow _ _ (finalize-keeps (:acts w) x)
+           (fn [e :- EdgeRow, h1 :- (= (jn xd (fin-st (:sources w) (:tasks w)) (esc-cl x) (:acts w) e) true), h2 :- (= (finalize-keeps (:acts w) x e) true)]
              (close-keep xd _ x (:acts w) e h1 h2))
            (:edges w) h)))
 
@@ -1289,12 +1289,12 @@
     (exact (scan-mem EdgeRow edge-id (close-wakes (:acts w) x) e (:edges w) hm (cw-mem w x e hm ha hb)))
     (simp only [esc-l r Bool.true_or])))
 
-(a/theorem g5-wake-final [xd :- (List Nat), w :- World, x :- Nat, f :- (=> SourceRow SourceRow),
+(a/theorem i5-dep-final-wake-final [xd :- (List Nat), w :- World, x :- Nat, f :- (=> SourceRow SourceRow),
                           hid :- (forall [s :- SourceRow] (= (source-id (f s)) (source-id s)))]
-  (=> (= (g5 xd w) true) (= (g5 xd (finalize-debtor (wake-closed (source-upd w x f) x) x)) true))
+  (=> (= (i5-dep-final xd w) true) (= (i5-dep-final xd (t10-finalize-debtor (wake-closed (source-upd w x f) x) x)) true))
   (intro h)
-  (have hs := (g5-sample xd w h))
-  (have hs1 := (inv-source-upd w x f hid hs))
+  (have hs := (i5-dep-final-well-formed xd w h))
+  (have hs1 := (well-formed-source-upd w x f hid hs))
   (have j0 (= (jw xd (esc-l (tbl-scan edge-id (close-wakes (:acts (source-upd w x f)) x) (:edges (source-upd w x f))) (esc-cl x))
                   (source-upd w x f)) true))
   (exact (jw-start xd _ w (source-upd w x f) x
@@ -1302,38 +1302,38 @@
              (fin-supd-x x f hid (:sources w) (:tasks w) d hd))
            (rfl)
            (fn [e :- EdgeRow, hm :- (List.Mem e (:edges w)), ha :- (= (armed-dep-on x e) true)] (cw-esc (source-upd w x f) x e hm ha))
-           (g5-rest-of xd w h)))
+           (i5-dep-final-rest-of xd w h)))
   (have j1 := (jw-fold xd (esc-cl x) (deb-result (source-upd w x f) x) (tbl-scan edge-id (close-wakes (:acts (source-upd w x f)) x) (:edges (source-upd w x f)))
                 (source-upd w x f) (esc-cl-mono x) hs1 j0))
-  (exact (g5-intro xd _ (inv-finalize-debtor _ x (inv-wake-closed _ x hs1)) (close-end xd x (wake-closed (source-upd w x f) x) j1))))
+  (exact (i5-dep-final-intro xd _ (well-formed-t10-finalize-debtor _ x (well-formed-wake-closed _ x hs1)) (close-end xd x (wake-closed (source-upd w x f) x) j1))))
 
 ;; T12/T14 on task k, deliver on source x: every dep edge on the debtor is listed
-(a/theorem g5-fold-all [xd :- (List Nat), w :- World, w1 :- World, x :- Nat, res :- RunResult, L :- (List Nat)]
-  (=> (= (inv-sample w1) true)
+(a/theorem i5-dep-final-fold-all [xd :- (List Nat), w :- World, w1 :- World, x :- Nat, res :- RunResult, L :- (List Nat)]
+  (=> (= (well-formed w1) true)
       (forall [d :- Nat] (=> (= (fin-st (:sources w1) (:tasks w1) d) true)
                              (Or (= (fin-st (:sources w) (:tasks w) d) true) (= (Nat.beq d x) true))))
       (= (:edges w1) (:edges w))
       (forall [e :- EdgeRow] (=> (List.Mem e (:edges w)) (= (armed-dep-on x e) true) (= (reach-mem (:id e) L) true)))
-      (= (g5 xd w) true) (= (g5 xd (nat-fold (fire-edge res) w1 L)) true))
+      (= (i5-dep-final xd w) true) (= (i5-dep-final xd (nat-fold (fire-edge res) w1 L)) true))
   (intros hs1 hf he hl h)
   (have j0 (= (jw xd (esc-l L (fn [as :- (List ActRow), e :- EdgeRow] false)) w1) true))
   (have hc (forall [e :- EdgeRow] (=> (List.Mem e (:edges w)) (= (armed-dep-on x e) true)
                                        (= (esc-l L (fn [as :- (List ActRow), e :- EdgeRow] false) (:acts w1) e) true))))
   (intros e hm ha) (simp only [esc-l (hl e hm ha) Bool.true_or])
-  (exact (jw-start xd (esc-l L (fn [as :- (List ActRow), e :- EdgeRow] false)) w w1 x hf he hc (g5-rest-of xd w h)))
+  (exact (jw-start xd (esc-l L (fn [as :- (List ActRow), e :- EdgeRow] false)) w w1 x hf he hc (i5-dep-final-rest-of xd w h)))
   (have j1 := (jw-fold xd (fn [as :- (List ActRow), e :- EdgeRow] false) res L w1 esc-false-mono hs1 j0))
-  (exact (g5-intro xd _ (nat-fold-inv (fire-edge res) (inv-fire-edge res) L w1 hs1) (jw-false-end xd (nat-fold (fire-edge res) w1 L) j1))))
+  (exact (i5-dep-final-intro xd _ (well-formed-nat-fold (fire-edge res) (well-formed-fire-edge res) L w1 hs1) (jw-false-end xd (nat-fold (fire-edge res) w1 L) j1))))
 
 (a/theorem on-task-of [k :- Nat, e :- EdgeRow] (=> (= (armed-dep-on k e) true) (= (on-task k e) true))
   (intro h) (simp only [armed-dep-on Bool.and_eq_true] at h)
   (simp only [on-task (And.left h) (And.left (And.right h)) Bool.or_true Bool.and_self]))
 
-(a/theorem g5-task-fold [xd :- (List Nat), w :- World, k :- Nat, f :- (=> TaskRow TaskRow),
+(a/theorem i5-dep-final-task-fold [xd :- (List Nat), w :- World, k :- Nat, f :- (=> TaskRow TaskRow),
                          hid :- (forall [t :- TaskRow] (= (task-id (f t)) (task-id t))), res :- RunResult]
-  (=> (= (g5 xd w) true)
-      (= (g5 xd (nat-fold (fire-edge res) (task-upd w k f) (tbl-scan edge-id (on-task k) (:edges (task-upd w k f))))) true))
+  (=> (= (i5-dep-final xd w) true)
+      (= (i5-dep-final xd (nat-fold (fire-edge res) (task-upd w k f) (tbl-scan edge-id (on-task k) (:edges (task-upd w k f))))) true))
   (intro h)
-  (exact (g5-fold-all xd w (task-upd w k f) k res _ (inv-task-upd w k f hid (g5-sample xd w h))
+  (exact (i5-dep-final-fold-all xd w (task-upd w k f) k res _ (well-formed-task-upd w k f hid (i5-dep-final-well-formed xd w h))
            (fn [d :- Nat, hd :- (= (fin-st (:sources (task-upd w k f)) (:tasks (task-upd w k f)) d) true)]
              (fin-tupd-x k f hid (:sources w) (:tasks w) d hd))
            (rfl)
@@ -1346,11 +1346,11 @@
   (case [nil] (intro W) (simp only [nat-fold]))
   (case [cons h t ih] (intro W) (simp only [nat-fold]) (exact (Eq.trans (ih (res-cancel W h)) (rfl)))))
 
-(a/theorem g5-ctask [xd :- (List Nat), w :- World, r :- RunRow, k :- Nat, res :- RunResult]
-  (=> (= (g5 xd w) true)
-      (= (g5 xd (nat-fold (fire-edge res) (cancel-res (task-upd w k (task-result-row res)) r) (tbl-scan edge-id (on-task k) (:edges w)))) true))
+(a/theorem i5-dep-final-ctask [xd :- (List Nat), w :- World, r :- RunRow, k :- Nat, res :- RunResult]
+  (=> (= (i5-dep-final xd w) true)
+      (= (i5-dep-final xd (nat-fold (fire-edge res) (cancel-res (task-upd w k (task-result-row res)) r) (tbl-scan edge-id (on-task k) (:edges w)))) true))
   (intro h)
-  (have hs1 := (inv-cancel-res _ r (inv-task-upd w k (task-result-row res) (task-result-row-id res) (g5-sample xd w h))))
+  (have hs1 := (well-formed-cancel-res _ r (well-formed-task-upd w k (task-result-row res) (task-result-row-id res) (i5-dep-final-well-formed xd w h))))
   (have st := (st5-fold res-cancel (fn [W :- World, z :- Nat] (Eq.refl (st5 W))) (:resources r) (task-upd w k (task-result-row res))))
   (have hf (forall [d :- Nat] (=> (= (fin-st (:sources (cancel-res (task-upd w k (task-result-row res)) r)) (:tasks (cancel-res (task-upd w k (task-result-row res)) r)) d) true)
                                   (Or (= (fin-st (:sources w) (:tasks w) d) true) (= (Nat.beq d k) true)))))
@@ -1360,28 +1360,28 @@
   (exact (fin-tupd-x k (task-result-row res) (task-result-row-id res) (:sources w) (:tasks w) d hd))
   (have he (= (:edges (cancel-res (task-upd w k (task-result-row res)) r)) (:edges w)))
   (simp only [cancel-res]) (exact (edges-res-fold (:resources r) (task-upd w k (task-result-row res))))
-  (exact (g5-fold-all xd w (cancel-res (task-upd w k (task-result-row res)) r) k res _ hs1 hf he
+  (exact (i5-dep-final-fold-all xd w (cancel-res (task-upd w k (task-result-row res)) r) k res _ hs1 hf he
            (fn [e :- EdgeRow, hm :- (List.Mem e (:edges w)), ha :- (= (armed-dep-on k e) true)]
              (scan-mem EdgeRow edge-id (on-task k) e (:edges w) hm (on-task-of k e ha)))
            h)))
 
-(a/theorem g5-deliver-fire [xd :- (List Nat), w :- World, x :- Nat, v :- Nat]
-  (=> (= (g5 xd w) true) (= (g5 xd (deliver-fire w x v)) true))
+(a/theorem i5-dep-final-deliver-fire [xd :- (List Nat), w :- World, x :- Nat, v :- Nat]
+  (=> (= (i5-dep-final xd w) true) (= (i5-dep-final xd (deliver-fire w x v)) true))
   (intro h)
   (simp only [deliver-fire])
-  (exact (g5-fold-all xd w (source-upd w x (source-write v)) x (RunResult.mk res-ok v) (edges-onto x (:edges w))
-           (inv-source-upd w x (source-write v) (source-write-source-id v) (g5-sample xd w h))
+  (exact (i5-dep-final-fold-all xd w (source-upd w x (source-write v)) x (RunResult.mk res-ok v) (edges-onto x (:edges w))
+           (well-formed-source-upd w x (source-write v) (source-write-source-id v) (i5-dep-final-well-formed xd w h))
            (fn [d :- Nat, hd :- (= (fin-st (:sources (source-upd w x (source-write v))) (:tasks (source-upd w x (source-write v))) d) true)]
              (fin-supd-x x (source-write v) (source-write-source-id v) (:sources w) (:tasks w) d hd))
            (rfl)
            (fn [e :- EdgeRow, hm :- (List.Mem e (:edges w)), ha :- (= (armed-dep-on x e) true)] (onto-mem x e (:edges w) hm ha))
            h)))
 
-(a/theorem g5-deliver-fire-res [xd :- (List Nat), w :- World, x :- Nat, v :- Nat, res :- RunResult]
-  (=> (= (g5 xd w) true) (= (g5 xd (nat-fold (fire-edge res) (source-upd w x (source-write v)) (edges-onto x (:edges w)))) true))
+(a/theorem i5-dep-final-deliver-fire-res [xd :- (List Nat), w :- World, x :- Nat, v :- Nat, res :- RunResult]
+  (=> (= (i5-dep-final xd w) true) (= (i5-dep-final xd (nat-fold (fire-edge res) (source-upd w x (source-write v)) (edges-onto x (:edges w)))) true))
   (intro h)
-  (exact (g5-fold-all xd w (source-upd w x (source-write v)) x res (edges-onto x (:edges w))
-           (inv-source-upd w x (source-write v) (source-write-source-id v) (g5-sample xd w h))
+  (exact (i5-dep-final-fold-all xd w (source-upd w x (source-write v)) x res (edges-onto x (:edges w))
+           (well-formed-source-upd w x (source-write v) (source-write-source-id v) (i5-dep-final-well-formed xd w h))
            (fn [d :- Nat, hd :- (= (fin-st (:sources (source-upd w x (source-write v))) (:tasks (source-upd w x (source-write v))) d) true)]
              (fin-supd-x x (source-write v) (source-write-source-id v) (:sources w) (:tasks w) d hd))
            (rfl)
@@ -1389,32 +1389,32 @@
            h)))
 
 ;; C0: a link's realization is a deliver with a result (rule.clj `deliver-res`)
-(tree/restate! G5 '[inv-fire-edge nat-fold-inv inv-finalize-debtor])
-(a/theorem g5-deliver-res [x5d :- (List Nat), w :- World, x :- Nat, v :- Nat, res :- RunResult]
-  (=> (= (g5 x5d w) true) (= (g5 x5d (deliver-res w x v res)) true))
+(tree/restate! G5 '[well-formed-fire-edge well-formed-nat-fold well-formed-t10-finalize-debtor])
+(a/theorem i5-dep-final-deliver-res [x5d :- (List Nat), w :- World, x :- Nat, v :- Nat, res :- RunResult]
+  (=> (= (i5-dep-final x5d w) true) (= (i5-dep-final x5d (deliver-res w x v res)) true))
   (intro h)
   (simp only [deliver-res])
-  (exact (g5-finalize-debtor x5d _ x (nat-fold-g5 x5d (fire-edge res) (g5-fire-edge x5d res) _ _
-           (g5-deliver-fire-res x5d w x v res h)))))
+  (exact (i5-dep-final-t10-finalize-debtor x5d _ x (i5-dep-final-nat-fold x5d (fire-edge res) (i5-dep-final-fire-edge x5d res) _ _
+           (i5-dep-final-deliver-fire-res x5d w x v res h)))))
 
 (a/theorem sfin-stream-tail [t :- Nat, s :- SourceRow] (=> (= (Nat.beq (:kind s) sk-stream) true) (= (sfin (stream-set-tail t s)) (sfin s)))
   (intro h)
   (have e (= (:kind s) sk-stream)) (exact (Nat.eq_of_beq_eq_true h))
-  (simp only [sfin stream-set-tail src-delivered e once-kind Bool.false_and]))
+  (simp only [sfin stream-set-tail source-delivered e once-kind Bool.false_and]))
 
 ;; C0 append: the stream's row keeps sfin (a stream is never once-delivered), with the guard's row
-(tree/restate! G5 '[inv-realize-link inv-source-ins-fresh])
-(a/theorem g5-append-raw [x5d :- (List Nat), w :- World, x :- Nat, v :- Nat, old :- Nat, s :- SourceRow]
-  (=> (= (source-find w x) (Option.some SourceRow s)) (= (Nat.beq (:kind s) sk-stream) true) (= (g5 x5d w) true)
-      (= (g5 x5d (append-raw w x v old)) true))
+(tree/restate! G5 '[well-formed-realize-link well-formed-source-ins-fresh])
+(a/theorem i5-dep-final-append-raw [x5d :- (List Nat), w :- World, x :- Nat, v :- Nat, old :- Nat, s :- SourceRow]
+  (=> (= (source-find w x) (Option.some SourceRow s)) (= (Nat.beq (:kind s) sk-stream) true) (= (i5-dep-final x5d w) true)
+      (= (i5-dep-final x5d (append-raw w x v old)) true))
   (intros hs hk h)
   (simp only [append-raw])
-  (exact (g5-realize-link x5d _ old v false _
-           (g5-source-ins x5d (source-upd w x (stream-set-tail (:next-id w))) (new-link (:next-id w) root-scope-id x)
+  (exact (i5-dep-final-realize-link x5d _ old v false _
+           (i5-dep-final-source-ins x5d (source-upd w x (stream-set-tail (:next-id w))) (new-link (:next-id w) root-scope-id x)
              (sfin-mk _ _ _ _ _ _ _ _ _ _ _) (rfl)
-             (g5-source-upd-at x5d w x (stream-set-tail (:next-id w)) s (stream-set-tail-id _) (sfin-stream-tail _ s hk) hs h)))))
-(a/theorem t-append-g5 [x5d :- (List Nat), w :- World, x :- Nat, v :- Nat, t :- Nat]
-  (=> (= (g5 x5d w) true) (= (g5 x5d (:world (t-append w x v t))) true))
+             (i5-dep-final-source-upd-at x5d w x (stream-set-tail (:next-id w)) s (stream-set-tail-id _) (sfin-stream-tail _ s hk) hs h)))))
+(a/theorem i5-dep-final-t-append [x5d :- (List Nat), w :- World, x :- Nat, v :- Nat, t :- Nat]
+  (=> (= (i5-dep-final x5d w) true) (= (i5-dep-final x5d (:world (t-append w x v t))) true))
   (intro h)
   (cases hf (source-find w x)) (case' [some s]) (case' [none])
   (simp only [t-append hf refuse]) (exact h)
@@ -1422,30 +1422,30 @@
   (simp only [t-append hf hg refuse]) (exact h)
   (cases hk (Nat.beq (:kind s) sk-stream))
   (case [false] (simp only [open-kind hk Bool.false_and] at hg) (cases hg))
-  (case [true] (simp only [t-append hf hg accept]) (exact (g5-append-raw x5d w x v _ s hf hk h))))
+  (case [true] (simp only [t-append hf hg accept]) (exact (i5-dep-final-append-raw x5d w x v _ s hf hk h))))
 
-(a/theorem g5-close-source0 [x5d :- (List Nat), w :- World, x :- Nat]
-  (=> (= (g5 x5d w) true) (= (g5 x5d (close-source0 w x)) true))
-  (intro h) (simp only [close-source0]) (exact (g5-wake-final x5d w x source-close-row source-close-row-id h)))
-(a/theorem g5-detach-source [x5d :- (List Nat), w :- World, x :- Nat]
-  (=> (= (g5 x5d w) true) (= (g5 x5d (detach-source w x)) true))
-  (intro h) (simp only [detach-source]) (exact (g5-wake-final x5d w x source-detach-row source-detach-row-id h)))
+(a/theorem i5-dep-final-close-source-ended [x5d :- (List Nat), w :- World, x :- Nat]
+  (=> (= (i5-dep-final x5d w) true) (= (i5-dep-final x5d (close-source-ended w x)) true))
+  (intro h) (simp only [close-source-ended]) (exact (i5-dep-final-wake-final x5d w x source-close-row source-close-row-id h)))
+(a/theorem i5-dep-final-detach-source [x5d :- (List Nat), w :- World, x :- Nat]
+  (=> (= (i5-dep-final x5d w) true) (= (i5-dep-final x5d (detach-source w x)) true))
+  (intro h) (simp only [detach-source]) (exact (i5-dep-final-wake-final x5d w x source-detach-row source-detach-row-id h)))
 
-(tree/restate! G5 '[inv-fire-waits-cancelled inv-invalidate-dependents inv-finalize-debtor inv-clear-rtasks])
-(a/theorem g5-debtor-side [x5d :- (List Nat), w :- World, r :- RunRow]
-  (=> (= (g5 x5d w) true) (= (g5 x5d (debtor-side w r)) true))
+(tree/restate! G5 '[well-formed-fire-waits-cancelled well-formed-invalidate-dependents well-formed-t10-finalize-debtor well-formed-clear-rtasks])
+(a/theorem i5-dep-final-debtor-side [x5d :- (List Nat), w :- World, r :- RunRow]
+  (=> (= (i5-dep-final x5d w) true) (= (i5-dep-final x5d (debtor-side w r)) true))
   (intro h)
   (cases hc (comp-find w (:of r))) (case' [some c]) (case' [none])
   (simp only [debtor-side hc fire-task-cancelled])
-  (exact (g5-clear-rtasks x5d _ (:of r) (g5-finalize-debtor x5d _ (:of r) (g5-task-fold x5d w (:of r) task-cancel-result task-cancel-result-id res-cancelled h))))
+  (exact (i5-dep-final-clear-rtasks x5d _ (:of r) (i5-dep-final-t10-finalize-debtor x5d _ (:of r) (i5-dep-final-task-fold x5d w (:of r) task-cancel-result task-cancel-result-id res-cancelled h))))
   (cases he (Nat.beq (:epoch r) (:epoch c)))
   (simp only [debtor-side hc he]) (exact h)
   (simp only [debtor-side hc he])
-  (exact (g5-invalidate-dependents x5d _ (:of r) (g5-fire-waits-cancelled x5d w (:of r) h))))
+  (exact (i5-dep-final-invalidate-dependents x5d _ (:of r) (i5-dep-final-fire-waits-cancelled x5d w (:of r) h))))
 
-(tree/restate! G5 '[inv-settle inv-cancel-res inv-comp-upd])
-(a/theorem g5-complete-body [x5d :- (List Nat), w :- World, r :- RunRow, res :- RunResult]
-  (=> (= (g5 x5d w) true) (= (g5 x5d (:world (complete-body w r res))) true))
+(tree/restate! G5 '[well-formed-settle well-formed-cancel-res well-formed-comp-upd])
+(a/theorem i5-dep-final-complete-body [x5d :- (List Nat), w :- World, r :- RunRow, res :- RunResult]
+  (=> (= (i5-dep-final x5d w) true) (= (i5-dep-final x5d (:world (complete-body w r res))) true))
   (intro h)
   (cases hc (comp-find w (:of r)))
   (case [none]
@@ -1453,27 +1453,27 @@
     (case [none] (simp only [complete-body hc hk]) (exact h))
     (case [some k]
       (simp only [complete-body hc hk complete-task])
-      (exact (g5-ctask x5d w r (:id k) res h))))
+      (exact (i5-dep-final-ctask x5d w r (:id k) res h))))
   (case [some c]
     (cases he (Nat.beq (:epoch r) (:epoch c)))
     (case [false] (simp only [complete-body hc he]) (exact h))
     (case [true]
       (simp only [complete-body hc he complete-comp])
-      (exact (g5-settle x5d _ (:id c) _ (g5-cancel-res x5d _ r
-               (g5-comp-upd x5d w (:id c) (comp-result-row res (:epoch r)) (comp-result-row-id res (:epoch r))
+      (exact (i5-dep-final-settle x5d _ (:id c) _ (i5-dep-final-cancel-res x5d _ r
+               (i5-dep-final-comp-upd x5d w (:id c) (comp-result-row res (:epoch r)) (comp-result-row-id res (:epoch r))
                  (comp-result-row-pending res (:epoch r)) h)))))))
 
-(tree/restate! G5 '[inv-fire-edge nat-fold-inv inv-finalize-debtor])
-(a/theorem t-deliver-g5 [x5d :- (List Nat), w :- World, x :- Nat, v :- Nat]
-  (=> (= (g5 x5d w) true) (= (g5 x5d (:world (t-deliver w x v))) true))
+(tree/restate! G5 '[well-formed-fire-edge well-formed-nat-fold well-formed-t10-finalize-debtor])
+(a/theorem i5-dep-final-t-deliver [x5d :- (List Nat), w :- World, x :- Nat, v :- Nat]
+  (=> (= (i5-dep-final x5d w) true) (= (i5-dep-final x5d (:world (t-deliver w x v))) true))
   (intro h)
   (cases hs (source-find w x)) (case' [some s]) (case' [none])
   (simp only [t-deliver hs refuse]) (exact h)
   (cases hg (deliverable s))
   (simp only [t-deliver hs hg refuse]) (exact h)
   (simp only [t-deliver hs hg accept deliver-raw])
-  (exact (g5-finalize-debtor x5d _ x (nat-fold-g5 x5d (fire-edge (RunResult.mk res-ok v)) (g5-fire-edge x5d (RunResult.mk res-ok v)) _ _
-           (g5-deliver-fire x5d w x v h)))))
+  (exact (i5-dep-final-t10-finalize-debtor x5d _ x (i5-dep-final-nat-fold x5d (fire-edge (RunResult.mk res-ok v)) (i5-dep-final-fire-edge x5d (RunResult.mk res-ok v)) _ _
+           (i5-dep-final-deliver-fire x5d w x v h)))))
 
 (a/theorem react-edge-ok [xd :- (List Nat), w :- World, c :- Nat, v :- Valid]
   (=> (= (deb-final w (:debtor v)) false) (= (dfk xd (fin-st (:sources w) (:tasks w)) (valid-edge w c v)) true))
@@ -1481,15 +1481,15 @@
   (have f2 (= (fin-st (:sources w) (:tasks w) (:debtor (valid-edge w c v))) false))
   (simp only [valid-edge]) (rw [← deb-final-st]) (exact hf)
   (exact (dfk-nonfinal xd _ _ f2)))
-(tree/restate! G5 '[inv-raise-for])
-(a/theorem g5-react-add [x5d :- (List Nat), w :- World, c :- Nat, v :- Valid]
-  (=> (= (g5 x5d w) true) (= (g5 x5d (react-add w c v)) true))
+(tree/restate! G5 '[well-formed-raise-for])
+(a/theorem i5-dep-final-react-add [x5d :- (List Nat), w :- World, c :- Nat, v :- Valid]
+  (=> (= (i5-dep-final x5d w) true) (= (i5-dep-final x5d (react-add w c v)) true))
   (intro h)
   (cases hk (react-ok w c v))
   (simp only [react-add hk]) (exact h)
   (have nf (= (deb-final w (:debtor v)) false)) (simp only [react-ok Bool.and_eq_true] at hk) (exact (bnot-true _ (And.left hk)))
   (simp only [react-add hk])
-  (exact (g5-raise-for x5d _ c (:debtor v) (g5-insert-edge-checked x5d w (valid-edge w c v) (react-edge-ok x5d w c v nf) h))))
+  (exact (i5-dep-final-raise-for x5d _ c (:debtor v) (i5-dep-final-insert-edge-checked x5d w (valid-edge w c v) (react-edge-ok x5d w c v nf) h))))
 
 ;; ---- T7: a track arms its edge on an open trackable source, or Z#48 consumes it at once
 
@@ -1503,13 +1503,13 @@
   (cases ht)
   (case [inl a] (have e (= (:kind s) sk-signal)) (exact (Nat.eq_of_beq_eq_true a)) (simp only [e once-kind]))
   (case [inr b] (have e (= (:kind s) sk-cell)) (exact (Nat.eq_of_beq_eq_true b)) (simp only [e once-kind]))
-  (simp only [sfin ho src-delivered nd Bool.not_true Bool.false_and Bool.false_or]))
+  (simp only [sfin ho source-delivered nd Bool.not_true Bool.false_and Bool.false_or]))
 
 (a/theorem jwy-ins [xd :- (List Nat), w :- World, e :- EdgeRow]
-  (=> (= (g5-rest xd w) true)
+  (=> (= (i5-dep-final-rest xd w) true)
       (= (jwy xd (fn [as :- (List ActRow), q :- EdgeRow] false) (:next-id w) (insert-edge-fresh w e)) true))
   (intro h)
-  (simp only [g5-rest] at h)
+  (simp only [i5-dep-final-rest] at h)
   (simp only [jwy insert-edge-fresh bump set-next-id insert-edge edge-ins set-edges tbl-ins tbl-all])
   (have a (= (jm xd (fin-st (:sources w) (:tasks w)) (fn [as :- (List ActRow), q :- EdgeRow] false) (:acts w) (:next-id w)
                (edge-set-marked false (edge-set-id (:next-id w) e))) true))
@@ -1520,9 +1520,9 @@
 
 (a/theorem jwy-upd-id [xd :- (List Nat), w :- World, y :- Nat, f :- (=> EdgeRow EdgeRow),
                        hid :- (forall [e :- EdgeRow] (= (edge-id (f e)) (edge-id e)))]
-  (=> (= (g5-rest xd w) true) (= (jwy xd (fn [as :- (List ActRow), q :- EdgeRow] false) y (edge-upd w y f)) true))
+  (=> (= (i5-dep-final-rest xd w) true) (= (jwy xd (fn [as :- (List ActRow), q :- EdgeRow] false) y (edge-upd w y f)) true))
   (intro h)
-  (simp only [g5-rest] at h)
+  (simp only [i5-dep-final-rest] at h)
   (simp only [jwy edge-upd set-edges])
   (apply (tbl-all-upd EdgeRow edge-id y f _ _ _ _ (:edges w) h))
   (intros q hq hx)
@@ -1531,11 +1531,11 @@
   (intros q hq hx)
   (simp only [jm jn hq Bool.true_or]))
 
-(a/theorem g5-remove-jwy [xd :- (List Nat), w :- World, y :- Nat]
-  (=> (= (inv-sample (remove-edge w y)) true) (= (jwy xd (fn [as :- (List ActRow), q :- EdgeRow] false) y w) true)
-      (= (g5 xd (remove-edge w y)) true))
+(a/theorem i5-dep-final-remove-jwy [xd :- (List Nat), w :- World, y :- Nat]
+  (=> (= (well-formed (remove-edge w y)) true) (= (jwy xd (fn [as :- (List ActRow), q :- EdgeRow] false) y w) true)
+      (= (i5-dep-final xd (remove-edge w y)) true))
   (intros hs h)
-  (exact (g5-intro xd _ hs (jw-false-end xd _ (jwy-remove xd (fn [as :- (List ActRow), q :- EdgeRow] false) y w h)))))
+  (exact (i5-dep-final-intro xd _ hs (jw-false-end xd _ (jwy-remove xd (fn [as :- (List ActRow), q :- EdgeRow] false) y w h)))))
 
 (a/theorem reread-ok5 [xd :- (List Nat), w :- World, d :- Nat, c :- Nat, s :- SourceRow, r :- EdgeRow]
   (=> (= (fin-st (:sources w) (:tasks w) d) false) (= (Nat.beq (:debtor r) d) true)
@@ -1546,55 +1546,55 @@
   (simp only [edge-reread e]) (exact hf)
   (exact (dfk-nonfinal xd _ _ f2)))
 
-(tree/restate! G5 '[inv-comp-upd inv-run-upd])
-(a/theorem g5-track-raw [x5d :- (List Nat), w :- World, r :- RunRow, x :- Nat, s :- SourceRow, k :- Nat]
+(tree/restate! G5 '[well-formed-comp-upd well-formed-run-upd])
+(a/theorem i5-dep-final-track-raw [x5d :- (List Nat), w :- World, r :- RunRow, x :- Nat, s :- SourceRow, k :- Nat]
   (=> (= (comp-has w (:of r)) true) (= (source-find w x) (Option.some SourceRow s)) (= (trackable s) true)
-      (= (g5 x5d w) true) (= (g5 x5d (track-raw w r x s k)) true))
+      (= (i5-dep-final x5d w) true) (= (i5-dep-final x5d (track-raw w r x s k)) true))
   (intros hc hs hk h)
-  (have hs0 := (g5-sample x5d w h))
-  (have hr0 := (g5-rest-of x5d w h))
-  (have h2 (= (g5 x5d (match (site-edge (:edges w) (:of r) (:effect-index r) x)
+  (have hs0 := (i5-dep-final-well-formed x5d w h))
+  (have hr0 := (i5-dep-final-rest-of x5d w h))
+  (have h2 (= (i5-dep-final x5d (match (site-edge (:edges w) (:of r) (:effect-index r) x)
                         [none (track-new w r x s k)]
                         [(some e) (comp-upd (track-fin s (:id e) (edge-upd w (:id e) (edge-reread (track-cont r k) s)))
                                             (:of r) (comp-consume-adopt (:effect-index r) x))])) true))
   (cases he (site-edge (:edges w) (:of r) (:effect-index r) x)) (case' [some e]) (case' [none])
   (simp only [track-new])
   (have ins := (track-edge-ok w r x s k hc hs))
-  (have t1 (= (g5 x5d (track-fin s (:next-id w) (insert-edge-fresh w (track-edge r x s k)))) true))
+  (have t1 (= (i5-dep-final x5d (track-fin s (:next-id w) (insert-edge-fresh w (track-edge r x s k)))) true))
   (cases ho (:open s))
   (case [true]
     (simp only [track-fin ho])
     (have fx (= (fin-st (:sources w) (:tasks w) (:debtor (track-edge r x s k))) false))
     (simp only [track-edge]) (rw [(fin-of-find w x s hs)]) (exact (sfin-track s hk ho))
-    (exact (g5-insert-edge-fresh x5d w (track-edge r x s k) (dfk-nonfinal x5d _ _ fx) ins h)))
+    (exact (i5-dep-final-insert-edge-fresh x5d w (track-edge r x s k) (dfk-nonfinal x5d _ _ fx) ins h)))
   (case [false]
     (simp only [track-fin ho])
-    (exact (g5-remove-jwy x5d _ (:next-id w) (inv-remove-edge _ (:next-id w) (insert-edge-fresh-inv-sample w (track-edge r x s k) ins hs0))
+    (exact (i5-dep-final-remove-jwy x5d _ (:next-id w) (well-formed-remove-edge _ (:next-id w) (well-formed-insert-edge-fresh w (track-edge r x s k) ins hs0))
              (jwy-ins x5d w (track-edge r x s k) hr0))))
-  (exact (g5-comp-upd x5d _ (:of r) (comp-consume-adopt (:effect-index r) x) (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _) t1))
+  (exact (i5-dep-final-comp-upd x5d _ (:of r) (comp-consume-adopt (:effect-index r) x) (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _) t1))
   (have sm := (site-edge-mem (:edges w) (:of r) (:effect-index r) x e he))
-  (have kx0 := (kx-of-mem w e hs0 (And.left sm)))
-  (have t2 (= (g5 x5d (track-fin s (:id e) (edge-upd w (:id e) (edge-reread (track-cont r k) s)))) true))
+  (have kx0 := (edge-debtor-kept-of-mem w e hs0 (And.left sm)))
+  (have t2 (= (i5-dep-final x5d (track-fin s (:id e) (edge-upd w (:id e) (edge-reread (track-cont r k) s)))) true))
   (cases ho (:open s))
   (case [true]
     (simp only [track-fin ho])
     (have fx (= (fin-st (:sources w) (:tasks w) x) false)) (rw [(fin-of-find w x s hs)]) (exact (sfin-track s hk ho))
     (have ex (= (:debtor e) x)) (exact (Nat.eq_of_beq_eq_true (And.right sm)))
     (have fx2 (= (fin-st (:sources w) (:tasks w) (:debtor e)) false)) (rw [ex]) (exact fx)
-    (exact (g5-edge-upd-q x5d w (:id e) (edge-reread (track-cont r k) s) (edge-reread-edge-id _ _) (edge-reread-kind _ _)
+    (exact (i5-dep-final-edge-upd-q x5d w (:id e) (edge-reread (track-cont r k) s) (edge-reread-edge-id _ _) (edge-reread-kind _ _)
              (edge-reread-creditor _ _) (edge-reread-debtor _ _) (edge-reread-marked _ _)
-             (g5-kx-q x5d (:id e) (:debtor e) w _
+             (i5-dep-final-edge-debtor-kept-q x5d (:id e) (:debtor e) w _
                (fn [q :- EdgeRow, hq :- (= (Nat.beq (:debtor q) (:debtor e)) true)] (reread-ok5 x5d w (:debtor e) (track-cont r k) s q fx2 hq))
-               (kx-rest-of _ _ w kx0)) h)))
+               (edge-debtor-kept-rest-of _ _ w kx0)) h)))
   (case [false]
     (simp only [track-fin ho])
-    (exact (g5-remove-jwy x5d _ (:id e)
-             (inv-remove-edge _ (:id e) (inv-edge-upd w (:id e) (edge-reread (track-cont r k) s) (edge-reread-edge-id _ _) (edge-reread-kind _ _)
+    (exact (i5-dep-final-remove-jwy x5d _ (:id e)
+             (well-formed-remove-edge _ (:id e) (well-formed-edge-upd w (:id e) (edge-reread (track-cont r k) s) (edge-reread-edge-id _ _) (edge-reread-kind _ _)
                (edge-reread-creditor _ _) (edge-reread-debtor _ _) (edge-reread-marked _ _) hs0))
              (jwy-upd-id x5d w (:id e) (edge-reread (track-cont r k) s) (edge-reread-edge-id _ _) hr0))))
-  (exact (g5-comp-upd x5d _ (:of r) (comp-consume-adopt (:effect-index r) x) (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _) t2))
+  (exact (i5-dep-final-comp-upd x5d _ (:of r) (comp-consume-adopt (:effect-index r) x) (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _) t2))
   (simp only [track-raw])
-  (exact (g5-run-upd x5d _ (:id r) run-tick run-tick-run-id h2)))
+  (exact (i5-dep-final-run-upd x5d _ (:id r) run-tick run-tick-run-id h2)))
 ;; ===========================================================================
 ;; T6: member edges on final debtors are fired by the fast path in the same commit
 ;; ===========================================================================
@@ -1748,11 +1748,11 @@
     (case [none] (simp only [await-step hd hs de-has tbl-any]))
     (case [some e] (simp only [await-step hd hs de-has tbl-any]))))
 
-(a/theorem kx-same [kxy :- Nat, kxd :- Nat, w :- World, P :- (=> EdgeRow Bool),
+(a/theorem edge-debtor-kept-same [kxy :- Nat, kxd :- Nat, w :- World, P :- (=> EdgeRow Bool),
                     hp :- (forall [r :- EdgeRow] (=> (= (Nat.beq (:debtor r) kxd) true) (= (Nat.beq (:id r) kxy) true) (= (P r) true)))]
-  (=> (= (kx-rest kxy kxd w) true) (= (tbl-all (same-id-then edge-id kxy P) (:edges w)) true))
+  (=> (= (edge-debtor-kept-rest kxy kxd w) true) (= (tbl-all (same-id-then edge-id kxy P) (:edges w)) true))
   (intro h)
-  (simp only [kx-rest Bool.and_eq_true] at h)
+  (simp only [edge-debtor-kept-rest Bool.and_eq_true] at h)
   (apply (tbl-all-mono EdgeRow (deb-at kxy kxd) _ _ (:edges w) (And.right h)))
   (intros r hr)
   (cases hx (Nat.beq (:id r) kxy))
@@ -1764,7 +1764,7 @@
     (exact (hp r hr hx))))
 
 (a/theorem jw6-await-step [xd :- (List Nat), r :- RunRow, a :- Nat, mode :- Nat, k :- Nat, acc :- AwAcc, d :- Nat, D :- (List Nat)]
-  (=> (= (inv-sample (:world acc)) true) (= (de-has d (:pairs acc)) false) (= (reach-mem d D) true)
+  (=> (= (well-formed (:world acc)) true) (= (de-has d (:pairs acc)) false) (= (reach-mem d D) true)
       (= (jw xd (esc6 (:pairs acc) D) (:world acc)) true)
       (= (jw xd (esc6 (:pairs (await-step r a mode k acc d)) D) (:world (await-step r a mode k acc d))) true))
   (intros hs hd hm h)
@@ -1786,21 +1786,21 @@
       (simp only [await-step hdp hse])
       (rw [jw-comp-upd])
       (have sm := (site-edge-mem (:edges (:world acc)) (:of r) (:effect-index r) d e hse))
-      (have kx0 := (kx-of-mem (:world acc) e hs (And.left sm)))
+      (have kx0 := (edge-debtor-kept-of-mem (:world acc) e hs (And.left sm)))
       (have ed (= (:debtor e) d)) (exact (Nat.eq_of_beq_eq_true (And.right sm)))
-      (have q := (kx-same (:id e) (:debtor e) (:world acc)
+      (have q := (edge-debtor-kept-same (:id e) (:debtor e) (:world acc)
                    (fn [r0 :- EdgeRow] (jn xd (fin-st (:sources (:world acc)) (:tasks (:world acc))) (esc6 (List.cons DE (DE.mk d (:id e)) (:pairs acc)) D)
                                             (:acts (:world acc)) (edge-reawait (await-cont r mode k) r0)))
                    (fn [r0 :- EdgeRow, h1 :- (= (Nat.beq (:debtor r0) (:debtor e)) true), h2 :- (= (Nat.beq (:id r0) (:id e)) true)]
                      (jn6-new xd (fin-st (:sources (:world acc)) (:tasks (:world acc))) (:pairs acc) D d (:id e) (:acts (:world acc)) (edge-reawait (await-cont r mode k) r0)
                        (Eq.trans (Nat.eq_of_beq_eq_true h1) ed) (Nat.eq_of_beq_eq_true h2) hm))
-                   (kx-rest-of _ _ (:world acc) kx0)))
+                   (edge-debtor-kept-rest-of _ _ (:world acc) kx0)))
       (exact (jw-upd-esc xd _ (:world acc) (:id e) (edge-reawait (await-cont r mode k)) q
                (jw-pairs-cons xd (:pairs acc) D d (:id e) (:world acc) hd h))))))
 
 (a/theorem jw6-await-wire [xd :- (List Nat), r :- RunRow, a :- Nat, mode :- Nat, k :- Nat, D :- (List Nat), T :- (List Nat)]
   (forall [acc :- AwAcc]
-    (=> (= (inv-sample (:world acc)) true) (= (nat-nodup T) true)
+    (=> (= (well-formed (:world acc)) true) (= (nat-nodup T) true)
         (forall [y :- Nat] (=> (= (nat-mem y T) true) (= (de-has y (:pairs acc)) false)))
         (forall [y :- Nat] (=> (= (nat-mem y T) true) (= (reach-mem y D) true)))
         (= (jw xd (esc6 (:pairs acc) D) (:world acc)) true)
@@ -1814,7 +1814,7 @@
     (have dt (= (nat-mem d t) false)) (exact (bnot-true _ (And.left hn)))
     (have md (= (nat-mem d (List.cons Nat d t)) true)) (simp only [nat-mem Nat.beq_refl])
     (have j1 := (jw6-await-step xd r a mode k acc d D hs (hp d md) (hd d md) h))
-    (apply (ih (await-step r a mode k acc d) (inv-await-step r a mode k acc d hs) (And.right hn)))
+    (apply (ih (await-step r a mode k acc d) (well-formed-await-step r a mode k acc d hs) (And.right hn)))
     (intros y hy)
     (have ne (= (Nat.beq d y) false))
     (cases q (Nat.beq d y))
@@ -1829,7 +1829,7 @@
 
 ;; ---- stage 2: the fast path fills the member of every ready debtor (a final one is ready)
 (a/theorem fast-not-final [w :- World, d :- Nat]
-  (=> (= (inv-sample w) true) (= (fast-ready w d) false) (= (fin-st (:sources w) (:tasks w) d) false))
+  (=> (= (well-formed w) true) (= (fast-ready w d) false) (= (fin-st (:sources w) (:tasks w) d) false))
   (intros hs hf)
   (cases hc (comp-find w d))
   (case [none]
@@ -1837,7 +1837,7 @@
     (rw [← deb-final-st]) (exact (And.left hf)))
   (case [some c]
     (have ch (= (comp-has w d) true)) (simp only [comp-has]) (exact (tbl-find-has CompRow comp-id d c (:comps w) hc))
-    (have io := (And.right (And.right (inv-parts w hs))))
+    (have io := (And.right (And.right (well-formed-parts w hs))))
     (have ns (= (tbl-has source-id d (:sources w)) false))
     (cases q (tbl-has source-id d (:sources w)))
     (case [false] (rfl))
@@ -1971,7 +1971,7 @@
       (case [inr s2] (simp only [jm s2 Bool.or_true])))))
 
 (a/theorem jw6-fast [xd :- (List Nat), ps :- (List DE), T :- (List Nat), D :- (List Nat)]
-  (forall [w :- World] (=> (= (inv-sample w) true) (forall [y :- Nat] (=> (= (reach-mem y T) true) (= (reach-mem y D) true)))
+  (forall [w :- World] (=> (= (well-formed w) true) (forall [y :- Nat] (=> (= (reach-mem y T) true) (= (reach-mem y D) true)))
                            (= (jw xd (escf ps T D) w) true)
                            (= (jw xd (escf ps (List.nil Nat) D) (nat-fold (fast-fill ps) w T)) true)))
   (induction T)
@@ -1984,7 +1984,7 @@
     (cases hyd (Nat.beq y d))
     (case [false] (simp only [hyd]) (exact hy))
     (case [true] (simp only [hyd]))
-    (apply (ih (fast-fill ps w d) (inv-fast-fill ps w d hs) hsub2))
+    (apply (ih (fast-fill ps w d) (well-formed-fast-fill ps w d hs) hsub2))
     (cases hr (fast-ready w d))
     (case [false]
       (simp only [fast-fill hr])
@@ -2041,7 +2041,7 @@
       (simp only [reach-mem hb] at b2)
       (simp only [jn escn esc6 b1 b2 b3 b4 Bool.and_self Bool.or_true]))))
 (a/theorem escn-keep [xd :- (List Nat), F :- (=> Nat Bool), ps :- (List DE), d :- Nat, t :- (List Nat), as :- (List ActRow), e :- EdgeRow]
-  (=> (= (fin-keep as d e) true) (= (jn xd F (escn ps (List.cons Nat d t)) as e) true) (= (jn xd F (escn ps t) as e) true))
+  (=> (= (finalize-keeps as d e) true) (= (jn xd F (escn ps (List.cons Nat d t)) as e) true) (= (jn xd F (escn ps t) as e) true))
   (intros hk h)
   (simp only [jn Bool.or_eq_true] at h)
   (cases h)
@@ -2059,66 +2059,66 @@
         (cases hp (Nat.beq (:phase e) ph-armed))
         (case [false] (simp only [jn (dfk-phase xd F e hp) Bool.true_or]))
         (case [true]
-          (simp only [fin-keep fin-drop hd hp hb m Bool.not_false Bool.and_self Bool.not_true] at hk)
+          (simp only [finalize-keeps finalize-drops hd hp hb m Bool.not_false Bool.and_self Bool.not_true] at hk)
           (cases hk))))
     (case [false]
       (simp only [reach-mem hb] at b2)
       (simp only [jn escn esc6 b1 b2 b3 b4 Bool.and_self Bool.or_true]))))
 (a/theorem jw-fin-one [xd :- (List Nat), ps :- (List DE), d :- Nat, t :- (List Nat), w :- World]
-  (=> (= (jw xd (escn ps (List.cons Nat d t)) w) true) (= (jw xd (escn ps t) (fin-if-final w d)) true))
+  (=> (= (jw xd (escn ps (List.cons Nat d t)) w) true) (= (jw xd (escn ps t) (finalize-if-final w d)) true))
   (intro h)
   (simp only [jw] at h)
   (cases hf (deb-final w d))
   (case [false]
-    (simp only [fin-if-final hf]) (simp only [jw])
+    (simp only [finalize-if-final hf]) (simp only [jw])
     (have nf (= (fin-st (:sources w) (:tasks w) d) false)) (rw [← deb-final-st]) (exact hf)
     (apply (tbl-all-mono EdgeRow _ _ _ (:edges w) h))
     (intros e he) (exact (escn-nf xd _ ps d t (:acts w) e nf he)))
   (case [true]
-    (simp only [fin-if-final hf]) (rw [fd-one])
+    (simp only [finalize-if-final hf]) (rw [fd-one])
     (simp only [jw finalize-one drop-edges set-comps set-edges])
-    (exact (tbl-all-filter-imp EdgeRow _ _ (fin-keep (:acts w) d)
+    (exact (tbl-all-filter-imp EdgeRow _ _ (finalize-keeps (:acts w) d)
              (fn [e :- EdgeRow, h1 :- (= (jn xd (fin-st (:sources w) (:tasks w)) (escn ps (List.cons Nat d t)) (:acts w) e) true),
-                  h2 :- (= (fin-keep (:acts w) d e) true)]
+                  h2 :- (= (finalize-keeps (:acts w) d e) true)]
                (escn-keep xd _ ps d t (:acts w) e h2 h1))
              (:edges w) h))))
 (a/theorem jw-fin-fold [xd :- (List Nat), ps :- (List DE), D :- (List Nat)]
-  (forall [w :- World] (=> (= (jw xd (escn ps D) w) true) (= (jw xd (escn ps (List.nil Nat)) (nat-fold fin-if-final w D)) true)))
+  (forall [w :- World] (=> (= (jw xd (escn ps D) w) true) (= (jw xd (escn ps (List.nil Nat)) (nat-fold finalize-if-final w D)) true)))
   (induction D)
   (case [nil] (intros w h) (simp only [nat-fold]) (exact h))
   (case [cons d t ih] (intros w h) (simp only [nat-fold]) (exact (ih _ (jw-fin-one xd ps d t w h)))))
 (a/theorem jw-escn-end [xd :- (List Nat), ps :- (List DE), w :- World]
-  (=> (= (jw xd (escn ps (List.nil Nat)) w) true) (= (g5-rest xd w) true))
-  (intro h) (simp only [jw] at h) (simp only [g5-rest])
+  (=> (= (jw xd (escn ps (List.nil Nat)) w) true) (= (i5-dep-final-rest xd w) true))
+  (intro h) (simp only [jw] at h) (simp only [i5-dep-final-rest])
   (apply (tbl-all-mono EdgeRow _ _ _ (:edges w) h))
   (intros e he) (simp only [jn escn esc6 reach-mem Bool.false_and Bool.and_false Bool.or_false] at he) (exact he))
 
 (a/theorem jw6-end [xd :- (List Nat), ps :- (List DE), w :- World]
-  (=> (= (jw xd (esc6 ps (List.nil Nat)) w) true) (= (g5-rest xd w) true))
-  (intro h) (simp only [jw] at h) (simp only [g5-rest])
+  (=> (= (jw xd (esc6 ps (List.nil Nat)) w) true) (= (i5-dep-final-rest xd w) true))
+  (intro h) (simp only [jw] at h) (simp only [i5-dep-final-rest])
   (apply (tbl-all-mono EdgeRow _ _ _ (:edges w) h))
   (intros e he) (simp only [jn esc6 reach-mem Bool.false_and Bool.and_false Bool.or_false] at he) (exact he))
 (a/theorem jw6-start [xd :- (List Nat), D :- (List Nat), w :- World]
-  (=> (= (g5-rest xd w) true) (= (jw xd (esc6 (List.nil DE) D) w) true))
-  (intro h) (simp only [g5-rest] at h) (simp only [jw])
+  (=> (= (i5-dep-final-rest xd w) true) (= (jw xd (esc6 (List.nil DE) D) w) true))
+  (intro h) (simp only [i5-dep-final-rest] at h) (simp only [jw])
   (apply (tbl-all-mono EdgeRow _ _ _ (:edges w) h))
   (intros e he) (simp only [jn he Bool.true_or]))
 
-(tree/restate! G5 '[inv-await-pre inv-park-if inv-fin-if-final nat-fold-inv inv-fast-fill inv-act-upd])
-(a/theorem g5-await-raw [x5d :- (List Nat), w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
-  (=> (= (g5 x5d w) true) (= (g5 x5d (await-raw w r ds mode k mine)) true))
+(tree/restate! G5 '[well-formed-await-pre well-formed-park-if well-formed-finalize-if-final well-formed-nat-fold well-formed-fast-fill well-formed-act-upd])
+(a/theorem i5-dep-final-await-raw [x5d :- (List Nat), w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
+  (=> (= (i5-dep-final x5d w) true) (= (i5-dep-final x5d (await-raw w r ds mode k mine)) true))
   (intro h)
-  (have h0 := (g5-await-pre x5d w r ds mode k mine h))
-  (have hs0 := (g5-sample x5d _ h0))
+  (have h0 := (i5-dep-final-await-pre x5d w r ds mode k mine h))
+  (have hs0 := (i5-dep-final-well-formed x5d _ h0))
   (have j2 (= (jw x5d (esc6 (:pairs (await-acc w r ds mode k mine)) (nat-distinct ds)) (:world (await-acc w r ds mode k mine))) true))
   (exact (jw6-await-wire x5d r (:next-id w) mode k (nat-distinct ds) (nat-distinct ds)
            (AwAcc.mk (await-pre w r ds mode k mine) (List.nil DE) true) hs0 (distinct-nodup ds)
            (fn [y :- Nat, hy :- (= (nat-mem y (nat-distinct ds)) true)] (Eq.refl false))
            (fn [y :- Nat, hy :- (= (nat-mem y (nat-distinct ds)) true)] (Eq.trans (reach-mem-nat-mem y (nat-distinct ds)) hy))
-           (jw6-start x5d (nat-distinct ds) (await-pre w r ds mode k mine) (g5-rest-of x5d _ h0))))
-  (have hs2 (= (inv-sample (:world (await-acc w r ds mode k mine))) true))
-  (exact (inv-await-wire r (:next-id w) mode k (nat-distinct ds) (AwAcc.mk (await-pre w r ds mode k mine) (List.nil DE) true) hs0))
-  (have hs3 := (inv-act-upd (:world (await-acc w r ds mode k mine)) (:next-id w)
+           (jw6-start x5d (nat-distinct ds) (await-pre w r ds mode k mine) (i5-dep-final-rest-of x5d _ h0))))
+  (have hs2 (= (well-formed (:world (await-acc w r ds mode k mine))) true))
+  (exact (well-formed-await-wire r (:next-id w) mode k (nat-distinct ds) (AwAcc.mk (await-pre w r ds mode k mine) (List.nil DE) true) hs0))
+  (have hs3 := (well-formed-act-upd (:world (await-acc w r ds mode k mine)) (:next-id w)
                  (act-set-members (mk-members (:pairs (await-acc w r ds mode k mine)) 0 ds))
                  (act-set-members-id (mk-members (:pairs (await-acc w r ds mode k mine)) 0 ds)) hs2))
   (have j3 := (Eq.trans (jw6-act-upd x5d (:pairs (await-acc w r ds mode k mine)) (nat-distinct ds) (:world (await-acc w r ds mode k mine)) (:next-id w)
@@ -2126,88 +2126,88 @@
   (have j4 := (jw6-fast x5d (:pairs (await-acc w r ds mode k mine)) (nat-distinct ds) (nat-distinct ds) _ hs3
                 (fn [y :- Nat, hy :- (= (reach-mem y (nat-distinct ds)) true)] hy)
                 (jw-escf x5d (:pairs (await-acc w r ds mode k mine)) (nat-distinct ds) (nat-distinct ds) _ j3)))
-  (have hs4 := (nat-fold-inv (fast-fill (:pairs (await-acc w r ds mode k mine))) (inv-fast-fill (:pairs (await-acc w r ds mode k mine)))
+  (have hs4 := (well-formed-nat-fold (fast-fill (:pairs (await-acc w r ds mode k mine))) (well-formed-fast-fill (:pairs (await-acc w r ds mode k mine)))
                  (nat-distinct ds) _ hs3))
   (have j5 := (jw6-escn x5d (:pairs (await-acc w r ds mode k mine)) (nat-distinct ds) _ j4))
   (have j6 := (Eq.trans (jw-park-if x5d (escn (:pairs (await-acc w r ds mode k mine)) (nat-distinct ds)) (nat-fold (fast-fill (:pairs (await-acc w r ds mode k mine))) (act-upd (:world (await-acc w r ds mode k mine)) (:next-id w) (act-set-members (mk-members (:pairs (await-acc w r ds mode k mine)) 0 ds))) (nat-distinct ds)) (:next-id w) (:id r)) j5))
   (have j7 := (jw-fin-fold x5d (:pairs (await-acc w r ds mode k mine)) (nat-distinct ds) _ j6))
-  (have hs7 := (nat-fold-inv fin-if-final inv-fin-if-final (nat-distinct ds) _ (inv-park-if _ (:next-id w) (:id r) hs4)))
+  (have hs7 := (well-formed-nat-fold finalize-if-final well-formed-finalize-if-final (nat-distinct ds) _ (well-formed-park-if _ (:next-id w) (:id r) hs4)))
   (simp only [await-raw await-post])
-  (exact (g5-intro x5d _ hs7 (jw-escn-end x5d (:pairs (await-acc w r ds mode k mine)) _ j7))))
+  (exact (i5-dep-final-intro x5d _ hs7 (jw-escn-end x5d (:pairs (await-acc w r ds mode k mine)) _ j7))))
 
 ;; ===========================================================================
 ;; Part C. The copy, Rule R and the step
 ;; ===========================================================================
 
-;; T11's dispatch: the entry edge is the world's (kx through the cut); after the cascade's lemmas
-(tree/restate! G5 '[inv-cancel-pred inv-cut-suffix inv-new-run-of])
-(a/theorem g5-dispatch-raw [x5d :- (List Nat), w :- World, c :- CompRow]
-  (=> (= (g5 x5d w) true) (= (g5 x5d (dispatch-raw w c)) true))
+;; T11's dispatch: the entry edge is the world's (edge-debtor-kept through the cut); after the cascade's lemmas
+(tree/restate! G5 '[well-formed-cancel-pred well-formed-cut-suffix well-formed-new-run-of])
+(a/theorem i5-dep-final-dispatch-raw [x5d :- (List Nat), w :- World, c :- CompRow]
+  (=> (= (i5-dep-final x5d w) true) (= (i5-dep-final x5d (dispatch-raw w c)) true))
   (intro h)
-  (have h1 := (g5-cancel-pred x5d w c h))
+  (have h1 := (i5-dep-final-cancel-pred x5d w c h))
   (cases he (entry-edge w (:id c))) (case' [some e]) (case' [none])
   (simp only [dispatch-raw he])
-  (exact (g5-new-run-of x5d _ c 0 (g5-cut-suffix x5d _ (:id c) false 0 0 h1)))
+  (exact (i5-dep-final-new-run-of x5d _ c 0 (i5-dep-final-cut-suffix x5d _ (:id c) false 0 0 h1)))
   (simp only [dispatch-raw he])
-  (have k0 := (kx-of-mem w e (g5-sample x5d w h) (entry-mem w (:id c) e he)))
-  (have k1 := (kx-cut-suffix (:id e) (:debtor e) _ (:id c) true (:at e) (:id e) (kx-cancel-pred (:id e) (:debtor e) w c k0)))
-  (exact (g5-new-run-of x5d _ c _ (g5-consume-entry x5d _ e k1 (g5-cut-suffix x5d _ (:id c) true (:at e) (:id e) h1)))))
+  (have k0 := (edge-debtor-kept-of-mem w e (i5-dep-final-well-formed x5d w h) (entry-mem w (:id c) e he)))
+  (have k1 := (edge-debtor-kept-cut-suffix (:id e) (:debtor e) _ (:id c) true (:at e) (:id e) (edge-debtor-kept-cancel-pred (:id e) (:debtor e) w c k0)))
+  (exact (i5-dep-final-new-run-of x5d _ c _ (i5-dep-final-consume-entry x5d _ e k1 (i5-dep-final-cut-suffix x5d _ (:id c) true (:at e) (:id e) h1)))))
 
-(tree/restate! G5 '[raw-inv inv-normalize])
+(tree/restate! G5 '[well-formed-raw well-formed-normalize])
 
 ;; ===========================================================================
 ;; Rule R and the step
 ;; ===========================================================================
 
-(a/theorem g5-rule-r-round [xd :- (List Nat), w :- World]
-  (=> (= (g5 xd w) true) (= (filter-safe (normalize w)) true) (= (g5 xd (rule-r-round w)) true))
+(a/theorem i5-dep-final-rule-r-round [xd :- (List Nat), w :- World]
+  (=> (= (i5-dep-final xd w) true) (= (filter-safe (normalize w)) true) (= (i5-dep-final xd (rule-r-round w)) true))
   (intros h hf)
   (simp only [rule-r-round])
   (rw [rule-r-filter-eq])
-  (exact (g5-filter-world xd _ (keep-fn (normalize w)) (g5-normalize xd w h) hf)))
+  (exact (i5-dep-final-filter-world xd _ (keep-fn (normalize w)) (i5-dep-final-normalize xd w h) hf)))
 
-(a/theorem g5-rr-loop [xd :- (List Nat), fuel :- (List Nat)]
-  (forall [w0 :- World] (=> (= (g5 xd w0) true) (= (rr-safe fuel w0) true) (= (g5 xd (rr-loop fuel (rule-r-round w0))) true)))
+(a/theorem i5-dep-final-rule-r-loop [xd :- (List Nat), fuel :- (List Nat)]
+  (forall [w0 :- World] (=> (= (i5-dep-final xd w0) true) (= (rounds-safe-loop fuel w0) true) (= (i5-dep-final xd (rule-r-loop fuel (rule-r-round w0))) true)))
   (induction fuel)
-  (case [nil] (intros w0 h hs) (simp only [rr-safe] at hs) (simp only [rr-loop]) (exact (g5-rule-r-round xd w0 h hs)))
+  (case [nil] (intros w0 h hs) (simp only [rounds-safe-loop] at hs) (simp only [rule-r-loop]) (exact (i5-dep-final-rule-r-round xd w0 h hs)))
   (case [cons x f ih]
     (intros w0 h hs)
-    (simp only [rr-safe Bool.and_eq_true] at hs)
-    (have h1 := (g5-rule-r-round xd w0 h (And.left hs)))
+    (simp only [rounds-safe-loop Bool.and_eq_true] at hs)
+    (have h1 := (i5-dep-final-rule-r-round xd w0 h (And.left hs)))
     (cases ho (no-orphans (rule-r-round w0)))
-    (case [false] (simp only [ho] at hs) (simp only [rr-loop ho]) (exact (ih (rule-r-round w0) h1 (And.right hs))))
-    (case [true] (simp only [rr-loop ho]) (exact h1))))
+    (case [false] (simp only [ho] at hs) (simp only [rule-r-loop ho]) (exact (ih (rule-r-round w0) h1 (And.right hs))))
+    (case [true] (simp only [rule-r-loop ho]) (exact h1))))
 
-(a/theorem g5-rule-r [xd :- (List Nat), w :- World] (=> (= (g5 xd w) true) (= (rule-r-safe w) true) (= (g5 xd (rule-r w)) true))
-  (intros h hs) (simp only [rule-r-safe] at hs) (simp only [rule-r]) (exact (g5-rr-loop xd (rr-fuel w) w h hs)))
+(a/theorem i5-dep-final-rule-r [xd :- (List Nat), w :- World] (=> (= (i5-dep-final xd w) true) (= (rule-r-safe w) true) (= (i5-dep-final xd (rule-r w)) true))
+  (intros h hs) (simp only [rule-r-safe] at hs) (simp only [rule-r]) (exact (i5-dep-final-rule-r-loop xd (rule-r-fuel w) w h hs)))
 
-(a/theorem step-g5 [xd :- (List Nat), w :- World, it :- Item]
-  (=> (= (g5 xd w) true) (= (rule-r-safe (:world (raw w it))) true) (= (g5 xd (:world (world-step w it))) true))
+(a/theorem step-i5-dep-final [xd :- (List Nat), w :- World, it :- Item]
+  (=> (= (i5-dep-final xd w) true) (= (rule-r-safe (:world (raw w it))) true) (= (i5-dep-final xd (:world (world-step w it))) true))
   (intros h hs)
   (cases ha (:accepted (raw w it)))
   (case [false] (have e1 := (step-refuse w it ha)) (simp only [e1 refuse]) (exact h))
-  (case [true] (have e2 := (step-accepted w it ha)) (rw [e2]) (exact (g5-rule-r xd (:world (raw w it)) (raw-g5 xd w it h) hs))))
+  (case [true] (have e2 := (step-accepted w it ha)) (rw [e2]) (exact (i5-dep-final-rule-r xd (:world (raw w it)) (i5-dep-final-raw xd w it h) hs))))
 
-(a/theorem g5-empty [] (= (g5 (List.nil Nat) empty-world) true) (rfl))
+(a/theorem i5-dep-final-empty [] (= (i5-dep-final (List.nil Nat) empty-world) true) (rfl))
 
-;; the combined bundle: p3f = p3e && g5 [] (no honest hypothesis)
-(a/defn p3f [w :- World] Bool (Bool.and (p3e w) (g5 (List.nil Nat) w)))
-(a/theorem p3f-parts [w :- World] (=> (= (p3f w) true) (And (= (p3e w) true) (= (g5 (List.nil Nat) w) true)))
-  (intro h) (simp only [p3f Bool.and_eq_true] at h) (exact h))
-(a/theorem p3f-empty [] (= (p3f empty-world) true) (rfl))
-(a/theorem step-p3f [w :- World, it :- Item] (=> (= (p3f w) true) (= (p3f (:world (world-step w it))) true))
+;; the combined bundle: chain-to-i5-dep-final = chain-to-i1-scopes && i5-dep-final [] (no honest hypothesis)
+(a/defn chain-to-i5-dep-final [w :- World] Bool (Bool.and (chain-to-i1-scopes w) (i5-dep-final (List.nil Nat) w)))
+(a/theorem chain-to-i5-dep-final-parts [w :- World] (=> (= (chain-to-i5-dep-final w) true) (And (= (chain-to-i1-scopes w) true) (= (i5-dep-final (List.nil Nat) w) true)))
+  (intro h) (simp only [chain-to-i5-dep-final Bool.and_eq_true] at h) (exact h))
+(a/theorem chain-to-i5-dep-final-empty [] (= (chain-to-i5-dep-final empty-world) true) (rfl))
+(a/theorem step-chain-to-i5-dep-final [w :- World, it :- Item] (=> (= (chain-to-i5-dep-final w) true) (= (chain-to-i5-dep-final (:world (world-step w it))) true))
   (intro h)
-  (have p := (p3f-parts w h))
-  (have pe := (p3e-parts w (And.left p)))
-  (have pd := (p3d-parts w (And.left pe)))
-  (have pc := (p3c-parts w (And.left pd)))
-  (have a1 := (step-p3e w it (And.left p)))
-  (have a2 := (step-g5 (List.nil Nat) w it (And.right p) (step-rule-r-safe w it (And.left pc))))
-  (simp only [p3f a1 a2 Bool.and_self]))
+  (have p := (chain-to-i5-dep-final-parts w h))
+  (have pe := (chain-to-i1-scopes-parts w (And.left p)))
+  (have pd := (chain-to-i11a-parts w (And.left pe)))
+  (have pc := (chain-to-i10-current-parts w (And.left pd)))
+  (have a1 := (step-chain-to-i1-scopes w it (And.left p)))
+  (have a2 := (step-i5-dep-final (List.nil Nat) w it (And.right p) (step-rule-r-safe w it (And.left pc))))
+  (simp only [chain-to-i5-dep-final a1 a2 Bool.and_self]))
 
 ;; Theorem: literal I5, dep-final clause (no armed dep edge has a final debtor), through every step
 (a/theorem step-lit-i5-dep-final-total [w :- World, it :- Item]
-  (=> (= (p3f w) true) (= (lit-i5-dep-final (:world (world-step w it))) true))
-  (intro h) (exact (g5-lit _ (g5-rest-of (List.nil Nat) _ (And.right (p3f-parts _ (step-p3f w it h)))))))
-(a/theorem lit-i5-dep-final-of [w :- World] (=> (= (p3f w) true) (= (lit-i5-dep-final w) true))
-  (intro h) (exact (g5-lit w (g5-rest-of (List.nil Nat) w (And.right (p3f-parts w h))))))
+  (=> (= (chain-to-i5-dep-final w) true) (= (lit-i5-dep-final (:world (world-step w it))) true))
+  (intro h) (exact (i5-dep-final-lit _ (i5-dep-final-rest-of (List.nil Nat) _ (And.right (chain-to-i5-dep-final-parts _ (step-chain-to-i5-dep-final w it h)))))))
+(a/theorem lit-i5-dep-final-of [w :- World] (=> (= (chain-to-i5-dep-final w) true) (= (lit-i5-dep-final w) true))
+  (intro h) (exact (i5-dep-final-lit w (i5-dep-final-rest-of (List.nil Nat) w (And.right (chain-to-i5-dep-final-parts w h))))))

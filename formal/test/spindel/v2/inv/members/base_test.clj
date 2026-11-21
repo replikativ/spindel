@@ -11,14 +11,14 @@
             [spindel.v2.engine-test :as fixtures]))
 
 (def theorems
-  '[p3la-parts p3la-p3l p3la-ar p3la-ekb p3la-p3i p3la-p3b p3la-g7 p3la-ga p3la-empty step-p3la])
+  '[chain-to-edge-kinds-parts chain-to-edge-kinds-prev chain-to-edge-kinds-alive-run-latest chain-to-edge-kinds-edge-kinds chain-to-edge-kinds-implies-chain-to-i8-closed chain-to-edge-kinds-implies-chain-start chain-to-edge-kinds-i7-idle chain-to-edge-kinds-acts-parked chain-to-edge-kinds-empty step-chain-to-edge-kinds])
 
 (deftest integration-theorems-kernel-checked
   (doseq [name theorems] (certification/checked-declaration name))
   (is (= {:parameters '[w :- World, it :- Item]
-          :statement '(=> (= (p3la w) true) (= (p3la (:world (world-step w it))) true))}
-         (certification/source-statement "spindel/v2/inv/members/base.clj" 'step-p3la)))
-  (is (true? (base/p3la s/empty-world))))
+          :statement '(=> (= (chain-to-edge-kinds w) true) (= (chain-to-edge-kinds (:world (world-step w it))) true))}
+         (certification/source-statement "spindel/v2/inv/members/base.clj" 'step-chain-to-edge-kinds)))
+  (is (true? (base/chain-to-edge-kinds s/empty-world))))
 
 (defn- current-computation-runs? [w]
   (every? (fn [run]
@@ -38,8 +38,8 @@
           (:edges w)))
 
 (defn- check-fields [w]
-  (is (= (current-computation-runs? w) (ar/ar-rest w)))
-  (is (= (layer-one-edge-kinds? w) (hm6/ekb-rest w))))
+  (is (= (current-computation-runs? w) (ar/alive-run-latest-rest w)))
+  (is (= (layer-one-edge-kinds? w) (hm6/edge-kinds-rest w))))
 
 (deftest predicates-reject-malformed-premises
   (let [w (fixtures/prefix-world)]
@@ -51,7 +51,7 @@
       (let [bad (update w :comps (fn [rows] (mapv #(assoc % :run 0) rows)))]
         (check-fields bad)
         (is (false? (current-computation-runs? bad)))
-        (is (false? (ar/ar-rest bad)))
+        (is (false? (ar/alive-run-latest-rest bad)))
         (let [dead (update bad :runs (fn [rows] (mapv #(assoc % :act s/act-done) rows)))]
           (check-fields dead)
           (is (true? (current-computation-runs? dead))))))
@@ -61,7 +61,7 @@
         (let [bad (assoc w :edges [edge])]
           (check-fields bad)
           (is (false? (layer-one-edge-kinds? bad)))
-          (is (false? (hm6/ekb-rest bad))))))
+          (is (false? (hm6/edge-kinds-rest bad))))))
     (testing "live run references must lie inside the allocator"
       (let [bad (update w :runs (fn [rows] (mapv #(assoc % :of (:next-id w) :act s/act-active) rows)))]
         (check-fields bad)
@@ -74,7 +74,7 @@
       (check-fields w)
       (is (current-computation-runs? w))
       (is (layer-one-edge-kinds? w))
-      (is (true? (base/p3la w)))
+      (is (true? (base/chain-to-edge-kinds w)))
       (when (< n 160)
         (let [item (if (zero? n) (fixtures/host-unawait 999999) (fixtures/random-item rng w))
               result (engine/world-step w item)]

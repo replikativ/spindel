@@ -1,6 +1,6 @@
 (ns spindel.v2.progress.z59-test
   "Loading spindel.v2.progress.z59 kernel-checks Z#59's two halves: T11 leaves no fired dep edge of the
-  re-entered computation (`z59-t11-no-fired`, on the world the entry is taken from) and a fired edge
+  re-entered computation (`z59-t11-dispatch-no-fired`, on the world the entry is taken from) and a fired edge
   on a written source starts no marking (`z59-fired-starts-none`). Tripwires on the random drivers
   of engine-test and every commit of the oracle samples 7-13:
     - after every accepted T11 dispatch (item 19) through `world-step`, the computation has no fired
@@ -20,7 +20,7 @@
             [spindel.v2.inv-test :as it]))
 
 (def theorems
-  '[z59-earliest-min z59-entry-least z59-cut-p1 z59-cut-edges z59-t11-no-fired z59-armed-creditors-mem
+  '[z59-earliest-min z59-entry-least z59-cut-p1 z59-cut-edges z59-t11-dispatch-no-fired z59-armed-creditors-mem
     z59-fired-starts-none])
 
 (deftest theorems-kernel-checked

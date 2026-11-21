@@ -1,6 +1,6 @@
 (ns spindel.v2.inv.i8-test
   "Loading spindel.v2.inv.i8 kernel-checks literal I8 (closed scopes) through the step (`step-lit-i8-total`,
-  bundle p3i = p3h && g8 []). The bundle, literal I8 and the guard's tripwire `cur-open-ok` (an alive
+  bundle chain-to-i8-closed = chain-to-i1-runs && i8-closed []). The bundle, literal I8 and the guard's tripwire `cur-open-ok` (an alive
   normal task run's current scope is open: the `cur-closed` refusal never fires, obligation P10) run on
   the random drivers of engine-test and on every commit of the oracle samples 7-13."
   (:require [clojure.test :refer [deftest is]]
@@ -14,15 +14,15 @@
             [spindel.v2.inv-test :as it]))
 
 (def theorems
-  '[g8-close-local i8k-close g8-cancel-run-local-x g8-retire-with-x g8-job g8-cascade g8-cascade-done
-    g8-run-cascade-ga step-g8 g8-empty p3i-empty step-p3i step-lit-i8-total])
+  '[i8-closed-close-local i8-closed-keys-ok-close i8-closed-cancel-run-local-x i8-closed-t13-retire-with-subtree-x i8-closed-job i8-closed-cascade i8-closed-cascade-done
+    i8-closed-run-cascade-acts-parked step-i8-closed i8-closed-empty chain-to-i8-closed-empty step-chain-to-i8-closed step-lit-i8-total])
 
 (deftest theorems-kernel-checked
   (doseq [t theorems]
     (is (some? (.lookup ^ansatz.kernel.Env @a/ansatz-env (ansatz.kernel.Name/fromString (str t)))) (str t))))
 
 (defn- checks [w tag]
-  (is (true? (i8/g8 [] w)) (str "g8 " tag))
+  (is (true? (i8/i8-closed [] w)) (str "i8-closed " tag))
   (is (true? (inv/lit-i8-runs w)) (str "lit-i8-runs " tag))
   (is (true? (inv/lit-i8-sources w)) (str "lit-i8-sources " tag))
   (is (true? (i8/cur-open-ok w)) (str "cur-open-ok " tag)))
@@ -40,7 +40,7 @@
             (recur (inc i) w2)))))))
 
 (deftest bundle-random
-  (is (true? (i8/p3i (et/prefix-world))))
+  (is (true? (i8/chain-to-i8-closed (et/prefix-world))))
   (drive 20261181 15 50 false)
   (drive 20261182 15 50 true))
 

@@ -6,6 +6,6 @@
             [spindel.v2.layer2.skip]))
 
 (deftest theorems-kernel-checked
-  (doseq [t '[p3b-skip p3c-skip p3d-skip p3e-skip p3f-skip p3g-skip p3h-skip p3i-skip p3j-skip p3k-skip
-              p3l-skip p3l-skip-ids]]
+  (doseq [t '[chain-start-skip chain-to-i10-current-skip chain-to-i11a-skip chain-to-i1-scopes-skip chain-to-i5-dep-final-skip chain-to-i1-detached-closed-skip chain-to-i1-runs-skip chain-to-i8-closed-skip chain-to-comp-facts-skip chain-to-i14-ordered-skip
+              chain-to-marks-waiting-skip chain-to-marks-waiting-skip-ids]]
     (is (some? (.lookup ^ansatz.kernel.Env @a/ansatz-env (ansatz.kernel.Name/fromString (str t)))) (str t))))

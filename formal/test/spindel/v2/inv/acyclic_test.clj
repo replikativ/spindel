@@ -5,8 +5,8 @@
             [spindel.v2.inv.acyclic :as acyc]))
 
 (def theorems
-  '[cy-acyc-sub cy-acyc-fresh cy-acyc-reparent cy-acyc-of cy-acyc-intro gcy-scope-ins-fresh gcy-set-parent
-    gcy-add-run-scope t-detach-gcy t-open-scope-gcy gcy-spawn-rows raw-gcy gcy-normalize gcy-rule-r step-gcy gcy-empty
+  '[cy-acyc-sub cy-acyc-fresh cy-acyc-reparent cy-acyc-of cy-acyc-intro scope-parents-acyclic-scope-ins-fresh scope-parents-acyclic-set-parent
+    scope-parents-acyclic-add-run-scope scope-parents-acyclic-t-detach scope-parents-acyclic-t-open-scope scope-parents-acyclic-spawn-rows scope-parents-acyclic-raw scope-parents-acyclic-normalize scope-parents-acyclic-rule-r step-scope-parents-acyclic scope-parents-acyclic-empty
     step-acyc acyc-empty step-acyclic step-acyclic-reach])
 
 (deftest theorems-kernel-checked

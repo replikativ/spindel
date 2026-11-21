@@ -1,10 +1,10 @@
 (ns spindel.v2.inv.members.complete-test
-  "Loading spindel.v2.inv.members.complete kernel-checks T12 complete and settle for the h-mem2 bundle h3."
+  "Loading spindel.v2.inv.members.complete kernel-checks T12 complete and settle for the h-mem2 bundle current-members."
   (:require [clojure.test :refer [deftest is]]
             [spindel.v2.inv.members.complete]))
 
-(def theorems '[h16-complete-task-x h16-se-fold h16-undo2 h16-dis h16-settle-step h16-settle-loop h16-settle-x
-                h16-complete-comp-x h16-complete-pre h16-complete-raw-x h16-t12-h3])
+(def theorems '[current-members-complete-task-x current-members-se-fold current-members-undo2 current-members-dis current-members-settle-step current-members-settle-loop current-members-settle-x
+                current-members-complete-comp-x current-members-complete-pre current-members-complete-raw-x current-members-t12-complete])
 
 (deftest proved-without-sorry
   (let [src (slurp "src/spindel/v2/inv/members/complete.clj")]

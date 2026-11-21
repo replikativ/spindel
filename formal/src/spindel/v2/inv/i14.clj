@@ -6,7 +6,7 @@
   Witness. A validity entry is recorded at demotion from a dep edge of C (rule.clj `edge-valid`);
   it carries two model-only fields (not projected): `stamp` = the allocator (next-id) and `crank` =
   C's I12 rank at that moment. An entry's key is (stamp, crank); `prec14 v u` (u below v) is
-  stamp(v) < stamp(u), or equal stamps and crank(u) < crank(v). The invariant `iv14`: for every
+  stamp(v) < stamp(u), or equal stamps and crank(u) < crank(v). The invariant `i14-idle-entries-ok`: for every
   idle C and entry v of C
     (a) stamp(v) <= next-id;
     (b) for every computation row D with v's debtor id: stamp(v) < next-id or rank(D) < crank(v),
@@ -167,14 +167,14 @@
   (Bool.and (Nat.ble (:stamp v) n) (tbl-all (deb14 n v) cs)))
 (a/defn ivc14 [cs :- (List CompRow), n :- Nat, k :- CompRow] Bool
   (Bool.or (Bool.not (:idle k)) (tbl-all (ent14 cs n) (:validity k))))
-(a/defn iv14 [cs :- (List CompRow), n :- Nat] Bool (tbl-all (ivc14 cs n) cs))
+(a/defn i14-idle-entries-ok [cs :- (List CompRow), n :- Nat] Bool (tbl-all (ivc14 cs n) cs))
 
 ;; a dep edge on an idle computation has its debtor in xq (raw: the reactivation queue)
-(a/defn dnaq14 [xq :- (List Nat), cs :- (List CompRow), e :- EdgeRow] Bool
+(a/defn i14-idle-dep-queued [xq :- (List Nat), cs :- (List CompRow), e :- EdgeRow] Bool
   (Bool.or (Bool.not (Nat.beq (:kind e) ek-dep)) (Bool.or (reach-mem (:debtor e) xq) (awake cs (:debtor e)))))
 ;; every entry of an idle computation is below the allocator (strict window)
 (a/defn stamp-lt [n :- Nat, v :- Valid] Bool (Nat.blt (:stamp v) n))
-(a/defn swc14 [n :- Nat, k :- CompRow] Bool (Bool.or (Bool.not (:idle k)) (tbl-all (stamp-lt n) (:validity k))))
+(a/defn i14-stamps-below [n :- Nat, k :- CompRow] Bool (Bool.or (Bool.not (:idle k)) (tbl-all (stamp-lt n) (:validity k))))
 
 ;; Rule R: dep edges on idle computations only within a pass (debtor in xd, creditor in xr)
 (a/defn dnb14 [xd :- (List Nat), xr :- (List Nat), cs :- (List CompRow), e :- EdgeRow] Bool
@@ -230,14 +230,14 @@
     (simp only [not-idle-if-id (And.left q) Bool.not_true Bool.or_false] at hc)
     (simp only [not-idle-if-id hi Bool.not_true Bool.or_false]) (rw [(And.left hd)]) (exact hc)))
 
-(a/theorem dcl-swc14 [n :- Nat] (dcl14 (swc14 n))
+(a/theorem dcl-i14-stamps-below [n :- Nat] (dcl14 (i14-stamps-below n))
   (intros k c hd hc)
   (cases hi (:idle k))
-  (case [false] (simp only [swc14 hi Bool.not_false Bool.true_or]))
+  (case [false] (simp only [i14-stamps-below hi Bool.not_false Bool.true_or]))
   (case [true]
     (have q := (dom14-idle k c hd hi))
-    (simp only [swc14 (And.left q) Bool.not_true Bool.false_or] at hc)
-    (simp only [swc14 hi Bool.not_true Bool.false_or]) (rw [(And.right q)]) (exact hc)))
+    (simp only [i14-stamps-below (And.left q) Bool.not_true Bool.false_or] at hc)
+    (simp only [i14-stamps-below hi Bool.not_true Bool.false_or]) (rw [(And.right q)]) (exact hc)))
 
 (a/theorem dcl-rgt14 [y :- Nat, r :- Nat] (dcl14 (rgt14 y r))
   (intros k c hd hc)
@@ -265,10 +265,10 @@
     (exact (tbl-all-mono Valid (ent14 cs n) (ent14 cs2 n)
              (fn [v :- Valid, hv :- (= (ent14 cs n v) true)] (ent14-pres cs cs2 n v hp hv)) (:validity k) h))))
 
-(a/theorem iv14-pres [cs :- (List CompRow), cs2 :- (List CompRow), n :- Nat]
-  (=> (cpres cs cs2) (= (iv14 cs n) true) (= (iv14 cs2 n) true))
+(a/theorem i14-idle-entries-ok-pres [cs :- (List CompRow), cs2 :- (List CompRow), n :- Nat]
+  (=> (cpres cs cs2) (= (i14-idle-entries-ok cs n) true) (= (i14-idle-entries-ok cs2 n) true))
   (intros hp h)
-  (simp only [iv14] at h) (simp only [iv14])
+  (simp only [i14-idle-entries-ok] at h) (simp only [i14-idle-entries-ok])
   (have h1 (= (tbl-all (ivc14 cs2 n) cs) true))
   (exact (tbl-all-mono CompRow (ivc14 cs n) (ivc14 cs2 n)
            (fn [k :- CompRow, hk :- (= (ivc14 cs n k) true)] (ivc14-pres cs cs2 n k hp hk)) cs h))
@@ -298,10 +298,10 @@
   (have a1 := (And.left h)) (simp only [Nat.ble_eq] at a1) (simp only [Nat.ble_eq]) (omega)
   (exact (tbl-all-mono CompRow (deb14 n v) (deb14 m v)
            (fn [k :- CompRow, hk :- (= (deb14 n v k) true)] (deb14-next n m v k hl hk)) cs (And.right h))))
-(a/theorem iv14-next [cs :- (List CompRow), n :- Nat, m :- Nat]
-  (=> (<= n m) (= (iv14 cs n) true) (= (iv14 cs m) true))
+(a/theorem i14-idle-entries-ok-next [cs :- (List CompRow), n :- Nat, m :- Nat]
+  (=> (<= n m) (= (i14-idle-entries-ok cs n) true) (= (i14-idle-entries-ok cs m) true))
   (intros hl h)
-  (simp only [iv14] at h) (simp only [iv14])
+  (simp only [i14-idle-entries-ok] at h) (simp only [i14-idle-entries-ok])
   (apply (tbl-all-mono CompRow (ivc14 cs n) (ivc14 cs m) _ cs h))
   (intros k hk)
   (cases hi (:idle k))
@@ -318,10 +318,10 @@
   (intro h)
   (exact (And.intro (congrArg (fn [q :- E14] (:kind q)) h)
            (And.intro (congrArg (fn [q :- E14] (:cred q)) h) (congrArg (fn [q :- E14] (:deb q)) h)))))
-(a/theorem ecl-dnaq14 [xq :- (List Nat), cs :- (List CompRow)] (ecl14 (dnaq14 xq cs))
+(a/theorem ecl-i14-idle-dep-queued [xq :- (List Nat), cs :- (List CompRow)] (ecl14 (i14-idle-dep-queued xq cs))
   (intros k e he hp)
   (have p := (ek14-parts k e he))
-  (simp only [dnaq14]) (rw [(And.left p)]) (rw [(And.right (And.right p))]) (exact hp))
+  (simp only [i14-idle-dep-queued]) (rw [(And.left p)]) (rw [(And.right (And.right p))]) (exact hp))
 (a/theorem ecl-dnb14 [xd :- (List Nat), xr :- (List Nat), cs :- (List CompRow)] (ecl14 (dnb14 xd xr cs))
   (intros k e he hp)
   (have p := (ek14-parts k e he))
@@ -335,14 +335,14 @@
   (have p := (ek14-parts k e he))
   (simp only [dep-active]) (rw [(And.left p)]) (rw [(And.left (And.right p))]) (exact hp))
 
-(a/theorem dnaq14-pres [xq :- (List Nat), cs :- (List CompRow), cs2 :- (List CompRow), e :- EdgeRow]
-  (=> (cpres cs cs2) (= (dnaq14 xq cs e) true) (= (dnaq14 xq cs2 e) true))
+(a/theorem i14-idle-dep-queued-pres [xq :- (List Nat), cs :- (List CompRow), cs2 :- (List CompRow), e :- EdgeRow]
+  (=> (cpres cs cs2) (= (i14-idle-dep-queued xq cs e) true) (= (i14-idle-dep-queued xq cs2 e) true))
   (intros hp h)
   (cases hk (Nat.beq (:kind e) ek-dep))
-  (case [false] (simp only [dnaq14 hk Bool.not_false Bool.true_or]))
+  (case [false] (simp only [i14-idle-dep-queued hk Bool.not_false Bool.true_or]))
   (case [true]
-    (simp only [dnaq14 hk Bool.not_true Bool.false_or Bool.or_eq_true] at h)
-    (simp only [dnaq14 hk Bool.not_true Bool.false_or Bool.or_eq_true])
+    (simp only [i14-idle-dep-queued hk Bool.not_true Bool.false_or Bool.or_eq_true] at h)
+    (simp only [i14-idle-dep-queued hk Bool.not_true Bool.false_or Bool.or_eq_true])
     (cases h)
     (case [inl a1] (exact (Or.inl a1)))
     (case [inr a2] (exact (Or.inr (awake-pres cs cs2 (:debtor e) hp a2))))))
@@ -405,130 +405,130 @@
     (exact (hp (dnk14 n cs2 (:creditor e) (:debtor e)) (dcl-dnk14 n cs2 (:creditor e) (:debtor e)) h1))))
 
 ;; ===========================================================================
-;; Part C. The two bundles: vq (raw part) and vr (Rule R)
+;; Part C. The two bundles: i14-validity-raw (raw part) and i14-validity-rule-r (Rule R)
 ;; ===========================================================================
 
-;; vq xq xw xs: iv14; a dep edge on an idle computation has its debtor in xq; the computations in
+;; i14-validity-raw xq xw xs: i14-idle-entries-ok; a dep edge on an idle computation has its debtor in xq; the computations in
 ;; xw are awake; when xs, every entry of an idle computation is below the allocator
-(a/defn vqk [xq :- (List Nat), xw :- (List Nat), xs :- Bool, cs :- (List CompRow), es :- (List EdgeRow), n :- Nat] Bool
-  (Bool.and (iv14 cs n)
-  (Bool.and (tbl-all (dnaq14 xq cs) es)
-  (Bool.and (tbl-all (awake cs) xw) (Bool.or (Bool.not xs) (tbl-all (swc14 n) cs))))))
-(a/defn vq-rest [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World] Bool (vqk xq xw xs (:comps w) (:edges w) (:next-id w)))
-(a/defn vq [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World] Bool (Bool.and (inv-sample w) (vq-rest xq xw xs w)))
+(a/defn i14-validity-raw-keys-ok [xq :- (List Nat), xw :- (List Nat), xs :- Bool, cs :- (List CompRow), es :- (List EdgeRow), n :- Nat] Bool
+  (Bool.and (i14-idle-entries-ok cs n)
+  (Bool.and (tbl-all (i14-idle-dep-queued xq cs) es)
+  (Bool.and (tbl-all (awake cs) xw) (Bool.or (Bool.not xs) (tbl-all (i14-stamps-below n) cs))))))
+(a/defn i14-validity-raw-rest [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World] Bool (i14-validity-raw-keys-ok xq xw xs (:comps w) (:edges w) (:next-id w)))
+(a/defn i14-validity-raw [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World] Bool (Bool.and (well-formed w) (i14-validity-raw-rest xq xw xs w)))
 
-;; vr xd xr: iv14; a dep edge on an idle computation has its debtor in xd; a dep edge on a debtor
+;; i14-validity-rule-r xd xr: i14-idle-entries-ok; a dep edge on an idle computation has its debtor in xd; a dep edge on a debtor
 ;; in xd has its creditor in xr and the debtor's entries (if idle) carry the allocator and a crank
 ;; below the creditor's rank; a dep edge's creditor is awake
-(a/defn vrk [xd :- (List Nat), xr :- (List Nat), cs :- (List CompRow), es :- (List EdgeRow), n :- Nat] Bool
-  (Bool.and (iv14 cs n)
+(a/defn i14-validity-rule-r-keys-ok [xd :- (List Nat), xr :- (List Nat), cs :- (List CompRow), es :- (List EdgeRow), n :- Nat] Bool
+  (Bool.and (i14-idle-entries-ok cs n)
   (Bool.and (tbl-all (dnb14 xd xr cs) es)
   (Bool.and (tbl-all (dne14 xd n cs) es) (tbl-all (dep-active cs) es)))))
-(a/defn vr-rest [xd :- (List Nat), xr :- (List Nat), w :- World] Bool (vrk xd xr (:comps w) (:edges w) (:next-id w)))
-(a/defn vr [xd :- (List Nat), xr :- (List Nat), w :- World] Bool (Bool.and (inv-sample w) (vr-rest xd xr w)))
+(a/defn i14-validity-rule-r-rest [xd :- (List Nat), xr :- (List Nat), w :- World] Bool (i14-validity-rule-r-keys-ok xd xr (:comps w) (:edges w) (:next-id w)))
+(a/defn i14-validity-rule-r [xd :- (List Nat), xr :- (List Nat), w :- World] Bool (Bool.and (well-formed w) (i14-validity-rule-r-rest xd xr w)))
 
-(a/theorem vq-sample [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World] (=> (= (vq xq xw xs w) true) (= (inv-sample w) true))
-  (intro h) (simp only [vq Bool.and_eq_true] at h) (exact (And.left h)))
-(a/theorem vq-rest-of [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World] (=> (= (vq xq xw xs w) true) (= (vq-rest xq xw xs w) true))
-  (intro h) (simp only [vq Bool.and_eq_true] at h) (exact (And.right h)))
-(a/theorem vq-intro [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World]
-  (=> (= (inv-sample w) true) (= (vq-rest xq xw xs w) true) (= (vq xq xw xs w) true))
-  (intros h1 h2) (simp only [vq h1 h2 Bool.and_self]))
-(a/theorem vq-parts [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World]
-  (=> (= (vq xq xw xs w) true)
+(a/theorem i14-validity-raw-well-formed [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World] (=> (= (i14-validity-raw xq xw xs w) true) (= (well-formed w) true))
+  (intro h) (simp only [i14-validity-raw Bool.and_eq_true] at h) (exact (And.left h)))
+(a/theorem i14-validity-raw-rest-of [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World] (=> (= (i14-validity-raw xq xw xs w) true) (= (i14-validity-raw-rest xq xw xs w) true))
+  (intro h) (simp only [i14-validity-raw Bool.and_eq_true] at h) (exact (And.right h)))
+(a/theorem i14-validity-raw-intro [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World]
+  (=> (= (well-formed w) true) (= (i14-validity-raw-rest xq xw xs w) true) (= (i14-validity-raw xq xw xs w) true))
+  (intros h1 h2) (simp only [i14-validity-raw h1 h2 Bool.and_self]))
+(a/theorem i14-validity-raw-parts [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World]
+  (=> (= (i14-validity-raw xq xw xs w) true)
       (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
-  (intro h) (exact (inv-parts w (vq-sample xq xw xs w h))))
-(a/theorem vr-sample [xd :- (List Nat), xr :- (List Nat), w :- World] (=> (= (vr xd xr w) true) (= (inv-sample w) true))
-  (intro h) (simp only [vr Bool.and_eq_true] at h) (exact (And.left h)))
-(a/theorem vr-rest-of [xd :- (List Nat), xr :- (List Nat), w :- World] (=> (= (vr xd xr w) true) (= (vr-rest xd xr w) true))
-  (intro h) (simp only [vr Bool.and_eq_true] at h) (exact (And.right h)))
-(a/theorem vr-intro [xd :- (List Nat), xr :- (List Nat), w :- World]
-  (=> (= (inv-sample w) true) (= (vr-rest xd xr w) true) (= (vr xd xr w) true))
-  (intros h1 h2) (simp only [vr h1 h2 Bool.and_self]))
-(a/theorem vr-parts [xd :- (List Nat), xr :- (List Nat), w :- World]
-  (=> (= (vr xd xr w) true)
+  (intro h) (exact (well-formed-parts w (i14-validity-raw-well-formed xq xw xs w h))))
+(a/theorem i14-validity-rule-r-well-formed [xd :- (List Nat), xr :- (List Nat), w :- World] (=> (= (i14-validity-rule-r xd xr w) true) (= (well-formed w) true))
+  (intro h) (simp only [i14-validity-rule-r Bool.and_eq_true] at h) (exact (And.left h)))
+(a/theorem i14-validity-rule-r-rest-of [xd :- (List Nat), xr :- (List Nat), w :- World] (=> (= (i14-validity-rule-r xd xr w) true) (= (i14-validity-rule-r-rest xd xr w) true))
+  (intro h) (simp only [i14-validity-rule-r Bool.and_eq_true] at h) (exact (And.right h)))
+(a/theorem i14-validity-rule-r-intro [xd :- (List Nat), xr :- (List Nat), w :- World]
+  (=> (= (well-formed w) true) (= (i14-validity-rule-r-rest xd xr w) true) (= (i14-validity-rule-r xd xr w) true))
+  (intros h1 h2) (simp only [i14-validity-rule-r h1 h2 Bool.and_self]))
+(a/theorem i14-validity-rule-r-parts [xd :- (List Nat), xr :- (List Nat), w :- World]
+  (=> (= (i14-validity-rule-r xd xr w) true)
       (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
-  (intro h) (exact (inv-parts w (vr-sample xd xr w h))))
+  (intro h) (exact (well-formed-parts w (i14-validity-rule-r-well-formed xd xr w h))))
 
-(a/theorem vqk-parts [xq :- (List Nat), xw :- (List Nat), xs :- Bool, cs :- (List CompRow), es :- (List EdgeRow), n :- Nat]
-  (=> (= (vqk xq xw xs cs es n) true)
-      (And (= (iv14 cs n) true) (And (= (tbl-all (dnaq14 xq cs) es) true)
-      (And (= (tbl-all (awake cs) xw) true) (= (Bool.or (Bool.not xs) (tbl-all (swc14 n) cs)) true)))))
-  (intro h) (simp only [vqk Bool.and_eq_true] at h) (exact h))
-(a/theorem vqk-intro [xq :- (List Nat), xw :- (List Nat), xs :- Bool, cs :- (List CompRow), es :- (List EdgeRow), n :- Nat]
-  (=> (= (iv14 cs n) true) (= (tbl-all (dnaq14 xq cs) es) true) (= (tbl-all (awake cs) xw) true)
-      (= (Bool.or (Bool.not xs) (tbl-all (swc14 n) cs)) true) (= (vqk xq xw xs cs es n) true))
-  (intros h1 h2 h3 h4) (simp only [vqk h1 h2 h3 h4 Bool.and_self]))
-(a/theorem vrk-parts [xd :- (List Nat), xr :- (List Nat), cs :- (List CompRow), es :- (List EdgeRow), n :- Nat]
-  (=> (= (vrk xd xr cs es n) true)
-      (And (= (iv14 cs n) true) (And (= (tbl-all (dnb14 xd xr cs) es) true)
+(a/theorem i14-validity-raw-keys-ok-parts [xq :- (List Nat), xw :- (List Nat), xs :- Bool, cs :- (List CompRow), es :- (List EdgeRow), n :- Nat]
+  (=> (= (i14-validity-raw-keys-ok xq xw xs cs es n) true)
+      (And (= (i14-idle-entries-ok cs n) true) (And (= (tbl-all (i14-idle-dep-queued xq cs) es) true)
+      (And (= (tbl-all (awake cs) xw) true) (= (Bool.or (Bool.not xs) (tbl-all (i14-stamps-below n) cs)) true)))))
+  (intro h) (simp only [i14-validity-raw-keys-ok Bool.and_eq_true] at h) (exact h))
+(a/theorem i14-validity-raw-keys-ok-intro [xq :- (List Nat), xw :- (List Nat), xs :- Bool, cs :- (List CompRow), es :- (List EdgeRow), n :- Nat]
+  (=> (= (i14-idle-entries-ok cs n) true) (= (tbl-all (i14-idle-dep-queued xq cs) es) true) (= (tbl-all (awake cs) xw) true)
+      (= (Bool.or (Bool.not xs) (tbl-all (i14-stamps-below n) cs)) true) (= (i14-validity-raw-keys-ok xq xw xs cs es n) true))
+  (intros h1 h2 h3 h4) (simp only [i14-validity-raw-keys-ok h1 h2 h3 h4 Bool.and_self]))
+(a/theorem i14-validity-rule-r-keys-ok-parts [xd :- (List Nat), xr :- (List Nat), cs :- (List CompRow), es :- (List EdgeRow), n :- Nat]
+  (=> (= (i14-validity-rule-r-keys-ok xd xr cs es n) true)
+      (And (= (i14-idle-entries-ok cs n) true) (And (= (tbl-all (dnb14 xd xr cs) es) true)
       (And (= (tbl-all (dne14 xd n cs) es) true) (= (tbl-all (dep-active cs) es) true)))))
-  (intro h) (simp only [vrk Bool.and_eq_true] at h) (exact h))
-(a/theorem vrk-intro [xd :- (List Nat), xr :- (List Nat), cs :- (List CompRow), es :- (List EdgeRow), n :- Nat]
-  (=> (= (iv14 cs n) true) (= (tbl-all (dnb14 xd xr cs) es) true) (= (tbl-all (dne14 xd n cs) es) true)
-      (= (tbl-all (dep-active cs) es) true) (= (vrk xd xr cs es n) true))
-  (intros h1 h2 h3 h4) (simp only [vrk h1 h2 h3 h4 Bool.and_self]))
+  (intro h) (simp only [i14-validity-rule-r-keys-ok Bool.and_eq_true] at h) (exact h))
+(a/theorem i14-validity-rule-r-keys-ok-intro [xd :- (List Nat), xr :- (List Nat), cs :- (List CompRow), es :- (List EdgeRow), n :- Nat]
+  (=> (= (i14-idle-entries-ok cs n) true) (= (tbl-all (dnb14 xd xr cs) es) true) (= (tbl-all (dne14 xd n cs) es) true)
+      (= (tbl-all (dep-active cs) es) true) (= (i14-validity-rule-r-keys-ok xd xr cs es n) true))
+  (intros h1 h2 h3 h4) (simp only [i14-validity-rule-r-keys-ok h1 h2 h3 h4 Bool.and_self]))
 
 ;; ---- the frames
-(a/theorem swc14-next [n :- Nat, m :- Nat, k :- CompRow] (=> (<= n m) (= (swc14 n k) true) (= (swc14 m k) true))
+(a/theorem i14-stamps-below-next [n :- Nat, m :- Nat, k :- CompRow] (=> (<= n m) (= (i14-stamps-below n k) true) (= (i14-stamps-below m k) true))
   (intros hl h)
   (cases hi (:idle k))
-  (case [false] (simp only [swc14 hi Bool.not_false Bool.true_or]))
+  (case [false] (simp only [i14-stamps-below hi Bool.not_false Bool.true_or]))
   (case [true]
-    (simp only [swc14 hi Bool.not_true Bool.false_or] at h) (simp only [swc14 hi Bool.not_true Bool.false_or])
+    (simp only [i14-stamps-below hi Bool.not_true Bool.false_or] at h) (simp only [i14-stamps-below hi Bool.not_true Bool.false_or])
     (apply (tbl-all-mono Valid (stamp-lt n) (stamp-lt m) _ (:validity k) h))
     (intros v hv) (simp only [stamp-lt Nat.blt_eq] at hv) (simp only [stamp-lt Nat.blt_eq]) (omega)))
-(a/theorem sw-of-iv [cs :- (List CompRow), n :- Nat, m :- Nat] (=> (< n m) (= (iv14 cs n) true) (= (tbl-all (swc14 m) cs) true))
+(a/theorem sw-of-iv [cs :- (List CompRow), n :- Nat, m :- Nat] (=> (< n m) (= (i14-idle-entries-ok cs n) true) (= (tbl-all (i14-stamps-below m) cs) true))
   (intros hl h)
-  (simp only [iv14] at h)
-  (apply (tbl-all-mono CompRow (ivc14 cs n) (swc14 m) _ cs h))
+  (simp only [i14-idle-entries-ok] at h)
+  (apply (tbl-all-mono CompRow (ivc14 cs n) (i14-stamps-below m) _ cs h))
   (intros k hk)
   (cases hi (:idle k))
-  (case [false] (simp only [swc14 hi Bool.not_false Bool.true_or]))
+  (case [false] (simp only [i14-stamps-below hi Bool.not_false Bool.true_or]))
   (case [true]
-    (simp only [ivc14 hi Bool.not_true Bool.false_or] at hk) (simp only [swc14 hi Bool.not_true Bool.false_or])
+    (simp only [ivc14 hi Bool.not_true Bool.false_or] at hk) (simp only [i14-stamps-below hi Bool.not_true Bool.false_or])
     (apply (tbl-all-mono Valid (ent14 cs n) (stamp-lt m) _ (:validity k) hk))
     (intros v hv) (simp only [ent14 Bool.and_eq_true Nat.ble_eq] at hv) (simp only [stamp-lt Nat.blt_eq])
     (have z := (And.left hv)) (omega)))
 
-(a/theorem vqk-frame [xq :- (List Nat), xw :- (List Nat), xs :- Bool, cs :- (List CompRow), es :- (List EdgeRow), n :- Nat,
+(a/theorem i14-validity-raw-keys-ok-frame [xq :- (List Nat), xw :- (List Nat), xs :- Bool, cs :- (List CompRow), es :- (List EdgeRow), n :- Nat,
                       cs2 :- (List CompRow), es2 :- (List EdgeRow), n2 :- Nat]
-  (=> (cpres cs cs2) (epres es es2) (<= n n2) (= (vqk xq xw xs cs es n) true) (= (vqk xq xw xs cs2 es2 n2) true))
+  (=> (cpres cs cs2) (epres es es2) (<= n n2) (= (i14-validity-raw-keys-ok xq xw xs cs es n) true) (= (i14-validity-raw-keys-ok xq xw xs cs2 es2 n2) true))
   (intros hc he hl h)
-  (have p := (vqk-parts xq xw xs cs es n h))
-  (have i1 := (iv14-next cs2 n n2 hl (iv14-pres cs cs2 n hc (And.left p))))
-  (have i2a := (he (dnaq14 xq cs) (ecl-dnaq14 xq cs) (And.left (And.right p))))
-  (have i2 := (tbl-all-mono EdgeRow (dnaq14 xq cs) (dnaq14 xq cs2)
-                (fn [e :- EdgeRow, h1 :- (= (dnaq14 xq cs e) true)] (dnaq14-pres xq cs cs2 e hc h1)) es2 i2a))
+  (have p := (i14-validity-raw-keys-ok-parts xq xw xs cs es n h))
+  (have i1 := (i14-idle-entries-ok-next cs2 n n2 hl (i14-idle-entries-ok-pres cs cs2 n hc (And.left p))))
+  (have i2a := (he (i14-idle-dep-queued xq cs) (ecl-i14-idle-dep-queued xq cs) (And.left (And.right p))))
+  (have i2 := (tbl-all-mono EdgeRow (i14-idle-dep-queued xq cs) (i14-idle-dep-queued xq cs2)
+                (fn [e :- EdgeRow, h1 :- (= (i14-idle-dep-queued xq cs e) true)] (i14-idle-dep-queued-pres xq cs cs2 e hc h1)) es2 i2a))
   (have i3 := (tbl-all-mono Nat (awake cs) (awake cs2)
                 (fn [y :- Nat, h1 :- (= (awake cs y) true)] (awake-pres cs cs2 y hc h1)) xw (And.left (And.right (And.right p)))))
-  (have i4 (= (Bool.or (Bool.not xs) (tbl-all (swc14 n2) cs2)) true))
+  (have i4 (= (Bool.or (Bool.not xs) (tbl-all (i14-stamps-below n2) cs2)) true))
   (cases xs)
   (case [false] (simp only [Bool.not_false Bool.true_or]))
   (case [true]
     (have p4 := (And.right (And.right (And.right p))))
     (simp only [Bool.not_true Bool.false_or] at p4) (simp only [Bool.not_true Bool.false_or])
-    (exact (tbl-all-mono CompRow (swc14 n) (swc14 n2) (fn [k :- CompRow, h1 :- (= (swc14 n k) true)] (swc14-next n n2 k hl h1))
-             cs2 (hc (swc14 n) (dcl-swc14 n) p4))))
-  (exact (vqk-intro xq xw xs cs2 es2 n2 i1 i2 i3 i4)))
+    (exact (tbl-all-mono CompRow (i14-stamps-below n) (i14-stamps-below n2) (fn [k :- CompRow, h1 :- (= (i14-stamps-below n k) true)] (i14-stamps-below-next n n2 k hl h1))
+             cs2 (hc (i14-stamps-below n) (dcl-i14-stamps-below n) p4))))
+  (exact (i14-validity-raw-keys-ok-intro xq xw xs cs2 es2 n2 i1 i2 i3 i4)))
 
 ;; an allocation: afterwards every stamp is below the allocator
-(a/theorem vqk-up [xq :- (List Nat), xw :- (List Nat), xs :- Bool, cs :- (List CompRow), es :- (List EdgeRow), n :- Nat,
+(a/theorem i14-validity-raw-keys-ok-up [xq :- (List Nat), xw :- (List Nat), xs :- Bool, cs :- (List CompRow), es :- (List EdgeRow), n :- Nat,
                    cs2 :- (List CompRow), es2 :- (List EdgeRow), n2 :- Nat]
-  (=> (cpres cs cs2) (epres es es2) (< n n2) (= (vqk xq xw xs cs es n) true) (= (vqk xq xw true cs2 es2 n2) true))
+  (=> (cpres cs cs2) (epres es es2) (< n n2) (= (i14-validity-raw-keys-ok xq xw xs cs es n) true) (= (i14-validity-raw-keys-ok xq xw true cs2 es2 n2) true))
   (intros hc he hl h)
-  (have f := (vqk-frame xq xw xs cs es n cs2 es2 n2 hc he (Nat.le_of_lt hl) h))
-  (have p := (vqk-parts xq xw xs cs2 es2 n2 f))
-  (have s := (sw-of-iv cs2 n n2 hl (iv14-pres cs cs2 n hc (And.left (vqk-parts xq xw xs cs es n h)))))
-  (have i4 (= (Bool.or (Bool.not true) (tbl-all (swc14 n2) cs2)) true)) (simp only [Bool.not_true Bool.false_or]) (exact s)
-  (exact (vqk-intro xq xw true cs2 es2 n2 (And.left p) (And.left (And.right p)) (And.left (And.right (And.right p))) i4)))
+  (have f := (i14-validity-raw-keys-ok-frame xq xw xs cs es n cs2 es2 n2 hc he (Nat.le_of_lt hl) h))
+  (have p := (i14-validity-raw-keys-ok-parts xq xw xs cs2 es2 n2 f))
+  (have s := (sw-of-iv cs2 n n2 hl (i14-idle-entries-ok-pres cs cs2 n hc (And.left (i14-validity-raw-keys-ok-parts xq xw xs cs es n h)))))
+  (have i4 (= (Bool.or (Bool.not true) (tbl-all (i14-stamps-below n2) cs2)) true)) (simp only [Bool.not_true Bool.false_or]) (exact s)
+  (exact (i14-validity-raw-keys-ok-intro xq xw true cs2 es2 n2 (And.left p) (And.left (And.right p)) (And.left (And.right (And.right p))) i4)))
 
-(a/theorem vrk-frame [xd :- (List Nat), xr :- (List Nat), cs :- (List CompRow), es :- (List EdgeRow), n :- Nat,
+(a/theorem i14-validity-rule-r-keys-ok-frame [xd :- (List Nat), xr :- (List Nat), cs :- (List CompRow), es :- (List EdgeRow), n :- Nat,
                       cs2 :- (List CompRow), es2 :- (List EdgeRow)]
-  (=> (cpres cs cs2) (epres es es2) (= (vrk xd xr cs es n) true) (= (vrk xd xr cs2 es2 n) true))
+  (=> (cpres cs cs2) (epres es es2) (= (i14-validity-rule-r-keys-ok xd xr cs es n) true) (= (i14-validity-rule-r-keys-ok xd xr cs2 es2 n) true))
   (intros hc he h)
-  (have p := (vrk-parts xd xr cs es n h))
-  (have i1 := (iv14-pres cs cs2 n hc (And.left p)))
+  (have p := (i14-validity-rule-r-keys-ok-parts xd xr cs es n h))
+  (have i1 := (i14-idle-entries-ok-pres cs cs2 n hc (And.left p)))
   (have i2 := (tbl-all-mono EdgeRow (dnb14 xd xr cs) (dnb14 xd xr cs2)
                 (fn [e :- EdgeRow, h1 :- (= (dnb14 xd xr cs e) true)] (dnb14-pres xd xr cs cs2 e hc h1)) es2
                 (he (dnb14 xd xr cs) (ecl-dnb14 xd xr cs) (And.left (And.right p)))))
@@ -538,22 +538,22 @@
   (have i4 := (tbl-all-mono EdgeRow (dep-active cs) (dep-active cs2)
                 (fn [e :- EdgeRow, h1 :- (= (dep-active cs e) true)] (dep-active-pres cs cs2 e hc h1)) es2
                 (he (dep-active cs) (ecl-dep-active cs) (And.right (And.right (And.right p))))))
-  (exact (vrk-intro xd xr cs2 es2 n i1 i2 i3 i4)))
+  (exact (i14-validity-rule-r-keys-ok-intro xd xr cs2 es2 n i1 i2 i3 i4)))
 
-(a/theorem vq-rest-frame [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World, w2 :- World]
+(a/theorem i14-validity-raw-rest-frame [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World, w2 :- World]
   (=> (cpres (:comps w) (:comps w2)) (epres (:edges w) (:edges w2)) (<= (:next-id w) (:next-id w2))
-      (= (vq-rest xq xw xs w) true) (= (vq-rest xq xw xs w2) true))
-  (intros hc he hl h) (exact (vqk-frame xq xw xs _ _ _ _ _ _ hc he hl h)))
-(a/theorem vq-rest-up [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World, w2 :- World]
+      (= (i14-validity-raw-rest xq xw xs w) true) (= (i14-validity-raw-rest xq xw xs w2) true))
+  (intros hc he hl h) (exact (i14-validity-raw-keys-ok-frame xq xw xs _ _ _ _ _ _ hc he hl h)))
+(a/theorem i14-validity-raw-rest-up [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World, w2 :- World]
   (=> (cpres (:comps w) (:comps w2)) (epres (:edges w) (:edges w2)) (< (:next-id w) (:next-id w2))
-      (= (vq-rest xq xw xs w) true) (= (vq-rest xq xw true w2) true))
-  (intros hc he hl h) (exact (vqk-up xq xw xs _ _ _ _ _ _ hc he hl h)))
-(a/theorem vr-rest-frame [xd :- (List Nat), xr :- (List Nat), w :- World, w2 :- World]
+      (= (i14-validity-raw-rest xq xw xs w) true) (= (i14-validity-raw-rest xq xw true w2) true))
+  (intros hc he hl h) (exact (i14-validity-raw-keys-ok-up xq xw xs _ _ _ _ _ _ hc he hl h)))
+(a/theorem i14-validity-rule-r-rest-frame [xd :- (List Nat), xr :- (List Nat), w :- World, w2 :- World]
   (=> (cpres (:comps w) (:comps w2)) (epres (:edges w) (:edges w2)) (= (:next-id w2) (:next-id w))
-      (= (vr-rest xd xr w) true) (= (vr-rest xd xr w2) true))
+      (= (i14-validity-rule-r-rest xd xr w) true) (= (i14-validity-rule-r-rest xd xr w2) true))
   (intros hc he hn h)
-  (simp only [vr-rest] at h) (simp only [vr-rest]) (rw [hn])
-  (exact (vrk-frame xd xr _ _ _ _ _ hc he h)))
+  (simp only [i14-validity-rule-r-rest] at h) (simp only [i14-validity-rule-r-rest]) (rw [hn])
+  (exact (i14-validity-rule-r-keys-ok-frame xd xr _ _ _ _ _ hc he h)))
 
 ;; ===========================================================================
 ;; Part D. The primitive edits: w2 dominated by w with the same allocator (wdom)
@@ -568,14 +568,14 @@
   (exact (And.intro (cpres-trans _ _ _ (And.left h1) (And.left h2))
            (And.intro (epres-trans _ _ _ (And.left (And.right h1)) (And.left (And.right h2)))
                       (Eq.trans (And.right (And.right h2)) (And.right (And.right h1)))))))
-(a/theorem vq-rest-wd [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World, w2 :- World]
-  (=> (wdom w w2) (= (vq-rest xq xw xs w) true) (= (vq-rest xq xw xs w2) true))
+(a/theorem i14-validity-raw-rest-wd [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World, w2 :- World]
+  (=> (wdom w w2) (= (i14-validity-raw-rest xq xw xs w) true) (= (i14-validity-raw-rest xq xw xs w2) true))
   (intros hd h)
-  (exact (vq-rest-frame xq xw xs w w2 (And.left hd) (And.left (And.right hd))
+  (exact (i14-validity-raw-rest-frame xq xw xs w w2 (And.left hd) (And.left (And.right hd))
            (Nat.le_of_eq (Eq.symm (And.right (And.right hd)))) h)))
-(a/theorem vr-rest-wd [xd :- (List Nat), xr :- (List Nat), w :- World, w2 :- World]
-  (=> (wdom w w2) (= (vr-rest xd xr w) true) (= (vr-rest xd xr w2) true))
-  (intros hd h) (exact (vr-rest-frame xd xr w w2 (And.left hd) (And.left (And.right hd)) (And.right (And.right hd)) h)))
+(a/theorem i14-validity-rule-r-rest-wd [xd :- (List Nat), xr :- (List Nat), w :- World, w2 :- World]
+  (=> (wdom w w2) (= (i14-validity-rule-r-rest xd xr w) true) (= (i14-validity-rule-r-rest xd xr w2) true))
+  (intros hd h) (exact (i14-validity-rule-r-rest-frame xd xr w w2 (And.left hd) (And.left (And.right hd)) (And.right (And.right hd)) h)))
 
 (a/theorem wdom-comp-upd [w :- World, x :- Nat, f :- (=> CompRow CompRow), hd :- (forall [c :- CompRow] (dom14 (f c) c))]
   (wdom w (comp-upd w x f))
@@ -628,52 +628,52 @@
   (exact (wdom-trans w (edge-del w x) (comp-upd (edge-del w x) (:creditor e) comp-dec-pending) (wdom-edge-del w x)
            (wdom-comp-key (edge-del w x) (:creditor e) comp-dec-pending (fn [c :- CompRow] (Eq.refl (ck14 c)))))))
 
-;; ---- vq: computation edits, insertions
-(a/theorem vq-comp-wake [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World, x :- Nat, f :- (=> CompRow CompRow),
+;; ---- i14-validity-raw: computation edits, insertions
+(a/theorem i14-validity-raw-comp-wake [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World, x :- Nat, f :- (=> CompRow CompRow),
                          hid :- (forall [c :- CompRow] (= (comp-id (f c)) (comp-id c))),
                          hp :- (forall [c :- CompRow] (= (:pending (f c)) (:pending c))),
                          hw :- (forall [c :- CompRow] (dom14 (f c) c))]
-  (=> (= (vq xq xw xs w) true) (= (vq xq xw xs (comp-upd w x f)) true))
+  (=> (= (i14-validity-raw xq xw xs w) true) (= (i14-validity-raw xq xw xs (comp-upd w x f)) true))
   (intro h)
-  (exact (vq-intro xq xw xs _ (inv-comp-upd w x f hid hp (vq-sample xq xw xs w h))
-           (vq-rest-wd xq xw xs w (comp-upd w x f) (wdom-comp-upd w x f hw) (vq-rest-of xq xw xs w h)))))
-(a/theorem vq-comp-upd [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World, x :- Nat, f :- (=> CompRow CompRow),
+  (exact (i14-validity-raw-intro xq xw xs _ (well-formed-comp-upd w x f hid hp (i14-validity-raw-well-formed xq xw xs w h))
+           (i14-validity-raw-rest-wd xq xw xs w (comp-upd w x f) (wdom-comp-upd w x f hw) (i14-validity-raw-rest-of xq xw xs w h)))))
+(a/theorem i14-validity-raw-comp-upd [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World, x :- Nat, f :- (=> CompRow CompRow),
                         hid :- (forall [c :- CompRow] (= (comp-id (f c)) (comp-id c))),
                         hp :- (forall [c :- CompRow] (= (:pending (f c)) (:pending c))),
                         hk :- (forall [c :- CompRow] (= (ck14 (f c)) (ck14 c)))]
-  (=> (= (vq xq xw xs w) true) (= (vq xq xw xs (comp-upd w x f)) true))
-  (intro h) (exact (vq-comp-wake xq xw xs w x f hid hp (fn [c :- CompRow] (dom14-key (f c) c (hk c))) h)))
+  (=> (= (i14-validity-raw xq xw xs w) true) (= (i14-validity-raw xq xw xs (comp-upd w x f)) true))
+  (intro h) (exact (i14-validity-raw-comp-wake xq xw xs w x f hid hp (fn [c :- CompRow] (dom14-key (f c) c (hk c))) h)))
 
-(a/theorem vqk-cons-edge [xq :- (List Nat), xw :- (List Nat), xs :- Bool, cs :- (List CompRow), es :- (List EdgeRow), n :- Nat, e :- EdgeRow]
-  (=> (= (dnaq14 xq cs e) true) (= (vqk xq xw xs cs es n) true) (= (vqk xq xw xs cs (List.cons EdgeRow e es) n) true))
+(a/theorem i14-validity-raw-keys-ok-cons-edge [xq :- (List Nat), xw :- (List Nat), xs :- Bool, cs :- (List CompRow), es :- (List EdgeRow), n :- Nat, e :- EdgeRow]
+  (=> (= (i14-idle-dep-queued xq cs e) true) (= (i14-validity-raw-keys-ok xq xw xs cs es n) true) (= (i14-validity-raw-keys-ok xq xw xs cs (List.cons EdgeRow e es) n) true))
   (intros he h)
-  (have p := (vqk-parts xq xw xs cs es n h))
-  (have d (= (tbl-all (dnaq14 xq cs) (List.cons EdgeRow e es)) true)) (simp only [tbl-all he (And.left (And.right p)) Bool.and_self])
-  (exact (vqk-intro xq xw xs cs _ n (And.left p) d (And.left (And.right (And.right p))) (And.right (And.right (And.right p))))))
+  (have p := (i14-validity-raw-keys-ok-parts xq xw xs cs es n h))
+  (have d (= (tbl-all (i14-idle-dep-queued xq cs) (List.cons EdgeRow e es)) true)) (simp only [tbl-all he (And.left (And.right p)) Bool.and_self])
+  (exact (i14-validity-raw-keys-ok-intro xq xw xs cs _ n (And.left p) d (And.left (And.right (And.right p))) (And.right (And.right (And.right p))))))
 
-(a/theorem vq-insert-edge-fresh [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World, e :- EdgeRow,
+(a/theorem i14-validity-raw-insert-edge-fresh [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World, e :- EdgeRow,
 ]
-  (=> (= (edge-ok-in w e) true) (= (vq xq xw xs w) true) (= (dnaq14 xq (:comps w) e) true) (= (vq xq xw xs (insert-edge-fresh w e)) true))
+  (=> (= (edge-ok-in w e) true) (= (i14-validity-raw xq xw xs w) true) (= (i14-idle-dep-queued xq (:comps w) e) true) (= (i14-validity-raw xq xw xs (insert-edge-fresh w e)) true))
   (intros he h hn)
-  (have r0 := (vqk-frame xq xw xs (:comps w) (:edges w) (:next-id w) (:comps w) (:edges w) (+ (:next-id w) 1)
-                (cpres-refl (:comps w)) (epres-refl (:edges w)) (Nat.le_succ (:next-id w)) (vq-rest-of xq xw xs w h)))
-  (have hn2 (= (dnaq14 xq (:comps w) (edge-set-marked false (edge-set-id (:next-id w) e))) true)) (exact hn)
-  (have r (= (vq-rest xq xw xs (insert-edge-fresh w e)) true))
-  (exact (vqk-cons-edge xq xw xs _ _ _ _ hn2 r0))
-  (exact (vq-intro xq xw xs _ (insert-edge-fresh-inv-sample w e he (vq-sample xq xw xs w h)) r)))
-(a/theorem vq-insert-edge-checked [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World, e :- EdgeRow,
+  (have r0 := (i14-validity-raw-keys-ok-frame xq xw xs (:comps w) (:edges w) (:next-id w) (:comps w) (:edges w) (+ (:next-id w) 1)
+                (cpres-refl (:comps w)) (epres-refl (:edges w)) (Nat.le_succ (:next-id w)) (i14-validity-raw-rest-of xq xw xs w h)))
+  (have hn2 (= (i14-idle-dep-queued xq (:comps w) (edge-set-marked false (edge-set-id (:next-id w) e))) true)) (exact hn)
+  (have r (= (i14-validity-raw-rest xq xw xs (insert-edge-fresh w e)) true))
+  (exact (i14-validity-raw-keys-ok-cons-edge xq xw xs _ _ _ _ hn2 r0))
+  (exact (i14-validity-raw-intro xq xw xs _ (well-formed-insert-edge-fresh w e he (i14-validity-raw-well-formed xq xw xs w h)) r)))
+(a/theorem i14-validity-raw-insert-edge-checked [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World, e :- EdgeRow,
 ]
-  (=> (= (vq xq xw xs w) true) (= (dnaq14 xq (:comps w) e) true) (= (vq xq xw xs (insert-edge-checked w e)) true))
+  (=> (= (i14-validity-raw xq xw xs w) true) (= (i14-idle-dep-queued xq (:comps w) e) true) (= (i14-validity-raw xq xw xs (insert-edge-checked w e)) true))
   (intros h hn)
   (cases hk (edge-ok-in w e))
   (simp only [insert-edge-checked hk]) (exact h)
-  (simp only [insert-edge-checked hk]) (exact (vq-insert-edge-fresh xq xw xs w e hk h hn)))
+  (simp only [insert-edge-checked hk]) (exact (i14-validity-raw-insert-edge-fresh xq xw xs w e hk h hn)))
 
 ;; a new computation (T3) is not idle
-(a/theorem vqk-ins-wake [xq :- (List Nat), xw :- (List Nat), xs :- Bool, cs :- (List CompRow), es :- (List EdgeRow), n :- Nat, r :- CompRow]
-  (=> (= (:idle r) false) (= (vqk xq xw xs cs es n) true) (= (vqk xq xw xs (List.cons CompRow r cs) es (+ n 1)) true))
+(a/theorem i14-validity-raw-keys-ok-ins-wake [xq :- (List Nat), xw :- (List Nat), xs :- Bool, cs :- (List CompRow), es :- (List EdgeRow), n :- Nat, r :- CompRow]
+  (=> (= (:idle r) false) (= (i14-validity-raw-keys-ok xq xw xs cs es n) true) (= (i14-validity-raw-keys-ok xq xw xs (List.cons CompRow r cs) es (+ n 1)) true))
   (intros hi h)
-  (have p := (vqk-parts xq xw xs cs es n h))
+  (have p := (i14-validity-raw-keys-ok-parts xq xw xs cs es n h))
   (have hr1 (= (ivc14 (List.cons CompRow r cs) (+ n 1) r) true)) (simp only [ivc14 hi Bool.not_false Bool.true_or])
   (have dr (forall [v :- Valid] (=> (= (Nat.ble (:stamp v) n) true) (= (deb14 (+ n 1) v r) true))))
   (intros v hv)
@@ -695,35 +695,35 @@
     (have z := (And.left hv)) (simp only [Nat.ble_eq] at z) (simp only [Nat.ble_eq]) (omega)
     (exact (tbl-all-mono CompRow (deb14 n v) (deb14 (+ n 1) v)
              (fn [q :- CompRow, hq :- (= (deb14 n v q) true)] (deb14-next n (+ n 1) v q (Nat.le_succ n) hq)) cs (And.right hv))))
-  (have i1 (= (iv14 (List.cons CompRow r cs) (+ n 1)) true)) (simp only [iv14 tbl-all hr1 hcs Bool.and_self])
+  (have i1 (= (i14-idle-entries-ok (List.cons CompRow r cs) (+ n 1)) true)) (simp only [i14-idle-entries-ok tbl-all hr1 hcs Bool.and_self])
   (have nr (forall [d :- Nat] (= (not-idle-if-id d r) true))) (intro d) (simp only [not-idle-if-id hi Bool.not_false Bool.or_true])
   (have aw (forall [d :- Nat] (=> (= (awake cs d) true) (= (awake (List.cons CompRow r cs) d) true))))
   (intros d hd) (simp only [awake tbl-all (nr d) Bool.true_and]) (simp only [awake] at hd) (exact hd)
-  (have i2 (= (tbl-all (dnaq14 xq (List.cons CompRow r cs)) es) true))
-  (apply (tbl-all-mono EdgeRow (dnaq14 xq cs) (dnaq14 xq (List.cons CompRow r cs)) _ es (And.left (And.right p))))
+  (have i2 (= (tbl-all (i14-idle-dep-queued xq (List.cons CompRow r cs)) es) true))
+  (apply (tbl-all-mono EdgeRow (i14-idle-dep-queued xq cs) (i14-idle-dep-queued xq (List.cons CompRow r cs)) _ es (And.left (And.right p))))
   (intros e he)
   (cases hk (Nat.beq (:kind e) ek-dep))
-  (case [false] (simp only [dnaq14 hk Bool.not_false Bool.true_or]))
+  (case [false] (simp only [i14-idle-dep-queued hk Bool.not_false Bool.true_or]))
   (case [true]
-    (simp only [dnaq14 hk Bool.not_true Bool.false_or Bool.or_eq_true] at he) (simp only [dnaq14 hk Bool.not_true Bool.false_or Bool.or_eq_true])
+    (simp only [i14-idle-dep-queued hk Bool.not_true Bool.false_or Bool.or_eq_true] at he) (simp only [i14-idle-dep-queued hk Bool.not_true Bool.false_or Bool.or_eq_true])
     (cases he) (case [inl a1] (exact (Or.inl a1))) (case [inr a2] (exact (Or.inr (aw (:debtor e) a2)))))
   (have i3 := (tbl-all-mono Nat (awake cs) (awake (List.cons CompRow r cs)) aw xw (And.left (And.right (And.right p)))))
-  (have i4 (= (Bool.or (Bool.not xs) (tbl-all (swc14 (+ n 1)) (List.cons CompRow r cs))) true))
+  (have i4 (= (Bool.or (Bool.not xs) (tbl-all (i14-stamps-below (+ n 1)) (List.cons CompRow r cs))) true))
   (cases xs)
   (case [false] (simp only [Bool.not_false Bool.true_or]))
   (case [true]
     (have p4 := (And.right (And.right (And.right p)))) (simp only [Bool.not_true Bool.false_or] at p4)
-    (have s1 (= (swc14 (+ n 1) r) true)) (simp only [swc14 hi Bool.not_false Bool.true_or])
+    (have s1 (= (i14-stamps-below (+ n 1) r) true)) (simp only [i14-stamps-below hi Bool.not_false Bool.true_or])
     (simp only [Bool.not_true Bool.false_or tbl-all s1 Bool.true_and])
-    (exact (tbl-all-mono CompRow (swc14 n) (swc14 (+ n 1)) (fn [k :- CompRow, h1 :- (= (swc14 n k) true)] (swc14-next n (+ n 1) k (Nat.le_succ n) h1)) cs p4)))
-  (exact (vqk-intro xq xw xs _ es _ i1 i2 i3 i4)))
-(a/theorem vq-comp-ins-fresh [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World, r :- CompRow, hni :- (= (:idle r) false)]
+    (exact (tbl-all-mono CompRow (i14-stamps-below n) (i14-stamps-below (+ n 1)) (fn [k :- CompRow, h1 :- (= (i14-stamps-below n k) true)] (i14-stamps-below-next n (+ n 1) k (Nat.le_succ n) h1)) cs p4)))
+  (exact (i14-validity-raw-keys-ok-intro xq xw xs _ es _ i1 i2 i3 i4)))
+(a/theorem i14-validity-raw-comp-ins-fresh [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World, r :- CompRow, hni :- (= (:idle r) false)]
   (=> (= (comp-id r) (:next-id w)) (= (:pending r) (marked-in (:id r) (:edges w)))
-      (= (vq xq xw xs w) true) (= (vq xq xw xs (bump (comp-ins w r))) true))
+      (= (i14-validity-raw xq xw xs w) true) (= (i14-validity-raw xq xw xs (bump (comp-ins w r))) true))
   (intros h1 h2 h)
-  (have r1 (= (vq-rest xq xw xs (bump (comp-ins w r))) true))
-  (exact (vqk-ins-wake xq xw xs _ _ _ r hni (vq-rest-of xq xw xs w h)))
-  (exact (vq-intro xq xw xs _ (inv-comp-ins-fresh w r h1 h2 (vq-sample xq xw xs w h)) r1)))
+  (have r1 (= (i14-validity-raw-rest xq xw xs (bump (comp-ins w r))) true))
+  (exact (i14-validity-raw-keys-ok-ins-wake xq xw xs _ _ _ r hni (i14-validity-raw-rest-of xq xw xs w h)))
+  (exact (i14-validity-raw-intro xq xw xs _ (well-formed-comp-ins-fresh w r h1 h2 (i14-validity-raw-well-formed xq xw xs w h)) r1)))
 
 ;; waking rows
 (a/theorem comp-start-row-dom14 [rid :- Nat, c :- CompRow] (dom14 (comp-start-row rid c) c) (apply dom14-wake) (rfl) (rfl) (rfl))
@@ -732,45 +732,45 @@
 (a/theorem comp-react-row-dom14 [c :- CompRow] (dom14 (comp-react-row c) c) (apply dom14-wake) (rfl) (rfl) (rfl))
 
 ;; ===========================================================================
-;; Part E. The vq copy (raw part)
+;; Part E. The i14-validity-raw copy (raw part)
 ;; ===========================================================================
 
-(def VQ (mk-bundle 'vq '[zq9 :- (List Nat), zw9 :- (List Nat), zs9 :- Bool] "vq-"
-          {'inv-comp-upd ['(fn [c :- CompRow] (Eq.refl (ck14 c))) 5]
-           'insert-edge-fresh-inv-sample ['(Eq.refl true) 4]
-           'inv-insert-edge-checked ['(Eq.refl true) 3]
-           'inv-comp-ins-fresh ['(Eq.refl false) 2]}))
-(swap! (:renames VQ) assoc 'inv-parts 'vq-parts 'inv-comp-upd 'vq-comp-upd 'insert-edge-fresh-inv-sample 'vq-insert-edge-fresh
-       'inv-insert-edge-checked 'vq-insert-edge-checked 'inv-comp-ins-fresh 'vq-comp-ins-fresh)
+(def VQ (mk-bundle 'i14-validity-raw '[zq9 :- (List Nat), zw9 :- (List Nat), zs9 :- Bool] "i14-validity-raw-"
+          {'well-formed-comp-upd ['(fn [c :- CompRow] (Eq.refl (ck14 c))) 5]
+           'well-formed-insert-edge-fresh ['(Eq.refl true) 4]
+           'well-formed-insert-edge-checked ['(Eq.refl true) 3]
+           'well-formed-comp-ins-fresh ['(Eq.refl false) 2]}))
+(swap! (:renames VQ) assoc 'well-formed-parts 'i14-validity-raw-parts 'well-formed-comp-upd 'i14-validity-raw-comp-upd 'well-formed-insert-edge-fresh 'i14-validity-raw-insert-edge-fresh
+       'well-formed-insert-edge-checked 'i14-validity-raw-insert-edge-checked 'well-formed-comp-ins-fresh 'i14-validity-raw-comp-ins-fresh)
 (defpart VQ :reads '[comps edges next-id])
-(doseq [[o t] '[[inv-source-ins-fresh source-ins] [inv-fork-ins-fresh fork-ins] [inv-resource-ins-fresh resource-ins] [inv-scope-ins-fresh scope-ins]
-                [inv-act-ins-fresh act-ins] [inv-task-ins-fresh task-ins] [inv-run-ins-fresh run-ins]]]
-  (prim! VQ o (list 'vq-rest-frame 'zq9 'zw9 'zs9 'w (list 'bump (list t 'w 'r)) '(cpres-refl (:comps w)) '(epres-refl (:edges w))
+(doseq [[o t] '[[well-formed-source-ins-fresh source-ins] [well-formed-fork-ins-fresh fork-ins] [well-formed-resource-ins-fresh resource-ins] [well-formed-scope-ins-fresh scope-ins]
+                [well-formed-act-ins-fresh act-ins] [well-formed-task-ins-fresh task-ins] [well-formed-run-ins-fresh run-ins]]]
+  (prim! VQ o (list 'i14-validity-raw-rest-frame 'zq9 'zw9 'zs9 'w (list 'bump (list t 'w 'r)) '(cpres-refl (:comps w)) '(epres-refl (:edges w))
                     '(Nat.le_succ (:next-id w)) 'R)))
-(prim! VQ 'inv-bump '(vq-rest-frame zq9 zw9 zs9 w (bump w) (cpres-refl (:comps w)) (epres-refl (:edges w)) (Nat.le_succ (:next-id w)) R))
-(prim! VQ 'inv-edge-upd '(vq-rest-wd zq9 zw9 zs9 w (edge-upd w x f) (wdom-edge-upd w x f hk hc hd) R))
-(prim! VQ 'inv-remove-edge '(vq-rest-wd zq9 zw9 zs9 w (remove-edge w x) (wdom-remove-edge w x) R))
-(prim! VQ 'mark-edge-inv-sample '(vq-rest-wd zq9 zw9 zs9 w (mark-edge w x) (wdom-mark-edge w x) R))
-(prim! VQ 'unmark-edge-inv-sample '(vq-rest-wd zq9 zw9 zs9 w (unmark-edge w x) (wdom-unmark-edge w x) R))
-(prim! VQ 'inv-drop-cred '(vq-rest-wd zq9 zw9 zs9 w (drop-cred-edges w a) (wdom-drop-cred w a) R))
-(prim! VQ 'inv-drop-act '(vq-rest-wd zq9 zw9 zs9 w (drop-act w a) (wdom-drop-act w a) R))
-(prim! VQ 'inv-drop-edges '(vq-rest-wd zq9 zw9 zs9 w (drop-edges w p) (wdom-drop-edges w p) R))
-(prim! VQ 'inv-comp-del-unref '(vq-rest-wd zq9 zw9 zs9 w (comp-del w x) (wdom-comp-del w x) R))
-(prim! VQ 'inv-filter-world '(vq-rest-wd zq9 zw9 zs9 w (filter-world K w) (wdom-filter-world w K) R))
+(prim! VQ 'well-formed-bump '(i14-validity-raw-rest-frame zq9 zw9 zs9 w (bump w) (cpres-refl (:comps w)) (epres-refl (:edges w)) (Nat.le_succ (:next-id w)) R))
+(prim! VQ 'well-formed-edge-upd '(i14-validity-raw-rest-wd zq9 zw9 zs9 w (edge-upd w x f) (wdom-edge-upd w x f hk hc hd) R))
+(prim! VQ 'well-formed-remove-edge '(i14-validity-raw-rest-wd zq9 zw9 zs9 w (remove-edge w x) (wdom-remove-edge w x) R))
+(prim! VQ 'well-formed-mark-edge '(i14-validity-raw-rest-wd zq9 zw9 zs9 w (mark-edge w x) (wdom-mark-edge w x) R))
+(prim! VQ 'well-formed-unmark-edge '(i14-validity-raw-rest-wd zq9 zw9 zs9 w (unmark-edge w x) (wdom-unmark-edge w x) R))
+(prim! VQ 'well-formed-drop-cred-edges '(i14-validity-raw-rest-wd zq9 zw9 zs9 w (drop-cred-edges w a) (wdom-drop-cred w a) R))
+(prim! VQ 'well-formed-drop-act '(i14-validity-raw-rest-wd zq9 zw9 zs9 w (drop-act w a) (wdom-drop-act w a) R))
+(prim! VQ 'well-formed-drop-edges '(i14-validity-raw-rest-wd zq9 zw9 zs9 w (drop-edges w p) (wdom-drop-edges w p) R))
+(prim! VQ 'well-formed-comp-del-unref '(i14-validity-raw-rest-wd zq9 zw9 zs9 w (comp-del w x) (wdom-comp-del w x) R))
+(prim! VQ 'well-formed-filter-world '(i14-validity-raw-rest-wd zq9 zw9 zs9 w (filter-world K w) (wdom-filter-world w K) R))
 
-;; vq on the generic tree (spindel.v2.pres.tree): its table. Its own proofs are below.
+;; i14-validity-raw on the generic tree (spindel.v2.pres.tree): its table. Its own proofs are below.
 (def ^:private wake-rows '#{comp-start-row comp-replace-row comp-demand-row comp-react-row})
 (defn- dom14 [F]   ; the row function's lemma `<f>-dom14`: the new row's domain is the old row's
   (let [l (symbol (str (if (seq? F) (first F) F) "-dom14"))]
     (list 'fn '[q9 :- CompRow] (concat (list l) (when (seq? F) (repeat (count (rest F)) '_)) '(q9)))))
 (tree/part! VQ
-  :over '{inv-await-raw vq-await-raw
-          inv-track-raw vq-track-raw
-          t22-inv       t22-vq
-          t8-full-inv   t8-full-vq
-          inv-take-park vq-take-park}
-  ;; ---- sites: a computation edit by a waking row goes through vq-comp-wake
-  :sites (tree/row-sites 'inv-comp-upd wake-rows (fn [F] (list 'vq-comp-wake 'zq9 'zw9 'zs9 'w 'x F 'hid 'hp (dom14 F) 'h0))))
+  :over '{well-formed-await-raw i14-validity-raw-await-raw
+          well-formed-track-raw i14-validity-raw-track-raw
+          well-formed-t22-host-await       i14-validity-raw-t22-host-await
+          well-formed-t8-observe-any-kind   i14-validity-raw-t8-observe-any-kind
+          well-formed-take-park i14-validity-raw-take-park}
+  ;; ---- sites: a computation edit by a waking row goes through i14-validity-raw-comp-wake
+  :sites (tree/row-sites 'well-formed-comp-upd wake-rows (fn [F] (list 'i14-validity-raw-comp-wake 'zq9 'zw9 'zs9 'w 'x F 'hid 'hp (dom14 F) 'h0))))
 
 ;; ===========================================================================
 ;; Part F. Rank changes in the strict window (the I12 raise of T6 and reactivation)
@@ -823,14 +823,14 @@
     (have q := ((And.right hd) hi))
     (simp only [not-idle-if-id (And.left q) Bool.not_true Bool.or_false] at hc)
     (simp only [not-idle-if-id hi Bool.not_true Bool.or_false]) (rw [(And.left hd)]) (exact hc)))
-(a/theorem dclr-swc14 [n :- Nat] (dclr14 (swc14 n))
+(a/theorem dclr-i14-stamps-below [n :- Nat] (dclr14 (i14-stamps-below n))
   (intros k c hd hc)
   (cases hi (:idle k))
-  (case [false] (simp only [swc14 hi Bool.not_false Bool.true_or]))
+  (case [false] (simp only [i14-stamps-below hi Bool.not_false Bool.true_or]))
   (case [true]
     (have q := ((And.right hd) hi))
-    (simp only [swc14 (And.left q) Bool.not_true Bool.false_or] at hc)
-    (simp only [swc14 hi Bool.not_true Bool.false_or]) (rw [(And.right q)]) (exact hc)))
+    (simp only [i14-stamps-below (And.left q) Bool.not_true Bool.false_or] at hc)
+    (simp only [i14-stamps-below hi Bool.not_true Bool.false_or]) (rw [(And.right q)]) (exact hc)))
 
 (a/theorem ivs14-pres [cs :- (List CompRow), cs2 :- (List CompRow), n :- Nat]
   (=> (cpresr cs cs2) (= (ivs14 cs n) true) (= (ivs14 cs2 n) true))
@@ -850,15 +850,15 @@
   (exact (hp (ivcs14 cs2 n) (dclr-ivcs14 cs2 n) h1)))
 
 (a/theorem ivs-of-iv [cs :- (List CompRow), n :- Nat]
-  (=> (= (iv14 cs n) true) (= (tbl-all (swc14 n) cs) true) (= (ivs14 cs n) true))
+  (=> (= (i14-idle-entries-ok cs n) true) (= (tbl-all (i14-stamps-below n) cs) true) (= (ivs14 cs n) true))
   (intros h hs)
-  (simp only [iv14] at h) (simp only [ivs14])
-  (apply (tbl-all-mono2 CompRow (ivc14 cs n) (swc14 n) (ivcs14 cs n) _ cs h hs))
+  (simp only [i14-idle-entries-ok] at h) (simp only [ivs14])
+  (apply (tbl-all-mono2 CompRow (ivc14 cs n) (i14-stamps-below n) (ivcs14 cs n) _ cs h hs))
   (intros k h1 h2)
   (cases hi (:idle k))
   (case [false] (simp only [ivcs14 hi Bool.not_false Bool.true_or]))
   (case [true]
-    (simp only [ivc14 hi Bool.not_true Bool.false_or] at h1) (simp only [swc14 hi Bool.not_true Bool.false_or] at h2)
+    (simp only [ivc14 hi Bool.not_true Bool.false_or] at h1) (simp only [i14-stamps-below hi Bool.not_true Bool.false_or] at h2)
     (simp only [ivcs14 hi Bool.not_true Bool.false_or])
     (apply (tbl-all-mono2 Valid (ent14 cs n) (stamp-lt n) (ents14 cs n) _ (:validity k) h1 h2))
     (intros v a1 a2)
@@ -873,11 +873,11 @@
       (simp only [debs14 hb Bool.not_true Bool.false_or]) (exact (And.right hq)))))
 
 (a/theorem iv-of-ivs [cs :- (List CompRow), n :- Nat]
-  (=> (= (ivs14 cs n) true) (And (= (iv14 cs n) true) (= (tbl-all (swc14 n) cs) true)))
+  (=> (= (ivs14 cs n) true) (And (= (i14-idle-entries-ok cs n) true) (= (tbl-all (i14-stamps-below n) cs) true)))
   (intro h)
   (simp only [ivs14] at h)
   (apply And.intro)
-  (simp only [iv14])
+  (simp only [i14-idle-entries-ok])
   (apply (tbl-all-mono CompRow (ivcs14 cs n) (ivc14 cs n) _ cs h))
   (intros k hk)
   (cases hi (:idle k))
@@ -898,45 +898,45 @@
     (case [true]
       (simp only [debs14 hb Bool.not_true Bool.false_or] at hq)
       (simp only [deb14 hb lt hq Bool.not_true Bool.false_or Bool.true_or Bool.true_and])))
-  (apply (tbl-all-mono CompRow (ivcs14 cs n) (swc14 n) _ cs h))
+  (apply (tbl-all-mono CompRow (ivcs14 cs n) (i14-stamps-below n) _ cs h))
   (intros k hk)
   (cases hi (:idle k))
-  (case [false] (simp only [swc14 hi Bool.not_false Bool.true_or]))
+  (case [false] (simp only [i14-stamps-below hi Bool.not_false Bool.true_or]))
   (case [true]
-    (simp only [ivcs14 hi Bool.not_true Bool.false_or] at hk) (simp only [swc14 hi Bool.not_true Bool.false_or])
+    (simp only [ivcs14 hi Bool.not_true Bool.false_or] at hk) (simp only [i14-stamps-below hi Bool.not_true Bool.false_or])
     (apply (tbl-all-mono Valid (ents14 cs n) (stamp-lt n) _ (:validity k) hk))
     (intros v hv) (simp only [ents14 Bool.and_eq_true] at hv) (simp only [stamp-lt]) (exact (And.left hv))))
 
-(a/theorem vqk-r-frame [xq :- (List Nat), xw :- (List Nat), cs :- (List CompRow), es :- (List EdgeRow), n :- Nat, cs2 :- (List CompRow)]
-  (=> (cpresr cs cs2) (= (vqk xq xw true cs es n) true) (= (vqk xq xw true cs2 es n) true))
+(a/theorem i14-validity-raw-keys-ok-r-frame [xq :- (List Nat), xw :- (List Nat), cs :- (List CompRow), es :- (List EdgeRow), n :- Nat, cs2 :- (List CompRow)]
+  (=> (cpresr cs cs2) (= (i14-validity-raw-keys-ok xq xw true cs es n) true) (= (i14-validity-raw-keys-ok xq xw true cs2 es n) true))
   (intros hc h)
-  (have p := (vqk-parts xq xw true cs es n h))
+  (have p := (i14-validity-raw-keys-ok-parts xq xw true cs es n h))
   (have p4 := (And.right (And.right (And.right p)))) (simp only [Bool.not_true Bool.false_or] at p4)
   (have v2 := (iv-of-ivs cs2 n (ivs14-pres cs cs2 n hc (ivs-of-iv cs n (And.left p) p4))))
   (have aw (forall [y :- Nat] (=> (= (awake cs y) true) (= (awake cs2 y) true))))
   (intros y hy) (simp only [awake] at hy) (simp only [awake]) (exact (hc (not-idle-if-id y) (dclr-nii y) hy))
-  (have i2 (= (tbl-all (dnaq14 xq cs2) es) true))
-  (apply (tbl-all-mono EdgeRow (dnaq14 xq cs) (dnaq14 xq cs2) _ es (And.left (And.right p))))
+  (have i2 (= (tbl-all (i14-idle-dep-queued xq cs2) es) true))
+  (apply (tbl-all-mono EdgeRow (i14-idle-dep-queued xq cs) (i14-idle-dep-queued xq cs2) _ es (And.left (And.right p))))
   (intros e he)
   (cases hk (Nat.beq (:kind e) ek-dep))
-  (case [false] (simp only [dnaq14 hk Bool.not_false Bool.true_or]))
+  (case [false] (simp only [i14-idle-dep-queued hk Bool.not_false Bool.true_or]))
   (case [true]
-    (simp only [dnaq14 hk Bool.not_true Bool.false_or Bool.or_eq_true] at he) (simp only [dnaq14 hk Bool.not_true Bool.false_or Bool.or_eq_true])
+    (simp only [i14-idle-dep-queued hk Bool.not_true Bool.false_or Bool.or_eq_true] at he) (simp only [i14-idle-dep-queued hk Bool.not_true Bool.false_or Bool.or_eq_true])
     (cases he) (case [inl a1] (exact (Or.inl a1))) (case [inr a2] (exact (Or.inr (aw (:debtor e) a2)))))
   (have i3 := (tbl-all-mono Nat (awake cs) (awake cs2) aw xw (And.left (And.right (And.right p)))))
-  (have i4 (= (Bool.or (Bool.not true) (tbl-all (swc14 n) cs2)) true)) (simp only [Bool.not_true Bool.false_or]) (exact (And.right v2))
-  (exact (vqk-intro xq xw true cs2 es n (And.left v2) i2 i3 i4)))
+  (have i4 (= (Bool.or (Bool.not true) (tbl-all (i14-stamps-below n) cs2)) true)) (simp only [Bool.not_true Bool.false_or]) (exact (And.right v2))
+  (exact (i14-validity-raw-keys-ok-intro xq xw true cs2 es n (And.left v2) i2 i3 i4)))
 
-(a/theorem vq-set-rank [xq :- (List Nat), xw :- (List Nat), w :- World, y :- Nat, m :- Nat]
-  (=> (= (vq xq xw true w) true) (= (vq xq xw true (comp-upd w y (comp-set-rank m))) true))
+(a/theorem i14-validity-raw-set-rank [xq :- (List Nat), xw :- (List Nat), w :- World, y :- Nat, m :- Nat]
+  (=> (= (i14-validity-raw xq xw true w) true) (= (i14-validity-raw xq xw true (comp-upd w y (comp-set-rank m))) true))
   (intro h)
-  (have r (= (vq-rest xq xw true (comp-upd w y (comp-set-rank m))) true))
-  (exact (vqk-r-frame xq xw (:comps w) (:edges w) (:next-id w) _ (cpresr-upd y (comp-set-rank m) (set-rank-domr m) (:comps w)) (vq-rest-of xq xw true w h)))
-  (exact (vq-intro xq xw true _ (inv-comp-upd w y (comp-set-rank m) (comp-set-rank-id m) (comp-set-rank-pending m) (vq-sample xq xw true w h)) r)))
+  (have r (= (i14-validity-raw-rest xq xw true (comp-upd w y (comp-set-rank m))) true))
+  (exact (i14-validity-raw-keys-ok-r-frame xq xw (:comps w) (:edges w) (:next-id w) _ (cpresr-upd y (comp-set-rank m) (set-rank-domr m) (:comps w)) (i14-validity-raw-rest-of xq xw true w h)))
+  (exact (i14-validity-raw-intro xq xw true _ (well-formed-comp-upd w y (comp-set-rank m) (comp-set-rank-id m) (comp-set-rank-pending m) (i14-validity-raw-well-formed xq xw true w h)) r)))
 
-(a/theorem vq-raise-loop [xq :- (List Nat), xw :- (List Nat), fuel :- (List Nat)]
+(a/theorem i14-validity-raw-raise-loop [xq :- (List Nat), xw :- (List Nat), fuel :- (List Nat)]
   (forall [d :- Nat, w :- World, todo :- (List RJ)]
-    (=> (= (vq xq xw true w) true) (= (vq xq xw true (:world (raise-loop fuel d w todo))) true)))
+    (=> (= (i14-validity-raw xq xw true w) true) (= (i14-validity-raw xq xw true (:world (raise-loop fuel d w todo))) true)))
   (induction fuel)
   (case [nil] (intros d w todo h) (cases todo) (all_goals (simp only [raise-loop])) (all_goals (exact h)))
   (case [cons u f ih]
@@ -951,16 +951,16 @@
         (case [true] (simp only [raise-loop hd hn]) (exact (ih d w t h)))
         (case [false]
           (simp only [raise-loop hd hn])
-          (exact (ih d _ _ (vq-set-rank xq xw w (:node j) (:need j) h))))))))
-(a/theorem vq-raise-for [xq :- (List Nat), xw :- (List Nat), w :- World, c :- Nat, d :- Nat]
-  (=> (= (vq xq xw true w) true) (= (vq xq xw true (raise-for w c d)) true))
+          (exact (ih d _ _ (i14-validity-raw-set-rank xq xw w (:node j) (:need j) h))))))))
+(a/theorem i14-validity-raw-raise-for [xq :- (List Nat), xw :- (List Nat), w :- World, c :- Nat, d :- Nat]
+  (=> (= (i14-validity-raw xq xw true w) true) (= (i14-validity-raw xq xw true (raise-for w c d)) true))
   (intro h)
   (cases hd (comp-has w d))
   (simp only [raise-for raise-run hd]) (exact h)
-  (simp only [raise-for raise-run hd]) (exact (vq-raise-loop xq xw (raise-fuel w) d w _ h)))
+  (simp only [raise-for raise-run hd]) (exact (i14-validity-raw-raise-loop xq xw (raise-fuel w) d w _ h)))
 
 ;; ===========================================================================
-;; Part G. vq through the allocating transitions: reactivation, demand, T6, T7, T8, T22
+;; Part G. i14-validity-raw through the allocating transitions: reactivation, demand, T6, T7, T8, T22
 ;; ===========================================================================
 
 ;; ---- awake facts
@@ -980,12 +980,12 @@
   (intro h) (exact (awake-not-has (:comps w) x (tbl-find-none-has CompRow comp-id x (:comps w) h))))
 (a/defn not-idle14 [c :- CompRow] Bool (Bool.not (:idle c)))
 (a/theorem awake-same [w :- World, x :- Nat, c :- CompRow]
-  (=> (= (inv-sample w) true) (= (comp-find w x) (Option.some CompRow c)) (= (:idle c) false) (= (awake (:comps w) x) true))
+  (=> (= (well-formed w) true) (= (comp-find w x) (Option.some CompRow c)) (= (:idle c) false) (= (awake (:comps w) x) true))
   (intros hs hf hi)
   (have mc := (tbl-find-mem CompRow comp-id x c (:comps w) hf))
   (have hid := (tbl-find-id CompRow comp-id x c (:comps w) hf))
   (have q (= (not-idle14 c) true)) (simp only [not-idle14 hi Bool.not_false])
-  (have z := (gd-same-id w c not-idle14 hs mc q))
+  (have z := (comp-facts-same-id w c not-idle14 hs mc q))
   (have hid2 (= (:id c) x)) (exact hid)
   (rw [hid2] at z)
   (simp only [awake])
@@ -1002,67 +1002,67 @@
     (case [false]
       (have hb2 (= (Nat.beq (:id hd) x) false)) (exact hb)
       (simp only [tbl-upd hb tbl-all ih not-idle-if-id hb2 Bool.not_false Bool.true_or Bool.and_self]))))
-(a/theorem awake-src [w :- World, x :- Nat, s :- SourceRow]
-  (=> (= (inv-sample w) true) (= (source-find w x) (Option.some SourceRow s)) (= (awake (:comps w) x) true))
+(a/theorem awake-source [w :- World, x :- Nat, s :- SourceRow]
+  (=> (= (well-formed w) true) (= (source-find w x) (Option.some SourceRow s)) (= (awake (:comps w) x) true))
   (intros hs hf)
   (have hx := (tbl-find-has SourceRow source-id x s (:sources w) hf))
-  (have hc := (comp-not-source w x (And.right (And.right (inv-parts w hs))) hx))
+  (have hc := (comp-not-source w x (And.right (And.right (well-formed-parts w hs))) hx))
   (simp only [comp-has] at hc)
   (exact (awake-not-has (:comps w) x hc)))
 
 ;; ---- moving the parameters
-(a/theorem vq-weaken [xq :- (List Nat), xw :- (List Nat), xs :- Bool, xq2 :- (List Nat), xw2 :- (List Nat), w :- World,
+(a/theorem i14-validity-raw-weaken [xq :- (List Nat), xw :- (List Nat), xs :- Bool, xq2 :- (List Nat), xw2 :- (List Nat), w :- World,
                       hq :- (forall [y :- Nat] (=> (= (reach-mem y xq) true) (= (reach-mem y xq2) true))),
                       hw :- (forall [y :- Nat] (=> (= (reach-mem y xw2) true) (= (reach-mem y xw) true)))]
-  (=> (= (vq xq xw xs w) true) (= (vq xq2 xw2 xs w) true))
+  (=> (= (i14-validity-raw xq xw xs w) true) (= (i14-validity-raw xq2 xw2 xs w) true))
   (intro h)
-  (have p := (vqk-parts xq xw xs _ _ _ (vq-rest-of xq xw xs w h)))
-  (have i2 (= (tbl-all (dnaq14 xq2 (:comps w)) (:edges w)) true))
-  (apply (tbl-all-mono EdgeRow (dnaq14 xq (:comps w)) (dnaq14 xq2 (:comps w)) _ (:edges w) (And.left (And.right p))))
+  (have p := (i14-validity-raw-keys-ok-parts xq xw xs _ _ _ (i14-validity-raw-rest-of xq xw xs w h)))
+  (have i2 (= (tbl-all (i14-idle-dep-queued xq2 (:comps w)) (:edges w)) true))
+  (apply (tbl-all-mono EdgeRow (i14-idle-dep-queued xq (:comps w)) (i14-idle-dep-queued xq2 (:comps w)) _ (:edges w) (And.left (And.right p))))
   (intros e he)
   (cases hk (Nat.beq (:kind e) ek-dep))
-  (case [false] (simp only [dnaq14 hk Bool.not_false Bool.true_or]))
+  (case [false] (simp only [i14-idle-dep-queued hk Bool.not_false Bool.true_or]))
   (case [true]
-    (simp only [dnaq14 hk Bool.not_true Bool.false_or Bool.or_eq_true] at he) (simp only [dnaq14 hk Bool.not_true Bool.false_or Bool.or_eq_true])
+    (simp only [i14-idle-dep-queued hk Bool.not_true Bool.false_or Bool.or_eq_true] at he) (simp only [i14-idle-dep-queued hk Bool.not_true Bool.false_or Bool.or_eq_true])
     (cases he) (case [inl a1] (exact (Or.inl (hq (:debtor e) a1)))) (case [inr a2] (exact (Or.inr a2))))
   (have i3 := (all-sub (awake (:comps w)) xw xw2 hw (And.left (And.right (And.right p)))))
-  (exact (vq-intro xq2 xw2 xs w (vq-sample xq xw xs w h)
-           (vqk-intro xq2 xw2 xs _ _ _ (And.left p) i2 i3 (And.right (And.right (And.right p)))))))
-(a/theorem vq-weaken-s [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World]
-  (=> (= (vq xq xw true w) true) (= (vq xq xw xs w) true))
+  (exact (i14-validity-raw-intro xq2 xw2 xs w (i14-validity-raw-well-formed xq xw xs w h)
+           (i14-validity-raw-keys-ok-intro xq2 xw2 xs _ _ _ (And.left p) i2 i3 (And.right (And.right (And.right p)))))))
+(a/theorem i14-validity-raw-weaken-s [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World]
+  (=> (= (i14-validity-raw xq xw true w) true) (= (i14-validity-raw xq xw xs w) true))
   (intro h)
-  (have p := (vqk-parts xq xw true _ _ _ (vq-rest-of xq xw true w h)))
-  (have i4 (= (Bool.or (Bool.not xs) (tbl-all (swc14 (:next-id w)) (:comps w))) true))
+  (have p := (i14-validity-raw-keys-ok-parts xq xw true _ _ _ (i14-validity-raw-rest-of xq xw true w h)))
+  (have i4 (= (Bool.or (Bool.not xs) (tbl-all (i14-stamps-below (:next-id w)) (:comps w))) true))
   (have p4 := (And.right (And.right (And.right p)))) (simp only [Bool.not_true Bool.false_or] at p4)
   (simp only [p4 Bool.or_true])
-  (exact (vq-intro xq xw xs w (vq-sample xq xw true w h)
-           (vqk-intro xq xw xs _ _ _ (And.left p) (And.left (And.right p)) (And.left (And.right (And.right p))) i4))))
-(a/theorem vq-drop [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World, x :- Nat]
-  (=> (= (awake (:comps w) x) true) (= (vq (List.cons Nat x xq) xw xs w) true) (= (vq xq xw xs w) true))
+  (exact (i14-validity-raw-intro xq xw xs w (i14-validity-raw-well-formed xq xw true w h)
+           (i14-validity-raw-keys-ok-intro xq xw xs _ _ _ (And.left p) (And.left (And.right p)) (And.left (And.right (And.right p))) i4))))
+(a/theorem i14-validity-raw-drop [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World, x :- Nat]
+  (=> (= (awake (:comps w) x) true) (= (i14-validity-raw (List.cons Nat x xq) xw xs w) true) (= (i14-validity-raw xq xw xs w) true))
   (intros ha h)
-  (have p := (vqk-parts _ xw xs _ _ _ (vq-rest-of _ xw xs w h)))
-  (have i2 (= (tbl-all (dnaq14 xq (:comps w)) (:edges w)) true))
-  (apply (tbl-all-mono EdgeRow (dnaq14 (List.cons Nat x xq) (:comps w)) (dnaq14 xq (:comps w)) _ (:edges w) (And.left (And.right p))))
+  (have p := (i14-validity-raw-keys-ok-parts _ xw xs _ _ _ (i14-validity-raw-rest-of _ xw xs w h)))
+  (have i2 (= (tbl-all (i14-idle-dep-queued xq (:comps w)) (:edges w)) true))
+  (apply (tbl-all-mono EdgeRow (i14-idle-dep-queued (List.cons Nat x xq) (:comps w)) (i14-idle-dep-queued xq (:comps w)) _ (:edges w) (And.left (And.right p))))
   (intros e he)
   (cases hk (Nat.beq (:kind e) ek-dep))
-  (case [false] (simp only [dnaq14 hk Bool.not_false Bool.true_or]))
+  (case [false] (simp only [i14-idle-dep-queued hk Bool.not_false Bool.true_or]))
   (case [true]
-    (simp only [dnaq14 hk Bool.not_true Bool.false_or Bool.or_eq_true] at he) (simp only [dnaq14 hk Bool.not_true Bool.false_or Bool.or_eq_true])
+    (simp only [i14-idle-dep-queued hk Bool.not_true Bool.false_or Bool.or_eq_true] at he) (simp only [i14-idle-dep-queued hk Bool.not_true Bool.false_or Bool.or_eq_true])
     (cases he)
     (case [inr a2] (exact (Or.inr a2)))
     (case [inl a1]
       (cases hb (Nat.beq (:debtor e) x))
       (case [true] (have ex := (Nat.eq_of_beq_eq_true hb)) (rw [ex]) (exact (Or.inr ha)))
       (case [false] (simp only [reach-mem hb] at a1) (exact (Or.inl a1)))))
-  (exact (vq-intro xq xw xs w (vq-sample _ xw xs w h)
-           (vqk-intro xq xw xs _ _ _ (And.left p) i2 (And.left (And.right (And.right p))) (And.right (And.right (And.right p)))))))
-(a/theorem vq-watch [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World, d :- Nat]
-  (=> (= (awake (:comps w) d) true) (= (vq xq xw xs w) true) (= (vq xq (List.cons Nat d xw) xs w) true))
+  (exact (i14-validity-raw-intro xq xw xs w (i14-validity-raw-well-formed _ xw xs w h)
+           (i14-validity-raw-keys-ok-intro xq xw xs _ _ _ (And.left p) i2 (And.left (And.right (And.right p))) (And.right (And.right (And.right p)))))))
+(a/theorem i14-validity-raw-watch [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World, d :- Nat]
+  (=> (= (awake (:comps w) d) true) (= (i14-validity-raw xq xw xs w) true) (= (i14-validity-raw xq (List.cons Nat d xw) xs w) true))
   (intros ha h)
-  (have p := (vqk-parts xq xw xs _ _ _ (vq-rest-of xq xw xs w h)))
+  (have p := (i14-validity-raw-keys-ok-parts xq xw xs _ _ _ (i14-validity-raw-rest-of xq xw xs w h)))
   (have i3 (= (tbl-all (awake (:comps w)) (List.cons Nat d xw)) true)) (simp only [tbl-all ha (And.left (And.right (And.right p))) Bool.and_self])
-  (exact (vq-intro xq _ xs w (vq-sample xq xw xs w h)
-           (vqk-intro xq _ xs _ _ _ (And.left p) (And.left (And.right p)) i3 (And.right (And.right (And.right p)))))))
+  (exact (i14-validity-raw-intro xq _ xs w (i14-validity-raw-well-formed xq xw xs w h)
+           (i14-validity-raw-keys-ok-intro xq _ xs _ _ _ (And.left p) (And.left (And.right p)) i3 (And.right (And.right (And.right p)))))))
 
 ;; ---- reactivation: the queue is the exemption list for dep edges on idle computations
 (a/theorem rm-cons-r [y :- Nat, h :- Nat, xs :- (List Nat)] (=> (= (reach-mem y xs) true) (= (reach-mem y (List.cons Nat h xs)) true))
@@ -1080,42 +1080,42 @@
     (apply ih) (intros y hy) (apply h) (simp only [valid-debtors]) (exact (rm-cons-r y (:debtor v) (valid-debtors t) hy))
     (simp only [tbl-all a1 a2 Bool.and_self])))
 
-(a/theorem vq-react-add [xq :- (List Nat), xw :- (List Nat), w :- World, c :- Nat, v :- Valid]
-  (=> (= (deb-in xq v) true) (= (vq xq xw true w) true) (= (vq xq xw true (react-add w c v)) true))
+(a/theorem i14-validity-raw-react-add [xq :- (List Nat), xw :- (List Nat), w :- World, c :- Nat, v :- Valid]
+  (=> (= (deb-in xq v) true) (= (i14-validity-raw xq xw true w) true) (= (i14-validity-raw xq xw true (react-add w c v)) true))
   (intros hd h)
   (cases hk (react-ok w c v))
   (simp only [react-add hk]) (exact h)
-  (have hn (= (dnaq14 xq (:comps w) (valid-edge w c v)) true))
+  (have hn (= (i14-idle-dep-queued xq (:comps w) (valid-edge w c v)) true))
   (simp only [deb-in] at hd)
-  (simp only [dnaq14 valid-edge hd Bool.true_or Bool.or_true])
+  (simp only [i14-idle-dep-queued valid-edge hd Bool.true_or Bool.or_true])
   (simp only [react-add hk])
-  (exact (vq-raise-for xq xw _ c (:debtor v) (vq-insert-edge-checked xq xw true w (valid-edge w c v) h hn))))
-(a/theorem vq-react-edges [xq :- (List Nat), xw :- (List Nat), vs :- (List Valid)]
-  (forall [w :- World, c :- Nat] (=> (= (tbl-all (deb-in xq) vs) true) (= (vq xq xw true w) true) (= (vq xq xw true (react-edges w c vs)) true)))
+  (exact (i14-validity-raw-raise-for xq xw _ c (:debtor v) (i14-validity-raw-insert-edge-checked xq xw true w (valid-edge w c v) h hn))))
+(a/theorem i14-validity-raw-react-edges [xq :- (List Nat), xw :- (List Nat), vs :- (List Valid)]
+  (forall [w :- World, c :- Nat] (=> (= (tbl-all (deb-in xq) vs) true) (= (i14-validity-raw xq xw true w) true) (= (i14-validity-raw xq xw true (react-edges w c vs)) true)))
   (induction vs)
   (case [nil] (intros w c hd h) (simp only [react-edges]) (exact h))
   (case [cons v t ih]
     (intros w c hd h)
     (simp only [tbl-all Bool.and_eq_true] at hd)
     (simp only [react-edges])
-    (exact (ih _ c (And.right hd) (vq-react-add xq xw w c v (And.left hd) h)))))
+    (exact (ih _ c (And.right hd) (i14-validity-raw-react-add xq xw w c v (And.left hd) h)))))
 
 ;; one reactivation: the popped computation wakes, the queue gains its validity debtors
-(a/theorem vq-react-one [q :- (List Nat), xq0 :- (List Nat), xw :- (List Nat), w :- World, c :- CompRow, t :- (List Nat)]
-  (=> (= (vq (List.cons Nat (:id c) (List.append Nat t xq0)) xw true w) true)
-      (= (vq (List.append Nat (List.append Nat t (valid-debtors (:validity c))) xq0) (List.cons Nat (:id c) xw) true (react-one w c)) true))
+(a/theorem i14-validity-raw-react-one [q :- (List Nat), xq0 :- (List Nat), xw :- (List Nat), w :- World, c :- CompRow, t :- (List Nat)]
+  (=> (= (i14-validity-raw (List.cons Nat (:id c) (List.append Nat t xq0)) xw true w) true)
+      (= (i14-validity-raw (List.append Nat (List.append Nat t (valid-debtors (:validity c))) xq0) (List.cons Nat (:id c) xw) true (react-one w c)) true))
   (intro h)
-  (have h1 := (vq-comp-wake _ xw true w (:id c) comp-react-row comp-react-row-id comp-react-row-pending comp-react-row-dom14 h))
+  (have h1 := (i14-validity-raw-comp-wake _ xw true w (:id c) comp-react-row comp-react-row-id comp-react-row-pending comp-react-row-dom14 h))
   (have aw := (awake-upd-wake (:id c) comp-react-row (fn [k :- CompRow] (Eq.refl false)) (:comps w)))
   (have aw2 (= (awake (:comps (comp-upd w (:id c) comp-react-row)) (:id c)) true)) (exact aw)
-  (have h2a := (vq-drop (List.append Nat t xq0) xw true (comp-upd w (:id c) comp-react-row) (:id c) aw2 h1))
-  (have h2 := (vq-watch (List.append Nat t xq0) xw true (comp-upd w (:id c) comp-react-row) (:id c) aw2 h2a))
+  (have h2a := (i14-validity-raw-drop (List.append Nat t xq0) xw true (comp-upd w (:id c) comp-react-row) (:id c) aw2 h1))
+  (have h2 := (i14-validity-raw-watch (List.append Nat t xq0) xw true (comp-upd w (:id c) comp-react-row) (:id c) aw2 h2a))
   (have sub (forall [y :- Nat] (=> (= (reach-mem y (List.append Nat t xq0)) true)
                                     (= (reach-mem y (List.append Nat (List.append Nat t (valid-debtors (:validity c))) xq0)) true))))
   (intros y hy)
   (simp only [reach-mem-append Bool.or_eq_true] at hy) (simp only [reach-mem-append Bool.or_eq_true])
   (cases hy) (case [inl a1] (exact (Or.inl (Or.inl a1)))) (case [inr a2] (exact (Or.inr a2)))
-  (have h3 := (vq-weaken _ (List.cons Nat (:id c) xw) true _ (List.cons Nat (:id c) xw) (comp-upd w (:id c) comp-react-row) sub
+  (have h3 := (i14-validity-raw-weaken _ (List.cons Nat (:id c) xw) true _ (List.cons Nat (:id c) xw) (comp-upd w (:id c) comp-react-row) sub
                 (fn [y :- Nat, hy :- (= (reach-mem y (List.cons Nat (:id c) xw)) true)] hy) h2))
   (have hd := (deb-in-sub (:validity c) (List.append Nat (List.append Nat t (valid-debtors (:validity c))) xq0)
                 (fn [y :- Nat, hy :- (= (reach-mem y (valid-debtors (:validity c))) true)]
@@ -1124,12 +1124,12 @@
                                 (Eq.trans (reach-mem-append y t (valid-debtors (:validity c))) (congrArg (fn [b :- Bool] (Bool.or (reach-mem y t) b)) hy)))
                               (Eq.trans (congrArg (fn [b :- Bool] (Bool.or b (reach-mem y xq0))) (Bool.or_true (reach-mem y t))) (Bool.true_or (reach-mem y xq0))))))))
   (simp only [react-one])
-  (exact (vq-react-edges _ _ (:validity c) (comp-upd w (:id c) comp-react-row) (:id c) hd h3)))
+  (exact (i14-validity-raw-react-edges _ _ (:validity c) (comp-upd w (:id c) comp-react-row) (:id c) hd h3)))
 
-(a/theorem vq-r8 [xq0 :- (List Nat), xw :- (List Nat), fuel :- (List Nat)]
+(a/theorem i14-validity-raw-i8-closed-run-ok [xq0 :- (List Nat), xw :- (List Nat), fuel :- (List Nat)]
   (forall [w :- World, q :- (List Nat)]
-    (=> (= (vq (List.append Nat q xq0) xw true w) true)
-        (= (vq (List.append Nat (:rest (react-run8 fuel w q)) xq0) xw true (:world (react-run8 fuel w q))) true)))
+    (=> (= (i14-validity-raw (List.append Nat q xq0) xw true w) true)
+        (= (i14-validity-raw (List.append Nat (:rest (react-run8 fuel w q)) xq0) xw true (:world (react-run8 fuel w q))) true)))
   (induction fuel)
   (case [nil] (intros w q h) (simp only [react-run8]) (exact h))
   (case [cons u f ih]
@@ -1140,23 +1140,23 @@
       (cases hc (comp-find w x))
       (case [none]
         (simp only [react-run8 hc])
-        (exact (ih w t (vq-drop _ xw true w x (awake-none w x hc) h))))
+        (exact (ih w t (i14-validity-raw-drop _ xw true w x (awake-none w x hc) h))))
       (case [some c]
         (have hid := (tbl-find-id CompRow comp-id x c (:comps w) hc))
         (have hid2 (= (:id c) x)) (exact hid)
         (cases hi (:idle c))
         (case [false]
           (simp only [react-run8 hc hi])
-          (exact (ih w t (vq-drop _ xw true w x (awake-same w x c (vq-sample _ xw true w h) hc hi) h))))
+          (exact (ih w t (i14-validity-raw-drop _ xw true w x (awake-same w x c (i14-validity-raw-well-formed _ xw true w h) hc hi) h))))
         (case [true]
           (simp only [react-run8 hc hi])
-          (have h0 (= (vq (List.cons Nat (:id c) (List.append Nat t xq0)) xw true w) true)) (rw [hid2]) (exact h)
-          (have h1 := (vq-react-one t xq0 xw w c t h0))
-          (exact (ih _ _ (vq-weaken _ _ true _ xw (react-one w c) (fn [y :- Nat, hy :- (= (reach-mem y (List.append Nat (List.append Nat t (valid-debtors (:validity c))) xq0)) true)] hy)
+          (have h0 (= (i14-validity-raw (List.cons Nat (:id c) (List.append Nat t xq0)) xw true w) true)) (rw [hid2]) (exact h)
+          (have h1 := (i14-validity-raw-react-one t xq0 xw w c t h0))
+          (exact (ih _ _ (i14-validity-raw-weaken _ _ true _ xw (react-one w c) (fn [y :- Nat, hy :- (= (reach-mem y (List.append Nat (List.append Nat t (valid-debtors (:validity c))) xq0)) true)] hy)
                            (fn [y :- Nat, hy :- (= (reach-mem y xw) true)] (rm-cons-r y (:id c) xw hy)) h1))))))))
 
 ;; demand on d: afterwards d is awake (watched)
-(a/theorem r8-step [u :- Nat, f :- (List Nat), w :- World, d :- Nat, c :- CompRow]
+(a/theorem i8-closed-run-ok-step [u :- Nat, f :- (List Nat), w :- World, d :- Nat, c :- CompRow]
   (=> (= (comp-find w d) (Option.some CompRow c)) (= (:idle c) true)
       (= (react-run8 (List.cons Nat u f) w (List.cons Nat d (List.nil Nat)))
          (react-run8 f (react-one w c) (List.append Nat (List.nil Nat) (valid-debtors (:validity c))))))
@@ -1164,53 +1164,53 @@
 (a/theorem rest-nil [r :- FinRes] (=> (= (match (:rest r) [nil true] [(cons h t) false]) true) (= (:rest r) (List.nil Nat)))
   (intro h) (cases hr (:rest r)) (case [nil] (rfl)) (case [cons a b] (rw [hr] at h) (cases h)))
 
-(a/theorem vq-demand [xq :- (List Nat), xw :- (List Nat), w :- World, d :- Nat]
-  (=> (= (vq xq xw true w) true) (= (vq xq (List.cons Nat d xw) true (demand-reactive w d)) true))
+(a/theorem i14-validity-raw-demand [xq :- (List Nat), xw :- (List Nat), w :- World, d :- Nat]
+  (=> (= (i14-validity-raw xq xw true w) true) (= (i14-validity-raw xq (List.cons Nat d xw) true (demand-reactive w d)) true))
   (intro h)
-  (have hs := (vq-sample xq xw true w h))
+  (have hs := (i14-validity-raw-well-formed xq xw true w h))
   (cases hc (comp-find w d)) (case' [some c]) (case' [none])
-  (simp only [demand-reactive hc]) (exact (vq-watch xq xw true w d (awake-none w d hc) h))
+  (simp only [demand-reactive hc]) (exact (i14-validity-raw-watch xq xw true w d (awake-none w d hc) h))
   (have hid := (tbl-find-id CompRow comp-id d c (:comps w) hc))
   (have hid2 (= (:id c) d)) (exact hid)
   (cases hi (:idle c))
-  (simp only [demand-reactive hc hi]) (exact (vq-watch xq xw true w d (awake-same w d c hs hc hi) h))
+  (simp only [demand-reactive hc hi]) (exact (i14-validity-raw-watch xq xw true w d (awake-same w d c hs hc hi) h))
   (cases hv (valid-idle w c))
   (simp only [demand-reactive hc hi hv])
   (have aw (= (awake (:comps (comp-upd w d comp-demand-row)) d) true))
   (exact (awake-upd-wake d comp-demand-row (fn [k :- CompRow] (Eq.refl false)) (:comps w)))
-  (exact (vq-watch xq xw true (comp-upd w d comp-demand-row) d aw
-           (vq-comp-wake xq xw true w d comp-demand-row comp-demand-row-id comp-demand-row-pending comp-demand-row-dom14 h)))
+  (exact (i14-validity-raw-watch xq xw true (comp-upd w d comp-demand-row) d aw
+           (i14-validity-raw-comp-wake xq xw true w d comp-demand-row comp-demand-row-id comp-demand-row-pending comp-demand-row-dom14 h)))
   (simp only [demand-reactive hc hi hv])
   (have e1 := (react-run8-world (react-fuel w) w (List.cons Nat d (List.nil Nat))))
   (rw [← e1])
-  (have e2 := (r8-step 0 (List.cons Nat 0 (tbl-gather (fn [k :- CompRow] true) (fn [k :- CompRow] (valid-debtors (:validity k))) (:comps w))) w d c hc hi))
+  (have e2 := (i8-closed-run-ok-step 0 (List.cons Nat 0 (tbl-gather (fn [k :- CompRow] true) (fn [k :- CompRow] (valid-debtors (:validity k))) (:comps w))) w d c hc hi))
   (have dn := (rest-nil (react-run8 (react-fuel w) w (List.cons Nat d (List.nil Nat))) (react-done-ok w d hs)))
-  (have h0 (= (vq (List.cons Nat (:id c) (List.append Nat (List.nil Nat) xq)) xw true w) true)) (rw [hid2])
-  (exact (vq-weaken xq xw true (List.cons Nat d xq) xw w (fn [y :- Nat, hy :- (= (reach-mem y xq) true)] (rm-cons-r y d xq hy))
+  (have h0 (= (i14-validity-raw (List.cons Nat (:id c) (List.append Nat (List.nil Nat) xq)) xw true w) true)) (rw [hid2])
+  (exact (i14-validity-raw-weaken xq xw true (List.cons Nat d xq) xw w (fn [y :- Nat, hy :- (= (reach-mem y xq) true)] (rm-cons-r y d xq hy))
            (fn [y :- Nat, hy :- (= (reach-mem y xw) true)] hy) h))
-  (have h1 := (vq-react-one (List.nil Nat) xq xw w c (List.nil Nat) h0))
-  (have h2 := (vq-r8 xq (List.cons Nat (:id c) xw) (List.cons Nat 0 (tbl-gather (fn [k :- CompRow] true) (fn [k :- CompRow] (valid-debtors (:validity k))) (:comps w)))
+  (have h1 := (i14-validity-raw-react-one (List.nil Nat) xq xw w c (List.nil Nat) h0))
+  (have h2 := (i14-validity-raw-i8-closed-run-ok xq (List.cons Nat (:id c) xw) (List.cons Nat 0 (tbl-gather (fn [k :- CompRow] true) (fn [k :- CompRow] (valid-debtors (:validity k))) (:comps w)))
                 (react-one w c) (List.append Nat (List.nil Nat) (valid-debtors (:validity c))) h1))
   (have e3 (= (react-run8 (react-fuel w) w (List.cons Nat d (List.nil Nat)))
               (react-run8 (List.cons Nat 0 (tbl-gather (fn [k :- CompRow] true) (fn [k :- CompRow] (valid-debtors (:validity k))) (:comps w)))
                           (react-one w c) (List.append Nat (List.nil Nat) (valid-debtors (:validity c))))))
   (exact e2)
   (rw [e3]) (rw [e3] at dn) (rw [dn] at h2)
-  (apply (vq-weaken (List.append Nat (List.nil Nat) xq) (List.cons Nat (:id c) xw) true xq (List.cons Nat d xw) _
+  (apply (i14-validity-raw-weaken (List.append Nat (List.nil Nat) xq) (List.cons Nat (:id c) xw) true xq (List.cons Nat d xw) _
            (fn [y :- Nat, hy :- (= (reach-mem y (List.append Nat (List.nil Nat) xq)) true)] hy)
            (fn [y :- Nat, hy :- (= (reach-mem y (List.cons Nat d xw)) true)] (Eq.trans (congrArg (fn [z :- Nat] (reach-mem y (List.cons Nat z xw))) hid2) hy))))
   (exact h2))
 
-(a/theorem vq-demand-fold [xq :- (List Nat), ds :- (List Nat)]
+(a/theorem i14-validity-raw-demand-fold [xq :- (List Nat), ds :- (List Nat)]
   (forall [w :- World, xw :- (List Nat)]
-    (=> (= (vq xq xw true w) true) (= (vq xq (List.append Nat ds xw) true (nat-fold demand-reactive w ds)) true)))
+    (=> (= (i14-validity-raw xq xw true w) true) (= (i14-validity-raw xq (List.append Nat ds xw) true (nat-fold demand-reactive w ds)) true)))
   (induction ds)
   (case [nil] (intros w xw h) (simp only [nat-fold]) (exact h))
   (case [cons d t ih]
     (intros w xw h)
     (simp only [nat-fold])
-    (have h1 := (ih (demand-reactive w d) (List.cons Nat d xw) (vq-demand xq xw w d h)))
-    (apply (vq-weaken xq (List.append Nat t (List.cons Nat d xw)) true xq (List.append Nat (List.cons Nat d t) xw) _
+    (have h1 := (ih (demand-reactive w d) (List.cons Nat d xw) (i14-validity-raw-demand xq xw w d h)))
+    (apply (i14-validity-raw-weaken xq (List.append Nat t (List.cons Nat d xw)) true xq (List.append Nat (List.cons Nat d t) xw) _
              (fn [y :- Nat, hy :- (= (reach-mem y xq) true)] hy)))
     (intros y hy)
     (simp only [List.append reach-mem-append Bool.or_eq_true] at hy) (simp only [reach-mem-append Bool.or_eq_true])
@@ -1222,61 +1222,61 @@
     (exact h1)))
 
 ;; an allocation by a fresh edge opens the strict window
-(a/theorem vq-insert-edge-fresh-up [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World, e :- EdgeRow]
-  (=> (= (edge-ok-in w e) true) (= (vq xq xw xs w) true) (= (dnaq14 xq (:comps w) e) true) (= (vq xq xw true (insert-edge-fresh w e)) true))
+(a/theorem i14-validity-raw-insert-edge-fresh-up [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World, e :- EdgeRow]
+  (=> (= (edge-ok-in w e) true) (= (i14-validity-raw xq xw xs w) true) (= (i14-idle-dep-queued xq (:comps w) e) true) (= (i14-validity-raw xq xw true (insert-edge-fresh w e)) true))
   (intros he h hn)
-  (have r0 := (vqk-up xq xw xs (:comps w) (:edges w) (:next-id w) (:comps w) (:edges w) (+ (:next-id w) 1)
-                (cpres-refl (:comps w)) (epres-refl (:edges w)) (Nat.lt_succ_self (:next-id w)) (vq-rest-of xq xw xs w h)))
-  (have hn2 (= (dnaq14 xq (:comps w) (edge-set-marked false (edge-set-id (:next-id w) e))) true)) (exact hn)
-  (have r (= (vq-rest xq xw true (insert-edge-fresh w e)) true))
-  (exact (vqk-cons-edge xq xw true _ _ _ _ hn2 r0))
-  (exact (vq-intro xq xw true _ (insert-edge-fresh-inv-sample w e he (vq-sample xq xw xs w h)) r)))
+  (have r0 := (i14-validity-raw-keys-ok-up xq xw xs (:comps w) (:edges w) (:next-id w) (:comps w) (:edges w) (+ (:next-id w) 1)
+                (cpres-refl (:comps w)) (epres-refl (:edges w)) (Nat.lt_succ_self (:next-id w)) (i14-validity-raw-rest-of xq xw xs w h)))
+  (have hn2 (= (i14-idle-dep-queued xq (:comps w) (edge-set-marked false (edge-set-id (:next-id w) e))) true)) (exact hn)
+  (have r (= (i14-validity-raw-rest xq xw true (insert-edge-fresh w e)) true))
+  (exact (i14-validity-raw-keys-ok-cons-edge xq xw true _ _ _ _ hn2 r0))
+  (exact (i14-validity-raw-intro xq xw true _ (well-formed-insert-edge-fresh w e he (i14-validity-raw-well-formed xq xw xs w h)) r)))
 
 ;; ---- T6
-(a/theorem vq-await-pre [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
-  (=> (= (vq xq xw xs w) true) (= (vq xq (List.append Nat (nat-distinct ds) xw) true (await-pre w r ds mode k mine)) true))
+(a/theorem i14-validity-raw-await-pre [xq :- (List Nat), xw :- (List Nat), xs :- Bool, w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
+  (=> (= (i14-validity-raw xq xw xs w) true) (= (i14-validity-raw xq (List.append Nat (nat-distinct ds) xw) true (await-pre w r ds mode k mine)) true))
   (intro h)
-  (have h1 := (vq-run-upd xq xw xs w (:id r) run-tick run-tick-run-id h))
+  (have h1 := (i14-validity-raw-run-upd xq xw xs w (:id r) run-tick run-tick-run-id h))
   (have he (= (act-id (ActRow.mk (:next-id w) (:id r) mode (List.nil Member) (none-slots ds) (nat-len ds) k mine))
               (:next-id (run-upd w (:id r) run-tick))))
   (rfl)
-  (have w1 (= (vq xq xw true (bump (act-ins (run-upd w (:id r) run-tick) (ActRow.mk (:next-id w) (:id r) mode (List.nil Member) (none-slots ds) (nat-len ds) k mine)))) true))
-  (exact (vq-intro xq xw true (bump (act-ins (run-upd w (:id r) run-tick) (ActRow.mk (:next-id w) (:id r) mode (List.nil Member) (none-slots ds) (nat-len ds) k mine))) (inv-act-ins-fresh (run-upd w (:id r) run-tick) (ActRow.mk (:next-id w) (:id r) mode (List.nil Member) (none-slots ds) (nat-len ds) k mine) he (vq-sample xq xw xs (run-upd w (:id r) run-tick) h1))
-           (vq-rest-up xq xw xs (run-upd w (:id r) run-tick) (bump (act-ins (run-upd w (:id r) run-tick) (ActRow.mk (:next-id w) (:id r) mode (List.nil Member) (none-slots ds) (nat-len ds) k mine))) (cpres-refl (:comps (run-upd w (:id r) run-tick))) (epres-refl (:edges (run-upd w (:id r) run-tick))) (Nat.lt_succ_self (:next-id (run-upd w (:id r) run-tick)))
-             (vq-rest-of xq xw xs (run-upd w (:id r) run-tick) h1))))
+  (have w1 (= (i14-validity-raw xq xw true (bump (act-ins (run-upd w (:id r) run-tick) (ActRow.mk (:next-id w) (:id r) mode (List.nil Member) (none-slots ds) (nat-len ds) k mine)))) true))
+  (exact (i14-validity-raw-intro xq xw true (bump (act-ins (run-upd w (:id r) run-tick) (ActRow.mk (:next-id w) (:id r) mode (List.nil Member) (none-slots ds) (nat-len ds) k mine))) (well-formed-act-ins-fresh (run-upd w (:id r) run-tick) (ActRow.mk (:next-id w) (:id r) mode (List.nil Member) (none-slots ds) (nat-len ds) k mine) he (i14-validity-raw-well-formed xq xw xs (run-upd w (:id r) run-tick) h1))
+           (i14-validity-raw-rest-up xq xw xs (run-upd w (:id r) run-tick) (bump (act-ins (run-upd w (:id r) run-tick) (ActRow.mk (:next-id w) (:id r) mode (List.nil Member) (none-slots ds) (nat-len ds) k mine))) (cpres-refl (:comps (run-upd w (:id r) run-tick))) (epres-refl (:edges (run-upd w (:id r) run-tick))) (Nat.lt_succ_self (:next-id (run-upd w (:id r) run-tick)))
+             (i14-validity-raw-rest-of xq xw xs (run-upd w (:id r) run-tick) h1))))
   (simp only [await-pre])
-  (exact (vq-demand-fold xq (nat-distinct ds) _ xw w1)))
+  (exact (i14-validity-raw-demand-fold xq (nat-distinct ds) _ xw w1)))
 
 (a/defn rm-in [xs :- (List Nat), y :- Nat] Bool (reach-mem y xs))
-(a/theorem vq-await-step [xq :- (List Nat), xw :- (List Nat), r :- RunRow, a :- Nat, mode :- Nat, k :- Nat, acc :- AwAcc, d :- Nat]
-  (=> (= (reach-mem d xw) true) (= (vq xq xw true (:world acc)) true) (= (vq xq xw true (:world (await-step r a mode k acc d))) true))
+(a/theorem i14-validity-raw-await-step [xq :- (List Nat), xw :- (List Nat), r :- RunRow, a :- Nat, mode :- Nat, k :- Nat, acc :- AwAcc, d :- Nat]
+  (=> (= (reach-mem d xw) true) (= (i14-validity-raw xq xw true (:world acc)) true) (= (i14-validity-raw xq xw true (:world (await-step r a mode k acc d))) true))
   (intros hw h)
-  (have aw := (all-reach-mem (awake (:comps (:world acc))) d xw (And.left (And.right (And.right (vqk-parts xq xw true _ _ _ (vq-rest-of xq xw true _ h))))) hw))
+  (have aw := (all-reach-mem (awake (:comps (:world acc))) d xw (And.left (And.right (And.right (i14-validity-raw-keys-ok-parts xq xw true _ _ _ (i14-validity-raw-rest-of xq xw true _ h))))) hw))
   (cases hd (as-dep (:world acc) r d))
   (case [false]
-    (have hn (= (dnaq14 xq (:comps (:world acc)) (await-edge (:world acc) r a mode k d)) true))
-    (simp [dnaq14 await-edge hd ek-wait ek-dep])
+    (have hn (= (i14-idle-dep-queued xq (:comps (:world acc)) (await-edge (:world acc) r a mode k d)) true))
+    (simp [i14-idle-dep-queued await-edge hd ek-wait ek-dep])
     (simp only [await-step hd])
-    (exact (vq-insert-edge-checked xq xw true _ _ h hn)))
+    (exact (i14-validity-raw-insert-edge-checked xq xw true _ _ h hn)))
   (case [true]
     (cases hs (site-edge (:edges (:world acc)) (:of r) (:effect-index r) d))
     (case [none]
-      (have hn (= (dnaq14 xq (:comps (:world acc)) (await-edge (:world acc) r a mode k d)) true))
-      (simp only [await-edge hd dnaq14 aw Bool.or_true])
+      (have hn (= (i14-idle-dep-queued xq (:comps (:world acc)) (await-edge (:world acc) r a mode k d)) true))
+      (simp only [await-edge hd i14-idle-dep-queued aw Bool.or_true])
       (simp only [await-step hd hs])
       (simp only [await-new-dep])
-      (exact (vq-comp-upd xq xw true _ (:of r) (comp-consume-adopt (:effect-index r) d)
+      (exact (i14-validity-raw-comp-upd xq xw true _ (:of r) (comp-consume-adopt (:effect-index r) d)
                (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _) (fn [c :- CompRow] (Eq.refl (ck14 c)))
-               (vq-raise-for xq xw _ (:of r) d (vq-insert-edge-checked xq xw true _ _ h hn)))))
+               (i14-validity-raw-raise-for xq xw _ (:of r) d (i14-validity-raw-insert-edge-checked xq xw true _ _ h hn)))))
     (case [some e]
       (simp only [await-step hd hs])
-      (exact (vq-comp-upd xq xw true _ (:of r) (comp-consume-adopt (:effect-index r) d)
+      (exact (i14-validity-raw-comp-upd xq xw true _ (:of r) (comp-consume-adopt (:effect-index r) d)
                (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _) (fn [c :- CompRow] (Eq.refl (ck14 c)))
-               (vq-edge-upd xq xw true _ (:id e) (edge-reawait (await-cont r mode k)) (edge-reawait-edge-id _)
+               (i14-validity-raw-edge-upd xq xw true _ (:id e) (edge-reawait (await-cont r mode k)) (edge-reawait-edge-id _)
                  (edge-reawait-kind _) (edge-reawait-creditor _) (edge-reawait-debtor _) (edge-reawait-marked _) h))))))
-(a/theorem vq-await-wire [xq :- (List Nat), xw :- (List Nat), r :- RunRow, a :- Nat, mode :- Nat, k :- Nat, ds :- (List Nat)]
-  (forall [acc :- AwAcc] (=> (= (tbl-all (rm-in xw) ds) true) (= (vq xq xw true (:world acc)) true)
-                             (= (vq xq xw true (:world (await-wire r a mode k acc ds))) true)))
+(a/theorem i14-validity-raw-await-wire [xq :- (List Nat), xw :- (List Nat), r :- RunRow, a :- Nat, mode :- Nat, k :- Nat, ds :- (List Nat)]
+  (forall [acc :- AwAcc] (=> (= (tbl-all (rm-in xw) ds) true) (= (i14-validity-raw xq xw true (:world acc)) true)
+                             (= (i14-validity-raw xq xw true (:world (await-wire r a mode k acc ds))) true)))
   (induction ds)
   (case [nil] (intros acc hd h) (simp only [await-wire]) (exact h))
   (case [cons d t ih]
@@ -1284,7 +1284,7 @@
     (simp only [tbl-all Bool.and_eq_true] at hd)
     (have hd1 (= (reach-mem d xw) true)) (exact (And.left hd))
     (simp only [await-wire])
-    (exact (ih _ (And.right hd) (vq-await-step xq xw r a mode k acc d hd1 h)))))
+    (exact (ih _ (And.right hd) (i14-validity-raw-await-step xq xw r a mode k acc d hd1 h)))))
 (a/theorem rm-in-self [xs :- (List Nat), ys :- (List Nat)] (= (tbl-all (rm-in (List.append Nat xs ys)) xs) true)
   (apply (all-of-mem-r (rm-in (List.append Nat xs ys)) xs))
   (intros y hy) (simp only [rm-in reach-mem-append hy Bool.true_or]))
@@ -1295,126 +1295,126 @@
   (simp [edge-ok-in edge-ok cred-ok deb-ok host-wait-edge host-cred ek-wait ek-dep h]))
 
 ;; ---- the parts' own proofs (generic in the bundle parameters)
-(tree/restate! VQ '[inv-await-post])
-(a/theorem vq-await-raw [zq9 :- (List Nat), zw9 :- (List Nat), zs9 :- Bool, w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
-  (=> (= (vq zq9 zw9 zs9 w) true) (= (vq zq9 zw9 zs9 (await-raw w r ds mode k mine)) true))
+(tree/restate! VQ '[well-formed-await-post])
+(a/theorem i14-validity-raw-await-raw [zq9 :- (List Nat), zw9 :- (List Nat), zs9 :- Bool, w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
+  (=> (= (i14-validity-raw zq9 zw9 zs9 w) true) (= (i14-validity-raw zq9 zw9 zs9 (await-raw w r ds mode k mine)) true))
   (intro h)
-  (have h1 := (vq-await-pre zq9 zw9 zs9 w r ds mode k mine h))
-  (have h2 := (vq-await-wire zq9 (List.append Nat (nat-distinct ds) zw9) r (:next-id w) mode k (nat-distinct ds)
+  (have h1 := (i14-validity-raw-await-pre zq9 zw9 zs9 w r ds mode k mine h))
+  (have h2 := (i14-validity-raw-await-wire zq9 (List.append Nat (nat-distinct ds) zw9) r (:next-id w) mode k (nat-distinct ds)
                 (AwAcc.mk (await-pre w r ds mode k mine) (List.nil DE) true) (rm-in-self (nat-distinct ds) zw9) h1))
-  (have h3 := (vq-await-post zq9 (List.append Nat (nat-distinct ds) zw9) true (:next-id w) (:id r) ds (await-acc w r ds mode k mine) h2))
-  (have h4 := (vq-weaken zq9 (List.append Nat (nat-distinct ds) zw9) true zq9 zw9 (await-post (:next-id w) (:id r) ds (await-acc w r ds mode k mine))
+  (have h3 := (i14-validity-raw-await-post zq9 (List.append Nat (nat-distinct ds) zw9) true (:next-id w) (:id r) ds (await-acc w r ds mode k mine) h2))
+  (have h4 := (i14-validity-raw-weaken zq9 (List.append Nat (nat-distinct ds) zw9) true zq9 zw9 (await-post (:next-id w) (:id r) ds (await-acc w r ds mode k mine))
                 (fn [y :- Nat, hy :- (= (reach-mem y zq9) true)] hy)
                 (fn [y :- Nat, hy :- (= (reach-mem y zw9) true)] (Eq.trans (reach-mem-append y (nat-distinct ds) zw9) (Eq.trans (congrArg (fn [b :- Bool] (Bool.or (reach-mem y (nat-distinct ds)) b)) hy) (Bool.or_true _))))
                 h3))
   (simp only [await-raw])
-  (exact (vq-weaken-s zq9 zw9 zs9 _ h4)))
+  (exact (i14-validity-raw-weaken-s zq9 zw9 zs9 _ h4)))
 
-(tree/restate! VQ '[inv-track-fin])
-(a/theorem vq-track-raw [zq9 :- (List Nat), zw9 :- (List Nat), zs9 :- Bool, w :- World, r :- RunRow, x :- Nat, s :- SourceRow, k :- Nat]
+(tree/restate! VQ '[well-formed-track-fin])
+(a/theorem i14-validity-raw-track-raw [zq9 :- (List Nat), zw9 :- (List Nat), zs9 :- Bool, w :- World, r :- RunRow, x :- Nat, s :- SourceRow, k :- Nat]
   (=> (= (comp-has w (:of r)) true) (= (source-find w x) (Option.some SourceRow s))
-      (= (vq zq9 zw9 zs9 w) true) (= (vq zq9 zw9 zs9 (track-raw w r x s k)) true))
+      (= (i14-validity-raw zq9 zw9 zs9 w) true) (= (i14-validity-raw zq9 zw9 zs9 (track-raw w r x s k)) true))
   (intros hc hs h)
-  (have aw := (awake-src w x s (vq-sample zq9 zw9 zs9 w h) hs))
-  (have hn (= (dnaq14 zq9 (:comps w) (track-edge r x s k)) true))
-  (simp only [dnaq14 track-edge aw Bool.or_true])
-  (have h2 (= (vq zq9 zw9 zs9 (match (site-edge (:edges w) (:of r) (:effect-index r) x)
+  (have aw := (awake-source w x s (i14-validity-raw-well-formed zq9 zw9 zs9 w h) hs))
+  (have hn (= (i14-idle-dep-queued zq9 (:comps w) (track-edge r x s k)) true))
+  (simp only [i14-idle-dep-queued track-edge aw Bool.or_true])
+  (have h2 (= (i14-validity-raw zq9 zw9 zs9 (match (site-edge (:edges w) (:of r) (:effect-index r) x)
                                [none (track-new w r x s k)]
                                [(some e) (comp-upd (track-fin s (:id e) (edge-upd w (:id e) (edge-reread (track-cont r k) s)))
                                                    (:of r) (comp-consume-adopt (:effect-index r) x))])) true))
   (cases he (site-edge (:edges w) (:of r) (:effect-index r) x)) (case' [some e]) (case' [none])
   (simp only [track-new])
-  (exact (vq-comp-upd zq9 zw9 zs9 _ (:of r) (comp-consume-adopt (:effect-index r) x)
+  (exact (i14-validity-raw-comp-upd zq9 zw9 zs9 _ (:of r) (comp-consume-adopt (:effect-index r) x)
            (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _) (fn [c :- CompRow] (Eq.refl (ck14 c)))
-           (vq-track-fin zq9 zw9 zs9 s (:next-id w) _ (vq-insert-edge-fresh zq9 zw9 zs9 w (track-edge r x s k) (track-edge-ok w r x s k hc hs) h hn))))
-  (exact (vq-comp-upd zq9 zw9 zs9 _ (:of r) (comp-consume-adopt (:effect-index r) x)
+           (i14-validity-raw-track-fin zq9 zw9 zs9 s (:next-id w) _ (i14-validity-raw-insert-edge-fresh zq9 zw9 zs9 w (track-edge r x s k) (track-edge-ok w r x s k hc hs) h hn))))
+  (exact (i14-validity-raw-comp-upd zq9 zw9 zs9 _ (:of r) (comp-consume-adopt (:effect-index r) x)
            (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _) (fn [c :- CompRow] (Eq.refl (ck14 c)))
-           (vq-track-fin zq9 zw9 zs9 s (:id e) _
-             (vq-edge-upd zq9 zw9 zs9 w (:id e) (edge-reread (track-cont r k) s) (edge-reread-edge-id _ _) (edge-reread-kind _ _)
+           (i14-validity-raw-track-fin zq9 zw9 zs9 s (:id e) _
+             (i14-validity-raw-edge-upd zq9 zw9 zs9 w (:id e) (edge-reread (track-cont r k) s) (edge-reread-edge-id _ _) (edge-reread-kind _ _)
                (edge-reread-creditor _ _) (edge-reread-debtor _ _) (edge-reread-marked _ _) h))))
   (simp only [track-raw])
-  (exact (vq-run-upd zq9 zw9 zs9 _ (:id r) run-tick run-tick-run-id h2)))
+  (exact (i14-validity-raw-run-upd zq9 zw9 zs9 _ (:id r) run-tick run-tick-run-id h2)))
 
-(tree/restate! VQ '[inv-fire-edge])
-(a/theorem t22-vq [zq9 :- (List Nat), zw9 :- (List Nat), zs9 :- Bool, w :- World, d :- Nat, fresh :- Nat]
-  (=> (= (vq zq9 zw9 zs9 w) true) (= (vq zq9 zw9 zs9 (:world (t22-host-await w d fresh))) true))
+(tree/restate! VQ '[well-formed-fire-edge])
+(a/theorem i14-validity-raw-t22-host-await [zq9 :- (List Nat), zw9 :- (List Nat), zs9 :- Bool, w :- World, d :- Nat, fresh :- Nat]
+  (=> (= (i14-validity-raw zq9 zw9 zs9 w) true) (= (i14-validity-raw zq9 zw9 zs9 (:world (t22-host-await w d fresh))) true))
   (intro h)
   (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (deb-exists w d)))
   (simp only [t22-host-await hg refuse]) (exact h)
   (have hx (= (deb-exists w d) true)) (simp only [Bool.and_eq_true] at hg) (exact (And.right hg))
   (have ok := (edge-ok-host-wait w d hx))
-  (have hn (= (dnaq14 zq9 (:comps w) (host-wait-edge d)) true)) (simp [dnaq14 host-wait-edge ek-wait ek-dep])
-  (have h0 := (vq-insert-edge-fresh-up zq9 zw9 zs9 w (host-wait-edge d) ok h hn))
+  (have hn (= (i14-idle-dep-queued zq9 (:comps w) (host-wait-edge d)) true)) (simp [i14-idle-dep-queued host-wait-edge ek-wait ek-dep])
+  (have h0 := (i14-validity-raw-insert-edge-fresh-up zq9 zw9 zs9 w (host-wait-edge d) ok h hn))
   (have e0 (= (insert-edge-checked w (host-wait-edge d)) (insert-edge-fresh w (host-wait-edge d)))) (simp only [insert-edge-checked ok])
-  (have h1 (= (vq zq9 (List.cons Nat d zw9) true (host-await-dem w d)) true))
-  (simp only [host-await-dem]) (rw [e0]) (exact (vq-demand zq9 zw9 _ d h0))
-  (have h2 (= (vq zq9 (List.cons Nat d zw9) true (host-await-raw w d)) true))
+  (have h1 (= (i14-validity-raw zq9 (List.cons Nat d zw9) true (host-await-dem w d)) true))
+  (simp only [host-await-dem]) (rw [e0]) (exact (i14-validity-raw-demand zq9 zw9 _ d h0))
+  (have h2 (= (i14-validity-raw zq9 (List.cons Nat d zw9) true (host-await-raw w d)) true))
   (cases hr (fast-ready (host-await-dem w d) d))
   (simp only [host-await-raw hr]) (exact h1)
-  (simp only [host-await-raw hr]) (exact (vq-fire-edge zq9 (List.cons Nat d zw9) true _ _ (:next-id w) h1))
+  (simp only [host-await-raw hr]) (exact (i14-validity-raw-fire-edge zq9 (List.cons Nat d zw9) true _ _ (:next-id w) h1))
   (simp only [t22-host-await hg accept])
-  (exact (vq-weaken-s zq9 zw9 zs9 _ (vq-weaken zq9 (List.cons Nat d zw9) true zq9 zw9 _ (fn [y :- Nat, hy :- (= (reach-mem y zq9) true)] hy)
+  (exact (i14-validity-raw-weaken-s zq9 zw9 zs9 _ (i14-validity-raw-weaken zq9 (List.cons Nat d zw9) true zq9 zw9 _ (fn [y :- Nat, hy :- (= (reach-mem y zq9) true)] hy)
                                        (fn [y :- Nat, hy :- (= (reach-mem y zw9) true)] (rm-cons-r y d zw9 hy)) h2))))
 
-(tree/restate! VQ '[inv-fire-edge])
-(a/theorem t8-full-vq [zq9 :- (List Nat), zw9 :- (List Nat), zs9 :- Bool, w :- World, d :- Nat, cb :- Nat, fresh :- Nat]
-  (=> (= (vq zq9 zw9 zs9 w) true) (= (vq zq9 zw9 zs9 (:world (t8-full w d cb fresh))) true))
+(tree/restate! VQ '[well-formed-fire-edge])
+(a/theorem i14-validity-raw-t8-observe-any-kind [zq9 :- (List Nat), zw9 :- (List Nat), zs9 :- Bool, w :- World, d :- Nat, cb :- Nat, fresh :- Nat]
+  (=> (= (i14-validity-raw zq9 zw9 zs9 w) true) (= (i14-validity-raw zq9 zw9 zs9 (:world (t8-observe-any-kind w d cb fresh))) true))
   (intro h)
   (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (edge-ok-in w (observe-edge w d cb))))
-  (simp only [t8-full hg refuse]) (exact h)
+  (simp only [t8-observe-any-kind hg refuse]) (exact h)
   (have he (= (edge-ok-in w (observe-edge w d cb)) true))
   (simp only [Bool.and_eq_true] at hg) (exact (And.right hg))
-  (have hn (= (dnaq14 zq9 (:comps w) (observe-edge w d cb)) true)) (simp [dnaq14 observe-edge ek-observe ek-dep])
-  (have h1 := (vq-demand zq9 zw9 _ d (vq-insert-edge-fresh-up zq9 zw9 zs9 w (observe-edge w d cb) he h hn)))
-  (have h2 (= (vq zq9 (List.cons Nat d zw9) true (observe-raw w d cb)) true))
+  (have hn (= (i14-idle-dep-queued zq9 (:comps w) (observe-edge w d cb)) true)) (simp [i14-idle-dep-queued observe-edge ek-observe ek-dep])
+  (have h1 := (i14-validity-raw-demand zq9 zw9 _ d (i14-validity-raw-insert-edge-fresh-up zq9 zw9 zs9 w (observe-edge w d cb) he h hn)))
+  (have h2 (= (i14-validity-raw zq9 (List.cons Nat d zw9) true (observe-raw w d cb)) true))
   (simp only [observe-raw])
   (cases hr (deb-ready (demand-reactive (insert-edge-fresh w (observe-edge w d cb)) d) d))
   (simp only [hr]) (exact h1)
-  (simp only [hr]) (exact (vq-fire-edge zq9 (List.cons Nat d zw9) true _ _ (:next-id w) h1))
-  (simp only [t8-full hg accept])
-  (exact (vq-weaken-s zq9 zw9 zs9 _ (vq-weaken zq9 (List.cons Nat d zw9) true zq9 zw9 _ (fn [y :- Nat, hy :- (= (reach-mem y zq9) true)] hy)
+  (simp only [hr]) (exact (i14-validity-raw-fire-edge zq9 (List.cons Nat d zw9) true _ _ (:next-id w) h1))
+  (simp only [t8-observe-any-kind hg accept])
+  (exact (i14-validity-raw-weaken-s zq9 zw9 zs9 _ (i14-validity-raw-weaken zq9 (List.cons Nat d zw9) true zq9 zw9 _ (fn [y :- Nat, hy :- (= (reach-mem y zq9) true)] hy)
                                        (fn [y :- Nat, hy :- (= (reach-mem y zw9) true)] (rm-cons-r y d zw9 hy)) h2))))
 
-(a/theorem vq-take-park [zq9 :- (List Nat), zw9 :- (List Nat), zs9 :- Bool, w :- World, r :- RunRow, x :- Nat, k :- Nat]
-  (=> (= (vq zq9 zw9 zs9 w) true) (= (vq zq9 zw9 zs9 (take-park w r x k)) true))
+(a/theorem i14-validity-raw-take-park [zq9 :- (List Nat), zw9 :- (List Nat), zs9 :- Bool, w :- World, r :- RunRow, x :- Nat, k :- Nat]
+  (=> (= (i14-validity-raw zq9 zw9 zs9 w) true) (= (i14-validity-raw zq9 zw9 zs9 (take-park w r x k)) true))
   (intro h)
-  (have h1 := (vq-act-ins-fresh zq9 zw9 zs9 w (take-act w r k) (rfl) h))
-  (have hn (= (dnaq14 zq9 (:comps (bump (act-ins w (take-act w r k)))) (take-edge r (:next-id w) x)) true))
-  (simp [dnaq14 take-edge ek-wait ek-dep])
-  (have h2 := (vq-insert-edge-checked zq9 zw9 zs9 (bump (act-ins w (take-act w r k))) (take-edge r (:next-id w) x) h1 hn))
+  (have h1 := (i14-validity-raw-act-ins-fresh zq9 zw9 zs9 w (take-act w r k) (rfl) h))
+  (have hn (= (i14-idle-dep-queued zq9 (:comps (bump (act-ins w (take-act w r k)))) (take-edge r (:next-id w) x)) true))
+  (simp [i14-idle-dep-queued take-edge ek-wait ek-dep])
+  (have h2 := (i14-validity-raw-insert-edge-checked zq9 zw9 zs9 (bump (act-ins w (take-act w r k))) (take-edge r (:next-id w) x) h1 hn))
   (simp only [take-park])
-  (exact (vq-run-upd zq9 zw9 zs9 _ (:id r) run-tick-park run-tick-park-id h2)))
+  (exact (i14-validity-raw-run-upd zq9 zw9 zs9 _ (:id r) run-tick-park run-tick-park-id h2)))
 
-(tree/restate! VQ '[raw-inv])
+(tree/restate! VQ '[well-formed-raw])
 
 ;; ===========================================================================
-;; Part H. The vr copy (Rule R: no allocation, the pass's demotions share the allocator)
+;; Part H. The i14-validity-rule-r copy (Rule R: no allocation, the pass's demotions share the allocator)
 ;; ===========================================================================
 
-(a/theorem vr-comp-upd [xd :- (List Nat), xr :- (List Nat), w :- World, x :- Nat, f :- (=> CompRow CompRow),
+(a/theorem i14-validity-rule-r-comp-upd [xd :- (List Nat), xr :- (List Nat), w :- World, x :- Nat, f :- (=> CompRow CompRow),
                         hid :- (forall [c :- CompRow] (= (comp-id (f c)) (comp-id c))),
                         hp :- (forall [c :- CompRow] (= (:pending (f c)) (:pending c))),
                         hk :- (forall [c :- CompRow] (= (ck14 (f c)) (ck14 c)))]
-  (=> (= (vr xd xr w) true) (= (vr xd xr (comp-upd w x f)) true))
+  (=> (= (i14-validity-rule-r xd xr w) true) (= (i14-validity-rule-r xd xr (comp-upd w x f)) true))
   (intro h)
-  (exact (vr-intro xd xr _ (inv-comp-upd w x f hid hp (vr-sample xd xr w h))
-           (vr-rest-wd xd xr w (comp-upd w x f) (wdom-comp-key w x f hk) (vr-rest-of xd xr w h)))))
+  (exact (i14-validity-rule-r-intro xd xr _ (well-formed-comp-upd w x f hid hp (i14-validity-rule-r-well-formed xd xr w h))
+           (i14-validity-rule-r-rest-wd xd xr w (comp-upd w x f) (wdom-comp-key w x f hk) (i14-validity-rule-r-rest-of xd xr w h)))))
 
-(def VR (mk-bundle 'vr '[zd9 :- (List Nat), zr9 :- (List Nat)] "vr-"
-          {'inv-comp-upd ['(fn [c :- CompRow] (Eq.refl (ck14 c))) 5]}))
-(swap! (:renames VR) assoc 'inv-parts 'vr-parts 'inv-comp-upd 'vr-comp-upd)
-(doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-set-pins
-            inv-resource-del inv-scope-del inv-cleanup-ins inv-act-upd inv-task-upd inv-run-upd inv-run-del inv-fork-del]]
+(def VR (mk-bundle 'i14-validity-rule-r '[zd9 :- (List Nat), zr9 :- (List Nat)] "i14-validity-rule-r-"
+          {'well-formed-comp-upd ['(fn [c :- CompRow] (Eq.refl (ck14 c))) 5]}))
+(swap! (:renames VR) assoc 'well-formed-parts 'i14-validity-rule-r-parts 'well-formed-comp-upd 'i14-validity-rule-r-comp-upd)
+(doseq [o '[well-formed-scope-upd well-formed-pub-upd well-formed-source-upd well-formed-resource-upd well-formed-cleanup-upd well-formed-cleanup-del well-formed-set-pins
+            well-formed-resource-del well-formed-scope-del well-formed-cleanup-ins well-formed-act-upd well-formed-task-upd well-formed-run-upd well-formed-run-del well-formed-fork-del]]
   (prim! VR o nil))
-(prim! VR 'inv-edge-upd '(vr-rest-wd zd9 zr9 w (edge-upd w x f) (wdom-edge-upd w x f hk hc hd) R))
-(prim! VR 'inv-remove-edge '(vr-rest-wd zd9 zr9 w (remove-edge w x) (wdom-remove-edge w x) R))
-(prim! VR 'mark-edge-inv-sample '(vr-rest-wd zd9 zr9 w (mark-edge w x) (wdom-mark-edge w x) R))
-(prim! VR 'unmark-edge-inv-sample '(vr-rest-wd zd9 zr9 w (unmark-edge w x) (wdom-unmark-edge w x) R))
-(prim! VR 'inv-drop-cred '(vr-rest-wd zd9 zr9 w (drop-cred-edges w a) (wdom-drop-cred w a) R))
-(prim! VR 'inv-drop-act '(vr-rest-wd zd9 zr9 w (drop-act w a) (wdom-drop-act w a) R))
-(prim! VR 'inv-drop-edges '(vr-rest-wd zd9 zr9 w (drop-edges w p) (wdom-drop-edges w p) R))
-(prim! VR 'inv-comp-del-unref '(vr-rest-wd zd9 zr9 w (comp-del w x) (wdom-comp-del w x) R))
-(prim! VR 'inv-filter-world '(vr-rest-wd zd9 zr9 w (filter-world K w) (wdom-filter-world w K) R))
+(prim! VR 'well-formed-edge-upd '(i14-validity-rule-r-rest-wd zd9 zr9 w (edge-upd w x f) (wdom-edge-upd w x f hk hc hd) R))
+(prim! VR 'well-formed-remove-edge '(i14-validity-rule-r-rest-wd zd9 zr9 w (remove-edge w x) (wdom-remove-edge w x) R))
+(prim! VR 'well-formed-mark-edge '(i14-validity-rule-r-rest-wd zd9 zr9 w (mark-edge w x) (wdom-mark-edge w x) R))
+(prim! VR 'well-formed-unmark-edge '(i14-validity-rule-r-rest-wd zd9 zr9 w (unmark-edge w x) (wdom-unmark-edge w x) R))
+(prim! VR 'well-formed-drop-cred-edges '(i14-validity-rule-r-rest-wd zd9 zr9 w (drop-cred-edges w a) (wdom-drop-cred w a) R))
+(prim! VR 'well-formed-drop-act '(i14-validity-rule-r-rest-wd zd9 zr9 w (drop-act w a) (wdom-drop-act w a) R))
+(prim! VR 'well-formed-drop-edges '(i14-validity-rule-r-rest-wd zd9 zr9 w (drop-edges w p) (wdom-drop-edges w p) R))
+(prim! VR 'well-formed-comp-del-unref '(i14-validity-rule-r-rest-wd zd9 zr9 w (comp-del w x) (wdom-comp-del w x) R))
+(prim! VR 'well-formed-filter-world '(i14-validity-rule-r-rest-wd zd9 zr9 w (filter-world K w) (wdom-filter-world w K) R))
 
 ;; ---- the demotion of x: comp-make-idle with entries at the pass's allocator and x's rank
 (a/defn xr14 [x :- Nat, rx :- Nat, k :- CompRow] Bool (Bool.or (Bool.not (Nat.beq (:id k) x)) (Nat.beq (:rank k) rx)))
@@ -1534,11 +1534,11 @@
     (simp only [deb14 comp-make-idle hb o1 hq2 Bool.not_true Bool.false_or Bool.or_true Bool.and_self]))
   (intros q hq hqx) (exact (both-left CompRow (deb14 n v) (xr14 x rx) q hq)))
 
-(a/theorem iv14-make-idle [n :- Nat, x :- Nat, rx :- Nat, cs :- (List CompRow), vs :- (List Valid)]
-  (=> (= (iv14 cs n) true) (= (tbl-all (xr14 x rx) cs) true) (= (tbl-all (vent14 n rx cs) vs) true)
-      (= (iv14 (tbl-upd comp-id x (comp-make-idle vs) cs) n) true))
+(a/theorem i14-idle-entries-ok-make-idle [n :- Nat, x :- Nat, rx :- Nat, cs :- (List CompRow), vs :- (List Valid)]
+  (=> (= (i14-idle-entries-ok cs n) true) (= (tbl-all (xr14 x rx) cs) true) (= (tbl-all (vent14 n rx cs) vs) true)
+      (= (i14-idle-entries-ok (tbl-upd comp-id x (comp-make-idle vs) cs) n) true))
   (intros h hx hvs)
-  (simp only [iv14] at h) (simp only [iv14])
+  (simp only [i14-idle-entries-ok] at h) (simp only [i14-idle-entries-ok])
   (apply (tbl-all-upd CompRow comp-id x (comp-make-idle vs) (ivc14 cs n) (ivc14 (tbl-upd comp-id x (comp-make-idle vs) cs) n) _ _ cs h))
   (intros k hk hkx)
   (simp only [ivc14 comp-make-idle Bool.not_true Bool.false_or])
@@ -1576,13 +1576,13 @@
   (intros q hq hqx) (simp only [rgt14] at hq) (simp only [rgt14 (hid q) (hr q)]) (exact hq)
   (intros q hq hqx) (exact hq))
 
-(a/theorem vrk-make-idle [S :- (List Nat), R :- (List Nat), cs :- (List CompRow), es :- (List EdgeRow), n :- Nat, x :- Nat, rx :- Nat, vs :- (List Valid)]
-  (=> (= (vrk S R cs es n) true) (= (reach-mem x S) true) (= (tbl-all (ncd14 x) es) true) (= (tbl-all (xr14 x rx) cs) true)
+(a/theorem i14-validity-rule-r-keys-ok-make-idle [S :- (List Nat), R :- (List Nat), cs :- (List CompRow), es :- (List EdgeRow), n :- Nat, x :- Nat, rx :- Nat, vs :- (List Valid)]
+  (=> (= (i14-validity-rule-r-keys-ok S R cs es n) true) (= (reach-mem x S) true) (= (tbl-all (ncd14 x) es) true) (= (tbl-all (xr14 x rx) cs) true)
       (= (tbl-all (vent14 n rx cs) vs) true) (= (tbl-all (inx14 x rx cs) es) true)
-      (= (vrk S R (tbl-upd comp-id x (comp-make-idle vs) cs) es n) true))
+      (= (i14-validity-rule-r-keys-ok S R (tbl-upd comp-id x (comp-make-idle vs) cs) es n) true))
   (intros h hx hn hxr hvs hin)
-  (have p := (vrk-parts S R cs es n h))
-  (have i1 := (iv14-make-idle n x rx cs vs (And.left p) hxr hvs))
+  (have p := (i14-validity-rule-r-keys-ok-parts S R cs es n h))
+  (have i1 := (i14-idle-entries-ok-make-idle n x rx cs vs (And.left p) hxr hvs))
   (have hid (forall [c :- CompRow] (= (:id (comp-make-idle vs c)) (:id c)))) (intro c) (rfl)
   (have hrk (forall [c :- CompRow] (= (:rank (comp-make-idle vs c)) (:rank c)))) (intro c) (rfl)
   (have i2 (= (tbl-all (dnb14 S R (tbl-upd comp-id x (comp-make-idle vs) cs)) es) true))
@@ -1654,7 +1654,7 @@
     (simp only [ncd14 hk Bool.not_true Bool.false_or] at hne)
     (have hne2 := (bnot-true _ hne))
     (have a := (awake-upd-other x (:creditor e) (comp-make-idle vs) hid cs hne2 he)) (simp only [awake] at a) (exact a))
-  (exact (vrk-intro S R _ es n i1 i2 i3 i4)))
+  (exact (i14-validity-rule-r-keys-ok-intro S R _ es n i1 i2 i3 i4)))
 
 ;; ---- rows with a given id (unique ids)
 (a/theorem not-has-all [x :- Nat, P :- (=> CompRow Bool), cs :- (List CompRow)]
@@ -1667,19 +1667,19 @@
     (case [true] (simp only [tbl-has hb] at h) (cases h))
     (case [false] (simp only [tbl-has hb] at h) (simp only [tbl-all same-id-then hb (ih h) Bool.not_false Bool.true_or Bool.and_self]))))
 (a/theorem same-all [w :- World, x :- Nat, c :- CompRow, P :- (=> CompRow Bool)]
-  (=> (= (inv-sample w) true) (= (comp-find w x) (Option.some CompRow c)) (= (P c) true) (= (tbl-all (same-id-then comp-id x P) (:comps w)) true))
+  (=> (= (well-formed w) true) (= (comp-find w x) (Option.some CompRow c)) (= (P c) true) (= (tbl-all (same-id-then comp-id x P) (:comps w)) true))
   (intros hs hf hp)
   (have mc := (tbl-find-mem CompRow comp-id x c (:comps w) hf))
   (have hid := (tbl-find-id CompRow comp-id x c (:comps w) hf))
   (have z := (uniq-all CompRow comp-id P c (:comps w) (comps-nodup w hs) mc hp))
   (rw [hid] at z) (exact z))
-(a/theorem crank-comp-rank [w :- World, x :- Nat] (= (crank-of w x) (comp-rank w x)) (rfl))
+(a/theorem crank-comp-rank [w :- World, x :- Nat] (= (comp-rank-of w x) (comp-rank w x)) (rfl))
 (a/defn rk-is [r :- Nat, k :- CompRow] Bool (Nat.beq (:rank k) r))
 (a/defn rlt-q [r :- Nat, k :- CompRow] Bool (Nat.blt (:rank k) r))
 (a/defn rgt-q [r :- Nat, k :- CompRow] Bool (Nat.blt r (:rank k)))
 (a/defn false-q [k :- CompRow] Bool false)
 
-(a/theorem xr-of [w :- World, x :- Nat] (=> (= (inv-sample w) true) (= (tbl-all (xr14 x (comp-rank w x)) (:comps w)) true))
+(a/theorem xr-of [w :- World, x :- Nat] (=> (= (well-formed w) true) (= (tbl-all (xr14 x (comp-rank w x)) (:comps w)) true))
   (intro hs)
   (cases hf (comp-find w x)) (case' [some c]) (case' [none])
   (have z := (not-has-all x (rk-is 0) (:comps w) (tbl-find-none-has CompRow comp-id x (:comps w) hf)))
@@ -1689,7 +1689,7 @@
   (apply (tbl-all-mono CompRow _ _ _ (:comps w) z))
   (intros k hk) (simp only [same-id-then rk-is comp-id] at hk) (simp only [xr14 comp-rank hf]) (exact hk))
 (a/theorem rlt-of [w :- World, d :- Nat, r :- Nat]
-  (=> (= (inv-sample w) true) (= (Bool.or (Bool.not (comp-has w d)) (Nat.blt (comp-rank w d) r)) true) (= (tbl-all (rlt14 d r) (:comps w)) true))
+  (=> (= (well-formed w) true) (= (Bool.or (Bool.not (comp-has w d)) (Nat.blt (comp-rank w d) r)) true) (= (tbl-all (rlt14 d r) (:comps w)) true))
   (intros hs h)
   (cases hf (comp-find w d)) (case' [some c]) (case' [none])
   (have z := (not-has-all d false-q (:comps w) (tbl-find-none-has CompRow comp-id d (:comps w) hf)))
@@ -1702,7 +1702,7 @@
   (apply (tbl-all-mono CompRow _ _ _ (:comps w) z))
   (intros k hk) (simp only [same-id-then rlt-q comp-id] at hk) (simp only [rlt14]) (exact hk))
 (a/theorem rgt-of [w :- World, y :- Nat, r :- Nat]
-  (=> (= (inv-sample w) true) (= (Bool.or (Bool.not (comp-has w y)) (Nat.blt r (comp-rank w y))) true) (= (tbl-all (rgt14 y r) (:comps w)) true))
+  (=> (= (well-formed w) true) (= (Bool.or (Bool.not (comp-has w y)) (Nat.blt r (comp-rank w y))) true) (= (tbl-all (rgt14 y r) (:comps w)) true))
   (intros hs h)
   (cases hf (comp-find w y)) (case' [some c]) (case' [none])
   (have z := (not-has-all y false-q (:comps w) (tbl-find-none-has CompRow comp-id y (:comps w) hf)))
@@ -1714,11 +1714,11 @@
   (have z := (same-all w y c (rgt-q r) hs hf h))
   (apply (tbl-all-mono CompRow _ _ _ (:comps w) z))
   (intros k hk) (simp only [same-id-then rgt-q comp-id] at hk) (simp only [rgt14]) (exact hk))
-(a/theorem zero-rlt [w :- World, r :- Nat] (=> (= (inv-sample w) true) (= (tbl-all (rlt14 0 r) (:comps w)) true))
+(a/theorem zero-rlt [w :- World, r :- Nat] (=> (= (well-formed w) true) (= (tbl-all (rlt14 0 r) (:comps w)) true))
   (intro hs)
   (apply (rlt-of w 0 r hs))
   (have z := (comp-has-zero w hs)) (simp only [comp-has] ) (simp only [z Bool.not_false Bool.true_or]))
-(a/theorem zero-vdn [w :- World, n :- Nat, r :- Nat] (=> (= (inv-sample w) true) (= (tbl-all (vdn14 n 0 r) (:comps w)) true))
+(a/theorem zero-vdn [w :- World, n :- Nat, r :- Nat] (=> (= (well-formed w) true) (= (tbl-all (vdn14 n 0 r) (:comps w)) true))
   (intro hs)
   (have z := (not-has-all 0 false-q (:comps w) (comp-has-zero w hs)))
   (apply (tbl-all-mono CompRow _ _ _ (:comps w) z))
@@ -1771,29 +1771,29 @@
 
 ;; ---- the entries recorded at the demotion of x
 (a/theorem edge-ok-mem [w :- World, e :- EdgeRow]
-  (=> (= (inv-sample w) true) (List.Mem e (:edges w)) (= (edge-ok (:comps w) (:tasks w) (:sources w) (:acts w) (:res w) e) true))
+  (=> (= (well-formed w) true) (List.Mem e (:edges w)) (= (edge-ok (:comps w) (:tasks w) (:sources w) (:acts w) (:res w) e) true))
   (intros hs hm)
   (exact (tbl-all-mem EdgeRow (edge-ok (:comps w) (:tasks w) (:sources w) (:acts w) (:res w)) e (:edges w)
-           (And.left (And.right (inv-parts w hs))) hm)))
+           (And.left (And.right (well-formed-parts w hs))) hm)))
 (a/theorem dep-cred-has [w :- World, e :- EdgeRow]
-  (=> (= (inv-sample w) true) (List.Mem e (:edges w)) (= (Nat.beq (:kind e) ek-dep) true) (= (comp-has w (:creditor e)) true))
+  (=> (= (well-formed w) true) (List.Mem e (:edges w)) (= (Nat.beq (:kind e) ek-dep) true) (= (comp-has w (:creditor e)) true))
   (intros hs hm hk)
   (have ho := (edge-ok-mem w e hs hm))
   (simp only [edge-ok cred-ok hk Bool.and_eq_true] at ho)
   (simp only [comp-has]) (exact (And.left ho)))
 
 (a/theorem vent-edge [S :- (List Nat), R :- (List Nat), w :- World, x :- Nat, e :- EdgeRow]
-  (=> (= (vr S (List.cons Nat x R) w) true) (= (ranks-ok w) true) (List.Mem e (:edges w)) (= (dep-of x e) true)
+  (=> (= (i14-validity-rule-r S (List.cons Nat x R) w) true) (= (ranks-ok w) true) (List.Mem e (:edges w)) (= (dep-of x e) true)
       (= (vent14 (:next-id w) (comp-rank w x) (:comps w) (edge-valid w e)) true))
   (intros h hr hm hd)
-  (have hs := (vr-sample _ _ w h))
-  (have p := (vrk-parts _ _ _ _ _ (vr-rest-of _ _ w h)))
+  (have hs := (i14-validity-rule-r-well-formed _ _ w h))
+  (have p := (i14-validity-rule-r-keys-ok-parts _ _ _ _ _ (i14-validity-rule-r-rest-of _ _ w h)))
   (simp only [dep-of Bool.and_eq_true] at hd)
   (have hk := (And.left hd))
   (have ec := (Nat.eq_of_beq_eq_true (And.right hd)))
   (have hcx0 := (dep-cred-has w e hs hm hk))
   (have hcx (= (comp-has w x) true)) (rw [← ec]) (exact hcx0)
-  (have cr (= (crank-of w (:creditor e)) (comp-rank w x))) (exact (Eq.trans (congrArg (fn [z :- Nat] (crank-of w z)) ec) (crank-comp-rank w x)))
+  (have cr (= (comp-rank-of w (:creditor e)) (comp-rank w x))) (exact (Eq.trans (congrArg (fn [z :- Nat] (comp-rank-of w z)) ec) (crank-comp-rank w x)))
   (cases hsn (:has-seen e))
   (case [false]
     (simp only [edge-valid hsn vent14 Nat.beq_refl Bool.true_and])
@@ -1850,7 +1850,7 @@
     (simp only [a1 a2 Bool.and_self])))
 
 (a/theorem vent-all [S :- (List Nat), R :- (List Nat), w :- World, x :- Nat]
-  (=> (= (vr S (List.cons Nat x R) w) true) (= (ranks-ok w) true)
+  (=> (= (i14-validity-rule-r S (List.cons Nat x R) w) true) (= (ranks-ok w) true)
       (= (tbl-all (vent14 (:next-id w) (comp-rank w x) (:comps w)) (validity-of w x)) true))
   (intros h hr)
   (simp only [validity-of])
@@ -1860,10 +1860,10 @@
   (exact (vent-edge S R w x e h hr (And.left z) (And.right z))))
 
 ;; ---- no dep edge of x (x missing, idle, or its dep edges dropped)
-(a/theorem vr-drop-r [S :- (List Nat), R :- (List Nat), w :- World, x :- Nat]
-  (=> (= (tbl-all (ncd14 x) (:edges w)) true) (= (vr S (List.cons Nat x R) w) true) (= (vr S R w) true))
+(a/theorem i14-validity-rule-r-drop-r [S :- (List Nat), R :- (List Nat), w :- World, x :- Nat]
+  (=> (= (tbl-all (ncd14 x) (:edges w)) true) (= (i14-validity-rule-r S (List.cons Nat x R) w) true) (= (i14-validity-rule-r S R w) true))
   (intros hn h)
-  (have p := (vrk-parts _ _ _ _ _ (vr-rest-of _ _ w h)))
+  (have p := (i14-validity-rule-r-keys-ok-parts _ _ _ _ _ (i14-validity-rule-r-rest-of _ _ w h)))
   (have i2 (= (tbl-all (dnb14 S R (:comps w)) (:edges w)) true))
   (apply (tbl-all-mono2 EdgeRow (dnb14 S (List.cons Nat x R) (:comps w)) (ncd14 x) _ _ (:edges w) (And.left (And.right p)) hn))
   (intros e he hne)
@@ -1875,9 +1875,9 @@
     (have hne2 := (bnot-true _ hne))
     (have r2 := (And.right he)) (simp only [reach-mem hne2] at r2)
     (exact (And.intro (And.left he) r2)))
-  (exact (vr-intro S R w (vr-sample _ _ w h) (vrk-intro S R _ _ _ (And.left p) i2 (And.left (And.right (And.right p))) (And.right (And.right (And.right p)))))))
+  (exact (i14-validity-rule-r-intro S R w (i14-validity-rule-r-well-formed _ _ w h) (i14-validity-rule-r-keys-ok-intro S R _ _ _ (And.left p) i2 (And.left (And.right (And.right p))) (And.right (And.right (And.right p)))))))
 (a/theorem ncd-none [w :- World, x :- Nat]
-  (=> (= (inv-sample w) true) (= (comp-find w x) (Option.none CompRow)) (= (tbl-all (ncd14 x) (:edges w)) true))
+  (=> (= (well-formed w) true) (= (comp-find w x) (Option.none CompRow)) (= (tbl-all (ncd14 x) (:edges w)) true))
   (intros hs hf)
   (have z := (tbl-find-none-has CompRow comp-id x (:comps w) hf))
   (apply (all-of-mem EdgeRow (ncd14 x) (:edges w)))
@@ -1890,9 +1890,9 @@
     (case [false] (simp only [ncd14 hb Bool.not_false Bool.or_true]))
     (case [true] (have eb := (Nat.eq_of_beq_eq_true hb)) (simp only [comp-has] at hc) (rw [eb] at hc) (rw [z] at hc) (cases hc))))
 (a/theorem ncd-idle [S :- (List Nat), R :- (List Nat), w :- World, x :- Nat, c :- CompRow]
-  (=> (= (vr S R w) true) (= (comp-find w x) (Option.some CompRow c)) (= (:idle c) true) (= (tbl-all (ncd14 x) (:edges w)) true))
+  (=> (= (i14-validity-rule-r S R w) true) (= (comp-find w x) (Option.some CompRow c)) (= (:idle c) true) (= (tbl-all (ncd14 x) (:edges w)) true))
   (intros h hf hi)
-  (have p := (vrk-parts _ _ _ _ _ (vr-rest-of _ _ w h)))
+  (have p := (i14-validity-rule-r-keys-ok-parts _ _ _ _ _ (i14-validity-rule-r-rest-of _ _ w h)))
   (have mc := (tbl-find-mem CompRow comp-id x c (:comps w) hf))
   (have ic := (tbl-find-id CompRow comp-id x c (:comps w) hf))
   (apply (tbl-all-mono EdgeRow (dep-active (:comps w)) (ncd14 x) _ (:edges w) (And.right (And.right (And.right p)))))
@@ -1918,7 +1918,7 @@
 
 ;; edges on x: their creditors rank above x
 (a/theorem inx-of [w :- World, x :- Nat, rx :- Nat, c :- CompRow]
-  (=> (= (inv-sample w) true) (= (ranks-ok w) true) (= (comp-find w x) (Option.some CompRow c)) (= (:rank c) rx)
+  (=> (= (well-formed w) true) (= (ranks-ok w) true) (= (comp-find w x) (Option.some CompRow c)) (= (:rank c) rx)
       (= (tbl-all (inx14 x rx (:comps w)) (:edges w)) true))
   (intros hs hr hf hrx)
   (have hcx (= (comp-has w x) true)) (simp only [comp-has]) (exact (tbl-find-has CompRow comp-id x c (:comps w) hf))
@@ -1938,13 +1938,13 @@
     (case [false] (simp only [Bool.not_false Bool.true_or]))
     (case [true] (simp only [hy Bool.not_true Bool.false_or] at he) (simp only [Bool.not_true Bool.false_or]) (exact he))))
 
-(tree/restate! VR '[inv-run-cascade inv-demote-epoch inv-detach])
+(tree/restate! VR '[well-formed-run-cascade well-formed-demote-epoch well-formed-detach])
 
 ;; the demotion's last part on the epoch-stepped world W2 (W3 = W2 without x's dep edges)
 ;; ---- C0: demote closes C's basis streams (`end-basis`) between dropping C's dep edges and
 ;; demote-finish; end-basis is dominated (comps keep id/idle/rank/validity, edges keep kind/creditor/
 ;; debtor or go, the allocator stays)
-(a/theorem wdom-src [w :- World, x :- Nat, f :- (=> SourceRow SourceRow)] (wdom w (source-upd w x f)) (exact (wdom-refl w)))
+(a/theorem wdom-source [w :- World, x :- Nat, f :- (=> SourceRow SourceRow)] (wdom w (source-upd w x f)) (exact (wdom-refl w)))
 (a/theorem wdom-fill-slot [w :- World, a :- ActRow, y :- Nat, v :- RunResult] (wdom w (fill-slot w a y v))
   (cases hm (act-ready (act-fill y v a)))
   (case [false] (simp only [fill-slot hm]) (exact (wdom-refl w)))
@@ -2002,28 +2002,28 @@
   (induction xs)
   (case [nil] (intro w) (simp only [nat-fold]) (exact (wdom-refl w)))
   (case [cons h t ih] (intro w) (simp only [nat-fold]) (exact (wdom-trans _ _ _ (hf w h) (ih (f w h))))))
-(a/theorem wdom-fin-loop [fuel :- (List Nat)]
-  (forall [w :- World, ds :- (List Nat)] (wdom w (:world (fin-loop fuel w ds))))
+(a/theorem wdom-finalize-loop [fuel :- (List Nat)]
+  (forall [w :- World, ds :- (List Nat)] (wdom w (:world (finalize-loop fuel w ds))))
   (induction fuel)
-  (case [nil] (intros w ds) (simp only [fin-loop]) (exact (wdom-refl w)))
+  (case [nil] (intros w ds) (simp only [finalize-loop]) (exact (wdom-refl w)))
   (case [cons h f ih]
     (intros w ds)
     (cases ds)
-    (simp only [fin-loop]) (exact (wdom-refl w))
+    (simp only [finalize-loop]) (exact (wdom-refl w))
     (rename_i d t)
-    (simp only [fin-loop finalize-one])
+    (simp only [finalize-loop finalize-one])
     (exact (wdom-trans _ _ _ (wdom-drop-edges w _) (ih _ _)))))
-(a/theorem wdom-finalize-debtor [w :- World, d :- Nat] (wdom w (finalize-debtor w d))
-  (simp only [finalize-debtor]) (exact (wdom-fin-loop _ w _)))
+(a/theorem wdom-t10-finalize-debtor [w :- World, d :- Nat] (wdom w (t10-finalize-debtor w d))
+  (simp only [t10-finalize-debtor]) (exact (wdom-finalize-loop _ w _)))
 (a/theorem wdom-deliver-res [w :- World, x :- Nat, v :- Nat, rr :- RunResult] (wdom w (deliver-res w x v rr))
   (simp only [deliver-res])
-  (exact (wdom-trans _ _ _ (wdom-src w x (source-write v))
+  (exact (wdom-trans _ _ _ (wdom-source w x (source-write v))
            (wdom-trans _ _ _ (wdom-fold (fire-edge rr) (wdom-fire-edge rr) _ _)
-             (wdom-trans _ _ _ (wdom-fold (fire-edge rr) (wdom-fire-edge rr) _ _) (wdom-finalize-debtor _ x))))))
+             (wdom-trans _ _ _ (wdom-fold (fire-edge rr) (wdom-fire-edge rr) _ _) (wdom-t10-finalize-debtor _ x))))))
 (a/theorem wdom-end-link [w :- World, x :- Nat, fl :- Bool, v :- Nat] (wdom w (end-link w x fl v))
   (cases hp (link-pending w x))
   (case [false] (simp only [end-link hp]) (exact (wdom-refl w)))
-  (case [true] (simp only [end-link hp realize-link]) (exact (wdom-trans _ _ _ (wdom-src w x (link-done-row fl 0)) (wdom-deliver-res _ x _ _)))))
+  (case [true] (simp only [end-link hp realize-link]) (exact (wdom-trans _ _ _ (wdom-source w x (link-done-row fl 0)) (wdom-deliver-res _ x _ _)))))
 (a/theorem wdom-end-stream [w :- World, x :- Nat] (wdom w (end-stream w x))
   (cases hf (source-find w x)) (case' [some s]) (case' [none])
   (simp only [end-stream hf]) (exact (wdom-refl w))
@@ -2031,10 +2031,10 @@
   (simp only [end-stream hf hk]) (exact (wdom-refl w))
   (simp only [end-stream hf hk]) (exact (wdom-end-link w _ false 0)))
 (a/theorem wdom-close-source [w :- World, x :- Nat] (wdom w (close-source w x))
-  (simp only [close-source close-source0 wake-closed])
+  (simp only [close-source close-source-ended wake-closed])
   (exact (wdom-trans _ _ _ (wdom-end-stream w x)
-           (wdom-trans _ _ _ (wdom-src _ x source-close-row)
-             (wdom-trans _ _ _ (wdom-fold (fire-edge _) (wdom-fire-edge _) _ _) (wdom-finalize-debtor _ x))))))
+           (wdom-trans _ _ _ (wdom-source _ x source-close-row)
+             (wdom-trans _ _ _ (wdom-fold (fire-edge _) (wdom-fire-edge _) _ _) (wdom-t10-finalize-debtor _ x))))))
 (a/theorem wdom-end-basis [w :- World, cid :- Nat] (wdom w (end-basis w cid))
   (cases hf (comp-find w cid)) (case' [some c]) (case' [none])
   (simp only [end-basis hf]) (exact (wdom-refl w))
@@ -2045,28 +2045,28 @@
   (have e2 (= (:creditor k) (:creditor e))) (exact (congrArg (fn [q :- E14] (:cred q)) hk))
   (simp only [ncd14 e1 e2]) (simp only [ncd14] at he) (exact he))
 
-(tree/restate! VR '[inv-end-basis])
+(tree/restate! VR '[well-formed-end-basis])
 
-(a/theorem vr-demote-tail [S :- (List Nat), R :- (List Nat), W2 :- World, x :- Nat]
-  (=> (= (reach-mem x S) true) (= (vr S (List.cons Nat x R) W2) true) (= (inv-rank W2) true)
-      (= (vr S R (drop-edges W2 (not-dep-of x))) true) (= (inv-rank (drop-edges W2 (not-dep-of x))) true)
-      (= (vr S R (demote-finish (end-basis (drop-edges W2 (not-dep-of x)) x) x (validity-of W2 x))) true))
+(a/theorem i14-validity-rule-r-demote-tail [S :- (List Nat), R :- (List Nat), W2 :- World, x :- Nat]
+  (=> (= (reach-mem x S) true) (= (i14-validity-rule-r S (List.cons Nat x R) W2) true) (= (i12-ranks W2) true)
+      (= (i14-validity-rule-r S R (drop-edges W2 (not-dep-of x))) true) (= (i12-ranks (drop-edges W2 (not-dep-of x))) true)
+      (= (i14-validity-rule-r S R (demote-finish (end-basis (drop-edges W2 (not-dep-of x)) x) x (validity-of W2 x))) true))
   (intros hx h2 k2 h3d k3d)
-  (have hs2 := (rk-sample W2 k2))
-  (have h3 := (vr-end-basis S R _ x h3d))
-  (have k3 := (rk-end-basis _ x k3d))
-  (have hs3 := (rk-sample _ k3))
+  (have hs2 := (i12-ranks-well-formed W2 k2))
+  (have h3 := (i14-validity-rule-r-end-basis S R _ x h3d))
+  (have k3 := (i12-ranks-end-basis _ x k3d))
+  (have hs3 := (i12-ranks-well-formed _ k3))
   (have wd := (wdom-end-basis (drop-edges W2 (not-dep-of x)) x))
   (cases hf3 (comp-find (end-basis (drop-edges W2 (not-dep-of x)) x) x)) (case' [some c3]) (case' [none])
   (simp only [demote-finish hf3]) (exact h3)
   (cases hkp (demote-keep (end-basis (drop-edges W2 (not-dep-of x)) x) c3))
   (simp only [demote-finish hf3 hkp])
-  (exact (vr-comp-del-unref S R _ x (drop-edges-avoids (end-basis (drop-edges W2 (not-dep-of x)) x) x)
-           (vr-drop-edges S R (end-basis (drop-edges W2 (not-dep-of x)) x) (edge-avoids x) h3)))
+  (exact (i14-validity-rule-r-comp-del-unref S R _ x (drop-edges-avoids (end-basis (drop-edges W2 (not-dep-of x)) x) x)
+           (i14-validity-rule-r-drop-edges S R (end-basis (drop-edges W2 (not-dep-of x)) x) (edge-avoids x) h3)))
   (simp only [demote-finish hf3 hkp])
   (have cp := (cpres-trans _ _ _ (cpres-resync (tbl-filter (not-dep-of x) (:edges W2)) (:comps W2)) (And.left wd)))
   (have hxr := (cp (xr14 x (comp-rank W2 x)) (dcl-xr14 x (comp-rank W2 x)) (xr-of W2 x hs2)))
-  (have hvs0 := (vent-all S R W2 x h2 (rk-ranks W2 k2)))
+  (have hvs0 := (vent-all S R W2 x h2 (i12-ranks-ranks W2 k2)))
   (have hvs1 := (tbl-all-mono Valid (vent14 (:next-id W2) (comp-rank W2 x) (:comps W2)) (vent14 (:next-id W2) (comp-rank W2 x) (:comps (end-basis (drop-edges W2 (not-dep-of x)) x)))
                  (fn [v :- Valid, hv :- (= (vent14 (:next-id W2) (comp-rank W2 x) (:comps W2) v) true)]
                    (vent-pres (:next-id W2) (comp-rank W2 x) (:comps W2) _ v cp hv))
@@ -2081,49 +2081,49 @@
   (have ic32 (= (Nat.beq (:id c3) x) true)) (simp only [Nat.beq_eq]) (exact ic3)
   (simp only [xr14 ic32 Bool.not_true Bool.false_or] at xc3)
   (have rc3 := (Nat.eq_of_beq_eq_true xc3))
-  (have hin := (inx-of (end-basis (drop-edges W2 (not-dep-of x)) x) x (comp-rank W2 x) c3 hs3 (rk-ranks _ k3) hf3 rc3))
+  (have hin := (inx-of (end-basis (drop-edges W2 (not-dep-of x)) x) x (comp-rank W2 x) c3 hs3 (i12-ranks-ranks _ k3) hf3 rc3))
   (cases hdi (demote-idle c3))
   (case [true]
     (rw [(demote-row-idle-upd _ x c3 _ hs3 hf3 hdi)])
-    (have r (= (vr-rest S R (comp-upd (end-basis (drop-edges W2 (not-dep-of x)) x) x (comp-make-idle (validity-of W2 x)))) true))
-    (exact (vrk-make-idle S R _ _ _ x (comp-rank W2 x) (validity-of W2 x) (vr-rest-of S R _ h3) hx hncd hxr hvs hin))
-    (exact (vr-intro S R _ (inv-comp-upd _ x (comp-make-idle (validity-of W2 x)) (comp-make-idle-id (validity-of W2 x)) (comp-make-idle-pending (validity-of W2 x)) hs3) r)))
+    (have r (= (i14-validity-rule-r-rest S R (comp-upd (end-basis (drop-edges W2 (not-dep-of x)) x) x (comp-make-idle (validity-of W2 x)))) true))
+    (exact (i14-validity-rule-r-keys-ok-make-idle S R _ _ _ x (comp-rank W2 x) (validity-of W2 x) (i14-validity-rule-r-rest-of S R _ h3) hx hncd hxr hvs hin))
+    (exact (i14-validity-rule-r-intro S R _ (well-formed-comp-upd _ x (comp-make-idle (validity-of W2 x)) (comp-make-idle-id (validity-of W2 x)) (comp-make-idle-pending (validity-of W2 x)) hs3) r)))
   ;; C1 Q6: the tombstone is not idle (dominated by its row: same id and rank)
   (case [false]
     (rw [(demote-row-tomb-upd _ x c3 _ hs3 hf3 hdi)])
-    (have r (= (vr-rest S R (comp-upd (end-basis (drop-edges W2 (not-dep-of x)) x) x comp-tomb-row)) true))
-    (exact (vrk-frame S R _ _ _ _ _ (cpres-upd x comp-tomb-row (fn [c :- CompRow] (dom14-wake (comp-tomb-row c) c (rfl) (rfl) (rfl))) _)
-             (epres-refl _) (vr-rest-of S R _ h3)))
-    (exact (vr-intro S R _ (inv-comp-upd _ x comp-tomb-row comp-tomb-row-id comp-tomb-row-pending hs3) r))))
+    (have r (= (i14-validity-rule-r-rest S R (comp-upd (end-basis (drop-edges W2 (not-dep-of x)) x) x comp-tomb-row)) true))
+    (exact (i14-validity-rule-r-keys-ok-frame S R _ _ _ _ _ (cpres-upd x comp-tomb-row (fn [c :- CompRow] (dom14-wake (comp-tomb-row c) c (rfl) (rfl) (rfl))) _)
+             (epres-refl _) (i14-validity-rule-r-rest-of S R _ h3)))
+    (exact (i14-validity-rule-r-intro S R _ (well-formed-comp-upd _ x comp-tomb-row comp-tomb-row-id comp-tomb-row-pending hs3) r))))
 
 ;; Theorem (one demotion of a stray x of the pass): x leaves the creditors to come
-(a/theorem vr-demote [S :- (List Nat), R :- (List Nat), w :- World, x :- Nat]
-  (=> (= (reach-mem x S) true) (= (inv-rank w) true) (= (vr S (List.cons Nat x R) w) true) (= (vr S R (demote w x)) true))
+(a/theorem i14-validity-rule-r-demote [S :- (List Nat), R :- (List Nat), w :- World, x :- Nat]
+  (=> (= (reach-mem x S) true) (= (i12-ranks w) true) (= (i14-validity-rule-r S (List.cons Nat x R) w) true) (= (i14-validity-rule-r S R (demote w x)) true))
   (intros hx hk h)
-  (have hs := (vr-sample _ _ w h))
+  (have hs := (i14-validity-rule-r-well-formed _ _ w h))
   (cases hf (comp-find w x)) (case' [some c]) (case' [none])
-  (simp only [demote hf]) (exact (vr-drop-r S R w x (ncd-none w x hs hf) h))
+  (simp only [demote hf]) (exact (i14-validity-rule-r-drop-r S R w x (ncd-none w x hs hf) h))
   (cases hi (:idle c))
   (case' [true])
-  (simp only [demote hf hi]) (exact (vr-drop-r S R w x (ncd-idle S (List.cons Nat x R) w x c h hf hi) h))
+  (simp only [demote hf hi]) (exact (i14-validity-rule-r-drop-r S R w x (ncd-idle S (List.cons Nat x R) w x c h hf hi) h))
   (simp only [demote hf hi demote-edges])
-  (have h1 := (vr-run-cascade S (List.cons Nat x R) w (cancel-jobs (demote-cancels w c)) h))
-  (have k1 := (rk-run-cascade w (cancel-jobs (demote-cancels w c)) hk))
-  (have h2 := (vr-demote-epoch S (List.cons Nat x R) (run-cascade w (cancel-jobs (demote-cancels w c))) x (demote-cur w c) h1))
-  (have k2 := (rk-demote-epoch (run-cascade w (cancel-jobs (demote-cancels w c))) x (demote-cur w c) k1))
-  (have h3a := (vr-drop-edges S (List.cons Nat x R) (demote-epoch (run-cascade w (cancel-jobs (demote-cancels w c))) x (demote-cur w c)) (not-dep-of x) h2))
-  (have h3 := (vr-drop-r S R (drop-edges (demote-epoch (run-cascade w (cancel-jobs (demote-cancels w c))) x (demote-cur w c)) (not-dep-of x)) x
+  (have h1 := (i14-validity-rule-r-run-cascade S (List.cons Nat x R) w (cancel-jobs (demote-cancels w c)) h))
+  (have k1 := (i12-ranks-run-cascade w (cancel-jobs (demote-cancels w c)) hk))
+  (have h2 := (i14-validity-rule-r-demote-epoch S (List.cons Nat x R) (run-cascade w (cancel-jobs (demote-cancels w c))) x (demote-cur w c) h1))
+  (have k2 := (i12-ranks-demote-epoch (run-cascade w (cancel-jobs (demote-cancels w c))) x (demote-cur w c) k1))
+  (have h3a := (i14-validity-rule-r-drop-edges S (List.cons Nat x R) (demote-epoch (run-cascade w (cancel-jobs (demote-cancels w c))) x (demote-cur w c)) (not-dep-of x) h2))
+  (have h3 := (i14-validity-rule-r-drop-r S R (drop-edges (demote-epoch (run-cascade w (cancel-jobs (demote-cancels w c))) x (demote-cur w c)) (not-dep-of x)) x
                 (ncd-drop (demote-epoch (run-cascade w (cancel-jobs (demote-cancels w c))) x (demote-cur w c)) x) h3a))
-  (have k3 := (rk-drop-edges (demote-epoch (run-cascade w (cancel-jobs (demote-cancels w c))) x (demote-cur w c)) (not-dep-of x) k2))
-  (exact (vr-demote-tail S R (demote-epoch (run-cascade w (cancel-jobs (demote-cancels w c))) x (demote-cur w c)) x hx h2 k2 h3 k3)))
+  (have k3 := (i12-ranks-drop-edges (demote-epoch (run-cascade w (cancel-jobs (demote-cancels w c))) x (demote-cur w c)) (not-dep-of x) k2))
+  (exact (i14-validity-rule-r-demote-tail S R (demote-epoch (run-cascade w (cancel-jobs (demote-cancels w c))) x (demote-cur w c)) x hx h2 k2 h3 k3)))
 
 ;; ---- a normalization round: the strays of the round are the exemption list
-(a/theorem vr-pass-start [w :- World]
-  (=> (= (trc w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true)
-      (= (vr (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) w) true))
+(a/theorem i14-validity-rule-r-pass-start [w :- World]
+  (=> (= (trc w) true) (= (i14-validity-rule-r (List.nil Nat) (List.nil Nat) w) true)
+      (= (i14-validity-rule-r (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) w) true))
   (intros htc h)
-  (have hs := (vr-sample _ _ w h))
-  (have p := (vrk-parts _ _ _ _ _ (vr-rest-of _ _ w h)))
+  (have hs := (i14-validity-rule-r-well-formed _ _ w h))
+  (have p := (i14-validity-rule-r-keys-ok-parts _ _ _ _ _ (i14-validity-rule-r-rest-of _ _ w h)))
   (have i2 (= (tbl-all (dnb14 (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) (:comps w)) (:edges w)) true))
   (apply (all-of-mem EdgeRow _ (:edges w)))
   (intros e hm)
@@ -2143,7 +2143,7 @@
       (cases hfd (comp-find w (:debtor e))) (case' [some cd]) (case' [none])
       (simp only [comp-find] at hfd) (rw [hfd] at sf) (simp only [opt-test] at sf) (cases sf)
       (simp only [comp-find] at hfd) (rw [hfd] at sf) (simp only [opt-test comp-stray] at sf)
-      (have z0 := (bnot-true _ sf)) (simp only [comp-norm] at z0)
+      (have z0 := (bnot-true _ sf)) (simp only [comp-normalized] at z0)
       (have icd := (tbl-find-id CompRow comp-id (:debtor e) cd (:comps w) hfd))
       (have icd2 (= (:id cd) (:debtor e))) (exact icd)
       (have ld (= (reach-mem (:debtor e) (live-list w)) false))
@@ -2170,11 +2170,11 @@
         (have el := (live-close w (:id cy) (:id e) hl2 (succ-dep w cy e my yi2 hm dep)))
         (have dl := (live-close w (:id e) (:debtor e) el (succ-edge w e hm (deb-nz w e hs hm))))
         (simp only [in-live] at dl) (rw [ld] at dl) (cases dl))
-      ;; C1 Q6: the creditor of a dep edge is no tombstone (gy 0)
+      ;; C1 Q6: the creditor of a dep edge is no tombstone (tombs-dormant 0)
       (have ut := (tbl-all-mem EdgeRow (dep-untomb (:comps w)) e (:edges w) (trc-refs w htc) hm))
       (simp only [dep-untomb hk Bool.not_true Bool.false_or] at ut)
       (have ty := (untomb-mem (:comps w) cy (:creditor e) ut my iy3))
-      (have st (= (comp-stray (live-list w) cy) true)) (simp only [comp-stray comp-norm yi2 ty Bool.false_or]) (rw [iy2]) (rw [ly])
+      (have st (= (comp-stray (live-list w) cy) true)) (simp only [comp-stray comp-normalized yi2 ty Bool.false_or]) (rw [iy2]) (rw [ly])
       (have sc := (scan-mem CompRow comp-id (comp-stray (live-list w)) cy (:comps w) my st))
       (have iy4 (= (comp-id cy) (:creditor e))) (exact iy2)
       (rw [iy4] at sc) (exact sc)))
@@ -2197,11 +2197,11 @@
       (case [true]
         (simp only [Bool.and_eq_true] at hb2)
         (simp only [not-idle-if-id (And.left hb2) (And.right hb2) Bool.not_true Bool.false_or] at hk2) (cases hk2))))
-  (exact (vr-intro _ _ w hs (vrk-intro _ _ _ _ _ (And.left p) i2 i3 (And.right (And.right (And.right p)))))))
+  (exact (i14-validity-rule-r-intro _ _ w hs (i14-validity-rule-r-keys-ok-intro _ _ _ _ _ (And.left p) i2 i3 (And.right (And.right (And.right p)))))))
 
-(a/theorem vr-pass-end [S :- (List Nat), w :- World] (=> (= (vr S (List.nil Nat) w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true))
+(a/theorem i14-validity-rule-r-pass-end [S :- (List Nat), w :- World] (=> (= (i14-validity-rule-r S (List.nil Nat) w) true) (= (i14-validity-rule-r (List.nil Nat) (List.nil Nat) w) true))
   (intro h)
-  (have p := (vrk-parts _ _ _ _ _ (vr-rest-of _ _ w h)))
+  (have p := (i14-validity-rule-r-keys-ok-parts _ _ _ _ _ (i14-validity-rule-r-rest-of _ _ w h)))
   (have i2 (= (tbl-all (dnb14 (List.nil Nat) (List.nil Nat) (:comps w)) (:edges w)) true))
   (apply (tbl-all-mono EdgeRow (dnb14 S (List.nil Nat) (:comps w)) _ _ (:edges w) (And.left (And.right p))))
   (intros e he)
@@ -2216,11 +2216,11 @@
   (have i3 (= (tbl-all (dne14 (List.nil Nat) (:next-id w) (:comps w)) (:edges w)) true))
   (apply (all-of-mem EdgeRow _ (:edges w)))
   (intros e hm) (simp only [dne14 reach-mem Bool.and_false Bool.not_false Bool.true_or])
-  (exact (vr-intro _ _ w (vr-sample _ _ w h) (vrk-intro _ _ _ _ _ (And.left p) i2 i3 (And.right (And.right (And.right p)))))))
+  (exact (i14-validity-rule-r-intro _ _ w (i14-validity-rule-r-well-formed _ _ w h) (i14-validity-rule-r-keys-ok-intro _ _ _ _ _ (And.left p) i2 i3 (And.right (And.right (And.right p)))))))
 
-(a/theorem vr-fold [S :- (List Nat), L :- (List Nat)]
-  (forall [w :- World] (=> (= (tbl-all (rm-in S) L) true) (= (inv-rank w) true) (= (vr S L w) true)
-                           (And (= (vr S (List.nil Nat) (nat-fold demote w L)) true) (= (inv-rank (nat-fold demote w L)) true))))
+(a/theorem i14-validity-rule-r-fold [S :- (List Nat), L :- (List Nat)]
+  (forall [w :- World] (=> (= (tbl-all (rm-in S) L) true) (= (i12-ranks w) true) (= (i14-validity-rule-r S L w) true)
+                           (And (= (i14-validity-rule-r S (List.nil Nat) (nat-fold demote w L)) true) (= (i12-ranks (nat-fold demote w L)) true))))
   (induction L)
   (case [nil] (intros w hl hk h) (simp only [nat-fold]) (exact (And.intro h hk)))
   (case [cons x t ih]
@@ -2228,133 +2228,133 @@
     (simp only [tbl-all Bool.and_eq_true] at hl)
     (have hx (= (reach-mem x S) true)) (exact (And.left hl))
     (simp only [nat-fold])
-    (exact (ih (demote w x) (And.right hl) (rk-demote w x hk) (vr-demote S t w x hx hk h)))))
+    (exact (ih (demote w x) (And.right hl) (i12-ranks-demote w x hk) (i14-validity-rule-r-demote S t w x hx hk h)))))
 
 (a/theorem rm-in-scan [A :- Type, idf :- (=> A Nat), p :- (=> A Bool), xs :- (List A)] (= (tbl-all (rm-in (tbl-scan idf p xs)) (tbl-scan idf p xs)) true)
   (apply (all-of-mem-r (rm-in (tbl-scan idf p xs)) (tbl-scan idf p xs))) (intros y hy) (simp only [rm-in]) (exact hy))
 
-;; Theorem (a normalization round keeps vr): the strays of the round demote among themselves
-(a/theorem vr-norm-round [w :- World]
-  (=> (= (trc w) true) (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (vr (List.nil Nat) (List.nil Nat) (norm-round w)) true))
+;; Theorem (a normalization round keeps i14-validity-rule-r): the strays of the round demote among themselves
+(a/theorem i14-validity-rule-r-normalize-round [w :- World]
+  (=> (= (trc w) true) (= (i12-ranks w) true) (= (i14-validity-rule-r (List.nil Nat) (List.nil Nat) w) true) (= (i14-validity-rule-r (List.nil Nat) (List.nil Nat) (normalize-round w)) true))
   (intros htc hk h)
-  (have h0 := (vr-pass-start w htc h))
-  (have h1 := (vr-run-cascade _ _ w (cancel-jobs (tbl-scan run-id (run-stray (live-list w)) (:runs w))) h0))
-  (have k1 := (rk-run-cascade w (cancel-jobs (tbl-scan run-id (run-stray (live-list w)) (:runs w))) hk))
-  (have f := (vr-fold (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) (tbl-scan comp-id (comp-stray (live-list w)) (:comps w))
+  (have h0 := (i14-validity-rule-r-pass-start w htc h))
+  (have h1 := (i14-validity-rule-r-run-cascade _ _ w (cancel-jobs (tbl-scan run-id (run-stray (live-list w)) (:runs w))) h0))
+  (have k1 := (i12-ranks-run-cascade w (cancel-jobs (tbl-scan run-id (run-stray (live-list w)) (:runs w))) hk))
+  (have f := (i14-validity-rule-r-fold (tbl-scan comp-id (comp-stray (live-list w)) (:comps w)) (tbl-scan comp-id (comp-stray (live-list w)) (:comps w))
                (run-cascade w (cancel-jobs (tbl-scan run-id (run-stray (live-list w)) (:runs w)))) (rm-in-scan CompRow comp-id (comp-stray (live-list w)) (:comps w)) k1 h1))
-  (simp only [norm-round norm-round-lv])
-  (exact (vr-detach (List.nil Nat) (List.nil Nat) _ (vr-pass-end _ _ (And.left f)))))
+  (simp only [normalize-round normalize-round-with-live])
+  (exact (i14-validity-rule-r-detach (List.nil Nat) (List.nil Nat) _ (i14-validity-rule-r-pass-end _ _ (And.left f)))))
 
-(a/theorem vr-norm-loop [fuel :- (List Nat)]
-  (forall [w :- World] (=> (= (trc w) true) (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (vr (List.nil Nat) (List.nil Nat) (norm-loop fuel w)) true)))
+(a/theorem i14-validity-rule-r-normalize-loop [fuel :- (List Nat)]
+  (forall [w :- World] (=> (= (trc w) true) (= (i12-ranks w) true) (= (i14-validity-rule-r (List.nil Nat) (List.nil Nat) w) true) (= (i14-validity-rule-r (List.nil Nat) (List.nil Nat) (normalize-loop fuel w)) true)))
   (induction fuel)
-  (case [nil] (intros w htc hk h) (simp only [norm-loop]) (exact h))
+  (case [nil] (intros w htc hk h) (simp only [normalize-loop]) (exact h))
   (case [cons u f ih]
     (intros w htc hk h)
     (cases hn (normalized w))
-    (case [false] (simp only [norm-loop hn]) (exact (ih (norm-round w) (trc-norm-round w htc) (rk-norm-round w hk) (vr-norm-round w htc hk h))))
-    (case [true] (simp only [norm-loop hn]) (exact h))))
-(a/theorem vr-normalize [w :- World]
-  (=> (= (trc w) true) (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (vr (List.nil Nat) (List.nil Nat) (normalize w)) true))
+    (case [false] (simp only [normalize-loop hn]) (exact (ih (normalize-round w) (trc-normalize-round w htc) (i12-ranks-normalize-round w hk) (i14-validity-rule-r-normalize-round w htc hk h))))
+    (case [true] (simp only [normalize-loop hn]) (exact h))))
+(a/theorem i14-validity-rule-r-normalize [w :- World]
+  (=> (= (trc w) true) (= (i12-ranks w) true) (= (i14-validity-rule-r (List.nil Nat) (List.nil Nat) w) true) (= (i14-validity-rule-r (List.nil Nat) (List.nil Nat) (normalize w)) true))
   (intros htc hk h)
   (simp only [normalize])
-  (exact (vr-norm-loop (norm-fuel (detach w)) (detach w) (trc-detach w htc) (rk-detach w hk) (vr-detach (List.nil Nat) (List.nil Nat) w h))))
-(a/theorem vr-rule-r-round [w :- World]
-  (=> (= (trc w) true) (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (filter-safe (normalize w)) true)
-      (= (vr (List.nil Nat) (List.nil Nat) (rule-r-round w)) true))
+  (exact (i14-validity-rule-r-normalize-loop (normalize-fuel (detach w)) (detach w) (trc-detach w htc) (i12-ranks-detach w hk) (i14-validity-rule-r-detach (List.nil Nat) (List.nil Nat) w h))))
+(a/theorem i14-validity-rule-r-rule-r-round [w :- World]
+  (=> (= (trc w) true) (= (i12-ranks w) true) (= (i14-validity-rule-r (List.nil Nat) (List.nil Nat) w) true) (= (filter-safe (normalize w)) true)
+      (= (i14-validity-rule-r (List.nil Nat) (List.nil Nat) (rule-r-round w)) true))
   (intros htc hk h hf)
   (simp only [rule-r-round]) (rw [rule-r-filter-eq])
-  (exact (vr-filter-world (List.nil Nat) (List.nil Nat) _ (keep-fn (normalize w)) (vr-normalize w htc hk h) hf)))
-(a/theorem vr-rr-loop [fuel :- (List Nat)]
-  (forall [w0 :- World] (=> (= (trc w0) true) (= (inv-rank w0) true) (= (vr (List.nil Nat) (List.nil Nat) w0) true) (= (rr-safe fuel w0) true)
-                            (= (vr (List.nil Nat) (List.nil Nat) (rr-loop fuel (rule-r-round w0))) true)))
+  (exact (i14-validity-rule-r-filter-world (List.nil Nat) (List.nil Nat) _ (keep-fn (normalize w)) (i14-validity-rule-r-normalize w htc hk h) hf)))
+(a/theorem i14-validity-rule-r-rule-r-loop [fuel :- (List Nat)]
+  (forall [w0 :- World] (=> (= (trc w0) true) (= (i12-ranks w0) true) (= (i14-validity-rule-r (List.nil Nat) (List.nil Nat) w0) true) (= (rounds-safe-loop fuel w0) true)
+                            (= (i14-validity-rule-r (List.nil Nat) (List.nil Nat) (rule-r-loop fuel (rule-r-round w0))) true)))
   (induction fuel)
-  (case [nil] (intros w0 htc hk h hs) (simp only [rr-safe] at hs) (simp only [rr-loop]) (exact (vr-rule-r-round w0 htc hk h hs)))
+  (case [nil] (intros w0 htc hk h hs) (simp only [rounds-safe-loop] at hs) (simp only [rule-r-loop]) (exact (i14-validity-rule-r-rule-r-round w0 htc hk h hs)))
   (case [cons x f ih]
     (intros w0 htc hk h hs)
-    (simp only [rr-safe Bool.and_eq_true] at hs)
-    (have h1 := (vr-rule-r-round w0 htc hk h (And.left hs)))
+    (simp only [rounds-safe-loop Bool.and_eq_true] at hs)
+    (have h1 := (i14-validity-rule-r-rule-r-round w0 htc hk h (And.left hs)))
     (cases ho (no-orphans (rule-r-round w0)))
-    (case [false] (simp only [ho] at hs) (simp only [rr-loop ho])
-      (exact (ih (rule-r-round w0) (trc-rule-r-round w0 htc (And.left hs)) (rk-rule-r-round w0 hk (And.left hs)) h1 (And.right hs))))
-    (case [true] (simp only [rr-loop ho]) (exact h1))))
-(a/theorem vr-rule-r [w :- World]
-  (=> (= (trc w) true) (= (inv-rank w) true) (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (rule-r-safe w) true) (= (vr (List.nil Nat) (List.nil Nat) (rule-r w)) true))
-  (intros htc hk h hs) (simp only [rule-r-safe] at hs) (simp only [rule-r]) (exact (vr-rr-loop (rr-fuel w) w htc hk h hs)))
+    (case [false] (simp only [ho] at hs) (simp only [rule-r-loop ho])
+      (exact (ih (rule-r-round w0) (trc-rule-r-round w0 htc (And.left hs)) (i12-ranks-rule-r-round w0 hk (And.left hs)) h1 (And.right hs))))
+    (case [true] (simp only [rule-r-loop ho]) (exact h1))))
+(a/theorem i14-validity-rule-r-rule-r [w :- World]
+  (=> (= (trc w) true) (= (i12-ranks w) true) (= (i14-validity-rule-r (List.nil Nat) (List.nil Nat) w) true) (= (rule-r-safe w) true) (= (i14-validity-rule-r (List.nil Nat) (List.nil Nat) (rule-r w)) true))
+  (intros htc hk h hs) (simp only [rule-r-safe] at hs) (simp only [rule-r]) (exact (i14-validity-rule-r-rule-r-loop (rule-r-fuel w) w htc hk h hs)))
 
 ;; ===========================================================================
 ;; Part I. The step, the combined bundle, I14 as a theorem
 ;; ===========================================================================
 
-(a/theorem dep-active-of-g7 [w :- World] (=> (= (g7 w) true) (= (tbl-all (dep-active (:comps w)) (:edges w)) true))
+(a/theorem dep-active-of-i7-idle [w :- World] (=> (= (i7-idle w) true) (= (tbl-all (dep-active (:comps w)) (:edges w)) true))
   (intro h)
-  (have p := (g7k-parts _ _ _ (g7-rest-of w h)))
+  (have p := (i7-idle-keys-ok-parts _ _ _ (i7-idle-rest-of w h)))
   (apply (tbl-all-mono EdgeRow (dm-one (:comps w)) (dep-active (:comps w)) _ (:edges w) (And.left (And.right p))))
   (intros e he)
   (cases hk (Nat.beq (:kind e) ek-dep))
   (case [false] (simp only [dep-active hk Bool.not_false Bool.true_or]))
   (case [true] (simp only [dm-one hk Bool.true_or Bool.not_true Bool.false_or] at he) (simp only [dep-active hk Bool.not_true Bool.false_or]) (exact he)))
-(a/theorem vr-of-vq [xw :- (List Nat), xs :- Bool, w :- World]
-  (=> (= (vq (List.nil Nat) xw xs w) true) (= (tbl-all (dep-active (:comps w)) (:edges w)) true) (= (vr (List.nil Nat) (List.nil Nat) w) true))
+(a/theorem i14-validity-rule-r-of-i14-validity-raw [xw :- (List Nat), xs :- Bool, w :- World]
+  (=> (= (i14-validity-raw (List.nil Nat) xw xs w) true) (= (tbl-all (dep-active (:comps w)) (:edges w)) true) (= (i14-validity-rule-r (List.nil Nat) (List.nil Nat) w) true))
   (intros h hd)
-  (have p := (vqk-parts _ _ _ _ _ _ (vq-rest-of _ _ _ w h)))
+  (have p := (i14-validity-raw-keys-ok-parts _ _ _ _ _ _ (i14-validity-raw-rest-of _ _ _ w h)))
   (have i2 (= (tbl-all (dnb14 (List.nil Nat) (List.nil Nat) (:comps w)) (:edges w)) true))
-  (apply (tbl-all-mono EdgeRow (dnaq14 (List.nil Nat) (:comps w)) _ _ (:edges w) (And.left (And.right p))))
+  (apply (tbl-all-mono EdgeRow (i14-idle-dep-queued (List.nil Nat) (:comps w)) _ _ (:edges w) (And.left (And.right p))))
   (intros e he)
   (cases hk (Nat.beq (:kind e) ek-dep))
   (case [false] (simp only [dnb14 hk Bool.not_false Bool.true_or]))
   (case [true]
-    (simp only [dnaq14 hk reach-mem Bool.not_true Bool.false_or] at he)
+    (simp only [i14-idle-dep-queued hk reach-mem Bool.not_true Bool.false_or] at he)
     (simp only [dnb14 hk reach-mem he Bool.not_true Bool.false_or Bool.not_false Bool.true_or Bool.and_self]))
   (have i3 (= (tbl-all (dne14 (List.nil Nat) (:next-id w) (:comps w)) (:edges w)) true))
   (apply (all-of-mem EdgeRow _ (:edges w)))
   (intros e hm) (simp only [dne14 reach-mem Bool.and_false Bool.not_false Bool.true_or])
-  (exact (vr-intro _ _ w (vq-sample _ _ _ w h) (vrk-intro _ _ _ _ _ (And.left p) i2 i3 hd))))
-(a/theorem vq-of-vr [w :- World] (=> (= (vr (List.nil Nat) (List.nil Nat) w) true) (= (vq (List.nil Nat) (List.nil Nat) false w) true))
+  (exact (i14-validity-rule-r-intro _ _ w (i14-validity-raw-well-formed _ _ _ w h) (i14-validity-rule-r-keys-ok-intro _ _ _ _ _ (And.left p) i2 i3 hd))))
+(a/theorem i14-validity-raw-of-i14-validity-rule-r [w :- World] (=> (= (i14-validity-rule-r (List.nil Nat) (List.nil Nat) w) true) (= (i14-validity-raw (List.nil Nat) (List.nil Nat) false w) true))
   (intro h)
-  (have p := (vrk-parts _ _ _ _ _ (vr-rest-of _ _ w h)))
-  (have i2 (= (tbl-all (dnaq14 (List.nil Nat) (:comps w)) (:edges w)) true))
+  (have p := (i14-validity-rule-r-keys-ok-parts _ _ _ _ _ (i14-validity-rule-r-rest-of _ _ w h)))
+  (have i2 (= (tbl-all (i14-idle-dep-queued (List.nil Nat) (:comps w)) (:edges w)) true))
   (apply (tbl-all-mono EdgeRow (dnb14 (List.nil Nat) (List.nil Nat) (:comps w)) _ _ (:edges w) (And.left (And.right p))))
   (intros e he)
   (cases hk (Nat.beq (:kind e) ek-dep))
-  (case [false] (simp only [dnaq14 hk Bool.not_false Bool.true_or]))
+  (case [false] (simp only [i14-idle-dep-queued hk Bool.not_false Bool.true_or]))
   (case [true]
     (simp only [dnb14 hk reach-mem Bool.not_true Bool.false_or Bool.not_false Bool.true_or Bool.and_true] at he)
-    (simp only [dnaq14 hk reach-mem he Bool.not_true Bool.false_or]))
+    (simp only [i14-idle-dep-queued hk reach-mem he Bool.not_true Bool.false_or]))
   (have i3 (= (tbl-all (awake (:comps w)) (List.nil Nat)) true)) (simp only [tbl-all])
-  (have i4 (= (Bool.or (Bool.not false) (tbl-all (swc14 (:next-id w)) (:comps w))) true)) (simp only [Bool.not_false Bool.true_or])
-  (exact (vq-intro _ _ _ w (vr-sample _ _ w h) (vqk-intro _ _ _ _ _ _ (And.left p) i2 i3 i4))))
+  (have i4 (= (Bool.or (Bool.not false) (tbl-all (i14-stamps-below (:next-id w)) (:comps w))) true)) (simp only [Bool.not_false Bool.true_or])
+  (exact (i14-validity-raw-intro _ _ _ w (i14-validity-rule-r-well-formed _ _ w h) (i14-validity-raw-keys-ok-intro _ _ _ _ _ _ (And.left p) i2 i3 i4))))
 
 ;; the step invariant
-(a/defn v14 [w :- World] Bool (vq (List.nil Nat) (List.nil Nat) false w))
-(a/theorem step-v14 [w :- World, it :- Item]
-  (=> (= (ga w) true) (= (gy 0 w) true) (= (v14 w) true) (= (g7 w) true) (= (inv-rank w) true) (= (rule-r-safe (:world (raw w it))) true)
-      (= (v14 (:world (world-step w it))) true))
+(a/defn i14-ordered [w :- World] Bool (i14-validity-raw (List.nil Nat) (List.nil Nat) false w))
+(a/theorem step-i14-ordered [w :- World, it :- Item]
+  (=> (= (acts-parked w) true) (= (tombs-dormant 0 w) true) (= (i14-ordered w) true) (= (i7-idle w) true) (= (i12-ranks w) true) (= (rule-r-safe (:world (raw w it))) true)
+      (= (i14-ordered (:world (world-step w it))) true))
   (intros hga hgy h hg hk hs)
-  (simp only [v14] at h) (simp only [v14])
+  (simp only [i14-ordered] at h) (simp only [i14-ordered])
   (cases ha (:accepted (raw w it)))
   (case [false] (have e1 := (step-refuse w it ha)) (simp only [e1 refuse]) (exact h))
   (case [true]
     (have e2 := (step-accepted w it ha)) (rw [e2])
-    (have r0 := (raw-vq (List.nil Nat) (List.nil Nat) false w it h))
-    (exact (vq-of-vr _ (vr-rule-r _ (trc-raw w it hga hg hgy) (raw-rk w it hk) (vr-of-vq (List.nil Nat) false _ r0 (dep-active-of-g7 _ (raw-g7 w it hg))) hs)))))
-(a/theorem v14-empty [] (= (v14 empty-world) true) (rfl))
+    (have r0 := (i14-validity-raw-raw (List.nil Nat) (List.nil Nat) false w it h))
+    (exact (i14-validity-raw-of-i14-validity-rule-r _ (i14-validity-rule-r-rule-r _ (trc-raw w it hga hg hgy) (i12-ranks-raw w it hk) (i14-validity-rule-r-of-i14-validity-raw (List.nil Nat) false _ r0 (dep-active-of-i7-idle _ (i7-idle-raw w it hg))) hs)))))
+(a/theorem i14-ordered-empty [] (= (i14-ordered empty-world) true) (rfl))
 
-;; the combined bundle: p3k = p3j && v14 (no honest hypothesis)
-(a/defn p3k [w :- World] Bool (Bool.and (p3j w) (v14 w)))
-(a/theorem p3k-parts [w :- World] (=> (= (p3k w) true) (And (= (p3j w) true) (= (v14 w) true)))
-  (intro h) (simp only [p3k Bool.and_eq_true] at h) (exact h))
-(a/theorem p3k-empty [] (= (p3k empty-world) true) (rfl))
-(a/theorem step-p3k [w :- World, it :- Item] (=> (= (p3k w) true) (= (p3k (:world (world-step w it))) true))
+;; the combined bundle: chain-to-i14-ordered = chain-to-comp-facts && i14-ordered (no honest hypothesis)
+(a/defn chain-to-i14-ordered [w :- World] Bool (Bool.and (chain-to-comp-facts w) (i14-ordered w)))
+(a/theorem chain-to-i14-ordered-parts [w :- World] (=> (= (chain-to-i14-ordered w) true) (And (= (chain-to-comp-facts w) true) (= (i14-ordered w) true)))
+  (intro h) (simp only [chain-to-i14-ordered Bool.and_eq_true] at h) (exact h))
+(a/theorem chain-to-i14-ordered-empty [] (= (chain-to-i14-ordered empty-world) true) (rfl))
+(a/theorem step-chain-to-i14-ordered [w :- World, it :- Item] (=> (= (chain-to-i14-ordered w) true) (= (chain-to-i14-ordered (:world (world-step w it))) true))
   (intro h)
-  (have p := (p3k-parts w h))
-  (have pi := (And.left (p3j-parts w (And.left p))))
-  (have pb := (And.left (p3i-ctx w pi)))
-  (have hk := (And.left (And.right (p3b-parts w pb))))
-  (have a1 := (step-p3j w it (And.left p)))
-  (have rq := (ri-parts w (And.right (And.right (And.right (And.right (p3b-parts w pb)))))))
-  (have a2 := (step-v14 w it (And.left (p3b-parts w pb)) (And.right (And.right (And.right (And.right rq)))) (And.right p) (p3i-g7 w pi) hk (step-rule-r-safe w it pb)))
-  (simp only [p3k a1 a2 Bool.and_self]))
+  (have p := (chain-to-i14-ordered-parts w h))
+  (have pi := (And.left (chain-to-comp-facts-parts w (And.left p))))
+  (have pb := (And.left (chain-to-i8-closed-ctx w pi)))
+  (have hk := (And.left (And.right (chain-start-parts w pb))))
+  (have a1 := (step-chain-to-comp-facts w it (And.left p)))
+  (have rq := (round-facts-parts w (And.right (And.right (And.right (And.right (chain-start-parts w pb)))))))
+  (have a2 := (step-i14-ordered w it (And.left (chain-start-parts w pb)) (And.right (And.right (And.right (And.right rq)))) (And.right p) (chain-to-i8-closed-i7-idle w pi) hk (step-rule-r-safe w it pb)))
+  (simp only [chain-to-i14-ordered a1 a2 Bool.and_self]))
 
 ;; ---- I14: the validity graph over idle computations has no cycle
 (a/defn idle-row [w :- World, d :- Nat] Bool (match (comp-find w d) [none false] [(some c) (:idle c)]))
@@ -2419,7 +2419,7 @@
       (simp only [tbl-any a1 Bool.true_or]))))
 
 (a/theorem iv-ent [w :- World, x :- Nat, c :- CompRow]
-  (=> (= (iv14 (:comps w) (:next-id w)) true) (= (comp-find w x) (Option.some CompRow c)) (= (:idle c) true)
+  (=> (= (i14-idle-entries-ok (:comps w) (:next-id w)) true) (= (comp-find w x) (Option.some CompRow c)) (= (:idle c) true)
       (= (tbl-all (ent14 (:comps w) (:next-id w)) (:validity c)) true))
   (intros h hf hi)
   (have z := (tbl-all-mem CompRow (ivc14 (:comps w) (:next-id w)) c (:comps w) h (tbl-find-mem CompRow comp-id x c (:comps w) hf)))
@@ -2448,7 +2448,7 @@
   (simp only [idle-row hf] at h) (apply (Exists.intro cq)) (exact (And.intro (Eq.refl (Option.some CompRow cq)) h)))
 
 (a/theorem reach-above [w :- World, x :- Nat, c :- CompRow]
-  (=> (= (iv14 (:comps w) (:next-id w)) true) (= (comp-find w x) (Option.some CompRow c)) (= (:idle c) true)
+  (=> (= (i14-idle-entries-ok (:comps w) (:next-id w)) true) (= (comp-find w x) (Option.some CompRow c)) (= (:idle c) true)
       (forall [y :- Nat] (=> (Reach (vsucc14 w) (vsucc14 w x) y)
                               (And (= (idle-row w y) true) (= (tbl-any (above-all (vrow w y)) (:validity c)) true)))))
   (intros h hf hi y hr)
@@ -2509,11 +2509,11 @@
   (case [root r hm] (cases hm))
   (case [step p q hp hq ihp] (exact ihp)))
 
-;; Theorem (I14): in a v14 world no idle computation reaches itself through the validity graph
+;; Theorem (I14): in a i14-ordered world no idle computation reaches itself through the validity graph
 (a/theorem i14-acyclic [w :- World, x :- Nat]
-  (=> (= (v14 w) true) (Not (Reach (vsucc14 w) (vsucc14 w x) x)))
+  (=> (= (i14-ordered w) true) (Not (Reach (vsucc14 w) (vsucc14 w x) x)))
   (intros h hr)
-  (have p := (vqk-parts _ _ _ _ _ _ (vq-rest-of _ _ _ w h)))
+  (have p := (i14-validity-raw-keys-ok-parts _ _ _ _ _ _ (i14-validity-raw-rest-of _ _ _ w h)))
   (cases hf (comp-find w x)) (case' [some c]) (case' [none])
   (simp only [vsucc14 hf] at hr) (exact (reach-nil (vsucc14 w) x hr))
   (cases hi (:idle c))
@@ -2524,13 +2524,13 @@
   (exact (any-above-self (:validity c) (:validity c) (fn [v :- Valid, m :- (List.Mem v (:validity c))] m) a))
   (simp only [vsucc14 hf hi] at hr) (exact (reach-nil (vsucc14 w) x hr)))
 
-;; Theorem: after every step from a p3k world, I14 holds (no honest hypothesis)
+;; Theorem: after every step from a chain-to-i14-ordered world, I14 holds (no honest hypothesis)
 (a/theorem step-i14-total [w :- World, it :- Item, x :- Nat]
-  (=> (= (p3k w) true) (Not (Reach (vsucc14 (:world (world-step w it))) (vsucc14 (:world (world-step w it)) x) x)))
-  (intro h) (exact (i14-acyclic _ x (And.right (p3k-parts _ (step-p3k w it h))))))
+  (=> (= (chain-to-i14-ordered w) true) (Not (Reach (vsucc14 (:world (world-step w it))) (vsucc14 (:world (world-step w it)) x) x)))
+  (intro h) (exact (i14-acyclic _ x (And.right (chain-to-i14-ordered-parts _ (step-chain-to-i14-ordered w it h))))))
 
 ;; ===========================================================================
-;; Part J. P10 (i8's raw0 guard `cur-closed` / `body-shut`) reduced to the run scope: an alive normal task
+;; Part J. P10 (i8's transition guard `cur-closed` / `create-in-scope-refused`) reduced to the run scope: an alive normal task
 ;; run's CURRENT scope is open as soon as its RUN scope is open (the current scope is the run scope or
 ;; an open explicit scope reached from it through open explicit children)
 ;; ===========================================================================
@@ -2597,7 +2597,7 @@
       (exact (And.intro (And.left ps) (And.intro (And.left (And.right ps)) o2))))))
 
 (a/theorem scope-open-of-row [w :- World, s :- ScopeRow, v :- Nat]
-  (=> (= (inv-sample w) true) (List.Mem s (:scopes w)) (= (scope-id s) v) (= (sopen-q s) true) (= (scope-open-at w v) true))
+  (=> (= (well-formed w) true) (List.Mem s (:scopes w)) (= (scope-id s) v) (= (sopen-q s) true) (= (scope-open-at w v) true))
   (intros hs hm hid ho)
   (have u := (uniq-all ScopeRow scope-id sopen-q s (:scopes w) (scopes-nodup8 w hs) hm ho))
   (rw [hid] at u)
@@ -2614,7 +2614,7 @@
 
 ;; Theorem (P10 reduced): a run whose run scope is open does not trip the guard
 (a/theorem cur-open-of-run-scope [w :- World, r :- RunRow]
-  (=> (= (inv-sample w) true) (= (scope-open-at w (:scope r)) true) (= (run-cur-closed w r) false))
+  (=> (= (well-formed w) true) (= (scope-open-at w (:scope r)) true) (= (run-cur-closed w r) false))
   (intros hs ho)
   (have co (= (scope-open-at w (cur-scope w r)) true))
   (simp only [cur-scope])
@@ -2640,7 +2640,7 @@
   (Bool.or (Bool.not (Bool.and (run-alive r) (Nat.beq (:mode r) mode-normal)))
            (Bool.or (in-comp w r) (scope-open-at w (:scope r)))))
 (a/theorem cur-open-of-rso [w :- World]
-  (=> (= (inv-sample w) true) (= (tbl-all (rso w) (:runs w)) true) (= (cur-open-ok w) true))
+  (=> (= (well-formed w) true) (= (tbl-all (rso w) (:runs w)) true) (= (cur-open-ok w) true))
   (intros hs h)
   (simp only [cur-open-ok])
   (apply (tbl-all-mono RunRow (rso w) (run-cur-ok w) _ (:runs w) h))

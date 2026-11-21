@@ -2,26 +2,26 @@
   "Obligations P4 (cascade completion) and P2 (normalization terminates), kernel-checked (Init only).
 
   Hypothesis of both: `acts-alive w` (every run row whose id is an activation's run is not done).
-  inv-sample does not imply it: `resume` sets its run active, so a done run that kept an
+  well-formed does not imply it: `resume` sets its run active, so a done run that kept an
   activation would be revived. spindel.v2.inv.acts proves it for every world the step reaches.
 
-    casc-done-ok         inv-sample w, acts-alive w -> casc-done w js                      (P4)
-    normalized-ok        inv-sample w, acts-alive w -> normalized (normalize w)             (P2)
-    rule-r-normalized-ok ... and rule-r-safe w -> normalized (normalize (rule-r-pre w))
+    cascade-done-ok         well-formed w, acts-alive w -> cascade-done w js                      (P4)
+    normalized-ok        well-formed w, acts-alive w -> normalized (normalize w)             (P2)
+    rule-r-normalized-ok ... and rule-r-safe w -> normalized (normalize (rule-r-last-input w))
     step-normalized-ok, step-i4-ok   the step theorems without the `normalized` flag
 
-  P4 (Part D): potential `casc-pot n w js` = jobs (a jclose weighs n+1) + (n+1) #alive runs +
-  n #run rows; with n the initial #run rows, every pop lowers it by >= 1 (`casc-step-pot`: an
+  P4 (Part D): potential `cascade-pot n w js` = jobs (a jclose weighs n+1) + (n+1) #alive runs +
+  n #run rows; with n the initial #run rows, every pop lowers it by >= 1 (`cascade-step-pot`: an
   acting cancel lowers #alive and queues <= #alive + 1 jobs, an acting retire lowers #rows and
   queues <= #alive, an acting close queues <= #alive <= n; nothing ever raises #alive or #rows),
-  and it starts below `casc-fuel` (`casc-fuel-above`).
-  Monotonicity: the bundle `bc b w` = inv-sample, acts-alive, #alive <= (:alive b), #rows <=
+  and it starts below `cascade-fuel` (`cascade-fuel-above`).
+  Monotonicity: the bundle `cascade-bound b w` = well-formed, acts-alive, #alive <= (:alive b), #rows <=
   (:rows b), the ids of the non-idle computations = (:active b), proved per primitive edit
-  (Part B) and copied for the 38 composite cascade lemmas by `bc-copy!` (the inv-sample proof
+  (Part B) and copied for the 38 composite cascade lemmas by `bc-copy!` (the well-formed proof
   re-checked with the bundle; overrides: resume and its callers, T14's local part).
-  P2 (Part E): `round-lt` (a round of a non-normalized world lowers `norm-measure`: the first
+  P2 (Part E): `round-lt` (a round of a non-normalized world lowers `normalize-measure`: the first
   stray run's cancel acts, else the first stray computation is demoted (idle or removed); unique
-  ids pick the stray row), `bn-round-lv` (no count grows: bundle `bn`), `norm-loop-ok`."
+  ids pick the stray row), `round-bound-round-lv` (no count grows: bundle `round-bound`), `normalize-loop-ok`."
   (:require [ansatz.core :as a]
             [clojure.java.io :as io]
             [clojure.string :as str]
@@ -49,13 +49,13 @@
 (a/defn active-ids [w :- World] (List Nat) (tbl-scan comp-id comp-active (:comps w)))
 
 ;; bounds: #alive runs <= alive, #run rows <= rows, the non-idle computations' ids = active
-(a/structure Bnd [] (alive Nat) (rows Nat) (active (List Nat)))
-(a/defn bc-rest [b :- Bnd, w :- World] Bool
+(a/structure Bound [] (alive Nat) (rows Nat) (active (List Nat)))
+(a/defn cascade-bound-rest [b :- Bound, w :- World] Bool
   (Bool.and (acts-alive w)
    (Bool.and (Nat.ble (alive-cnt w) (:alive b))
     (Bool.and (Nat.ble (row-cnt w) (:rows b)) (nat-list-eq (active-ids w) (:active b))))))
-(a/defn bc [b :- Bnd, w :- World] Bool (Bool.and (inv-sample w) (bc-rest b w)))
-(a/defn bnd-of [w :- World] Bnd (Bnd.mk (alive-cnt w) (row-cnt w) (active-ids w)))
+(a/defn cascade-bound [b :- Bound, w :- World] Bool (Bool.and (well-formed w) (cascade-bound-rest b w)))
+(a/defn bound-of [w :- World] Bound (Bound.mk (alive-cnt w) (row-cnt w) (active-ids w)))
 
 (a/theorem nat-list-eq-eq [xs :- (List Nat)]
   (forall [ys :- (List Nat)] (=> (= (nat-list-eq xs ys) true) (= xs ys)))
@@ -76,62 +76,62 @@
   (case [nil] (simp [nat-list-eq]))
   (case [cons x t ih] (simp [nat-list-eq Nat.beq_refl ih])))
 
-(a/theorem bc-sample [b :- Bnd, w :- World] (=> (= (bc b w) true) (= (inv-sample w) true))
-  (intro h) (simp only [bc Bool.and_eq_true] at h) (exact (And.left h)))
-(a/theorem bc-rest-of [b :- Bnd, w :- World] (=> (= (bc b w) true) (= (bc-rest b w) true))
-  (intro h) (simp only [bc Bool.and_eq_true] at h) (exact (And.right h)))
-(a/theorem bc-intro [b :- Bnd, w :- World] (=> (= (inv-sample w) true) (= (bc-rest b w) true) (= (bc b w) true))
-  (intros h1 h2) (simp only [bc h1 h2 Bool.and_self]))
-(a/theorem bc-parts [b :- Bnd, w :- World]
-  (=> (= (bc b w) true)
+(a/theorem cascade-bound-well-formed [b :- Bound, w :- World] (=> (= (cascade-bound b w) true) (= (well-formed w) true))
+  (intro h) (simp only [cascade-bound Bool.and_eq_true] at h) (exact (And.left h)))
+(a/theorem cascade-bound-rest-of [b :- Bound, w :- World] (=> (= (cascade-bound b w) true) (= (cascade-bound-rest b w) true))
+  (intro h) (simp only [cascade-bound Bool.and_eq_true] at h) (exact (And.right h)))
+(a/theorem cascade-bound-intro [b :- Bound, w :- World] (=> (= (well-formed w) true) (= (cascade-bound-rest b w) true) (= (cascade-bound b w) true))
+  (intros h1 h2) (simp only [cascade-bound h1 h2 Bool.and_self]))
+(a/theorem cascade-bound-parts [b :- Bound, w :- World]
+  (=> (= (cascade-bound b w) true)
       (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
-  (intro h) (exact (inv-parts w (bc-sample b w h))))
+  (intro h) (exact (well-formed-parts w (cascade-bound-well-formed b w h))))
 
-(a/theorem bc-rest-parts [b :- Bnd, w :- World]
-  (=> (= (bc-rest b w) true)
+(a/theorem cascade-bound-rest-parts [b :- Bound, w :- World]
+  (=> (= (cascade-bound-rest b w) true)
       (And (= (acts-alive w) true)
            (And (<= (alive-cnt w) (:alive b))
                 (And (<= (row-cnt w) (:rows b)) (= (active-ids w) (:active b))))))
   (intro h)
-  (simp only [bc-rest Bool.and_eq_true] at h)
+  (simp only [cascade-bound-rest Bool.and_eq_true] at h)
   (exact (And.intro (And.left h)
            (And.intro (Nat.le_of_ble_eq_true (And.left (And.right h)))
              (And.intro (Nat.le_of_ble_eq_true (And.left (And.right (And.right h))))
                         (nat-list-eq-eq _ _ (And.right (And.right (And.right h)))))))))
 
-(a/theorem bc-rest-intro [b :- Bnd, w :- World]
+(a/theorem cascade-bound-rest-intro [b :- Bound, w :- World]
   (=> (= (acts-alive w) true) (<= (alive-cnt w) (:alive b)) (<= (row-cnt w) (:rows b))
-      (= (active-ids w) (:active b)) (= (bc-rest b w) true))
+      (= (active-ids w) (:active b)) (= (cascade-bound-rest b w) true))
   (intros h1 h2 h3 h4)
-  (simp only [bc-rest Bool.and_eq_true h1 h4 nat-list-eq-refl (Nat.ble_eq_true_of_le h2) (Nat.ble_eq_true_of_le h3)]))
+  (simp only [cascade-bound-rest Bool.and_eq_true h1 h4 nat-list-eq-refl (Nat.ble_eq_true_of_le h2) (Nat.ble_eq_true_of_le h3)]))
 
 ;; the frame: acts-alive kept, both counts down, the active ids unchanged
-(a/theorem bc-rest-mono [b :- Bnd, w :- World, w2 :- World]
+(a/theorem cascade-bound-rest-mono [b :- Bound, w :- World, w2 :- World]
   (=> (=> (= (acts-alive w) true) (= (acts-alive w2) true))
       (<= (alive-cnt w2) (alive-cnt w)) (<= (row-cnt w2) (row-cnt w)) (= (active-ids w2) (active-ids w))
-      (= (bc-rest b w) true) (= (bc-rest b w2) true))
+      (= (cascade-bound-rest b w) true) (= (cascade-bound-rest b w2) true))
   (intros ha hl hr he h)
-  (have p := (bc-rest-parts b w h))
-  (exact (bc-rest-intro b w2 (ha (And.left p)) (Nat.le_trans hl (And.left (And.right p)))
+  (have p := (cascade-bound-rest-parts b w h))
+  (exact (cascade-bound-rest-intro b w2 (ha (And.left p)) (Nat.le_trans hl (And.left (And.right p)))
            (Nat.le_trans hr (And.left (And.right (And.right p))))
            (Eq.trans he (And.right (And.right (And.right p)))))))
 
 (a/theorem ble-refl [n :- Nat] (= (Nat.ble n n) true) (exact (Nat.ble_eq_true_of_le (Nat.le_refl n))))
 
-(a/theorem bc-of-bnd [w :- World] (=> (= (inv-sample w) true) (= (acts-alive w) true) (= (bc (bnd-of w) w) true))
+(a/theorem cascade-bound-of-bnd [w :- World] (=> (= (well-formed w) true) (= (acts-alive w) true) (= (cascade-bound (bound-of w) w) true))
   (intros h1 h2)
-  (have h3 (= (bc-rest (bnd-of w) w) true))
-  (simp only [bc-rest bnd-of h2 ble-refl nat-list-eq-refl Bool.and_self])
-  (exact (bc-intro (bnd-of w) w h1 h3)))
+  (have h3 (= (cascade-bound-rest (bound-of w) w) true))
+  (simp only [cascade-bound-rest bound-of h2 ble-refl nat-list-eq-refl Bool.and_self])
+  (exact (cascade-bound-intro (bound-of w) w h1 h3)))
 
 ;; ===========================================================================
-;; Part B. bc-rest under the primitive edits
+;; Part B. cascade-bound-rest under the primitive edits
 ;; ===========================================================================
 
-(a/theorem bc-rest-same [b :- Bnd, w :- World, w2 :- World]
+(a/theorem cascade-bound-rest-same [b :- Bound, w :- World, w2 :- World]
   (=> (= (acts-alive w2) (acts-alive w)) (= (alive-cnt w2) (alive-cnt w)) (= (row-cnt w2) (row-cnt w))
-      (= (active-ids w2) (active-ids w)) (= (bc-rest b w2) (bc-rest b w)))
-  (intros h1 h2 h3 h4) (simp only [bc-rest h1 h2 h3 h4]))
+      (= (active-ids w2) (active-ids w)) (= (cascade-bound-rest b w2) (cascade-bound-rest b w)))
+  (intros h1 h2 h3 h4) (simp only [cascade-bound-rest h1 h2 h3 h4]))
 
 (a/theorem tbl-all-upd-same [A :- Type, idf :- (=> A Nat), x :- Nat, f :- (=> A A), p :- (=> A Bool),
                              hf :- (forall [r :- A] (= (p (f r)) (p r))), xs :- (List A)]
@@ -189,16 +189,16 @@
   (simp only [acts-alive run-upd set-runs])
   (exact (tbl-all-congr ActRow _ _ ha (:acts w))))
 
-(a/theorem bc-rest-run-upd [b :- Bnd, w :- World, x :- Nat, f :- (=> RunRow RunRow),
+(a/theorem cascade-bound-rest-run-upd [b :- Bound, w :- World, x :- Nat, f :- (=> RunRow RunRow),
                             hid :- (forall [r :- RunRow] (= (run-id (f r)) (run-id r))),
                             hal :- (forall [r :- RunRow] (= (run-alive (f r)) (run-alive r)))]
-  (= (bc-rest b (run-upd w x f)) (bc-rest b w))
+  (= (cascade-bound-rest b (run-upd w x f)) (cascade-bound-rest b w))
   (have e2 (= (alive-cnt (run-upd w x f)) (alive-cnt w)))
   (simp only [alive-cnt run-upd set-runs]) (exact (tbl-count-upd-same RunRow run-id x f run-alive hal (:runs w)))
   (have e3 (= (row-cnt (run-upd w x f)) (row-cnt w)))
   (simp only [row-cnt run-upd set-runs])
   (exact (tbl-count-upd-same RunRow run-id x f run-any (fn [r :- RunRow] (Eq.refl true)) (:runs w)))
-  (exact (bc-rest-same b w (run-upd w x f) (acts-alive-run-upd w x f hid hal) e2 e3 (rfl))))
+  (exact (cascade-bound-rest-same b w (run-upd w x f) (acts-alive-run-upd w x f hid hal) e2 e3 (rfl))))
 
 (a/theorem act-run-ok-del [rs :- (List RunRow), x :- Nat, a :- ActRow]
   (=> (= (act-run-ok rs a) true) (= (act-run-ok (tbl-del run-id x rs) a) true))
@@ -208,8 +208,8 @@
            (fn [r :- RunRow, h1 :- (= (run-ok-for (:run a) r) true), h2 :- (= (Nat.beq (run-id r) x) false)] h1)
            rs h)))
 
-(a/theorem bc-rest-run-del [b :- Bnd, w :- World, x :- Nat]
-  (=> (= (bc-rest b w) true) (= (bc-rest b (run-del w x)) true))
+(a/theorem cascade-bound-rest-run-del [b :- Bound, w :- World, x :- Nat]
+  (=> (= (cascade-bound-rest b w) true) (= (cascade-bound-rest b (run-del w x)) true))
   (intro h)
   (have ha (=> (= (acts-alive w) true) (= (acts-alive (run-del w x)) true)))
   (intro h1)
@@ -220,22 +220,22 @@
   (simp only [alive-cnt run-del set-runs]) (exact (tbl-count-del-le RunRow run-id x run-alive (:runs w)))
   (have hr (<= (row-cnt (run-del w x)) (row-cnt w)))
   (simp only [row-cnt run-del set-runs]) (exact (tbl-count-del-le RunRow run-id x run-any (:runs w)))
-  (exact (bc-rest-mono b w (run-del w x) ha hl hr (rfl) h)))
+  (exact (cascade-bound-rest-mono b w (run-del w x) ha hl hr (rfl) h)))
 
 ;; ---- activations
 
-(a/theorem bc-rest-act-upd [b :- Bnd, w :- World, x :- Nat, f :- (=> ActRow ActRow),
+(a/theorem cascade-bound-rest-act-upd [b :- Bound, w :- World, x :- Nat, f :- (=> ActRow ActRow),
                             hr :- (forall [c :- ActRow] (= (:run (f c)) (:run c)))]
-  (= (bc-rest b (act-upd w x f)) (bc-rest b w))
+  (= (cascade-bound-rest b (act-upd w x f)) (cascade-bound-rest b w))
   (have hp (forall [c :- ActRow] (= (act-run-ok (:runs w) (f c)) (act-run-ok (:runs w) c))))
   (intro c) (simp only [act-run-ok (hr c)])
   (have e1 (= (acts-alive (act-upd w x f)) (acts-alive w)))
   (simp only [acts-alive act-upd set-acts])
   (exact (tbl-all-upd-same ActRow act-id x f (act-run-ok (:runs w)) hp (:acts w)))
-  (exact (bc-rest-same b w (act-upd w x f) e1 (rfl) (rfl) (rfl))))
+  (exact (cascade-bound-rest-same b w (act-upd w x f) e1 (rfl) (rfl) (rfl))))
 
-(a/theorem bc-rest-act-del [b :- Bnd, w :- World, x :- Nat]
-  (=> (= (bc-rest b w) true) (= (bc-rest b (act-del w x)) true))
+(a/theorem cascade-bound-rest-act-del [b :- Bound, w :- World, x :- Nat]
+  (=> (= (cascade-bound-rest b w) true) (= (cascade-bound-rest b (act-del w x)) true))
   (intro h)
   (have ha (=> (= (acts-alive w) true) (= (acts-alive (act-del w x)) true)))
   (intro h1)
@@ -243,18 +243,18 @@
   (exact (tbl-all-del ActRow act-id x (act-run-ok (:runs w)) (act-run-ok (:runs w))
            (fn [r :- ActRow, h1 :- (= (act-run-ok (:runs w) r) true), h2 :- (= (Nat.beq (act-id r) x) false)] h1)
            (:acts w) h1))
-  (exact (bc-rest-mono b w (act-del w x) ha (Nat.le_refl _) (Nat.le_refl _) (rfl) h)))
+  (exact (cascade-bound-rest-mono b w (act-del w x) ha (Nat.le_refl _) (Nat.le_refl _) (rfl) h)))
 
 ;; ---- computations
 
-(a/theorem bc-rest-comp-upd [b :- Bnd, w :- World, x :- Nat, f :- (=> CompRow CompRow),
+(a/theorem cascade-bound-rest-comp-upd [b :- Bound, w :- World, x :- Nat, f :- (=> CompRow CompRow),
                              hid :- (forall [c :- CompRow] (= (comp-id (f c)) (comp-id c))),
                              hac :- (forall [c :- CompRow] (= (comp-active (f c)) (comp-active c)))]
-  (= (bc-rest b (comp-upd w x f)) (bc-rest b w))
+  (= (cascade-bound-rest b (comp-upd w x f)) (cascade-bound-rest b w))
   (have e (= (active-ids (comp-upd w x f)) (active-ids w)))
   (simp only [active-ids comp-upd set-comps])
   (exact (tbl-scan-upd-same CompRow comp-id x f comp-active hid hac (:comps w)))
-  (exact (bc-rest-same b w (comp-upd w x f) (rfl) (rfl) (rfl) e)))
+  (exact (cascade-bound-rest-same b w (comp-upd w x f) (rfl) (rfl) (rfl) e)))
 
 (a/theorem scan-resync [es :- (List EdgeRow), cs :- (List CompRow)]
   (= (tbl-scan comp-id comp-active (comps-resync es cs)) (tbl-scan comp-id comp-active cs))
@@ -265,26 +265,26 @@
     (have e2 (= (comp-id (comp-resync es h)) (comp-id h))) (rfl)
     (simp only [comps-resync tbl-scan e1 e2 ih])))
 
-(a/theorem bc-rest-drop-edges [b :- Bnd, w :- World, p :- (=> EdgeRow Bool)]
-  (= (bc-rest b (drop-edges w p)) (bc-rest b w))
+(a/theorem cascade-bound-rest-drop-edges [b :- Bound, w :- World, p :- (=> EdgeRow Bool)]
+  (= (cascade-bound-rest b (drop-edges w p)) (cascade-bound-rest b w))
   (have e (= (active-ids (drop-edges w p)) (active-ids w)))
   (simp only [active-ids drop-edges set-comps set-edges])
   (exact (scan-resync (tbl-filter p (:edges w)) (:comps w)))
-  (exact (bc-rest-same b w (drop-edges w p) (rfl) (rfl) (rfl) e)))
+  (exact (cascade-bound-rest-same b w (drop-edges w p) (rfl) (rfl) (rfl) e)))
 
-(a/theorem bc-rest-drop-cred [b :- Bnd, w :- World, a :- Nat]
-  (= (bc-rest b (drop-cred-edges w a)) (bc-rest b w))
+(a/theorem cascade-bound-rest-drop-cred [b :- Bound, w :- World, a :- Nat]
+  (= (cascade-bound-rest b (drop-cred-edges w a)) (cascade-bound-rest b w))
   (simp only [drop-cred-edges])
-  (rw [(bc-rest-comp-upd b _ a (comp-set-pending 0) (comp-set-pending-id 0) (fn [c :- CompRow] (Eq.refl (comp-active c))))]))
+  (rw [(cascade-bound-rest-comp-upd b _ a (comp-set-pending 0) (comp-set-pending-id 0) (fn [c :- CompRow] (Eq.refl (comp-active c))))]))
 
-(a/theorem bc-rest-drop-act [b :- Bnd, w :- World, a :- Nat]
-  (=> (= (bc-rest b w) true) (= (bc-rest b (drop-act w a)) true))
+(a/theorem cascade-bound-rest-drop-act [b :- Bound, w :- World, a :- Nat]
+  (=> (= (cascade-bound-rest b w) true) (= (cascade-bound-rest b (drop-act w a)) true))
   (intro h)
   (simp only [drop-act])
-  (exact (bc-rest-act-del b _ a (Eq.trans (bc-rest-drop-cred b w a) h))))
+  (exact (cascade-bound-rest-act-del b _ a (Eq.trans (cascade-bound-rest-drop-cred b w a) h))))
 
-(a/theorem bc-rest-remove-edge [b :- Bnd, w :- World, x :- Nat]
-  (= (bc-rest b (remove-edge w x)) (bc-rest b w))
+(a/theorem cascade-bound-rest-remove-edge [b :- Bound, w :- World, x :- Nat]
+  (= (cascade-bound-rest b (remove-edge w x)) (cascade-bound-rest b w))
   (cases hf (edge-find w x))
   (case [none] (simp only [remove-edge hf]))
   (case [some e]
@@ -292,7 +292,7 @@
     (case [false] (simp only [remove-edge hf hm]))
     (case [true]
       (simp only [remove-edge hf hm])
-      (rw [(bc-rest-comp-upd b _ (:creditor e) comp-dec-pending comp-dec-pending-id (fn [c :- CompRow] (Eq.refl (comp-active c))))]))))
+      (rw [(cascade-bound-rest-comp-upd b _ (:creditor e) comp-dec-pending comp-dec-pending-id (fn [c :- CompRow] (Eq.refl (comp-active c))))]))))
 
 ;; ---- generic count lemmas
 
@@ -353,30 +353,30 @@
 ;; Part C. The bundle under the primitive edits, and the copy of the composite lemmas
 ;; ===========================================================================
 
-(a/theorem bc-run-upd [bnd :- Bnd, w :- World, x :- Nat, f :- (=> RunRow RunRow),
+(a/theorem cascade-bound-run-upd [bnd :- Bound, w :- World, x :- Nat, f :- (=> RunRow RunRow),
                        hf :- (forall [r :- RunRow] (= (run-id (f r)) (run-id r))),
                        hal :- (forall [r :- RunRow] (= (run-alive (f r)) (run-alive r)))]
-  (=> (= (bc bnd w) true) (= (bc bnd (run-upd w x f)) true))
+  (=> (= (cascade-bound bnd w) true) (= (cascade-bound bnd (run-upd w x f)) true))
   (intro h)
-  (exact (bc-intro bnd _ (inv-run-upd w x f hf (bc-sample bnd w h))
-           (Eq.trans (bc-rest-run-upd bnd w x f hf hal) (bc-rest-of bnd w h)))))
+  (exact (cascade-bound-intro bnd _ (well-formed-run-upd w x f hf (cascade-bound-well-formed bnd w h))
+           (Eq.trans (cascade-bound-rest-run-upd bnd w x f hf hal) (cascade-bound-rest-of bnd w h)))))
 
-(a/theorem bc-act-upd [bnd :- Bnd, w :- World, x :- Nat, f :- (=> ActRow ActRow),
+(a/theorem cascade-bound-act-upd [bnd :- Bound, w :- World, x :- Nat, f :- (=> ActRow ActRow),
                        hf :- (forall [r :- ActRow] (= (act-id (f r)) (act-id r))),
                        hr :- (forall [c :- ActRow] (= (:run (f c)) (:run c)))]
-  (=> (= (bc bnd w) true) (= (bc bnd (act-upd w x f)) true))
+  (=> (= (cascade-bound bnd w) true) (= (cascade-bound bnd (act-upd w x f)) true))
   (intro h)
-  (exact (bc-intro bnd _ (inv-act-upd w x f hf (bc-sample bnd w h))
-           (Eq.trans (bc-rest-act-upd bnd w x f hr) (bc-rest-of bnd w h)))))
+  (exact (cascade-bound-intro bnd _ (well-formed-act-upd w x f hf (cascade-bound-well-formed bnd w h))
+           (Eq.trans (cascade-bound-rest-act-upd bnd w x f hr) (cascade-bound-rest-of bnd w h)))))
 
-(a/theorem bc-comp-upd [bnd :- Bnd, w :- World, x :- Nat, f :- (=> CompRow CompRow),
+(a/theorem cascade-bound-comp-upd [bnd :- Bound, w :- World, x :- Nat, f :- (=> CompRow CompRow),
                         hid :- (forall [c :- CompRow] (= (comp-id (f c)) (comp-id c))),
                         hp :- (forall [c :- CompRow] (= (:pending (f c)) (:pending c))),
                         hac :- (forall [c :- CompRow] (= (comp-active (f c)) (comp-active c)))]
-  (=> (= (bc bnd w) true) (= (bc bnd (comp-upd w x f)) true))
+  (=> (= (cascade-bound bnd w) true) (= (cascade-bound bnd (comp-upd w x f)) true))
   (intro h)
-  (exact (bc-intro bnd _ (inv-comp-upd w x f hid hp (bc-sample bnd w h))
-           (Eq.trans (bc-rest-comp-upd bnd w x f hid hac) (bc-rest-of bnd w h)))))
+  (exact (cascade-bound-intro bnd _ (well-formed-comp-upd w x f hid hp (cascade-bound-well-formed bnd w h))
+           (Eq.trans (cascade-bound-rest-comp-upd bnd w x f hid hac) (cascade-bound-rest-of bnd w h)))))
 
 (def ^:private casc-ns *ns*)
 
@@ -411,9 +411,9 @@
       (throw (ex-info (str "no source for theorem " nm) {:name nm}))))
 
 (defn- binder-names [binders] (vec (take-nth 3 binders)))
-(defn- inv-premise? [p] (and (seq? p) (= '= (first p)) (seq? (second p)) (= 'inv-sample (first (second p)))))
+(defn- inv-premise? [p] (and (seq? p) (= '= (first p)) (seq? (second p)) (= 'well-formed (first (second p)))))
 
-(def ^:private renames "inv-sample lemma -> its bundle version" (atom {}))
+(def ^:private renames "well-formed lemma -> its bundle version" (atom {}))
 (def bc-copied "the theorems checked by bc-copy!, in order" (atom []))
 
 ;; REPL iteration only: skip a generated theorem whose name is already in the env
@@ -426,8 +426,8 @@
        (catch Throwable t
          (throw (ex-info (str "casc: theorem " (second form) " failed: " (ex-message t)) {:form form} t)))))
 
-;; a primitive: the inv-sample lemma plus a bc-rest proof; `rest` is a form over the binder
-;; names, the premise names h0..hn and R = bc-rest of the input world; nil = rfl frame
+;; a primitive: the well-formed lemma plus a cascade-bound-rest proof; `rest` is a form over the binder
+;; names, the premise names h0..hn and R = cascade-bound-rest of the input world; nil = rfl frame
 (defn- prim-form [orig bcn rest-f]
   (let [[_ _ binders stmt] (theorem-source orig)
         prems (butlast (rest stmt))
@@ -437,14 +437,14 @@
         w (second (second (nth prems i)))
         w2 (second (second concl))
         hi (nth hs i)
-        args (concat (binder-names binders) (assoc hs i (list 'bc-sample 'bnd w hi)))
-        R (list 'bc-rest-of 'bnd w hi)
+        args (concat (binder-names binders) (assoc hs i (list 'cascade-bound-well-formed 'bnd w hi)))
+        R (list 'cascade-bound-rest-of 'bnd w hi)
         rest-term (if rest-f (walk/postwalk-replace {'R R} rest-f) (list 'Eq.trans 'e-frame R))
-        sub (fn [x] (walk/postwalk (fn [y] (if (and (seq? y) (= 'inv-sample (first y))) (list 'bc 'bnd (second y)) y)) x))]
+        sub (fn [x] (walk/postwalk (fn [y] (if (and (seq? y) (= 'well-formed (first y))) (list 'cascade-bound 'bnd (second y)) y)) x))]
     (concat
-     (list 'a/theorem bcn (into '[bnd :- Bnd] binders) (sub stmt) (cons 'intros hs))
-     (when-not rest-f [(list 'have 'e-frame (list '= (list 'bc-rest 'bnd w2) (list 'bc-rest 'bnd w))) '(rfl)])
-     [(list 'exact (list 'bc-intro 'bnd w2 (cons orig args) rest-term))])))
+     (list 'a/theorem bcn (into '[bnd :- Bound] binders) (sub stmt) (cons 'intros hs))
+     (when-not rest-f [(list 'have 'e-frame (list '= (list 'cascade-bound-rest 'bnd w2) (list 'cascade-bound-rest 'bnd w))) '(rfl)])
+     [(list 'exact (list 'cascade-bound-intro 'bnd w2 (cons orig args) rest-term))])))
 
 (defn- bc-prim! [orig bcn rest]
   (eval-theorem! (apply list (prim-form orig bcn rest)))
@@ -453,44 +453,43 @@
 (defmacro ^:private defbc-prims [& specs]
   `(do ~@(for [[orig bcn rest] (partition 3 specs)] `(bc-prim! '~orig '~bcn '~rest))))
 
-(swap! renames assoc 'inv-run-upd 'bc-run-upd 'inv-act-upd 'bc-act-upd 'inv-comp-upd 'bc-comp-upd
-       'inv-parts 'bc-parts)
+(swap! renames assoc 'well-formed-run-upd 'cascade-bound-run-upd 'well-formed-act-upd 'cascade-bound-act-upd 'well-formed-comp-upd 'cascade-bound-comp-upd
+       'well-formed-parts 'cascade-bound-parts)
 
 (defbc-prims
   ;; edits that touch neither runs, activations nor computations (rfl frame)
-  inv-scope-upd bc-scope-upd nil
-  inv-source-upd bc-source-upd nil
-  inv-task-upd bc-task-upd nil
-  inv-resource-upd bc-resource-upd nil
-  inv-cleanup-del bc-cleanup-del nil
-  inv-cleanup-ins bc-cleanup-ins nil
-  inv-edge-upd bc-edge-upd nil
-  inv-scope-del bc-scope-del nil
+  well-formed-scope-upd cascade-bound-scope-upd nil
+  well-formed-source-upd cascade-bound-source-upd nil
+  well-formed-task-upd cascade-bound-task-upd nil
+  well-formed-resource-upd cascade-bound-resource-upd nil
+  well-formed-cleanup-del cascade-bound-cleanup-del nil
+  well-formed-cleanup-ins cascade-bound-cleanup-ins nil
+  well-formed-edge-upd cascade-bound-edge-upd nil
+  well-formed-scope-del cascade-bound-scope-del nil
   ;; runs, activations, computations
-  inv-run-del bc-run-del (bc-rest-run-del bnd w x R)
-  inv-remove-edge bc-remove-edge (Eq.trans (bc-rest-remove-edge bnd w x) R)
-  inv-drop-cred bc-drop-cred (Eq.trans (bc-rest-drop-cred bnd w a) R)
-  inv-drop-act bc-drop-act (bc-rest-drop-act bnd w a R)
-  inv-drop-edges bc-drop-edges (Eq.trans (bc-rest-drop-edges bnd w p) R))
+  well-formed-run-del cascade-bound-run-del (cascade-bound-rest-run-del bnd w x R)
+  well-formed-remove-edge cascade-bound-remove-edge (Eq.trans (cascade-bound-rest-remove-edge bnd w x) R)
+  well-formed-drop-cred-edges cascade-bound-drop-cred-edges (Eq.trans (cascade-bound-rest-drop-cred bnd w a) R)
+  well-formed-drop-act cascade-bound-drop-act (cascade-bound-rest-drop-act bnd w a R)
+  well-formed-drop-edges cascade-bound-drop-edges (Eq.trans (cascade-bound-rest-drop-edges bnd w p) R))
 
 (defn- statement-mentions-inv? [form]
-  (let [[_ _ binders stmt] form] (boolean (some #{'inv-sample} (flatten (list (seq binders) stmt))))))
+  (let [[_ _ binders stmt] form] (boolean (some #{'well-formed} (flatten (list (seq binders) stmt))))))
 
 (defn- bc-name [sym]
   (let [s (name sym)]
-    (symbol (cond (str/starts-with? s "inv-") (str "bc-" (subs s 4))
-                  (str/ends-with? s "-inv") (str (subs s 0 (- (count s) 4)) "-bc")
-                  :else (str s "-bc")))))
+    (symbol (if (str/includes? s "well-formed") (str/replace-first s "well-formed" "cascade-bound")
+                  (str s "-cascade-bound")))))
 
-;; the row-function lemmas of the bundle take one more argument than their inv-sample versions
+;; the row-function lemmas of the bundle take one more argument than their well-formed versions
 (def ^:private extra-args
-  {'inv-comp-upd ['(fn [c :- CompRow] (Eq.refl (comp-active c))) 5]
-   'inv-run-upd ['(fn [r :- RunRow] (Eq.refl (run-alive r))) 4]
-   'inv-act-upd ['(fn [c :- ActRow] (Eq.refl (:run c))) 4]})
+  {'well-formed-comp-upd ['(fn [c :- CompRow] (Eq.refl (comp-active c))) 5]
+   'well-formed-run-upd ['(fn [r :- RunRow] (Eq.refl (run-alive r))) 4]
+   'well-formed-act-upd ['(fn [c :- ActRow] (Eq.refl (:run c))) 4]})
 
 (defn- bc-subst [x rn]
   (cond
-    (and (seq? x) (= 'inv-sample (first x))) (list 'bc 'bnd (bc-subst (second x) rn))
+    (and (seq? x) (= 'well-formed (first x))) (list 'cascade-bound 'bnd (bc-subst (second x) rn))
     (and (seq? x) (symbol? (first x)) (contains? rn (first x)))
     (let [h (first x)
           args (map #(bc-subst % rn) (rest x))
@@ -508,11 +507,11 @@
 
 (defn- bc-form [form bcn rn]
   (let [[head _ binders stmt & proof] form]
-    (apply list head bcn (into '[bnd :- Bnd] (bc-subst binders rn)) (bc-subst stmt rn)
+    (apply list head bcn (into '[bnd :- Bound] (bc-subst binders rn)) (bc-subst stmt rn)
            (map #(bc-subst % rn) proof))))
 
 (def ^:private bc-overrides
-  "Bundle proofs written by hand, keyed by the inv-sample lemma they replace" (atom {}))
+  "Bundle proofs written by hand, keyed by the well-formed lemma they replace" (atom {}))
 
 (defmacro ^:private defbc-override [orig deps form]
   `(swap! bc-overrides assoc '~orig {:deps '~deps :form '~form}))
@@ -531,7 +530,7 @@
         (filterv seen (map first thms))))))
 
 (defn bc-copy!
-  "Check the bundle version of every inv-sample lemma `root` depends on, in load order."
+  "Check the bundle version of every well-formed lemma `root` depends on, in load order."
   [root]
   (doseq [n (bc-closure root) :when (not (contains? @renames n))]
     (let [form (if-let [o (get @bc-overrides n)]
@@ -557,8 +556,8 @@
   (=> (= (acts-alive w) true) (List.Mem a (:acts w)) (= (act-run-ok (:runs w) a) true))
   (intros h hm) (simp only [acts-alive] at h) (exact (tbl-all-mem ActRow (act-run-ok (:runs w)) a (:acts w) h hm)))
 
-(a/theorem bc-acts-alive [bnd :- Bnd, w :- World] (=> (= (bc bnd w) true) (= (acts-alive w) true))
-  (intro h) (exact (And.left (bc-rest-parts bnd w (bc-rest-of bnd w h)))))
+(a/theorem cascade-bound-acts-alive [bnd :- Bound, w :- World] (=> (= (cascade-bound bnd w) true) (= (acts-alive w) true))
+  (intro h) (exact (And.left (cascade-bound-rest-parts bnd w (cascade-bound-rest-of bnd w h)))))
 
 (a/theorem count-revive [x :- Nat, f :- (=> RunRow RunRow),
                          hid :- (forall [r :- RunRow] (= (run-id (f r)) (run-id r))),
@@ -581,10 +580,10 @@
       (exact hp1)
       (simp only [tbl-upd hx tbl-count-cons ih2 (hal h) ha]))))
 
-(a/theorem bc-rest-revive [b :- Bnd, w :- World, x :- Nat, f :- (=> RunRow RunRow),
+(a/theorem cascade-bound-rest-revive [b :- Bound, w :- World, x :- Nat, f :- (=> RunRow RunRow),
                            hid :- (forall [r :- RunRow] (= (run-id (f r)) (run-id r))),
                            hal :- (forall [r :- RunRow] (= (run-alive (f r)) true))]
-  (=> (= (tbl-all (run-ok-for x) (:runs w)) true) (= (bc-rest b w) true) (= (bc-rest b (run-upd w x f)) true))
+  (=> (= (tbl-all (run-ok-for x) (:runs w)) true) (= (cascade-bound-rest b w) true) (= (cascade-bound-rest b (run-upd w x f)) true))
   (intros hx h)
   (have hin (forall [y :- Nat, r :- RunRow] (=> (= (run-ok-for y r) true) (= (Nat.beq (run-id r) x) true)
                                                 (= (run-ok-for y (f r)) true))))
@@ -605,7 +604,7 @@
   (have hr (<= (row-cnt (run-upd w x f)) (row-cnt w)))
   (simp only [row-cnt run-upd set-runs (tbl-count-upd-same RunRow run-id x f run-any (fn [r :- RunRow] (Eq.refl true)) (:runs w))])
   (exact (Nat.le_refl _))
-  (exact (bc-rest-mono b w (run-upd w x f) ha hl hr (rfl) h)))
+  (exact (cascade-bound-rest-mono b w (run-upd w x f) ha hl hr (rfl) h)))
 
 (a/theorem run-set-act-active-alive [r :- RunRow] (= (run-alive (run-set-act act-active r)) true) (rfl))
 
@@ -617,58 +616,58 @@
     (have e (= (:act r) act-parked)) (exact (Nat.eq_of_beq_eq_true h))
     (simp only [run-alive run-wake wake-act h e])))
 
-(defbc-override inv-resume [inv-drop-act]
-  (a/theorem bc-resume [bnd :- Bnd, w :- World, a :- ActRow]
-    (=> (= (act-run-ok (:runs w) a) true) (= (bc bnd w) true) (= (bc bnd (resume w a)) true))
+(defbc-override well-formed-resume [well-formed-drop-act]
+  (a/theorem cascade-bound-resume [bnd :- Bound, w :- World, a :- ActRow]
+    (=> (= (act-run-ok (:runs w) a) true) (= (cascade-bound bnd w) true) (= (cascade-bound bnd (resume w a)) true))
     (intros ha h)
-    (exact (bc-run-upd bnd _ (:run a) run-wake run-wake-run-id run-wake-alive (bc-drop-act bnd w (:id a) h)))))
+    (exact (cascade-bound-run-upd bnd _ (:run a) run-wake run-wake-run-id run-wake-alive (cascade-bound-drop-act bnd w (:id a) h)))))
 
-(defbc-override inv-fill-slot [inv-resume]
-  (a/theorem bc-fill-slot [bnd :- Bnd, w :- World, a :- ActRow, x :- Nat, v :- RunResult]
-    (=> (= (act-run-ok (:runs w) a) true) (= (bc bnd w) true) (= (bc bnd (fill-slot w a x v)) true))
+(defbc-override well-formed-fill-slot [well-formed-resume]
+  (a/theorem cascade-bound-fill-slot [bnd :- Bound, w :- World, a :- ActRow, x :- Nat, v :- RunResult]
+    (=> (= (act-run-ok (:runs w) a) true) (= (cascade-bound bnd w) true) (= (cascade-bound bnd (fill-slot w a x v)) true))
     (intros ha h)
     (cases hm (act-ready (act-fill x v a)))
     (simp only [fill-slot hm])
-    (exact (bc-act-upd bnd w (:id a) (act-fill x v) (act-fill-act-id x v) (fn [c :- ActRow] (Eq.refl (:run c))) h))
-    (simp only [fill-slot hm]) (exact (bc-resume bnd w a ha h))))
+    (exact (cascade-bound-act-upd bnd w (:id a) (act-fill x v) (act-fill-act-id x v) (fn [c :- ActRow] (Eq.refl (:run c))) h))
+    (simp only [fill-slot hm]) (exact (cascade-bound-resume bnd w a ha h))))
 
-(defbc-override inv-fire-dep [inv-invalidate inv-fill-slot inv-dep-consumed]
-  (a/theorem bc-fire-dep [bnd :- Bnd, w :- World, e :- EdgeRow]
-    (=> (= (bc bnd w) true) (= (bc bnd (fire-dep w e)) true))
+(defbc-override well-formed-fire-dep [well-formed-invalidate well-formed-fill-slot well-formed-dep-consumed]
+  (a/theorem cascade-bound-fire-dep [bnd :- Bound, w :- World, e :- EdgeRow]
+    (=> (= (cascade-bound bnd w) true) (= (cascade-bound bnd (fire-dep w e)) true))
     (intro h)
     (cases ha (act-with-member (:id e) (:acts w))) (case' [some a]) (case' [none])
-    (simp only [fire-dep ha]) (exact (bc-invalidate bnd w e h))
-    (have hok := (acts-alive-mem w a (bc-acts-alive bnd w h) (act-with-member-mem (:id e) (:acts w) a ha)))
+    (simp only [fire-dep ha]) (exact (cascade-bound-invalidate bnd w e h))
+    (have hok := (acts-alive-mem w a (cascade-bound-acts-alive bnd w h) (act-with-member-mem (:id e) (:acts w) a ha)))
     (cases hc (Bool.and (run-current-of w (:run a) (:creditor e)) (deb-avail w (:debtor e))))
-    (simp only [fire-dep ha hc]) (exact (bc-invalidate bnd w e h))
+    (simp only [fire-dep ha hc]) (exact (cascade-bound-invalidate bnd w e h))
     (simp only [fire-dep ha hc deliver-dep])
     (have hok2 (= (act-run-ok (:runs (dep-consumed w e)) a) true))
     (exact (Eq.trans (congrArg (fn [rs :- (List RunRow)] (act-run-ok rs a)) (dep-consumed-runs w e)) hok))
-    (exact (bc-fill-slot bnd _ a _ _ hok2 (bc-dep-consumed bnd w e h)))))
+    (exact (cascade-bound-fill-slot bnd _ a _ _ hok2 (cascade-bound-dep-consumed bnd w e h)))))
 
-(defbc-override inv-fire-wait-act [inv-edge-set-phase inv-fill-slot]
-  (a/theorem bc-fire-wait-act [bnd :- Bnd, res :- RunResult, w :- World, e :- EdgeRow]
-    (=> (= (bc bnd w) true) (= (bc bnd (fire-wait-act res w e)) true))
+(defbc-override well-formed-fire-wait-act [well-formed-edge-set-phase well-formed-fill-slot]
+  (a/theorem cascade-bound-fire-wait-act [bnd :- Bound, res :- RunResult, w :- World, e :- EdgeRow]
+    (=> (= (cascade-bound bnd w) true) (= (cascade-bound bnd (fire-wait-act res w e)) true))
     (intro h)
     (cases ha (act-find w (:creditor e))) (case' [some a]) (case' [none])
-    (simp only [fire-wait-act ha]) (exact (bc-edge-set-phase bnd w (:id e) ph-fired h))
-    (have hok := (acts-alive-mem w a (bc-acts-alive bnd w h) (tbl-find-mem ActRow act-id (:creditor e) a (:acts w) ha)))
+    (simp only [fire-wait-act ha]) (exact (cascade-bound-edge-set-phase bnd w (:id e) ph-fired h))
+    (have hok := (acts-alive-mem w a (cascade-bound-acts-alive bnd w h) (tbl-find-mem ActRow act-id (:creditor e) a (:acts w) ha)))
     (cases hc (run-current w (:run a)))
-    (simp only [fire-wait-act ha hc]) (exact (bc-edge-set-phase bnd w (:id e) ph-fired h))
+    (simp only [fire-wait-act ha hc]) (exact (cascade-bound-edge-set-phase bnd w (:id e) ph-fired h))
     (have hok2 (= (act-run-ok (:runs (edge-upd w (:id e) (edge-set-phase ph-fired))) a) true)) (exact hok)
-    (simp only [fire-wait-act ha hc]) (exact (bc-fill-slot bnd _ a _ _ hok2 (bc-edge-set-phase bnd w (:id e) ph-fired h)))))
+    (simp only [fire-wait-act ha hc]) (exact (cascade-bound-fill-slot bnd _ a _ _ hok2 (cascade-bound-edge-set-phase bnd w (:id e) ph-fired h)))))
 
-(bc-copy! 'inv-fire-edge)
+(bc-copy! 'well-formed-fire-edge)
 
 ;; ---- T14's local part: the run is done and its activations are gone
 
-(a/theorem bc-weaken [b :- Bnd, b2 :- Bnd, w :- World]
-  (=> (= (bc b w) true) (<= (:alive b) (:alive b2)) (<= (:rows b) (:rows b2)) (= (:active b) (:active b2))
-      (= (bc b2 w) true))
+(a/theorem cascade-bound-weaken [b :- Bound, b2 :- Bound, w :- World]
+  (=> (= (cascade-bound b w) true) (<= (:alive b) (:alive b2)) (<= (:rows b) (:rows b2)) (= (:active b) (:active b2))
+      (= (cascade-bound b2 w) true))
   (intros h h1 h2 h3)
-  (have p := (bc-rest-parts b w (bc-rest-of b w h)))
-  (exact (bc-intro b2 w (bc-sample b w h)
-           (bc-rest-intro b2 w (And.left p) (Nat.le_trans (And.left (And.right p)) h1)
+  (have p := (cascade-bound-rest-parts b w (cascade-bound-rest-of b w h)))
+  (exact (cascade-bound-intro b2 w (cascade-bound-well-formed b w h)
+           (cascade-bound-rest-intro b2 w (And.left p) (Nat.le_trans (And.left (And.right p)) h1)
              (Nat.le_trans (And.left (And.right (And.right p))) h2) (Eq.trans (And.right (And.right (And.right p))) h3)))))
 
 (a/defn runs-of [w :- World] (List RunRow) (:runs w))
@@ -782,9 +781,9 @@
   (case [false] (simp only [act-covered-run hk] at h) (exact h))
   (case [true] (simp [act-covered-run hk reach-mem] at h)))
 
-(a/theorem cancel-acts-bc [w :- World, x :- Nat]
-  (=> (= (inv-sample w) true) (= (acts-alive w) true)
-      (= (bc (Bnd.mk (alive-cnt (run-upd w x run-cancel-row)) (row-cnt w) (active-ids w))
+(a/theorem cancel-acts-cascade-bound [w :- World, x :- Nat]
+  (=> (= (well-formed w) true) (= (acts-alive w) true)
+      (= (cascade-bound (Bound.mk (alive-cnt (run-upd w x run-cancel-row)) (row-cnt w) (active-ids w))
              (cancel-acts (run-upd w x run-cancel-row) x)) true))
   (intros h ha)
   (have hrun (= (runs-of (cancel-acts (run-upd w x run-cancel-row) x)) (runs-of (run-upd w x run-cancel-row))))
@@ -806,10 +805,10 @@
   (simp only [row-cnt hrun run-upd set-runs (tbl-count-upd-same RunRow run-id x run-cancel-row run-any (fn [r :- RunRow] (Eq.refl true)) (:runs w))])
   (exact (Nat.le_refl _))
   (have hact2 (= (active-ids (cancel-acts (run-upd w x run-cancel-row) x)) (active-ids w))) (exact hact)
-  (exact (bc-intro (Bnd.mk (alive-cnt (run-upd w x run-cancel-row)) (row-cnt w) (active-ids w))
+  (exact (cascade-bound-intro (Bound.mk (alive-cnt (run-upd w x run-cancel-row)) (row-cnt w) (active-ids w))
            (cancel-acts (run-upd w x run-cancel-row) x)
-           (inv-cancel-acts (run-upd w x run-cancel-row) x (inv-run-upd w x run-cancel-row run-cancel-row-id h))
-           (bc-rest-intro (Bnd.mk (alive-cnt (run-upd w x run-cancel-row)) (row-cnt w) (active-ids w))
+           (well-formed-cancel-acts (run-upd w x run-cancel-row) x (well-formed-run-upd w x run-cancel-row run-cancel-row-id h))
+           (cascade-bound-rest-intro (Bound.mk (alive-cnt (run-upd w x run-cancel-row)) (row-cnt w) (active-ids w))
              (cancel-acts (run-upd w x run-cancel-row) x) h1 h2 h3 hact2))))
 
 (a/theorem run-cancel-row-alive [r :- RunRow] (= (run-alive (run-cancel-row r)) false) (rfl))
@@ -826,104 +825,104 @@
   (simp only [alive-cnt run-upd set-runs])
   (exact (count-upd-false-lt RunRow run-id x run-cancel-row run-alive run-cancel-row-alive r (:runs w) hf ha)))
 
-(bc-copy! 'inv-cancel-debtor)
-(bc-copy! 'inv-cleanup-set)
-(bc-copy! 'inv-cancel-res)
+(bc-copy! 'well-formed-cancel-debtor)
+(bc-copy! 'well-formed-cleanup-set)
+(bc-copy! 'well-formed-cancel-res)
 
-(a/theorem bc-cancel-tail [bnd :- Bnd, w :- World, r :- RunRow, rep :- Bool]
-  (=> (= (bc bnd (cancel-acts (run-upd w (:id r) run-cancel-row) (:id r))) true)
-      (= (bc bnd (cancel-run-local w r rep)) true))
+(a/theorem cascade-bound-cancel-tail [bnd :- Bound, w :- World, r :- RunRow, rep :- Bool]
+  (=> (= (cascade-bound bnd (cancel-acts (run-upd w (:id r) run-cancel-row) (:id r))) true)
+      (= (cascade-bound bnd (cancel-run-local w r rep)) true))
   (intro h)
   (simp only [cancel-run-local])
-  (exact (bc-cancel-debtor bnd rep _ r (bc-cleanup-set bnd _ (:id r) _ (bc-cancel-res bnd _ r h)))))
+  (exact (cascade-bound-cancel-debtor bnd rep _ r (cascade-bound-cleanup-set bnd _ (:id r) _ (cascade-bound-cancel-res bnd _ r h)))))
 
-(defbc-override inv-cancel-run-local [inv-cancel-debtor inv-cleanup-set inv-cancel-res]
-  (a/theorem bc-cancel-run-local [bnd :- Bnd, w :- World, r :- RunRow, rep :- Bool]
-    (=> (= (bc bnd w) true) (= (bc bnd (cancel-run-local w r rep)) true))
+(defbc-override well-formed-cancel-run-local [well-formed-cancel-debtor well-formed-cleanup-set well-formed-cancel-res]
+  (a/theorem cascade-bound-cancel-run-local [bnd :- Bound, w :- World, r :- RunRow, rep :- Bool]
+    (=> (= (cascade-bound bnd w) true) (= (cascade-bound bnd (cancel-run-local w r rep)) true))
     (intro h)
-    (have p := (bc-rest-parts bnd w (bc-rest-of bnd w h)))
-    (have h1 := (cancel-acts-bc w (:id r) (bc-sample bnd w h) (And.left p)))
-    (exact (bc-cancel-tail bnd w r rep
-             (bc-weaken _ bnd _ h1 (Nat.le_trans (alive-cancel-le w (:id r)) (And.left (And.right p)))
+    (have p := (cascade-bound-rest-parts bnd w (cascade-bound-rest-of bnd w h)))
+    (have h1 := (cancel-acts-cascade-bound w (:id r) (cascade-bound-well-formed bnd w h) (And.left p)))
+    (exact (cascade-bound-cancel-tail bnd w r rep
+             (cascade-bound-weaken _ bnd _ h1 (Nat.le_trans (alive-cancel-le w (:id r)) (And.left (And.right p)))
                (And.left (And.right (And.right p))) (And.right (And.right (And.right p))))))))
 
-(bc-copy! 'inv-run-cascade)
+(bc-copy! 'well-formed-run-cascade)
 
 ;; ===========================================================================
-;; Part D. P4: the cascade empties its worklist within casc-fuel
+;; Part D. P4: the cascade empties its worklist within cascade-fuel
 ;; ===========================================================================
 
 ;; ---- an acting cancel lowers #alive runs, an acting retire lowers #run rows
 
 (a/theorem cancel-alive-lt [w :- World, rid :- Nat, r :- RunRow, rep :- Bool]
-  (=> (= (inv-sample w) true) (= (acts-alive w) true) (= (run-find w rid) (Option.some RunRow r))
+  (=> (= (well-formed w) true) (= (acts-alive w) true) (= (run-find w rid) (Option.some RunRow r))
       (= (run-alive r) true)
       (<= (+ (alive-cnt (cancel-run-local w r rep)) 1) (alive-cnt w)))
   (intros h ha hf hr)
   (have e (= (run-id r) rid)) (exact (tbl-find-id RunRow run-id rid r (:runs w) hf))
   (have e2 (= (:id r) rid)) (exact e)
   (have hf2 (= (run-find w (:id r)) (Option.some RunRow r))) (rw [e2]) (exact hf)
-  (have h1 := (bc-cancel-tail _ w r rep (cancel-acts-bc w (:id r) h ha)))
-  (have p := (bc-rest-parts _ _ (bc-rest-of _ _ h1)))
+  (have h1 := (cascade-bound-cancel-tail _ w r rep (cancel-acts-cascade-bound w (:id r) h ha)))
+  (have p := (cascade-bound-rest-parts _ _ (cascade-bound-rest-of _ _ h1)))
   (have l1 (<= (alive-cnt (cancel-run-local w r rep)) (alive-cnt (run-upd w (:id r) run-cancel-row))))
   (exact (And.left (And.right p)))
   (have l2 := (alive-cancel-lt w (:id r) r hf2 hr))
   (omega))
 
-(a/theorem fin-loop-runs [fuel :- (List Nat)]
-  (forall [w :- World, ds :- (List Nat)] (= (runs-of (:world (fin-loop fuel w ds))) (runs-of w)))
+(a/theorem finalize-loop-runs [fuel :- (List Nat)]
+  (forall [w :- World, ds :- (List Nat)] (= (runs-of (:world (finalize-loop fuel w ds))) (runs-of w)))
   (induction fuel)
-  (case [nil] (intros w ds) (simp only [fin-loop]))
+  (case [nil] (intros w ds) (simp only [finalize-loop]))
   (case [cons h f ih]
     (intros w ds)
     (cases ds)
-    (simp only [fin-loop])
+    (simp only [finalize-loop])
     (rename_i d t)
-    (simp only [fin-loop])
+    (simp only [finalize-loop])
     (exact (ih _ _))))
 
 ;; Z#53: closing a source wakes its waiters (T9 fills resume parked runs), so the run rows change
 ;; (act parked -> active) but keep their ids
 (a/defn run-ids [w :- World] (List Nat) (tbl-ids run-id (:runs w)))
-(a/theorem ri-run-upd [w :- World, x :- Nat, f :- (=> RunRow RunRow),
+(a/theorem round-facts-run-upd [w :- World, x :- Nat, f :- (=> RunRow RunRow),
                        hf :- (forall [r :- RunRow] (= (run-id (f r)) (run-id r)))]
   (= (run-ids (run-upd w x f)) (run-ids w))
   (exact (tbl-ids-upd RunRow run-id x f hf (:runs w))))
-(a/theorem ri-resume [w :- World, a :- ActRow] (= (run-ids (resume w a)) (run-ids w))
+(a/theorem round-facts-resume [w :- World, a :- ActRow] (= (run-ids (resume w a)) (run-ids w))
   (simp only [resume])
-  (exact (ri-run-upd _ (:run a) run-wake (fn [r :- RunRow] (Eq.refl (run-id r))))))
-(a/theorem ri-fill-slot [w :- World, a :- ActRow, y :- Nat, v :- RunResult]
+  (exact (round-facts-run-upd _ (:run a) run-wake (fn [r :- RunRow] (Eq.refl (run-id r))))))
+(a/theorem round-facts-fill-slot [w :- World, a :- ActRow, y :- Nat, v :- RunResult]
   (= (run-ids (fill-slot w a y v)) (run-ids w))
   (cases hm (act-ready (act-fill y v a)))
   (simp only [fill-slot hm])
-  (simp only [fill-slot hm]) (exact (ri-resume w a)))
-(a/theorem ri-remove-edge [w :- World, y :- Nat] (= (run-ids (remove-edge w y)) (run-ids w))
+  (simp only [fill-slot hm]) (exact (round-facts-resume w a)))
+(a/theorem round-facts-remove-edge [w :- World, y :- Nat] (= (run-ids (remove-edge w y)) (run-ids w))
   (cases hf (edge-find w y)) (case' [some e]) (case' [none])
   (simp only [remove-edge hf])
   (cases hm (:marked e))
   (all_goals (simp only [remove-edge hf hm])))
-(a/theorem ri-dep-consumed [w :- World, e :- EdgeRow] (= (run-ids (dep-consumed w e)) (run-ids w))
+(a/theorem round-facts-dep-consumed [w :- World, e :- EdgeRow] (= (run-ids (dep-consumed w e)) (run-ids w))
   (cases hf (deb-final w (:debtor e)))
   (simp only [dep-consumed hf])
-  (simp only [dep-consumed hf]) (exact (ri-remove-edge w (:id e))))
-(a/theorem ri-fire-dep [w :- World, e :- EdgeRow] (= (run-ids (fire-dep w e)) (run-ids w))
+  (simp only [dep-consumed hf]) (exact (round-facts-remove-edge w (:id e))))
+(a/theorem round-facts-fire-dep [w :- World, e :- EdgeRow] (= (run-ids (fire-dep w e)) (run-ids w))
   (cases ha (act-with-member (:id e) (:acts w))) (case' [some a]) (case' [none])
   (simp only [fire-dep ha invalidate])
   (cases hc (Bool.and (run-current-of w (:run a) (:creditor e)) (deb-avail w (:debtor e))))
   (simp only [fire-dep ha hc invalidate])
   (simp only [fire-dep ha hc deliver-dep])
-  (exact (Eq.trans (ri-fill-slot _ a _ _) (ri-dep-consumed w e))))
-(a/theorem ri-fire-wait [res :- RunResult, w :- World, e :- EdgeRow] (= (run-ids (fire-wait res w e)) (run-ids w))
+  (exact (Eq.trans (round-facts-fill-slot _ a _ _) (round-facts-dep-consumed w e))))
+(a/theorem round-facts-fire-wait [res :- RunResult, w :- World, e :- EdgeRow] (= (run-ids (fire-wait res w e)) (run-ids w))
   (cases hc (Nat.beq (:creditor e) 0))
-  (case [true] (simp only [fire-wait hc]) (exact (ri-remove-edge w (:id e))))
+  (case [true] (simp only [fire-wait hc]) (exact (round-facts-remove-edge w (:id e))))
   (case [false]
     (simp only [fire-wait hc])
     (cases ha (act-find w (:creditor e))) (case' [some a]) (case' [none])
     (simp only [fire-wait-act ha])
     (cases hr (run-current w (:run a)))
     (simp only [fire-wait-act ha hr])
-    (simp only [fire-wait-act ha hr]) (exact (ri-fill-slot _ a _ _))))
-(a/theorem ri-fire-edge [res :- RunResult, w :- World, y :- Nat] (= (run-ids (fire-edge res w y)) (run-ids w))
+    (simp only [fire-wait-act ha hr]) (exact (round-facts-fill-slot _ a _ _))))
+(a/theorem round-facts-fire-edge [res :- RunResult, w :- World, y :- Nat] (= (run-ids (fire-edge res w y)) (run-ids w))
   (cases hf (edge-find w y)) (case' [some e]) (case' [none])
   (simp only [fire-edge hf])
   (cases hp (Nat.beq (:phase e) ph-armed))
@@ -935,34 +934,34 @@
   (cases ho (observe-new e (deb-version w (:debtor e))))
   (simp only [fire-edge hf hp hk1 hk2 hk3 fire-observe ho])
   (simp only [fire-edge hf hp hk1 hk2 hk3 fire-observe ho])
-  (simp only [fire-edge hf hp hk1 hk2]) (exact (ri-fire-wait res w e))
-  (simp only [fire-edge hf hp hk1]) (exact (ri-fire-dep w e)))
-(a/theorem ri-finalize-debtor [w :- World, d :- Nat] (= (run-ids (finalize-debtor w d)) (run-ids w))
-  (simp only [finalize-debtor])
-  (have e1 := (fin-loop-runs (fin-fuel w) w (List.cons Nat d (List.nil Nat))))
+  (simp only [fire-edge hf hp hk1 hk2]) (exact (round-facts-fire-wait res w e))
+  (simp only [fire-edge hf hp hk1]) (exact (round-facts-fire-dep w e)))
+(a/theorem round-facts-t10-finalize-debtor [w :- World, d :- Nat] (= (run-ids (t10-finalize-debtor w d)) (run-ids w))
+  (simp only [t10-finalize-debtor])
+  (have e1 := (finalize-loop-runs (finalize-fuel w) w (List.cons Nat d (List.nil Nat))))
   (simp only [runs-of] at e1)
   (simp only [run-ids e1]))
-(a/theorem ri-source-upd [w :- World, x :- Nat, f :- (=> SourceRow SourceRow)] (= (run-ids (source-upd w x f)) (run-ids w)) (rfl))
-(a/theorem ri-deliver-res [w :- World, x :- Nat, v :- Nat, res :- RunResult] (= (run-ids (deliver-res w x v res)) (run-ids w))
+(a/theorem round-facts-source-upd [w :- World, x :- Nat, f :- (=> SourceRow SourceRow)] (= (run-ids (source-upd w x f)) (run-ids w)) (rfl))
+(a/theorem round-facts-deliver-res [w :- World, x :- Nat, v :- Nat, res :- RunResult] (= (run-ids (deliver-res w x v res)) (run-ids w))
   (simp only [deliver-res])
-  (exact (Eq.trans (ri-finalize-debtor _ x)
-           (Eq.trans (nat-fold-frame (List Nat) run-ids (fire-edge res) (ri-fire-edge res) _ _)
-             (Eq.trans (nat-fold-frame (List Nat) run-ids (fire-edge res) (ri-fire-edge res) _ _) (ri-source-upd w x _))))))
-(a/theorem ri-realize-link [w :- World, x :- Nat, v :- Nat, fl :- Bool, n :- Nat] (= (run-ids (realize-link w x v fl n)) (run-ids w))
-  (simp only [realize-link]) (exact (Eq.trans (ri-deliver-res _ x v _) (ri-source-upd w x _))))
-(a/theorem ri-end-link [w :- World, x :- Nat, fl :- Bool, v :- Nat] (= (run-ids (end-link w x fl v)) (run-ids w))
+  (exact (Eq.trans (round-facts-t10-finalize-debtor _ x)
+           (Eq.trans (nat-fold-frame (List Nat) run-ids (fire-edge res) (round-facts-fire-edge res) _ _)
+             (Eq.trans (nat-fold-frame (List Nat) run-ids (fire-edge res) (round-facts-fire-edge res) _ _) (round-facts-source-upd w x _))))))
+(a/theorem round-facts-realize-link [w :- World, x :- Nat, v :- Nat, fl :- Bool, n :- Nat] (= (run-ids (realize-link w x v fl n)) (run-ids w))
+  (simp only [realize-link]) (exact (Eq.trans (round-facts-deliver-res _ x v _) (round-facts-source-upd w x _))))
+(a/theorem round-facts-end-link [w :- World, x :- Nat, fl :- Bool, v :- Nat] (= (run-ids (end-link w x fl v)) (run-ids w))
   (cases hp (link-pending w x))
   (simp only [end-link hp])
-  (simp only [end-link hp]) (exact (ri-realize-link w x _ fl 0)))
-(a/theorem ri-end-stream [w :- World, x :- Nat] (= (run-ids (end-stream w x)) (run-ids w))
+  (simp only [end-link hp]) (exact (round-facts-realize-link w x _ fl 0)))
+(a/theorem round-facts-end-stream [w :- World, x :- Nat] (= (run-ids (end-stream w x)) (run-ids w))
   (cases hf (source-find w x)) (case' [some s]) (case' [none])
   (simp only [end-stream hf])
   (cases hk (Nat.beq (:kind s) sk-stream))
   (simp only [end-stream hf hk])
-  (simp only [end-stream hf hk]) (exact (ri-end-link w _ false 0)))
-(a/theorem ri-close-source0 [w :- World, x :- Nat] (= (run-ids (close-source0 w x)) (run-ids w))
-  (simp only [close-source0 finalize-debtor wake-closed])
-  (have e1 := (fin-loop-runs (fin-fuel (nat-fold (fire-edge (deb-result (source-upd w x source-close-row) x)) (source-upd w x source-close-row)
+  (simp only [end-stream hf hk]) (exact (round-facts-end-link w _ false 0)))
+(a/theorem round-facts-close-source-ended [w :- World, x :- Nat] (= (run-ids (close-source-ended w x)) (run-ids w))
+  (simp only [close-source-ended t10-finalize-debtor wake-closed])
+  (have e1 := (finalize-loop-runs (finalize-fuel (nat-fold (fire-edge (deb-result (source-upd w x source-close-row) x)) (source-upd w x source-close-row)
                                              (tbl-scan edge-id (close-wakes (:acts (source-upd w x source-close-row)) x) (:edges (source-upd w x source-close-row)))))
                              (nat-fold (fire-edge (deb-result (source-upd w x source-close-row) x)) (source-upd w x source-close-row)
                                (tbl-scan edge-id (close-wakes (:acts (source-upd w x source-close-row)) x) (:edges (source-upd w x source-close-row))))
@@ -970,17 +969,17 @@
   (simp only [runs-of] at e1)
   (simp only [run-ids e1])
   (exact (nat-fold-frame (List Nat) run-ids (fire-edge (deb-result (source-upd w x source-close-row) x))
-           (ri-fire-edge (deb-result (source-upd w x source-close-row) x)) _ _)))
-(a/theorem ri-close-source [w :- World, x :- Nat] (= (run-ids (close-source w x)) (run-ids w))
-  (simp only [close-source]) (exact (Eq.trans (ri-close-source0 _ x) (ri-end-stream w x))))
+           (round-facts-fire-edge (deb-result (source-upd w x source-close-row) x)) _ _)))
+(a/theorem round-facts-close-source [w :- World, x :- Nat] (= (run-ids (close-source w x)) (run-ids w))
+  (simp only [close-source]) (exact (Eq.trans (round-facts-close-source-ended _ x) (round-facts-end-stream w x))))
 (a/theorem close-scope-id-runs [w :- World, x :- Nat] (= (runs-of (close-scope-id w x)) (runs-of w)) (rfl))
 (a/theorem scope-del-runs [w :- World, x :- Nat] (= (runs-of (scope-del w x)) (runs-of w)) (rfl))
-(a/theorem ri-close-scope-id [w :- World, x :- Nat] (= (run-ids (close-scope-id w x)) (run-ids w)) (rfl))
+(a/theorem round-facts-close-scope-id [w :- World, x :- Nat] (= (run-ids (close-scope-id w x)) (run-ids w)) (rfl))
 
-(a/theorem ri-close-local [w :- World, sub :- (List Nat)] (= (run-ids (close-local w sub)) (run-ids w))
+(a/theorem round-facts-close-local [w :- World, sub :- (List Nat)] (= (run-ids (close-local w sub)) (run-ids w))
   (simp only [close-local])
-  (exact (Eq.trans (nat-fold-frame (List Nat) run-ids close-source ri-close-source _ _)
-                   (nat-fold-frame (List Nat) run-ids close-scope-id ri-close-scope-id _ _))))
+  (exact (Eq.trans (nat-fold-frame (List Nat) run-ids close-source round-facts-close-source _ _)
+                   (nat-fold-frame (List Nat) run-ids close-scope-id round-facts-close-scope-id _ _))))
 
 ;; a table with the same ids has the same row count; deleting a present id lowers it
 (a/theorem count-any-ids [xs :- (List RunRow)] (= (tbl-count run-any xs) (List.length (tbl-ids run-id xs)))
@@ -1031,18 +1030,18 @@
 
 (a/theorem retire-rows-lt [w :- World, rid :- Nat, r :- RunRow]
   (=> (= (run-find w rid) (Option.some RunRow r))
-      (<= (+ (row-cnt (retire-local w r)) 1) (row-cnt w)))
+      (<= (+ (row-cnt (retire-run w r)) 1) (row-cnt w)))
   (intro hf)
   (have e (= (run-id r) rid)) (exact (tbl-find-id RunRow run-id rid r (:runs w) hf))
   (have e2 (= (:id r) rid)) (exact e)
-  (have hr (= (runs-of (retire-local w r))
+  (have hr (= (runs-of (retire-run w r))
               (tbl-del run-id (:id r) (runs-of (close-local (clear-comp-run w r) (scope-subtree w (:scope r)))))))
-  (simp only [retire-local retire-with])
+  (simp only [retire-run t13-retire-with-subtree])
   (exact (remove-if-empty-runs _ _))
   (have hi (= (run-ids (close-local (clear-comp-run w r) (scope-subtree w (:scope r)))) (run-ids w)))
   (have hc (= (run-ids (clear-comp-run w r)) (run-ids w)))
   (exact (congrArg (tbl-ids run-id) (clear-comp-run-runs w r)))
-  (exact (Eq.trans (ri-close-local _ _) hc))
+  (exact (Eq.trans (round-facts-close-local _ _) hc))
   (simp only [runs-of] at hr)
   (simp only [run-ids] at hi)
   (have hf2 (= (tbl-find run-id (:id r) (:runs w)) (Option.some RunRow r))) (rw [e2]) (exact hf)
@@ -1059,7 +1058,7 @@
 (a/defn job-wt [n :- Nat, j :- Job] Nat (match j [(jcancel r rep) 1] [(jretire r) 1] [(jclose s) (+ n 1)]))
 (a/defn jobs-wt [n :- Nat, js :- (List Job)] Nat (match js [nil 0] [(cons h t) (+ (job-wt n h) (jobs-wt n t))]))
 ;; the potential: |jobs| + n #jclose + (n+1) #alive runs + n #run rows
-(a/defn casc-pot [n :- Nat, w :- World, js :- (List Job)] Nat
+(a/defn cascade-pot [n :- Nat, w :- World, js :- (List Job)] Nat
   (+ (jobs-wt n js) (+ (* (+ n 1) (alive-cnt w)) (* n (row-cnt w)))))
 
 (a/theorem jobs-wt-append [n :- Nat, xs :- (List Job), ys :- (List Job)]
@@ -1101,15 +1100,15 @@
 
 ;; ---- one pop lowers the potential by at least 1 (n bounds the run rows)
 
-(a/theorem bc-of-job [w :- World, j :- Job]
-  (=> (= (inv-sample w) true) (= (acts-alive w) true)
-      (And (= (inv-sample (job-apply w j)) true)
+(a/theorem cascade-bound-of-job [w :- World, j :- Job]
+  (=> (= (well-formed w) true) (= (acts-alive w) true)
+      (And (= (well-formed (job-apply w j)) true)
            (And (= (acts-alive (job-apply w j)) true)
                 (And (<= (alive-cnt (job-apply w j)) (alive-cnt w)) (<= (row-cnt (job-apply w j)) (row-cnt w))))))
   (intros h ha)
-  (have h1 := (bc-job-apply (bnd-of w) w j (bc-of-bnd w h ha)))
-  (have p := (bc-rest-parts _ _ (bc-rest-of _ _ h1)))
-  (exact (And.intro (bc-sample _ _ h1) (And.intro (And.left p) (And.intro (And.left (And.right p)) (And.left (And.right (And.right p))))))))
+  (have h1 := (cascade-bound-job-apply (bound-of w) w j (cascade-bound-of-bnd w h ha)))
+  (have p := (cascade-bound-rest-parts _ _ (cascade-bound-rest-of _ _ h1)))
+  (exact (And.intro (cascade-bound-well-formed _ _ h1) (And.intro (And.left p) (And.intro (And.left (And.right p)) (And.left (And.right (And.right p))))))))
 
 (a/theorem mul-lt-step [n :- Nat, a :- Nat, b :- Nat]
   (=> (<= (+ b 1) a) (<= (+ (* (+ n 1) b) (+ n 1)) (* (+ n 1) a)))
@@ -1118,17 +1117,17 @@
   (rw [Nat.mul_add Nat.mul_one] at h2)
   (exact h2))
 
-(a/theorem casc-step-pot [n :- Nat, w :- World, j :- Job, t :- (List Job)]
-  (=> (= (inv-sample w) true) (= (acts-alive w) true) (<= (row-cnt w) n)
-      (<= (+ (casc-pot n (job-apply w j) (List.append Job t (job-next w j))) 1) (casc-pot n w (List.cons Job j t))))
+(a/theorem cascade-step-pot [n :- Nat, w :- World, j :- Job, t :- (List Job)]
+  (=> (= (well-formed w) true) (= (acts-alive w) true) (<= (row-cnt w) n)
+      (<= (+ (cascade-pot n (job-apply w j) (List.append Job t (job-next w j))) 1) (cascade-pot n w (List.cons Job j t))))
   (intros h ha hn)
-  (have p := (bc-of-job w j h ha))
+  (have p := (cascade-bound-of-job w j h ha))
   (have la (<= (alive-cnt (job-apply w j)) (alive-cnt w))) (exact (And.left (And.right (And.right p))))
   (have lr (<= (row-cnt (job-apply w j)) (row-cnt w))) (exact (And.right (And.right (And.right p))))
   (have ma := (Nat.mul_le_mul_left (+ n 1) la))
   (have mr := (Nat.mul_le_mul_left n lr))
   (have ar := (alive-le-rows w))
-  (simp only [casc-pot jobs-wt jobs-wt-append])
+  (simp only [cascade-pot jobs-wt jobs-wt-append])
   (cases j)
   ;; jcancel
   (case [jcancel rid rep]
@@ -1156,7 +1155,7 @@
         (have lt := (retire-rows-lt w rid r hf))
         (have m1 := (Nat.mul_le_mul_left n lt))
         (rw [Nat.mul_add Nat.mul_one] at m1)
-        (have m2 (<= (* (+ n 1) (alive-cnt (retire-local w r))) (* (+ n 1) (alive-cnt w))))
+        (have m2 (<= (* (+ n 1) (alive-cnt (retire-run w r))) (* (+ n 1) (alive-cnt w))))
         (simp only [job-apply hf hl] at ma) (exact ma)
         (have ow := (owned-runs-le w (scope-subtree w (:scope r))))
         (simp only [job-next hf hl job-apply job-wt jobs-wt-cancel])
@@ -1173,10 +1172,10 @@
 
 ;; ---- the induction over the fuel
 
-(a/theorem casc-empties [n :- Nat, fuel :- (List Nat)]
+(a/theorem cascade-empties [n :- Nat, fuel :- (List Nat)]
   (forall [w :- World, js :- (List Job)]
-    (=> (= (inv-sample w) true) (= (acts-alive w) true) (<= (row-cnt w) n)
-        (< (casc-pot n w js) (List.length fuel))
+    (=> (= (well-formed w) true) (= (acts-alive w) true) (<= (row-cnt w) n)
+        (< (cascade-pot n w js) (List.length fuel))
         (= (jobs-empty (:rest (cascade fuel w js))) true)))
   (induction fuel)
   (case [nil] (intros w js h ha hn hp) (simp only [List.length] at hp) (omega))
@@ -1185,16 +1184,16 @@
     (cases js)
     (case [nil] (simp [cascade jobs-empty]))
     (case [cons j t]
-      (have p := (bc-of-job w j h ha))
-      (have st := (casc-step-pot n w j t h ha hn))
+      (have p := (cascade-bound-of-job w j h ha))
+      (have st := (cascade-step-pot n w j t h ha hn))
       (have hn2 (<= (row-cnt (job-apply w j)) n))
       (exact (Nat.le_trans (And.right (And.right (And.right p))) hn))
-      (have hp2 (< (casc-pot n (job-apply w j) (List.append Job t (job-next w j))) (List.length f)))
+      (have hp2 (< (cascade-pot n (job-apply w j) (List.append Job t (job-next w j))) (List.length f)))
       (simp only [List.length] at hp) (omega)
       (simp only [cascade])
       (exact (ih (job-apply w j) (List.append Job t (job-next w j)) (And.left p) (And.left (And.right p)) hn2 hp2)))))
 
-;; ---- casc-fuel is above the initial potential (n = #run rows)
+;; ---- cascade-fuel is above the initial potential (n = #run rows)
 
 (a/theorem rep-list-length [xs :- (List Nat), u :- (List Nat)]
   (= (List.length (rep-list xs u)) (* (List.length xs) (List.length u)))
@@ -1223,40 +1222,40 @@
     (simp only [jobs-wt List.length Nat.add_mul Nat.one_mul])
     (omega)))
 
-(a/theorem casc-fuel-above [w :- World, js :- (List Job)]
-  (< (casc-pot (row-cnt w) w js) (List.length (casc-fuel w js)))
+(a/theorem cascade-fuel-above [w :- World, js :- (List Job)]
+  (< (cascade-pot (row-cnt w) w js) (List.length (cascade-fuel w js)))
   (have h1 := (jobs-wt-le (row-cnt w) js))
   (have h2 := (Nat.mul_le_mul_left (+ (row-cnt w) 1) (alive-le-rows w)))
-  (simp only [casc-pot casc-fuel List.length list-length-append rep-list-length job-zeros-length ids-length-rows])
+  (simp only [cascade-pot cascade-fuel List.length list-length-append rep-list-length job-zeros-length ids-length-rows])
   (simp only [row-cnt] at h1 h2)
   (simp only [row-cnt])
   (simp only [Nat.mul_add Nat.add_mul Nat.mul_one Nat.one_mul] at h1 h2)
   (simp only [Nat.mul_add Nat.add_mul Nat.mul_one Nat.one_mul])
   (omega))
 
-;; Theorem (P4): on a world with unique ids (inv-sample) where no activation belongs to a done
-;; run (acts-alive), every cascade empties its worklist within casc-fuel
-(a/theorem casc-done-ok [w :- World, js :- (List Job)]
-  (=> (= (inv-sample w) true) (= (acts-alive w) true) (= (casc-done w js) true))
+;; Theorem (P4): on a world with unique ids (well-formed) where no activation belongs to a done
+;; run (acts-alive), every cascade empties its worklist within cascade-fuel
+(a/theorem cascade-done-ok [w :- World, js :- (List Job)]
+  (=> (= (well-formed w) true) (= (acts-alive w) true) (= (cascade-done w js) true))
   (intros h ha)
-  (simp only [casc-done cascade-run])
-  (exact (casc-empties (row-cnt w) (casc-fuel w js) w js h ha (Nat.le_refl _) (casc-fuel-above w js))))
+  (simp only [cascade-done cascade-run])
+  (exact (cascade-empties (row-cnt w) (cascade-fuel w js) w js h ha (Nat.le_refl _) (cascade-fuel-above w js))))
 
 ;; ===========================================================================
-;; Part E. P2: every round lowers norm-measure; normalize ends normalized
+;; Part E. P2: every round lowers normalize-measure; normalize ends normalized
 ;; ===========================================================================
 
 ;; ---- unique run and computation ids (from ids-ok)
 
-(a/theorem runs-nodup [w :- World] (=> (= (inv-sample w) true) (= (nat-nodup (tbl-ids run-id (:runs w))) true))
+(a/theorem runs-nodup [w :- World] (=> (= (well-formed w) true) (= (nat-nodup (tbl-ids run-id (:runs w))) true))
   (intro h)
-  (have hi := (And.right (And.right (inv-parts w h))))
+  (have hi := (And.right (And.right (well-formed-parts w h))))
   (simp only [ids-ok ids-unique all-ids Bool.and_eq_true] at hi)
   (exact (nat-nodup-app-left _ _ (nat-nodup-app-right _ _ (nat-nodup-app-right _ _ (nat-nodup-app-right _ _ (And.left hi)))))))
 
-(a/theorem comps-nodup [w :- World] (=> (= (inv-sample w) true) (= (nat-nodup (tbl-ids comp-id (:comps w))) true))
+(a/theorem comps-nodup [w :- World] (=> (= (well-formed w) true) (= (nat-nodup (tbl-ids comp-id (:comps w))) true))
   (intro h)
-  (have hi := (And.right (And.right (inv-parts w h))))
+  (have hi := (And.right (And.right (well-formed-parts w h))))
   (simp only [ids-ok ids-unique all-ids Bool.and_eq_true] at hi)
   (exact (nat-nodup-app-left _ _ (nat-nodup-app-right _ _ (And.left hi)))))
 
@@ -1323,60 +1322,60 @@
 (a/theorem act-cnt-ids [w :- World] (= (act-cnt w) (List.length (active-ids w)))
   (simp only [act-cnt active-ids scan-length-eq]))
 
-;; the round bundle: inv-sample, acts-alive, #alive runs <= a, #non-idle computations <= k
-(a/defn bn [a :- Nat, k :- Nat, w :- World] Bool
-  (Bool.and (inv-sample w) (Bool.and (acts-alive w) (Bool.and (Nat.ble (alive-cnt w) a) (Nat.ble (act-cnt w) k)))))
+;; the round bundle: well-formed, acts-alive, #alive runs <= a, #non-idle computations <= k
+(a/defn round-bound [a :- Nat, k :- Nat, w :- World] Bool
+  (Bool.and (well-formed w) (Bool.and (acts-alive w) (Bool.and (Nat.ble (alive-cnt w) a) (Nat.ble (act-cnt w) k)))))
 
-(a/theorem bn-parts [a :- Nat, k :- Nat, w :- World]
-  (=> (= (bn a k w) true)
-      (And (= (inv-sample w) true) (And (= (acts-alive w) true) (And (<= (alive-cnt w) a) (<= (act-cnt w) k)))))
+(a/theorem round-bound-parts [a :- Nat, k :- Nat, w :- World]
+  (=> (= (round-bound a k w) true)
+      (And (= (well-formed w) true) (And (= (acts-alive w) true) (And (<= (alive-cnt w) a) (<= (act-cnt w) k)))))
   (intro h)
-  (simp only [bn Bool.and_eq_true] at h)
+  (simp only [round-bound Bool.and_eq_true] at h)
   (exact (And.intro (And.left h) (And.intro (And.left (And.right h))
            (And.intro (Nat.le_of_ble_eq_true (And.left (And.right (And.right h))))
                       (Nat.le_of_ble_eq_true (And.right (And.right (And.right h)))))))))
 
-(a/theorem bn-intro [a :- Nat, k :- Nat, w :- World]
-  (=> (= (inv-sample w) true) (= (acts-alive w) true) (<= (alive-cnt w) a) (<= (act-cnt w) k) (= (bn a k w) true))
+(a/theorem round-bound-intro [a :- Nat, k :- Nat, w :- World]
+  (=> (= (well-formed w) true) (= (acts-alive w) true) (<= (alive-cnt w) a) (<= (act-cnt w) k) (= (round-bound a k w) true))
   (intros h1 h2 h3 h4)
-  (simp only [bn h1 h2 (Nat.ble_eq_true_of_le h3) (Nat.ble_eq_true_of_le h4) Bool.and_self]))
+  (simp only [round-bound h1 h2 (Nat.ble_eq_true_of_le h3) (Nat.ble_eq_true_of_le h4) Bool.and_self]))
 
 ;; from the cascade bundle with the bounds of w
-(a/theorem bn-lift [a :- Nat, k :- Nat, w :- World, w2 :- World]
-  (=> (= (bc (bnd-of w) w2) true) (= (bn a k w) true) (= (bn a k w2) true))
+(a/theorem round-bound-lift [a :- Nat, k :- Nat, w :- World, w2 :- World]
+  (=> (= (cascade-bound (bound-of w) w2) true) (= (round-bound a k w) true) (= (round-bound a k w2) true))
   (intros h hb)
-  (have p := (bn-parts a k w hb))
-  (have q := (bc-rest-parts _ _ (bc-rest-of _ _ h)))
+  (have p := (round-bound-parts a k w hb))
+  (have q := (cascade-bound-rest-parts _ _ (cascade-bound-rest-of _ _ h)))
   (have e (= (act-cnt w2) (act-cnt w)))
   (have e2 (= (active-ids w2) (active-ids w))) (exact (And.right (And.right (And.right q))))
   (simp only [act-cnt-ids e2])
-  (exact (bn-intro a k w2 (bc-sample _ _ h) (And.left q)
+  (exact (round-bound-intro a k w2 (cascade-bound-well-formed _ _ h) (And.left q)
            (Nat.le_trans (And.left (And.right q)) (And.left (And.right (And.right p))))
            (Nat.le_trans (Nat.le_of_eq e) (And.right (And.right (And.right p)))))))
 
-(a/theorem bn-bc [a :- Nat, k :- Nat, w :- World] (=> (= (bn a k w) true) (= (bc (bnd-of w) w) true))
-  (intro h) (have p := (bn-parts a k w h)) (exact (bc-of-bnd w (And.left p) (And.left (And.right p)))))
+(a/theorem round-bound-cascade-bound [a :- Nat, k :- Nat, w :- World] (=> (= (round-bound a k w) true) (= (cascade-bound (bound-of w) w) true))
+  (intro h) (have p := (round-bound-parts a k w h)) (exact (cascade-bound-of-bnd w (And.left p) (And.left (And.right p)))))
 
-(bc-copy! 'inv-detach-source)
-(bc-copy! 'inv-detach-task)
-(bc-copy! 'inv-detach-comp)
+(bc-copy! 'well-formed-detach-source)
+(bc-copy! 'well-formed-detach-task)
+(bc-copy! 'well-formed-detach-comp)
 
-(bc-copy! 'inv-detach)
-(bc-copy! 'inv-end-basis)
+(bc-copy! 'well-formed-detach)
+(bc-copy! 'well-formed-end-basis)
 
 ;; ---- the round keeps the bundle (both counts never grow)
 
-(a/theorem bn-run-cascade [a :- Nat, k :- Nat, w :- World, js :- (List Job)]
-  (=> (= (bn a k w) true) (= (bn a k (run-cascade w js)) true))
-  (intro h) (exact (bn-lift a k w _ (bc-run-cascade (bnd-of w) w js (bn-bc a k w h)) h)))
+(a/theorem round-bound-run-cascade [a :- Nat, k :- Nat, w :- World, js :- (List Job)]
+  (=> (= (round-bound a k w) true) (= (round-bound a k (run-cascade w js)) true))
+  (intro h) (exact (round-bound-lift a k w _ (cascade-bound-run-cascade (bound-of w) w js (round-bound-cascade-bound a k w h)) h)))
 
-(a/theorem bn-drop-edges [a :- Nat, k :- Nat, w :- World, p :- (=> EdgeRow Bool)]
-  (=> (= (bn a k w) true) (= (bn a k (drop-edges w p)) true))
-  (intro h) (exact (bn-lift a k w _ (bc-drop-edges (bnd-of w) w p (bn-bc a k w h)) h)))
+(a/theorem round-bound-drop-edges [a :- Nat, k :- Nat, w :- World, p :- (=> EdgeRow Bool)]
+  (=> (= (round-bound a k w) true) (= (round-bound a k (drop-edges w p)) true))
+  (intro h) (exact (round-bound-lift a k w _ (cascade-bound-drop-edges (bound-of w) w p (round-bound-cascade-bound a k w h)) h)))
 
-(a/theorem bn-detach [a :- Nat, k :- Nat, w :- World]
-  (=> (= (bn a k w) true) (= (bn a k (detach w)) true))
-  (intro h) (exact (bn-lift a k w _ (bc-detach (bnd-of w) w (bn-bc a k w h)) h)))
+(a/theorem round-bound-detach [a :- Nat, k :- Nat, w :- World]
+  (=> (= (round-bound a k w) true) (= (round-bound a k (detach w)) true))
+  (intro h) (exact (round-bound-lift a k w _ (cascade-bound-detach (bound-of w) w (round-bound-cascade-bound a k w h)) h)))
 
 (a/theorem act-cnt-drop-edges [w :- World, p :- (=> EdgeRow Bool)] (= (act-cnt (drop-edges w p)) (act-cnt w))
   (simp only [act-cnt drop-edges set-comps set-edges])
@@ -1389,10 +1388,10 @@
 (a/theorem comp-demote-row-inactive [vs :- (List Valid), c :- CompRow] (= (comp-active (comp-demote-row vs c)) false)
   (cases h (demote-idle c)) (all_goals (simp only [comp-demote-row h comp-active Bool.or_true Bool.true_or Bool.not_true Bool.not_false Bool.or_false Bool.false_or])))
 
-(a/theorem bn-demote-finish [a :- Nat, k :- Nat, w :- World, cid :- Nat, vs :- (List Valid)]
-  (=> (= (bn a k w) true) (= (bn a k (demote-finish w cid vs)) true))
+(a/theorem round-bound-demote-finish [a :- Nat, k :- Nat, w :- World, cid :- Nat, vs :- (List Valid)]
+  (=> (= (round-bound a k w) true) (= (round-bound a k (demote-finish w cid vs)) true))
   (intro h)
-  (have p := (bn-parts a k w h))
+  (have p := (round-bound-parts a k w h))
   (cases hf (comp-find w cid))
   (case [none] (simp only [demote-finish hf]) (exact h))
   (case [some c]
@@ -1402,43 +1401,43 @@
       (have l (<= (act-cnt (comp-upd w cid (comp-demote-row vs))) (act-cnt w)))
       (simp only [act-cnt comp-upd set-comps])
       (exact (count-upd-false-le CompRow comp-id cid (comp-demote-row vs) comp-active (comp-demote-row-inactive vs) (:comps w)))
-      (exact (bn-intro a k _
-               (inv-comp-upd w cid (comp-demote-row vs) (comp-demote-row-id vs) (comp-demote-row-pending vs) (And.left p))
+      (exact (round-bound-intro a k _
+               (well-formed-comp-upd w cid (comp-demote-row vs) (comp-demote-row-id vs) (comp-demote-row-pending vs) (And.left p))
                (And.left (And.right p)) (And.left (And.right (And.right p)))
                (Nat.le_trans l (And.right (And.right (And.right p)))))))
     (case [false]
       (simp only [demote-finish hf hk])
-      (have h2 := (bn-drop-edges a k w (edge-avoids cid) h))
-      (have p2 := (bn-parts a k _ h2))
+      (have h2 := (round-bound-drop-edges a k w (edge-avoids cid) h))
+      (have p2 := (round-bound-parts a k _ h2))
       (have l (<= (act-cnt (comp-del (drop-edges w (edge-avoids cid)) cid)) (act-cnt (drop-edges w (edge-avoids cid)))))
       (simp only [act-cnt comp-del set-comps])
       (exact (tbl-count-del-le CompRow comp-id cid comp-active _))
       (have ha (= (acts-alive (comp-del (drop-edges w (edge-avoids cid)) cid)) (acts-alive (drop-edges w (edge-avoids cid))))) (rfl)
       (have hl (= (alive-cnt (comp-del (drop-edges w (edge-avoids cid)) cid)) (alive-cnt (drop-edges w (edge-avoids cid))))) (rfl)
       (rw [← ha] at p2) (rw [← hl] at p2)
-      (exact (bn-intro a k _
-               (inv-comp-del-unref _ cid (drop-edges-avoids w cid) (And.left p2))
+      (exact (round-bound-intro a k _
+               (well-formed-comp-del-unref _ cid (drop-edges-avoids w cid) (And.left p2))
                (And.left (And.right p2)) (And.left (And.right (And.right p2)))
                (Nat.le_trans l (And.right (And.right (And.right p2)))))))))
 
 (a/theorem comp-inc-epoch-active [c :- CompRow] (= (comp-active (comp-inc-epoch c)) (comp-active c)) (rfl))
-(a/theorem bc-demote-epoch [bnd :- Bnd, w :- World, cid :- Nat, b :- Bool]
-  (=> (= (bc bnd w) true) (= (bc bnd (demote-epoch w cid b)) true))
+(a/theorem cascade-bound-demote-epoch [bnd :- Bound, w :- World, cid :- Nat, b :- Bool]
+  (=> (= (cascade-bound bnd w) true) (= (cascade-bound bnd (demote-epoch w cid b)) true))
   (intro h)
   (cases b)
   (simp only [demote-epoch]) (exact h)
   (simp only [demote-epoch])
-  (exact (bc-comp-upd bnd w cid comp-inc-epoch comp-inc-epoch-comp-id comp-inc-epoch-pending comp-inc-epoch-active h)))
-(a/theorem bn-demote-epoch [a :- Nat, k :- Nat, w :- World, cid :- Nat, b :- Bool]
-  (=> (= (bn a k w) true) (= (bn a k (demote-epoch w cid b)) true))
-  (intro h) (exact (bn-lift a k w _ (bc-demote-epoch (bnd-of w) w cid b (bn-bc a k w h)) h)))
+  (exact (cascade-bound-comp-upd bnd w cid comp-inc-epoch comp-inc-epoch-comp-id comp-inc-epoch-pending comp-inc-epoch-active h)))
+(a/theorem round-bound-demote-epoch [a :- Nat, k :- Nat, w :- World, cid :- Nat, b :- Bool]
+  (=> (= (round-bound a k w) true) (= (round-bound a k (demote-epoch w cid b)) true))
+  (intro h) (exact (round-bound-lift a k w _ (cascade-bound-demote-epoch (bound-of w) w cid b (round-bound-cascade-bound a k w h)) h)))
 
-(a/theorem bn-end-basis [a :- Nat, k :- Nat, w :- World, cid :- Nat]
-  (=> (= (bn a k w) true) (= (bn a k (end-basis w cid)) true))
-  (intro h) (exact (bn-lift a k w _ (bc-end-basis (bnd-of w) w cid (bn-bc a k w h)) h)))
+(a/theorem round-bound-end-basis [a :- Nat, k :- Nat, w :- World, cid :- Nat]
+  (=> (= (round-bound a k w) true) (= (round-bound a k (end-basis w cid)) true))
+  (intro h) (exact (round-bound-lift a k w _ (cascade-bound-end-basis (bound-of w) w cid (round-bound-cascade-bound a k w h)) h)))
 
-(a/theorem bn-demote [a :- Nat, k :- Nat, w :- World, cid :- Nat]
-  (=> (= (bn a k w) true) (= (bn a k (demote w cid)) true))
+(a/theorem round-bound-demote [a :- Nat, k :- Nat, w :- World, cid :- Nat]
+  (=> (= (round-bound a k w) true) (= (round-bound a k (demote w cid)) true))
   (intro h)
   (cases hf (comp-find w cid))
   (case [none] (simp only [demote hf]) (exact h))
@@ -1447,26 +1446,26 @@
     (case [true] (simp only [demote hf hi]) (exact h))
     (case [false]
       (simp only [demote hf hi demote-edges])
-      (exact (bn-demote-finish a k _ cid _ (bn-end-basis a k _ cid (bn-drop-edges a k _ (not-dep-of cid) (bn-demote-epoch a k _ cid _ (bn-run-cascade a k w _ h)))))))))
+      (exact (round-bound-demote-finish a k _ cid _ (round-bound-end-basis a k _ cid (round-bound-drop-edges a k _ (not-dep-of cid) (round-bound-demote-epoch a k _ cid _ (round-bound-run-cascade a k w _ h)))))))))
 
-(a/theorem bn-nat-fold [a :- Nat, k :- Nat, f :- (=> World Nat World),
-                        hf :- (forall [w :- World, x :- Nat] (=> (= (bn a k w) true) (= (bn a k (f w x)) true))),
+(a/theorem round-bound-nat-fold [a :- Nat, k :- Nat, f :- (=> World Nat World),
+                        hf :- (forall [w :- World, x :- Nat] (=> (= (round-bound a k w) true) (= (round-bound a k (f w x)) true))),
                         xs :- (List Nat)]
-  (forall [w :- World] (=> (= (bn a k w) true) (= (bn a k (nat-fold f w xs)) true)))
+  (forall [w :- World] (=> (= (round-bound a k w) true) (= (round-bound a k (nat-fold f w xs)) true)))
   (induction xs)
   (case [nil] (intros w hw) (simp only [nat-fold]) (exact hw))
   (case [cons h t ih] (intros w hw) (simp only [nat-fold]) (exact (ih (f w h) (hf w h hw)))))
 
-(a/theorem bn-round-lv [a :- Nat, k :- Nat, w :- World, lv :- (List Nat)]
-  (=> (= (bn a k w) true) (= (bn a k (norm-round-lv w lv)) true))
+(a/theorem round-bound-round-lv [a :- Nat, k :- Nat, w :- World, lv :- (List Nat)]
+  (=> (= (round-bound a k w) true) (= (round-bound a k (normalize-round-with-live w lv)) true))
   (intro h)
-  (simp only [norm-round-lv])
-  (exact (bn-detach a k _ (bn-nat-fold a k demote (bn-demote a k) _ _ (bn-run-cascade a k w _ h)))))
+  (simp only [normalize-round-with-live])
+  (exact (round-bound-detach a k _ (round-bound-nat-fold a k demote (round-bound-demote a k) _ _ (round-bound-run-cascade a k w _ h)))))
 
 ;; ---- strict decrease
 
 (a/theorem stray-scan-nil [lv :- (List Nat), rs :- (List RunRow)]
-  (=> (= (tbl-all (run-norm lv) rs) true) (= (tbl-scan run-id (run-stray lv) rs) (List.nil Nat)))
+  (=> (= (tbl-all (run-normalized lv) rs) true) (= (tbl-scan run-id (run-stray lv) rs) (List.nil Nat)))
   (induction rs)
   (case [nil] (intro h) (simp [tbl-scan]))
   (case [cons h t ih]
@@ -1476,60 +1475,60 @@
     (exact (ih (And.right hp)))))
 
 (a/theorem stray-scan-cons [lv :- (List Nat), rs :- (List RunRow)]
-  (=> (= (tbl-scan run-id (run-stray lv) rs) (List.nil Nat)) (= (tbl-all (run-norm lv) rs) true))
+  (=> (= (tbl-scan run-id (run-stray lv) rs) (List.nil Nat)) (= (tbl-all (run-normalized lv) rs) true))
   (induction rs)
   (case [nil] (intro h) (simp [tbl-all]))
   (case [cons h t ih]
     (intro hs)
-    (cases hn (run-norm lv h))
+    (cases hn (run-normalized lv h))
     (case [false] (simp [tbl-scan run-stray hn] at hs))
     (case [true]
       (simp only [tbl-scan run-stray hn Bool.not_true] at hs)
       (simp only [tbl-all hn (ih hs) Bool.and_self]))))
 
 (a/theorem comp-stray-nil [lv :- (List Nat), cs :- (List CompRow)]
-  (=> (= (tbl-scan comp-id (comp-stray lv) cs) (List.nil Nat)) (= (tbl-all (comp-norm lv) cs) true))
+  (=> (= (tbl-scan comp-id (comp-stray lv) cs) (List.nil Nat)) (= (tbl-all (comp-normalized lv) cs) true))
   (induction cs)
   (case [nil] (intro h) (simp [tbl-all]))
   (case [cons h t ih]
     (intro hs)
-    (cases hn (comp-norm lv h))
+    (cases hn (comp-normalized lv h))
     (case [false] (simp [tbl-scan comp-stray hn] at hs))
     (case [true]
       (simp only [tbl-scan comp-stray hn Bool.not_true] at hs)
       (simp only [tbl-all hn (ih hs) Bool.and_self]))))
 
 (a/theorem run-cascade-nil [w :- World] (= (run-cascade w (List.nil Job)) w)
-  (simp only [run-cascade cascade-run casc-fuel cascade]))
+  (simp only [run-cascade cascade-run cascade-fuel cascade]))
 
-(a/defn casc-tail [w :- World, js :- (List Job)] (List Nat)
+(a/defn cascade-tail [w :- World, js :- (List Job)] (List Nat)
   (List.append Nat (rep-list (job-zeros js) (List.cons Nat 0 (tbl-ids run-id (:runs w))))
     (rep-list (tbl-ids run-id (:runs w))
               (List.cons Nat 0 (List.cons Nat 0 (List.append Nat (tbl-ids run-id (:runs w)) (tbl-ids run-id (:runs w))))))))
 
 (a/theorem run-cascade-cons [w :- World, j :- Job, t :- (List Job)]
   (= (run-cascade w (List.cons Job j t))
-     (:world (cascade (casc-tail w (List.cons Job j t)) (job-apply w j) (List.append Job t (job-next w j)))))
-  (simp only [run-cascade cascade-run casc-fuel cascade casc-tail]))
+     (:world (cascade (cascade-tail w (List.cons Job j t)) (job-apply w j) (List.append Job t (job-next w j)))))
+  (simp only [run-cascade cascade-run cascade-fuel cascade cascade-tail]))
 
 ;; a stray run: the first cancel acts, #alive runs drops
 (a/theorem cascade-first-lt [w :- World, x :- Nat, t :- (List Nat), r :- RunRow]
-  (=> (= (inv-sample w) true) (= (acts-alive w) true) (= (run-find w x) (Option.some RunRow r)) (= (run-alive r) true)
+  (=> (= (well-formed w) true) (= (acts-alive w) true) (= (run-find w x) (Option.some RunRow r)) (= (run-alive r) true)
       (And (<= (+ (alive-cnt (run-cascade w (cancel-jobs (List.cons Nat x t)))) 1) (alive-cnt w))
            (= (act-cnt (run-cascade w (cancel-jobs (List.cons Nat x t)))) (act-cnt w))))
   (intros h ha hf hr)
   (have lt := (cancel-alive-lt w x r false h ha hf hr))
   (have hj (= (job-apply w (Job.jcancel x false)) (cancel-run-local w r false))) (simp only [job-apply hf hr])
-  (have p := (bc-of-job w (Job.jcancel x false) h ha))
-  (have h1 := (bc-of-bnd _ (And.left p) (And.left (And.right p))))
-  (have h2 := (bc-cascade (bnd-of (job-apply w (Job.jcancel x false))) (casc-tail w (cancel-jobs (List.cons Nat x t)))
+  (have p := (cascade-bound-of-job w (Job.jcancel x false) h ha))
+  (have h1 := (cascade-bound-of-bnd _ (And.left p) (And.left (And.right p))))
+  (have h2 := (cascade-bound-cascade (bound-of (job-apply w (Job.jcancel x false))) (cascade-tail w (cancel-jobs (List.cons Nat x t)))
                 (job-apply w (Job.jcancel x false))
                 (List.append Job (cancel-jobs t) (job-next w (Job.jcancel x false))) h1))
-  (have q := (bc-rest-parts _ _ (bc-rest-of _ _ h2)))
+  (have q := (cascade-bound-rest-parts _ _ (cascade-bound-rest-of _ _ h2)))
   (have l1 := (And.left (And.right q)))
-  (simp only [bnd-of hj] at l1)
-  (have h3 := (bc-run-cascade (bnd-of w) w (cancel-jobs (List.cons Nat x t)) (bc-of-bnd w h ha)))
-  (have q3 := (bc-rest-parts _ _ (bc-rest-of _ _ h3)))
+  (simp only [bound-of hj] at l1)
+  (have h3 := (cascade-bound-run-cascade (bound-of w) w (cancel-jobs (List.cons Nat x t)) (cascade-bound-of-bnd w h ha)))
+  (have q3 := (cascade-bound-rest-parts _ _ (cascade-bound-rest-of _ _ h3)))
   (have e3 (= (active-ids (run-cascade w (cancel-jobs (List.cons Nat x t)))) (active-ids w)))
   (exact (And.right (And.right (And.right q3))))
   (have lt2 (<= (+ (alive-cnt (job-apply w (Job.jcancel x false))) 1) (alive-cnt w))) (rw [hj]) (exact lt)
@@ -1542,7 +1541,7 @@
 
 ;; a stray computation: its demotion makes it idle or removes it
 (a/theorem demote-finish-lt [w :- World, x :- Nat, vs :- (List Valid)]
-  (=> (= (inv-sample w) true) (= (reach-mem x (active-ids w)) true)
+  (=> (= (well-formed w) true) (= (reach-mem x (active-ids w)) true)
       (<= (+ (act-cnt (demote-finish w x vs)) 1) (act-cnt w)))
   (intros h hm)
   (have hfind (= (opt-test comp-active (comp-find w x)) true))
@@ -1557,7 +1556,7 @@
       (exact (count-upd-false-lt CompRow comp-id x (comp-demote-row vs) comp-active (comp-demote-row-inactive vs) c (:comps w) hf hfind)))
     (case [false]
       (simp only [demote-finish hf hk])
-      (have h2 := (inv-drop-edges w (edge-avoids x) h))
+      (have h2 := (well-formed-drop-edges w (edge-avoids x) h))
       (have hm2 (= (reach-mem x (active-ids (drop-edges w (edge-avoids x)))) true))
       (simp only [active-ids drop-edges set-comps set-edges scan-resync]) (exact hm)
       (have hfind2 (= (opt-test comp-active (comp-find (drop-edges w (edge-avoids x)) x)) true))
@@ -1574,12 +1573,12 @@
         (omega)))))
 
 (a/theorem demote-lt [w :- World, x :- Nat, c :- CompRow]
-  (=> (= (inv-sample w) true) (= (acts-alive w) true) (= (comp-find w x) (Option.some CompRow c)) (= (:idle c) false)
+  (=> (= (well-formed w) true) (= (acts-alive w) true) (= (comp-find w x) (Option.some CompRow c)) (= (:idle c) false)
       (= (:tomb c) false)
       (And (<= (+ (act-cnt (demote w x)) 1) (act-cnt w)) (<= (alive-cnt (demote w x)) (alive-cnt w))))
   (intros h ha hf hi ht)
-  (have h1 := (bc-demote-epoch (bnd-of w) _ x (demote-cur w c) (bc-run-cascade (bnd-of w) w (cancel-jobs (demote-cancels w c)) (bc-of-bnd w h ha))))
-  (have q := (bc-rest-parts _ _ (bc-rest-of _ _ h1)))
+  (have h1 := (cascade-bound-demote-epoch (bound-of w) _ x (demote-cur w c) (cascade-bound-run-cascade (bound-of w) w (cancel-jobs (demote-cancels w c)) (cascade-bound-of-bnd w h ha))))
+  (have q := (cascade-bound-rest-parts _ _ (cascade-bound-rest-of _ _ h1)))
   (have hx (= (reach-mem x (active-ids w)) true))
   (have e (= (comp-id c) x)) (exact (tbl-find-id CompRow comp-id x c (:comps w) hf))
   (have hac (= (comp-active c) true)) (simp only [comp-active hi ht Bool.or_false Bool.not_false])
@@ -1591,19 +1590,19 @@
   (simp only [active-ids drop-edges set-comps set-edges scan-resync])
   (simp only [active-ids] at e1)
   (rw [e1]) (exact hx)
-  (have bd := (bn-drop-edges (alive-cnt w) (act-cnt w) _ (not-dep-of x)
-                (bn-demote-epoch (alive-cnt w) (act-cnt w) _ x (demote-cur w c)
-                  (bn-run-cascade (alive-cnt w) (act-cnt w) w (cancel-jobs (demote-cancels w c))
-                    (bn-intro _ _ w h ha (Nat.le_refl _) (Nat.le_refl _))))))
-  (have pd := (bn-parts _ _ _ bd))
-  (have hE := (bc-end-basis _ _ x (bc-of-bnd (drop-edges (demote-epoch (run-cascade w (cancel-jobs (demote-cancels w c))) x (demote-cur w c)) (not-dep-of x))
+  (have bd := (round-bound-drop-edges (alive-cnt w) (act-cnt w) _ (not-dep-of x)
+                (round-bound-demote-epoch (alive-cnt w) (act-cnt w) _ x (demote-cur w c)
+                  (round-bound-run-cascade (alive-cnt w) (act-cnt w) w (cancel-jobs (demote-cancels w c))
+                    (round-bound-intro _ _ w h ha (Nat.le_refl _) (Nat.le_refl _))))))
+  (have pd := (round-bound-parts _ _ _ bd))
+  (have hE := (cascade-bound-end-basis _ _ x (cascade-bound-of-bnd (drop-edges (demote-epoch (run-cascade w (cancel-jobs (demote-cancels w c))) x (demote-cur w c)) (not-dep-of x))
                                    (And.left pd) (And.left (And.right pd)))))
-  (have qE := (bc-rest-parts _ _ (bc-rest-of _ _ hE)))
+  (have qE := (cascade-bound-rest-parts _ _ (cascade-bound-rest-of _ _ hE)))
   (have eE := (And.right (And.right (And.right qE))))
-  (simp only [bnd-of] at eE)
+  (simp only [bound-of] at eE)
   (have hx3 (= (reach-mem x (active-ids (end-basis (drop-edges (demote-epoch (run-cascade w (cancel-jobs (demote-cancels w c))) x (demote-cur w c)) (not-dep-of x)) x))) true))
   (rw [eE]) (exact hx2)
-  (have hs2 := (bc-sample _ _ hE))
+  (have hs2 := (cascade-bound-well-formed _ _ hE))
   (have l1 := (demote-finish-lt _ x (validity-of (demote-epoch (run-cascade w (cancel-jobs (demote-cancels w c))) x (demote-cur w c)) x) hs2 hx3))
   (have l0 (= (act-cnt (end-basis (drop-edges (demote-epoch (run-cascade w (cancel-jobs (demote-cancels w c))) x (demote-cur w c)) (not-dep-of x)) x))
               (act-cnt (drop-edges (demote-epoch (run-cascade w (cancel-jobs (demote-cancels w c))) x (demote-cur w c)) (not-dep-of x)))))
@@ -1611,40 +1610,40 @@
   (have l2 := (act-cnt-drop-edges (demote-epoch (run-cascade w (cancel-jobs (demote-cancels w c))) x (demote-cur w c)) (not-dep-of x)))
   (have l3 (= (act-cnt (demote-epoch (run-cascade w (cancel-jobs (demote-cancels w c))) x (demote-cur w c))) (act-cnt w)))
   (simp only [act-cnt-ids]) (rw [(And.right (And.right (And.right q)))])
-  (have b1 := (bn-demote-finish (alive-cnt w) (act-cnt w) (end-basis (drop-edges (demote-epoch (run-cascade w (cancel-jobs (demote-cancels w c))) x (demote-cur w c)) (not-dep-of x)) x) x
+  (have b1 := (round-bound-demote-finish (alive-cnt w) (act-cnt w) (end-basis (drop-edges (demote-epoch (run-cascade w (cancel-jobs (demote-cancels w c))) x (demote-cur w c)) (not-dep-of x)) x) x
                 (validity-of (demote-epoch (run-cascade w (cancel-jobs (demote-cancels w c))) x (demote-cur w c)) x)
-                (bn-end-basis (alive-cnt w) (act-cnt w) _ x bd)))
-  (have pb := (bn-parts _ _ _ b1))
+                (round-bound-end-basis (alive-cnt w) (act-cnt w) _ x bd)))
+  (have pb := (round-bound-parts _ _ _ b1))
   (simp only [demote hf hi demote-edges])
   (apply And.intro)
   (omega)
   (exact (And.left (And.right (And.right pb)))))
 
-(a/theorem norm-measure-eq [w :- World] (= (norm-measure w) (+ (alive-cnt w) (act-cnt w))) (rfl))
+(a/theorem normalize-measure-eq [w :- World] (= (normalize-measure w) (+ (alive-cnt w) (act-cnt w))) (rfl))
 
 (a/theorem stray-run-alive [lv :- (List Nat), r :- RunRow] (=> (= (run-stray lv r) true) (= (run-alive r) true))
   (intro h)
   (cases ha (run-alive r))
-  (case [false] (simp [run-stray run-norm ha] at h))
+  (case [false] (simp [run-stray run-normalized ha] at h))
   (case [true] (rfl)))
 
 (a/theorem stray-comp-busy [lv :- (List Nat), c :- CompRow] (=> (= (comp-stray lv c) true) (= (:idle c) false))
   (intro h)
   (cases hi (:idle c))
   (case [false] (rfl))
-  (case [true] (simp [comp-stray comp-norm hi] at h)))
+  (case [true] (simp [comp-stray comp-normalized hi] at h)))
 (a/theorem stray-comp-tomb [lv :- (List Nat), c :- CompRow] (=> (= (comp-stray lv c) true) (= (:tomb c) false))
   (intro h)
   (cases hi (:tomb c))
   (case [false] (rfl))
-  (case [true] (simp [comp-stray comp-norm hi] at h)))
+  (case [true] (simp [comp-stray comp-normalized hi] at h)))
 
 ;; one round of a world that is not normalized lowers #non-done runs + #non-idle computations
 (a/theorem round-lt [w :- World, lv :- (List Nat)]
-  (=> (= (inv-sample w) true) (= (acts-alive w) true) (= (normalized-with w lv) false)
-      (< (norm-measure (norm-round-lv w lv)) (norm-measure w)))
+  (=> (= (well-formed w) true) (= (acts-alive w) true) (= (normalized-with w lv) false)
+      (< (normalize-measure (normalize-round-with-live w lv)) (normalize-measure w)))
   (intros h ha hn)
-  (simp only [norm-measure-eq])
+  (simp only [normalize-measure-eq])
   (cases hs (tbl-scan run-id (run-stray lv) (:runs w)))
   (case [cons x t]
     (have hm (= (reach-mem x (List.cons Nat x t)) true)) (simp [reach-mem-cons Nat.beq_refl])
@@ -1656,13 +1655,13 @@
     (case [some r]
       (simp only [opt-test hf] at hfind)
       (have c1 := (cascade-first-lt w x t r h ha hf (stray-run-alive lv r hfind)))
-      (have h1 := (bc-run-cascade (bnd-of w) w (cancel-jobs (List.cons Nat x t)) (bc-of-bnd w h ha)))
-      (have b1 := (bn-intro (alive-cnt (run-cascade w (cancel-jobs (List.cons Nat x t))))
+      (have h1 := (cascade-bound-run-cascade (bound-of w) w (cancel-jobs (List.cons Nat x t)) (cascade-bound-of-bnd w h ha)))
+      (have b1 := (round-bound-intro (alive-cnt (run-cascade w (cancel-jobs (List.cons Nat x t))))
                             (act-cnt (run-cascade w (cancel-jobs (List.cons Nat x t)))) _
-                    (bc-sample _ _ h1) (bc-acts-alive _ _ h1) (Nat.le_refl _) (Nat.le_refl _)))
-      (have b2 := (bn-detach _ _ _ (bn-nat-fold _ _ demote (bn-demote _ _) (tbl-scan comp-id (comp-stray lv) (:comps w)) _ b1)))
-      (have p2 := (bn-parts _ _ _ b2))
-      (simp only [norm-round-lv hs])
+                    (cascade-bound-well-formed _ _ h1) (cascade-bound-acts-alive _ _ h1) (Nat.le_refl _) (Nat.le_refl _)))
+      (have b2 := (round-bound-detach _ _ _ (round-bound-nat-fold _ _ demote (round-bound-demote _ _) (tbl-scan comp-id (comp-stray lv) (:comps w)) _ b1)))
+      (have p2 := (round-bound-parts _ _ _ b2))
+      (simp only [normalize-round-with-live hs])
       (have l1 := (And.left (And.right (And.right p2))))
       (have l2 := (And.right (And.right (And.right p2))))
       (have c1a := (And.left c1))
@@ -1670,7 +1669,7 @@
       (omega)))
   (case [nil]
     (have hr := (stray-scan-cons lv (:runs w) hs))
-    (have hc (= (tbl-all (comp-norm lv) (:comps w)) false))
+    (have hc (= (tbl-all (comp-normalized lv) (:comps w)) false))
     (simp only [normalized-with hr Bool.true_and] at hn) (exact hn)
     (cases hcs (tbl-scan comp-id (comp-stray lv) (:comps w)))
     (case [nil] (have hc2 := (comp-stray-nil lv (:comps w) hcs)) (rw [hc2] at hc) (cases hc))
@@ -1684,84 +1683,84 @@
       (case [some c]
         (simp only [opt-test hf] at hfind)
         (have d := (demote-lt w x c h ha hf (stray-comp-busy lv c hfind) (stray-comp-tomb lv c hfind)))
-        (have bd := (bn-demote (alive-cnt w) (act-cnt w) w x (bn-intro _ _ w h ha (Nat.le_refl _) (Nat.le_refl _))))
-        (have pd := (bn-parts _ _ _ bd))
-        (have b1 := (bn-intro (alive-cnt (demote w x)) (act-cnt (demote w x)) _
+        (have bd := (round-bound-demote (alive-cnt w) (act-cnt w) w x (round-bound-intro _ _ w h ha (Nat.le_refl _) (Nat.le_refl _))))
+        (have pd := (round-bound-parts _ _ _ bd))
+        (have b1 := (round-bound-intro (alive-cnt (demote w x)) (act-cnt (demote w x)) _
                       (And.left pd) (And.left (And.right pd)) (Nat.le_refl _) (Nat.le_refl _)))
-        (have b2 := (bn-detach _ _ _ (bn-nat-fold _ _ demote (bn-demote _ _) t _ b1)))
-        (have p2 := (bn-parts _ _ _ b2))
-        (simp only [norm-round-lv hs hcs cancel-jobs run-cascade-nil nat-fold])
+        (have b2 := (round-bound-detach _ _ _ (round-bound-nat-fold _ _ demote (round-bound-demote _ _) t _ b1)))
+        (have p2 := (round-bound-parts _ _ _ b2))
+        (simp only [normalize-round-with-live hs hcs cancel-jobs run-cascade-nil nat-fold])
         (have l1 := (And.left (And.right (And.right p2))))
         (have l2 := (And.right (And.right (And.right p2))))
         (have d1 := (And.left d))
         (have d2 := (And.right d))
         (omega)))))
 
-(a/theorem bn-round [w :- World]
-  (=> (= (inv-sample w) true) (= (acts-alive w) true)
-      (And (= (inv-sample (norm-round w)) true) (= (acts-alive (norm-round w)) true)))
+(a/theorem round-bound-round [w :- World]
+  (=> (= (well-formed w) true) (= (acts-alive w) true)
+      (And (= (well-formed (normalize-round w)) true) (= (acts-alive (normalize-round w)) true)))
   (intros h ha)
-  (have b := (bn-round-lv (alive-cnt w) (act-cnt w) w (live-list w) (bn-intro _ _ w h ha (Nat.le_refl _) (Nat.le_refl _))))
-  (have p := (bn-parts _ _ _ b))
+  (have b := (round-bound-round-lv (alive-cnt w) (act-cnt w) w (live-list w) (round-bound-intro _ _ w h ha (Nat.le_refl _) (Nat.le_refl _))))
+  (have p := (round-bound-parts _ _ _ b))
   (exact (And.intro (And.left p) (And.left (And.right p)))))
 
-(a/theorem norm-loop-ok [fuel :- (List Nat)]
+(a/theorem normalize-loop-ok [fuel :- (List Nat)]
   (forall [w :- World]
-    (=> (= (inv-sample w) true) (= (acts-alive w) true) (< (norm-measure w) (List.length fuel))
-        (= (normalized (norm-loop fuel w)) true)))
+    (=> (= (well-formed w) true) (= (acts-alive w) true) (< (normalize-measure w) (List.length fuel))
+        (= (normalized (normalize-loop fuel w)) true)))
   (induction fuel)
   (case [nil] (intros w h ha hm) (simp only [List.length] at hm) (omega))
   (case [cons x f ih]
     (intros w h ha hm)
     (cases hn (normalized w))
-    (case [true] (simp only [norm-loop hn]))
+    (case [true] (simp only [normalize-loop hn]))
     (case [false]
       (have lt := (round-lt w (live-list w) h ha hn))
-      (have p := (bn-round w h ha))
-      (have hm2 (< (norm-measure (norm-round w)) (List.length f)))
+      (have p := (round-bound-round w h ha))
+      (have hm2 (< (normalize-measure (normalize-round w)) (List.length f)))
       (simp only [List.length] at hm)
-      (simp only [norm-round])
+      (simp only [normalize-round])
       (omega)
-      (simp only [norm-loop hn])
-      (exact (ih (norm-round w) (And.left p) (And.right p) hm2)))))
+      (simp only [normalize-loop hn])
+      (exact (ih (normalize-round w) (And.left p) (And.right p) hm2)))))
 
-(a/theorem norm-fuel-length [w :- World] (= (List.length (norm-fuel w)) (+ (norm-measure w) 1))
-  (simp only [norm-fuel norm-measure List.length list-length-append scan-length-eq]))
+(a/theorem normalize-fuel-length [w :- World] (= (List.length (normalize-fuel w)) (+ (normalize-measure w) 1))
+  (simp only [normalize-fuel normalize-measure List.length list-length-append scan-length-eq]))
 
 ;; Theorem (P2): on a world with unique ids where no activation belongs to a done run,
 ;; normalization ends normalized (the loop's flag always holds)
 (a/theorem normalized-ok [w :- World]
-  (=> (= (inv-sample w) true) (= (acts-alive w) true) (= (normalized (normalize w)) true))
+  (=> (= (well-formed w) true) (= (acts-alive w) true) (= (normalized (normalize w)) true))
   (intros h ha)
-  (have hd := (inv-detach w h))
-  (have b := (bn-detach (alive-cnt w) (act-cnt w) w (bn-intro _ _ w h ha (Nat.le_refl _) (Nat.le_refl _))))
-  (have p := (bn-parts _ _ _ b))
-  (have hm (< (norm-measure (detach w)) (List.length (norm-fuel (detach w)))))
-  (rw [norm-fuel-length]) (omega)
+  (have hd := (well-formed-detach w h))
+  (have b := (round-bound-detach (alive-cnt w) (act-cnt w) w (round-bound-intro _ _ w h ha (Nat.le_refl _) (Nat.le_refl _))))
+  (have p := (round-bound-parts _ _ _ b))
+  (have hm (< (normalize-measure (detach w)) (List.length (normalize-fuel (detach w)))))
+  (rw [normalize-fuel-length]) (omega)
   (simp only [normalize])
-  (exact (norm-loop-ok (norm-fuel (detach w)) (detach w) hd (And.left (And.right p)) hm)))
+  (exact (normalize-loop-ok (normalize-fuel (detach w)) (detach w) hd (And.left (And.right p)) hm)))
 
 ;; ---- through the Rule R rounds
 
-(a/theorem acts-alive-norm-loop [fuel :- (List Nat)]
-  (forall [w :- World] (=> (= (inv-sample w) true) (= (acts-alive w) true) (= (acts-alive (norm-loop fuel w)) true)))
+(a/theorem acts-alive-normalize-loop [fuel :- (List Nat)]
+  (forall [w :- World] (=> (= (well-formed w) true) (= (acts-alive w) true) (= (acts-alive (normalize-loop fuel w)) true)))
   (induction fuel)
-  (case [nil] (intros w h ha) (simp only [norm-loop]) (exact ha))
+  (case [nil] (intros w h ha) (simp only [normalize-loop]) (exact ha))
   (case [cons x f ih]
     (intros w h ha)
     (cases hn (normalized w))
-    (case [true] (simp only [norm-loop hn]) (exact ha))
+    (case [true] (simp only [normalize-loop hn]) (exact ha))
     (case [false]
-      (have p := (bn-round w h ha))
-      (simp only [norm-loop hn])
-      (exact (ih (norm-round w) (And.left p) (And.right p))))))
+      (have p := (round-bound-round w h ha))
+      (simp only [normalize-loop hn])
+      (exact (ih (normalize-round w) (And.left p) (And.right p))))))
 
 (a/theorem acts-alive-normalize [w :- World]
-  (=> (= (inv-sample w) true) (= (acts-alive w) true) (= (acts-alive (normalize w)) true))
+  (=> (= (well-formed w) true) (= (acts-alive w) true) (= (acts-alive (normalize w)) true))
   (intros h ha)
-  (have p := (bn-parts _ _ _ (bn-detach (alive-cnt w) (act-cnt w) w (bn-intro _ _ w h ha (Nat.le_refl _) (Nat.le_refl _)))))
+  (have p := (round-bound-parts _ _ _ (round-bound-detach (alive-cnt w) (act-cnt w) w (round-bound-intro _ _ w h ha (Nat.le_refl _) (Nat.le_refl _)))))
   (simp only [normalize])
-  (exact (acts-alive-norm-loop _ (detach w) (inv-detach w h) (And.left (And.right p)))))
+  (exact (acts-alive-normalize-loop _ (detach w) (well-formed-detach w h) (And.left (And.right p)))))
 
 (a/theorem act-run-ok-keep [K :- (=> Nat Bool), rs :- (List RunRow), a :- ActRow]
   (=> (= (act-run-ok rs a) true) (= (act-run-ok (tbl-keep K run-id rs) a) true))
@@ -1778,36 +1777,36 @@
              (act-run-ok-keep K (:runs w)) (:acts w) h))))
 
 (a/theorem acts-alive-round [w :- World]
-  (=> (= (inv-sample w) true) (= (acts-alive w) true) (= (acts-alive (rule-r-round w)) true))
+  (=> (= (well-formed w) true) (= (acts-alive w) true) (= (acts-alive (rule-r-round w)) true))
   (intros h ha)
   (simp only [rule-r-round])
   (rw [rule-r-filter-eq])
   (exact (acts-alive-filter _ _ (acts-alive-normalize w h ha))))
 
-(a/theorem rr-pre-ok [fuel :- (List Nat)]
+(a/theorem last-input-loop-ok [fuel :- (List Nat)]
   (forall [w0 :- World]
-    (=> (= (inv-sample w0) true) (= (acts-alive w0) true) (= (rr-safe fuel w0) true)
-        (And (= (inv-sample (rr-pre fuel w0)) true) (= (acts-alive (rr-pre fuel w0)) true))))
+    (=> (= (well-formed w0) true) (= (acts-alive w0) true) (= (rounds-safe-loop fuel w0) true)
+        (And (= (well-formed (last-input-loop fuel w0)) true) (= (acts-alive (last-input-loop fuel w0)) true))))
   (induction fuel)
-  (case [nil] (intros w0 h ha hs) (simp only [rr-pre]) (exact (And.intro h ha)))
+  (case [nil] (intros w0 h ha hs) (simp only [last-input-loop]) (exact (And.intro h ha)))
   (case [cons x f ih]
     (intros w0 h ha hs)
-    (simp only [rr-safe Bool.and_eq_true] at hs)
+    (simp only [rounds-safe-loop Bool.and_eq_true] at hs)
     (cases ho (no-orphans (rule-r-round w0)))
-    (case [true] (simp only [rr-pre ho]) (exact (And.intro h ha)))
+    (case [true] (simp only [last-input-loop ho]) (exact (And.intro h ha)))
     (case [false]
       (simp only [ho] at hs)
-      (simp only [rr-pre ho])
-      (exact (ih (rule-r-round w0) (inv-rule-r-round w0 h (And.left hs)) (acts-alive-round w0 h ha) (And.right hs))))))
+      (simp only [last-input-loop ho])
+      (exact (ih (rule-r-round w0) (well-formed-rule-r-round w0 h (And.left hs)) (acts-alive-round w0 h ha) (And.right hs))))))
 
 ;; P2 for Rule R: with filter-safe in every round, the last round's normalization is normalized
 (a/theorem rule-r-normalized-ok [w :- World]
-  (=> (= (inv-sample w) true) (= (acts-alive w) true) (= (rule-r-safe w) true)
-      (= (normalized (normalize (rule-r-pre w))) true))
+  (=> (= (well-formed w) true) (= (acts-alive w) true) (= (rule-r-safe w) true)
+      (= (normalized (normalize (rule-r-last-input w))) true))
   (intros h ha hs)
   (simp only [rule-r-safe] at hs)
-  (have p := (rr-pre-ok (rr-fuel w) w h ha hs))
-  (simp only [rule-r-pre])
+  (have p := (last-input-loop-ok (rule-r-fuel w) w h ha hs))
+  (simp only [rule-r-last-input])
   (exact (normalized-ok _ (And.left p) (And.right p))))
 
 ;; ===========================================================================
@@ -1815,16 +1814,16 @@
 ;; ===========================================================================
 
 ;; the step's world is normalized: no normalized hypothesis, only acts-alive of the raw world
-;; (and rule-r-safe, as step-inv)
+;; (and rule-r-safe, as step-well-formed)
 (a/theorem step-normalized-ok [w :- World, it :- Item]
-  (=> (= (:accepted (raw w it)) true) (= (inv-sample w) true) (= (acts-alive (:world (raw w it))) true)
+  (=> (= (:accepted (raw w it)) true) (= (well-formed w) true) (= (acts-alive (:world (raw w it))) true)
       (= (rule-r-safe (:world (raw w it))) true)
       (= (normalized (:world (world-step w it))) true))
   (intros ha h haa hs)
-  (exact (step-normalized-total w it ha (rule-r-normalized-ok _ (raw-inv w it h) haa hs))))
+  (exact (step-normalized-total w it ha (rule-r-normalized-ok _ (well-formed-raw w it h) haa hs))))
 
 (a/theorem step-i4-ok [w :- World, it :- Item, r :- RunRow]
-  (=> (= (:accepted (raw w it)) true) (= (inv-sample w) true) (= (acts-alive (:world (raw w it))) true)
+  (=> (= (:accepted (raw w it)) true) (= (well-formed w) true) (= (acts-alive (:world (raw w it))) true)
       (= (rule-r-safe (:world (raw w it))) true)
       (List.Mem r (:runs (:world (world-step w it)))) (= (run-alive r) true)
       (= (in-live (:world (world-step w it)) (:id r)) true))

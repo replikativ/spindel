@@ -100,7 +100,7 @@
     47  drain ids                              C1c stage B: `[:normalize]`, the inherited markers
                                                             ids (W-NORMALIZE) go, then Z#18 at their
                                                             owners -
-    48  retire-local v                         Z#77 T28: `[:retire-local]`, the first item of a
+    48  retire-run v                         Z#77 T28: `[:retire-local]`, the first item of a
                                                             world derived from one with fork-local
                                                             runs: every run of a fork-local task is
                                                             retired, nothing runs; a task without a
@@ -120,14 +120,14 @@
   effect; `arm-raw` adds the resource only, the park advances the index.
 
   Theorems (kernel-checked when the namespace loads):
-    tN-inv     inv-sample w -> inv-sample (:world (tN w ...)), for every transition, with no
+    tN-inv     well-formed w -> well-formed (:world (tN w ...)), for every transition, with no
                further precondition (the transitions check what they need: e.g. T7 checks that
                the creditor computation and the debtor source exist, so `edge-ok-in` holds)
     tN-refuse  (:accepted o) = false -> (:world o) = w
     tN-l4      token check false -> (:world o) = w   (t1, t7, t9, t15, t18; t17 in engine)
-    dispatch-inv / dispatch-refuse / dispatch-l4   the same for `dispatch`, by `cases item`
-    run-items-inv, run-items-from-empty   inv-sample holds along any item sequence
-  and per helper: inv-fire-edge (T9 on any edge), inv-write-raw, inv-retire-check, ...
+    well-formed-dispatch / dispatch-refuse / dispatch-l4   the same for `dispatch`, by `cases item`
+    well-formed-run-items, run-items-from-empty   well-formed holds along any item sequence
+  and per helper: well-formed-fire-edge (T9 on any edge), well-formed-write-raw, well-formed-retire-check, ...
   The primitive edit lemmas they compose are in spindel.v2.edits (appended section).
 
   Modelled semantics and readings (see also the report's ambiguity list):
@@ -171,8 +171,8 @@
   - T13 (`retire-check`): retirable = act done, no slice, no finalizers, no resources;
     retire removes the run row and cleanup[R] and closes the run scope. STUB: T16 is only
     `close-scope-shallow` (open := false) here. The model's step (spindel.v2.rule/world-step)
-    replaces T15 by `rule/t15-full`, whose T13 is the full Z#18 retirement with the T16
-    cascade (`rule/retire-full`); `dispatch` keeps this shallow version for its lemmas.
+    replaces T15 by `rule/t15-resource-ack`, whose T13 is the full Z#18 retirement with the T16
+    cascade (`rule/t13-retire`); `dispatch` keeps this shallow version for its lemmas.
   - T15 (Z#6): refused while an edge has Z as debtor (`ack-tok-ok`); removes Z from res,
     from its run's resources and its cleanup rows, then T13.
   - T17 (Z#55, the item lives in spindel.v2.engine): `arm-raw` adds a new armed resource owned by
@@ -451,24 +451,24 @@
 ;; a source delivered once (§4.3): a deferred, or a link (C0: deferred-like for finality/awaiting)
 (a/defn once-kind [k :- Nat] Bool (Bool.or (Nat.beq k sk-deferred) (Nat.beq k sk-link)))
 ;; a source without a value (Z#53): a mailbox, a semaphore, an undelivered deferred or link
-(a/defn src-valueless [s :- SourceRow] Bool
+(a/defn source-valueless [s :- SourceRow] Bool
   (Bool.or (Nat.beq (:kind s) sk-mailbox)
    (Bool.or (Nat.beq (:kind s) sk-semaphore)
             (Bool.and (once-kind (:kind s)) (Nat.beq (:version s) 0)))))
 ;; what a source delivers: its state as ok; once closed (final), a source without a value gives
 ;; err ::closed (Z#53); a link realized with an error (C0) gives err (its state)
-(a/defn src-result [s :- SourceRow] RunResult
+(a/defn source-result [s :- SourceRow] RunResult
   (if (:fail s) (RunResult.mk res-err (:state s))
-      (if (Bool.and (Bool.not (:open s)) (src-valueless s))
+      (if (Bool.and (Bool.not (:open s)) (source-valueless s))
           (RunResult.mk res-err closed-code)
           (RunResult.mk res-ok (:state s)))))
-;; the result a debtor delivers: a computation's or task's result, a source's `src-result`
+;; the result a debtor delivers: a computation's or task's result, a source's `source-result`
 (a/defn deb-result [w :- World, d :- Nat] RunResult
   (match (comp-find w d)
     [none (match (task-find w d)
             [none (match (source-find w d)
                     [none (RunResult.mk res-ok (deb-value w d))]
-                    [(some s) (src-result s)])]
+                    [(some s) (source-result s)])]
             [(some t) (:result t)])]
     [(some c) (:result c)]))
 
@@ -492,13 +492,13 @@
 
 ;; D1 final debtors: a closed source, a delivered deferred or realized link (version > 0, §4.3),
 ;; a completed task; never a computation (Z#32)
-(a/defn src-delivered [s :- SourceRow] Bool (Bool.and (once-kind (:kind s)) (Nat.blt 0 (:version s))))
+(a/defn source-delivered [s :- SourceRow] Bool (Bool.and (once-kind (:kind s)) (Nat.blt 0 (:version s))))
 (a/defn deb-final [w :- World, d :- Nat] Bool
   (match (source-find w d)
     [none (match (task-find w d)
             [none false]
             [(some t) (Bool.not (Nat.beq (:tag (:result t)) res-none))])]
-    [(some s) (Bool.or (Bool.not (:open s)) (src-delivered s))]))
+    [(some s) (Bool.or (Bool.not (:open s)) (source-delivered s))]))
 
 ;; §4.2: a delivered dep edge returns to armed with its new baseline, unless its debtor is
 ;; final; then it is removed (Z#39)
@@ -549,41 +549,41 @@
                               (fire-savepoint-todo w e))))
                   w)]))
 
-;; ---- fire preserves inv-sample
+;; ---- fire preserves well-formed
 
-(a/theorem inv-resume [w :- World, a :- ActRow]
-  (=> (= (inv-sample w) true) (= (inv-sample (resume w a)) true))
+(a/theorem well-formed-resume [w :- World, a :- ActRow]
+  (=> (= (well-formed w) true) (= (well-formed (resume w a)) true))
   (intro h)
-  (exact (inv-run-upd (drop-act w (:id a)) (:run a) run-wake run-wake-run-id
-           (inv-drop-act w (:id a) h))))
+  (exact (well-formed-run-upd (drop-act w (:id a)) (:run a) run-wake run-wake-run-id
+           (well-formed-drop-act w (:id a) h))))
 
-(a/theorem inv-fill-slot [w :- World, a :- ActRow, x :- Nat, v :- RunResult]
-  (=> (= (inv-sample w) true) (= (inv-sample (fill-slot w a x v)) true))
+(a/theorem well-formed-fill-slot [w :- World, a :- ActRow, x :- Nat, v :- RunResult]
+  (=> (= (well-formed w) true) (= (well-formed (fill-slot w a x v)) true))
   (intro h)
   (cases hm (act-ready (act-fill x v a)))
-  (simp only [fill-slot hm]) (exact (inv-act-upd w (:id a) (act-fill x v) (act-fill-act-id x v) h))
-  (simp only [fill-slot hm]) (exact (inv-resume w a h)))
+  (simp only [fill-slot hm]) (exact (well-formed-act-upd w (:id a) (act-fill x v) (act-fill-act-id x v) h))
+  (simp only [fill-slot hm]) (exact (well-formed-resume w a h)))
 
-(a/theorem inv-edge-set-phase [w :- World, x :- Nat, p :- Nat]
-  (=> (= (inv-sample w) true) (= (inv-sample (edge-upd w x (edge-set-phase p))) true))
-  (exact (inv-edge-upd w x (edge-set-phase p) (edge-set-phase-edge-id p) (edge-set-phase-kind p)
+(a/theorem well-formed-edge-set-phase [w :- World, x :- Nat, p :- Nat]
+  (=> (= (well-formed w) true) (= (well-formed (edge-upd w x (edge-set-phase p))) true))
+  (exact (well-formed-edge-upd w x (edge-set-phase p) (edge-set-phase-edge-id p) (edge-set-phase-kind p)
            (edge-set-phase-creditor p) (edge-set-phase-debtor p) (edge-set-phase-marked p))))
 
-(a/theorem inv-invalidate [w :- World, e :- EdgeRow]
-  (=> (= (inv-sample w) true) (= (inv-sample (invalidate w e)) true))
+(a/theorem well-formed-invalidate [w :- World, e :- EdgeRow]
+  (=> (= (well-formed w) true) (= (well-formed (invalidate w e)) true))
   (intro h)
-  (exact (inv-comp-upd (edge-upd w (:id e) (edge-set-phase ph-fired)) (:creditor e) comp-inc-epoch
-           comp-inc-epoch-comp-id comp-inc-epoch-pending (inv-edge-set-phase w (:id e) ph-fired h))))
+  (exact (well-formed-comp-upd (edge-upd w (:id e) (edge-set-phase ph-fired)) (:creditor e) comp-inc-epoch
+           comp-inc-epoch-comp-id comp-inc-epoch-pending (well-formed-edge-set-phase w (:id e) ph-fired h))))
 
-(a/theorem inv-dep-consumed [w :- World, e :- EdgeRow]
-  (=> (= (inv-sample w) true) (= (inv-sample (dep-consumed w e)) true))
+(a/theorem well-formed-dep-consumed [w :- World, e :- EdgeRow]
+  (=> (= (well-formed w) true) (= (well-formed (dep-consumed w e)) true))
   (intro h)
   (cases hf (deb-final w (:debtor e)))
   (simp only [dep-consumed hf])
-  (exact (inv-edge-upd w (:id e) (edge-rearm (deb-value w (:debtor e)) (deb-version w (:debtor e)))
+  (exact (well-formed-edge-upd w (:id e) (edge-rearm (deb-value w (:debtor e)) (deb-version w (:debtor e)))
            (edge-rearm-edge-id _ _) (edge-rearm-kind _ _) (edge-rearm-creditor _ _)
            (edge-rearm-debtor _ _) (edge-rearm-marked _ _) h))
-  (simp only [dep-consumed hf]) (exact (inv-remove-edge w (:id e) h)))
+  (simp only [dep-consumed hf]) (exact (well-formed-remove-edge w (:id e) h)))
 
 ;; the edit leaves the activation and run tables alone
 (a/theorem dep-consumed-acts [w :- World, e :- EdgeRow] (= (:acts (dep-consumed w e)) (:acts w))
@@ -603,44 +603,44 @@
   (cases hm (:marked x))
   (all_goals (simp only [ho hm comp-upd edge-del set-comps set-edges])))
 
-(a/theorem inv-fire-dep [w :- World, e :- EdgeRow]
-  (=> (= (inv-sample w) true) (= (inv-sample (fire-dep w e)) true))
+(a/theorem well-formed-fire-dep [w :- World, e :- EdgeRow]
+  (=> (= (well-formed w) true) (= (well-formed (fire-dep w e)) true))
   (intro h)
   (cases ha (act-with-member (:id e) (:acts w))) (case' [some a]) (case' [none])
-  (simp only [fire-dep ha]) (exact (inv-invalidate w e h))
+  (simp only [fire-dep ha]) (exact (well-formed-invalidate w e h))
   (cases hc (Bool.and (run-current-of w (:run a) (:creditor e)) (deb-avail w (:debtor e))))
-  (simp only [fire-dep ha hc]) (exact (inv-invalidate w e h))
+  (simp only [fire-dep ha hc]) (exact (well-formed-invalidate w e h))
   (simp only [fire-dep ha hc deliver-dep])
-  (exact (inv-fill-slot _ a _ _ (inv-dep-consumed w e h))))
+  (exact (well-formed-fill-slot _ a _ _ (well-formed-dep-consumed w e h))))
 
-(a/theorem inv-fire-wait-act [res :- RunResult, w :- World, e :- EdgeRow]
-  (=> (= (inv-sample w) true) (= (inv-sample (fire-wait-act res w e)) true))
+(a/theorem well-formed-fire-wait-act [res :- RunResult, w :- World, e :- EdgeRow]
+  (=> (= (well-formed w) true) (= (well-formed (fire-wait-act res w e)) true))
   (intro h)
   (cases ha (act-find w (:creditor e))) (case' [some a]) (case' [none])
-  (simp only [fire-wait-act ha]) (exact (inv-edge-set-phase w (:id e) ph-fired h))
+  (simp only [fire-wait-act ha]) (exact (well-formed-edge-set-phase w (:id e) ph-fired h))
   (cases hc (run-current w (:run a)))
-  (simp only [fire-wait-act ha hc]) (exact (inv-edge-set-phase w (:id e) ph-fired h))
-  (simp only [fire-wait-act ha hc]) (exact (inv-fill-slot _ a _ _ (inv-edge-set-phase w (:id e) ph-fired h))))
+  (simp only [fire-wait-act ha hc]) (exact (well-formed-edge-set-phase w (:id e) ph-fired h))
+  (simp only [fire-wait-act ha hc]) (exact (well-formed-fill-slot _ a _ _ (well-formed-edge-set-phase w (:id e) ph-fired h))))
 
-(a/theorem inv-fire-wait [res :- RunResult, w :- World, e :- EdgeRow]
-  (=> (= (inv-sample w) true) (= (inv-sample (fire-wait res w e)) true))
+(a/theorem well-formed-fire-wait [res :- RunResult, w :- World, e :- EdgeRow]
+  (=> (= (well-formed w) true) (= (well-formed (fire-wait res w e)) true))
   (intro h)
   (cases hc (Nat.beq (:creditor e) 0))
-  (simp only [fire-wait hc]) (exact (inv-fire-wait-act res w e h))
-  (simp only [fire-wait hc]) (exact (inv-remove-edge w (:id e) h)))
+  (simp only [fire-wait hc]) (exact (well-formed-fire-wait-act res w e h))
+  (simp only [fire-wait hc]) (exact (well-formed-remove-edge w (:id e) h)))
 
-(a/theorem inv-fire-observe [w :- World, e :- EdgeRow]
-  (=> (= (inv-sample w) true) (= (inv-sample (fire-observe w e)) true))
+(a/theorem well-formed-fire-observe [w :- World, e :- EdgeRow]
+  (=> (= (well-formed w) true) (= (well-formed (fire-observe w e)) true))
   (intro h)
   (cases hs (observe-new e (deb-version w (:debtor e))))
   (simp only [fire-observe hs]) (exact h)
   (simp only [fire-observe hs])
-  (exact (inv-edge-upd w (:id e) (edge-set-seen (deb-version w (:debtor e)))
+  (exact (well-formed-edge-upd w (:id e) (edge-set-seen (deb-version w (:debtor e)))
            (edge-set-seen-edge-id _) (edge-set-seen-kind _) (edge-set-seen-creditor _)
            (edge-set-seen-debtor _) (edge-set-seen-marked _) h)))
 
-(a/theorem inv-fire-edge [res :- RunResult, w :- World, x :- Nat]
-  (=> (= (inv-sample w) true) (= (inv-sample (fire-edge res w x)) true))
+(a/theorem well-formed-fire-edge [res :- RunResult, w :- World, x :- Nat]
+  (=> (= (well-formed w) true) (= (well-formed (fire-edge res w x)) true))
   (intro h)
   (cases hf (edge-find w x)) (case' [some e]) (case' [none])
   (simp only [fire-edge hf]) (exact h)
@@ -650,9 +650,9 @@
   (cases hk2 (Nat.beq (:kind e) ek-wait))
   (cases hk3 (Nat.beq (:kind e) ek-observe))
   (simp only [fire-edge hf hp hk1 hk2 hk3 fire-savepoint-todo]) (exact h)
-  (simp only [fire-edge hf hp hk1 hk2 hk3]) (exact (inv-fire-observe w e h))
-  (simp only [fire-edge hf hp hk1 hk2]) (exact (inv-fire-wait res w e h))
-  (simp only [fire-edge hf hp hk1]) (exact (inv-fire-dep w e h)))
+  (simp only [fire-edge hf hp hk1 hk2 hk3]) (exact (well-formed-fire-observe w e h))
+  (simp only [fire-edge hf hp hk1 hk2]) (exact (well-formed-fire-wait res w e h))
+  (simp only [fire-edge hf hp hk1]) (exact (well-formed-fire-dep w e h)))
 
 ;; ===========================================================================
 ;; Part D. Transitions
@@ -660,10 +660,10 @@
 
 ;; ---- T1 create-source
 
-(a/defn src-kind-ok [kind :- Nat] Bool (Nat.ble kind sk-semaphore))
+(a/defn source-kind-ok [kind :- Nat] Bool (Nat.ble kind sk-semaphore))
 (a/defn in-comp [w :- World, r :- RunRow] Bool (comp-has w (:of r)))
 ;; §5.2: inside a computation run the owner is the computation, inside a task run its run scope
-(a/defn src-owner [w :- World, r :- RunRow] Nat (if (in-comp w r) (:of r) (:scope r)))
+(a/defn source-owner [w :- World, r :- RunRow] Nat (if (in-comp w r) (:of r) (:scope r)))
 (a/defn new-source [id :- Nat, owner :- Nat, kind :- Nat, v :- Nat] SourceRow
   (SourceRow.mk id owner kind v 0 true 1 (List.nil Nat) 0 0 0 false v))
 ;; §5.2: a computation run records the creation in its basis, with at = effect-index
@@ -671,79 +671,79 @@
   (if (in-comp w r) (comp-upd w (:of r) (comp-add-basis (Created.mk id (:effect-index r)))) w))
 
 (a/defn create-source-raw [w :- World, r :- RunRow, kind :- Nat, v :- Nat] World
-  (run-upd (record-basis (bump (source-ins w (new-source (:next-id w) (src-owner w r) kind v))) r (:next-id w))
+  (run-upd (record-basis (bump (source-ins w (new-source (:next-id w) (source-owner w r) kind v))) r (:next-id w))
            (:id r) run-tick))
 
-(a/defn t1-create-source [w :- World, st :- Nat, kind :- Nat, v :- Nat, fresh :- Nat] Outcome
+(a/defn t1-create-source-basic [w :- World, st :- Nat, kind :- Nat, v :- Nat, fresh :- Nat] Outcome
   (match (tok-run w st)
     [none (refuse w)]
-    [(some r) (if (Bool.and (Nat.beq fresh (:next-id w)) (src-kind-ok kind))
+    [(some r) (if (Bool.and (Nat.beq fresh (:next-id w)) (source-kind-ok kind))
                   (accept (create-source-raw w r kind v))
                   (refuse w))]))
 
 (a/defn scope-open-at [w :- World, s :- Nat] Bool
   (match (scope-find w s) [none false] [(some sc) (:open sc)]))
 
-(a/defn t1-create-source-top [w :- World, scope :- Nat, kind :- Nat, v :- Nat, fresh :- Nat] Outcome
-  (if (Bool.and (Bool.and (Nat.beq fresh (:next-id w)) (src-kind-ok kind)) (scope-open-at w scope))
+(a/defn t1-create-nonstream-top [w :- World, scope :- Nat, kind :- Nat, v :- Nat, fresh :- Nat] Outcome
+  (if (Bool.and (Bool.and (Nat.beq fresh (:next-id w)) (source-kind-ok kind)) (scope-open-at w scope))
       (accept (bump (source-ins w (new-source (:next-id w) scope kind v))))
       (refuse w)))
 
-(a/theorem inv-record-basis [w :- World, r :- RunRow, id :- Nat]
-  (=> (= (inv-sample w) true) (= (inv-sample (record-basis w r id)) true))
+(a/theorem well-formed-record-basis [w :- World, r :- RunRow, id :- Nat]
+  (=> (= (well-formed w) true) (= (well-formed (record-basis w r id)) true))
   (intro h)
   (cases hc (in-comp w r))
   (simp only [record-basis hc]) (exact h)
   (simp only [record-basis hc])
-  (exact (inv-comp-upd w (:of r) (comp-add-basis (Created.mk id (:effect-index r)))
+  (exact (well-formed-comp-upd w (:of r) (comp-add-basis (Created.mk id (:effect-index r)))
            (comp-add-basis-comp-id _) (comp-add-basis-pending _) h)))
 
-(a/theorem inv-create-source-raw [w :- World, r :- RunRow, kind :- Nat, v :- Nat]
-  (=> (= (inv-sample w) true) (= (inv-sample (create-source-raw w r kind v)) true))
+(a/theorem well-formed-create-source-raw [w :- World, r :- RunRow, kind :- Nat, v :- Nat]
+  (=> (= (well-formed w) true) (= (well-formed (create-source-raw w r kind v)) true))
   (intro h)
   (simp only [create-source-raw])
-  (exact (inv-run-upd _ (:id r) run-tick run-tick-run-id
-           (inv-record-basis _ r (:next-id w)
-             (inv-source-ins-fresh w (new-source (:next-id w) (src-owner w r) kind v) (rfl) h)))))
+  (exact (well-formed-run-upd _ (:id r) run-tick run-tick-run-id
+           (well-formed-record-basis _ r (:next-id w)
+             (well-formed-source-ins-fresh w (new-source (:next-id w) (source-owner w r) kind v) (rfl) h)))))
 
-(a/theorem t1-inv [w :- World, st :- Nat, kind :- Nat, v :- Nat, fresh :- Nat]
-  (=> (= (inv-sample w) true) (= (inv-sample (:world (t1-create-source w st kind v fresh))) true))
+(a/theorem well-formed-t1-create-source-basic [w :- World, st :- Nat, kind :- Nat, v :- Nat, fresh :- Nat]
+  (=> (= (well-formed w) true) (= (well-formed (:world (t1-create-source-basic w st kind v fresh))) true))
   (intro h)
   (cases ht (tok-run w st)) (case' [some r]) (case' [none])
-  (simp only [t1-create-source ht refuse]) (exact h)
-  (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (src-kind-ok kind)))
-  (simp only [t1-create-source ht hg refuse]) (exact h)
-  (simp only [t1-create-source ht hg accept]) (exact (inv-create-source-raw w r kind v h)))
+  (simp only [t1-create-source-basic ht refuse]) (exact h)
+  (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (source-kind-ok kind)))
+  (simp only [t1-create-source-basic ht hg refuse]) (exact h)
+  (simp only [t1-create-source-basic ht hg accept]) (exact (well-formed-create-source-raw w r kind v h)))
 
-(a/theorem t1-refuse [w :- World, st :- Nat, kind :- Nat, v :- Nat, fresh :- Nat]
-  (=> (= (:accepted (t1-create-source w st kind v fresh)) false) (= (:world (t1-create-source w st kind v fresh)) w))
+(a/theorem t1-create-source-basic-refuse [w :- World, st :- Nat, kind :- Nat, v :- Nat, fresh :- Nat]
+  (=> (= (:accepted (t1-create-source-basic w st kind v fresh)) false) (= (:world (t1-create-source-basic w st kind v fresh)) w))
   (intro ha)
   (cases ht (tok-run w st)) (case' [some r]) (case' [none])
-  (simp only [t1-create-source ht refuse])
-  (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (src-kind-ok kind)))
-  (simp only [t1-create-source ht hg refuse])
-  (simp [t1-create-source ht hg accept] at ha))
+  (simp only [t1-create-source-basic ht refuse])
+  (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (source-kind-ok kind)))
+  (simp only [t1-create-source-basic ht hg refuse])
+  (simp [t1-create-source-basic ht hg accept] at ha))
 
-(a/theorem t1-l4 [w :- World, st :- Nat, kind :- Nat, v :- Nat, fresh :- Nat]
-  (=> (= (run-tok-ok w st) false) (= (:world (t1-create-source w st kind v fresh)) w))
+(a/theorem t1-create-source-basic-l4 [w :- World, st :- Nat, kind :- Nat, v :- Nat, fresh :- Nat]
+  (=> (= (run-tok-ok w st) false) (= (:world (t1-create-source-basic w st kind v fresh)) w))
   (intro hf)
-  (simp only [t1-create-source (run-tok-none w st hf) refuse]))
+  (simp only [t1-create-source-basic (run-tok-none w st hf) refuse]))
 
-(a/theorem t1-top-inv [w :- World, scope :- Nat, kind :- Nat, v :- Nat, fresh :- Nat]
-  (=> (= (inv-sample w) true) (= (inv-sample (:world (t1-create-source-top w scope kind v fresh))) true))
+(a/theorem well-formed-t1-create-nonstream-top [w :- World, scope :- Nat, kind :- Nat, v :- Nat, fresh :- Nat]
+  (=> (= (well-formed w) true) (= (well-formed (:world (t1-create-nonstream-top w scope kind v fresh))) true))
   (intro h)
-  (cases hg (Bool.and (Bool.and (Nat.beq fresh (:next-id w)) (src-kind-ok kind)) (scope-open-at w scope)))
-  (simp only [t1-create-source-top hg refuse]) (exact h)
-  (simp only [t1-create-source-top hg accept])
-  (exact (inv-source-ins-fresh w (new-source (:next-id w) scope kind v) (rfl) h)))
+  (cases hg (Bool.and (Bool.and (Nat.beq fresh (:next-id w)) (source-kind-ok kind)) (scope-open-at w scope)))
+  (simp only [t1-create-nonstream-top hg refuse]) (exact h)
+  (simp only [t1-create-nonstream-top hg accept])
+  (exact (well-formed-source-ins-fresh w (new-source (:next-id w) scope kind v) (rfl) h)))
 
-(a/theorem t1-top-refuse [w :- World, scope :- Nat, kind :- Nat, v :- Nat, fresh :- Nat]
-  (=> (= (:accepted (t1-create-source-top w scope kind v fresh)) false)
-      (= (:world (t1-create-source-top w scope kind v fresh)) w))
+(a/theorem t1-create-nonstream-top-refuse [w :- World, scope :- Nat, kind :- Nat, v :- Nat, fresh :- Nat]
+  (=> (= (:accepted (t1-create-nonstream-top w scope kind v fresh)) false)
+      (= (:world (t1-create-nonstream-top w scope kind v fresh)) w))
   (intro ha)
-  (cases hg (Bool.and (Bool.and (Nat.beq fresh (:next-id w)) (src-kind-ok kind)) (scope-open-at w scope)))
-  (simp only [t1-create-source-top hg refuse])
-  (simp [t1-create-source-top hg accept] at ha))
+  (cases hg (Bool.and (Bool.and (Nat.beq fresh (:next-id w)) (source-kind-ok kind)) (scope-open-at w scope)))
+  (simp only [t1-create-nonstream-top hg refuse])
+  (simp [t1-create-nonstream-top hg accept] at ha))
 
 ;; ---- T2 write (signals and cells)
 
@@ -777,7 +777,7 @@
 
 ;; the computations reachable from `roots` through reversed dep edges (any phase), roots included.
 ;; Fuel 2|E|+1 >= |roots| + sum |succ v| + 1 (each dep edge is one successor entry, the roots are
-;; dep creditors), so the worklist converges; the inv-sample theorems do not depend on it (tests
+;; dep creditors), so the worklist converges; the well-formed theorems do not depend on it (tests
 ;; check `converged`).
 (a/defn dirty-from [w :- World, roots :- (List Nat)] ReachResult
   (reach-run (+ (* 2 (edge-count (:edges w))) 1) (dep-creditors (:edges w)) roots))
@@ -805,25 +805,25 @@
     [none (refuse w)]
     [(some s) (if (writable s) (accept (write-raw w x v)) (refuse w))]))
 
-(a/theorem inv-write-raw [w :- World, x :- Nat, v :- Nat]
-  (=> (= (inv-sample w) true) (= (inv-sample (write-raw w x v)) true))
+(a/theorem well-formed-write-raw [w :- World, x :- Nat, v :- Nat]
+  (=> (= (well-formed w) true) (= (well-formed (write-raw w x v)) true))
   (intro h)
   (simp only [write-raw])
-  (exact (nat-fold-inv mark-edge mark-edge-inv-sample (mark-targets (dirty-set w x) (:edges w)) _
-           (nat-fold-inv (fire-edge (RunResult.mk res-ok v)) (inv-fire-edge (RunResult.mk res-ok v))
+  (exact (well-formed-nat-fold mark-edge well-formed-mark-edge (mark-targets (dirty-set w x) (:edges w)) _
+           (well-formed-nat-fold (fire-edge (RunResult.mk res-ok v)) (well-formed-fire-edge (RunResult.mk res-ok v))
              (edges-onto x (:edges w)) _
-             (inv-source-upd w x (source-write v) (source-write-source-id v) h)))))
+             (well-formed-source-upd w x (source-write v) (source-write-source-id v) h)))))
 
-(a/theorem t2-inv [w :- World, x :- Nat, v :- Nat]
-  (=> (= (inv-sample w) true) (= (inv-sample (:world (t2-write w x v))) true))
+(a/theorem well-formed-t2-write [w :- World, x :- Nat, v :- Nat]
+  (=> (= (well-formed w) true) (= (well-formed (:world (t2-write w x v))) true))
   (intro h)
   (cases hs (source-find w x)) (case' [some s]) (case' [none])
   (simp only [t2-write hs refuse]) (exact h)
   (cases hg (writable s))
   (simp only [t2-write hs hg refuse]) (exact h)
-  (simp only [t2-write hs hg accept]) (exact (inv-write-raw w x v h)))
+  (simp only [t2-write hs hg accept]) (exact (well-formed-write-raw w x v h)))
 
-(a/theorem t2-refuse [w :- World, x :- Nat, v :- Nat]
+(a/theorem t2-write-refuse [w :- World, x :- Nat, v :- Nat]
   (=> (= (:accepted (t2-write w x v)) false) (= (:world (t2-write w x v)) w))
   (intro ha)
   (cases hs (source-find w x)) (case' [some s]) (case' [none])
@@ -897,36 +897,36 @@
   (simp only [comp-has] at hc)
   (simp [edge-ok-in edge-ok cred-ok deb-ok track-edge hc hx]))
 
-(a/theorem inv-track-fin [s :- SourceRow, y :- Nat, w :- World]
-  (=> (= (inv-sample w) true) (= (inv-sample (track-fin s y w)) true))
+(a/theorem well-formed-track-fin [s :- SourceRow, y :- Nat, w :- World]
+  (=> (= (well-formed w) true) (= (well-formed (track-fin s y w)) true))
   (intro h)
   (cases ho (:open s))
   (case [true] (simp only [track-fin ho]) (exact h))
-  (case [false] (simp only [track-fin ho]) (exact (inv-remove-edge w y h))))
+  (case [false] (simp only [track-fin ho]) (exact (well-formed-remove-edge w y h))))
 
-(a/theorem inv-track-raw [w :- World, r :- RunRow, x :- Nat, s :- SourceRow, k :- Nat]
+(a/theorem well-formed-track-raw [w :- World, r :- RunRow, x :- Nat, s :- SourceRow, k :- Nat]
   (=> (= (comp-has w (:of r)) true) (= (source-find w x) (Option.some SourceRow s))
-      (= (inv-sample w) true) (= (inv-sample (track-raw w r x s k)) true))
+      (= (well-formed w) true) (= (well-formed (track-raw w r x s k)) true))
   (intros hc hs h)
-  (have h2 (= (inv-sample (match (site-edge (:edges w) (:of r) (:effect-index r) x)
+  (have h2 (= (well-formed (match (site-edge (:edges w) (:of r) (:effect-index r) x)
                              [none (track-new w r x s k)]
                              [(some e) (comp-upd (track-fin s (:id e) (edge-upd w (:id e) (edge-reread (track-cont r k) s)))
                                                  (:of r) (comp-consume-adopt (:effect-index r) x))])) true))
   (cases he (site-edge (:edges w) (:of r) (:effect-index r) x)) (case' [some e]) (case' [none])
   (simp only [track-new])
-  (exact (inv-comp-upd _ (:of r) (comp-consume-adopt (:effect-index r) x)
+  (exact (well-formed-comp-upd _ (:of r) (comp-consume-adopt (:effect-index r) x)
            (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _)
-           (inv-track-fin s (:next-id w) _ (insert-edge-fresh-inv-sample w (track-edge r x s k) (track-edge-ok w r x s k hc hs) h))))
-  (exact (inv-comp-upd _ (:of r) (comp-consume-adopt (:effect-index r) x)
+           (well-formed-track-fin s (:next-id w) _ (well-formed-insert-edge-fresh w (track-edge r x s k) (track-edge-ok w r x s k hc hs) h))))
+  (exact (well-formed-comp-upd _ (:of r) (comp-consume-adopt (:effect-index r) x)
            (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _)
-           (inv-track-fin s (:id e) _
-             (inv-edge-upd w (:id e) (edge-reread (track-cont r k) s) (edge-reread-edge-id _ _) (edge-reread-kind _ _)
+           (well-formed-track-fin s (:id e) _
+             (well-formed-edge-upd w (:id e) (edge-reread (track-cont r k) s) (edge-reread-edge-id _ _) (edge-reread-kind _ _)
                (edge-reread-creditor _ _) (edge-reread-debtor _ _) (edge-reread-marked _ _) h))))
   (simp only [track-raw])
-  (exact (inv-run-upd _ (:id r) run-tick run-tick-run-id h2)))
+  (exact (well-formed-run-upd _ (:id r) run-tick run-tick-run-id h2)))
 
-(a/theorem t7-inv [w :- World, st :- Nat, x :- Nat, k :- Nat, fresh :- Nat]
-  (=> (= (inv-sample w) true) (= (inv-sample (:world (t7-track w st x k fresh))) true))
+(a/theorem well-formed-t7-track [w :- World, st :- Nat, x :- Nat, k :- Nat, fresh :- Nat]
+  (=> (= (well-formed w) true) (= (well-formed (:world (t7-track w st x k fresh))) true))
   (intro h)
   (cases ht (tok-run w st)) (case' [some r]) (case' [none])
   (simp only [t7-track ht refuse]) (exact h)
@@ -937,12 +937,12 @@
   (cases hc (comp-has w (:of r)))
   (cases hta (task-has w (:of r)))
   (simp only [t7-track ht hs hk hc hta refuse]) (exact h)
-  (simp only [t7-track ht hs hk hc hta accept]) (exact (inv-run-upd w (:id r) run-tick run-tick-run-id h))
+  (simp only [t7-track ht hs hk hc hta accept]) (exact (well-formed-run-upd w (:id r) run-tick run-tick-run-id h))
   (cases hf (Bool.or (Nat.beq fresh (:next-id w)) (opt-some (site-edge (:edges w) (:of r) (:effect-index r) x))))
   (simp only [t7-track ht hs hk hc hf refuse]) (exact h)
-  (simp only [t7-track ht hs hk hc hf accept]) (exact (inv-track-raw w r x s k hc hs h)))
+  (simp only [t7-track ht hs hk hc hf accept]) (exact (well-formed-track-raw w r x s k hc hs h)))
 
-(a/theorem t7-refuse [w :- World, st :- Nat, x :- Nat, k :- Nat, fresh :- Nat]
+(a/theorem t7-track-refuse [w :- World, st :- Nat, x :- Nat, k :- Nat, fresh :- Nat]
   (=> (= (:accepted (t7-track w st x k fresh)) false) (= (:world (t7-track w st x k fresh)) w))
   (intro ha)
   (cases ht (tok-run w st)) (case' [some r]) (case' [none])
@@ -959,7 +959,7 @@
   (simp only [t7-track ht hs hk hc hf refuse])
   (simp [t7-track ht hs hk hc hf accept] at ha))
 
-(a/theorem t7-l4 [w :- World, st :- Nat, x :- Nat, k :- Nat, fresh :- Nat]
+(a/theorem t7-track-l4 [w :- World, st :- Nat, x :- Nat, k :- Nat, fresh :- Nat]
   (=> (= (run-tok-ok w st) false) (= (:world (t7-track w st x k fresh)) w))
   (intro hf)
   (simp only [t7-track (run-tok-none w st hf) refuse]))
@@ -981,7 +981,7 @@
 ;; (reactivate or re-run). Not modelled yet: such an observe refuses (`validate-idle-todo`).
 (a/defn validate-idle-todo [w :- World] Outcome (refuse w))
 
-(a/defn t8-observe [w :- World, d :- Nat, cb :- Nat, fresh :- Nat] Outcome
+(a/defn t8-observe-basic [w :- World, d :- Nat, cb :- Nat, fresh :- Nat] Outcome
   (if (Bool.and (Nat.beq fresh (:next-id w)) (edge-ok-in w (observe-edge w d cb)))
       (if (idle-comp w d) (validate-idle-todo w) (accept (insert-edge-fresh w (observe-edge w d cb))))
       (refuse w)))
@@ -991,35 +991,35 @@
     [none (refuse w)]
     [(some e) (if (Nat.beq (:kind e) ek-observe) (accept (remove-edge w x)) (refuse w))]))
 
-(a/theorem t8-observe-inv [w :- World, d :- Nat, cb :- Nat, fresh :- Nat]
-  (=> (= (inv-sample w) true) (= (inv-sample (:world (t8-observe w d cb fresh))) true))
+(a/theorem well-formed-t8-observe-basic [w :- World, d :- Nat, cb :- Nat, fresh :- Nat]
+  (=> (= (well-formed w) true) (= (well-formed (:world (t8-observe-basic w d cb fresh))) true))
   (intro h)
   (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (edge-ok-in w (observe-edge w d cb))))
-  (simp only [t8-observe hg refuse]) (exact h)
+  (simp only [t8-observe-basic hg refuse]) (exact h)
   (cases hi (idle-comp w d))
-  (simp only [t8-observe hg hi accept])
+  (simp only [t8-observe-basic hg hi accept])
   (have he (= (edge-ok-in w (observe-edge w d cb)) true))
   (simp only [Bool.and_eq_true] at hg) (exact (And.right hg))
-  (exact (insert-edge-fresh-inv-sample w (observe-edge w d cb) he h))
-  (simp only [t8-observe hg hi validate-idle-todo refuse]) (exact h))
+  (exact (well-formed-insert-edge-fresh w (observe-edge w d cb) he h))
+  (simp only [t8-observe-basic hg hi validate-idle-todo refuse]) (exact h))
 
-(a/theorem t8-observe-refuse [w :- World, d :- Nat, cb :- Nat, fresh :- Nat]
-  (=> (= (:accepted (t8-observe w d cb fresh)) false) (= (:world (t8-observe w d cb fresh)) w))
+(a/theorem t8-observe-basic-refuse [w :- World, d :- Nat, cb :- Nat, fresh :- Nat]
+  (=> (= (:accepted (t8-observe-basic w d cb fresh)) false) (= (:world (t8-observe-basic w d cb fresh)) w))
   (intro ha)
   (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (edge-ok-in w (observe-edge w d cb))))
-  (simp only [t8-observe hg refuse])
+  (simp only [t8-observe-basic hg refuse])
   (cases hi (idle-comp w d))
-  (simp [t8-observe hg hi accept] at ha)
-  (simp only [t8-observe hg hi validate-idle-todo refuse]))
+  (simp [t8-observe-basic hg hi accept] at ha)
+  (simp only [t8-observe-basic hg hi validate-idle-todo refuse]))
 
-(a/theorem t8-unobserve-inv [w :- World, x :- Nat]
-  (=> (= (inv-sample w) true) (= (inv-sample (:world (t8-unobserve w x))) true))
+(a/theorem well-formed-t8-unobserve [w :- World, x :- Nat]
+  (=> (= (well-formed w) true) (= (well-formed (:world (t8-unobserve w x))) true))
   (intro h)
   (cases hf (edge-find w x)) (case' [some e]) (case' [none])
   (simp only [t8-unobserve hf refuse]) (exact h)
   (cases hk (Nat.beq (:kind e) ek-observe))
   (simp only [t8-unobserve hf hk refuse]) (exact h)
-  (simp only [t8-unobserve hf hk accept]) (exact (inv-remove-edge w x h)))
+  (simp only [t8-unobserve hf hk accept]) (exact (well-formed-remove-edge w x h)))
 
 (a/theorem t8-unobserve-refuse [w :- World, x :- Nat]
   (=> (= (:accepted (t8-unobserve w x)) false) (= (:world (t8-unobserve w x)) w))
@@ -1035,21 +1035,21 @@
 (a/defn t9-fire [w :- World, x :- Nat, tag :- Nat, v :- Nat] Outcome
   (if (fire-tok-ok w x) (accept (fire-edge (RunResult.mk tag v) w x)) (refuse w)))
 
-(a/theorem t9-inv [w :- World, x :- Nat, tag :- Nat, v :- Nat]
-  (=> (= (inv-sample w) true) (= (inv-sample (:world (t9-fire w x tag v))) true))
+(a/theorem well-formed-t9-fire [w :- World, x :- Nat, tag :- Nat, v :- Nat]
+  (=> (= (well-formed w) true) (= (well-formed (:world (t9-fire w x tag v))) true))
   (intro h)
   (cases hg (fire-tok-ok w x))
   (simp only [t9-fire hg refuse]) (exact h)
-  (simp only [t9-fire hg accept]) (exact (inv-fire-edge (RunResult.mk tag v) w x h)))
+  (simp only [t9-fire hg accept]) (exact (well-formed-fire-edge (RunResult.mk tag v) w x h)))
 
-(a/theorem t9-refuse [w :- World, x :- Nat, tag :- Nat, v :- Nat]
+(a/theorem t9-fire-refuse [w :- World, x :- Nat, tag :- Nat, v :- Nat]
   (=> (= (:accepted (t9-fire w x tag v)) false) (= (:world (t9-fire w x tag v)) w))
   (intro ha)
   (cases hg (fire-tok-ok w x))
   (simp only [t9-fire hg refuse])
   (simp [t9-fire hg accept] at ha))
 
-(a/theorem t9-l4 [w :- World, x :- Nat, tag :- Nat, v :- Nat]
+(a/theorem t9-fire-l4 [w :- World, x :- Nat, tag :- Nat, v :- Nat]
   (=> (= (fire-tok-ok w x) false) (= (:world (t9-fire w x tag v)) w))
   (intro hg) (simp only [t9-fire hg refuse]))
 
@@ -1060,7 +1060,7 @@
             (Bool.and (Bool.not (:slice r))
                       (Bool.and (fins-empty (:finalizers r)) (nats-empty (:resources r))))))
 
-;; STUB(T16), superseded in the step by spindel.v2.rule/retire-full (Z#18 order, T16 cascade).
+;; STUB(T16), superseded in the step by spindel.v2.rule/t13-retire (Z#18 order, T16 cascade).
 ;; Retiring closes the run scope via T16. Here the scope is only marked closed
 ;; (`close-scope-shallow`). Cancelling the work it owns, closing its explicit child scopes and
 ;; sources and removing the empty subtree are T16's cancel cascade (next batch). Once the run
@@ -1084,54 +1084,54 @@
 ;; T15 (Z#6): the acknowledgement token needs the resource row and no edge with Z as debtor
 (a/defn ack-tok-ok [w :- World, z :- Nat] Bool
   (Bool.and (resource-has w z) (tbl-all (no-debtor z) (:edges w))))
-(a/defn t15-resource-ack [w :- World, z :- Nat] Outcome
+(a/defn t15-resource-ack-basic [w :- World, z :- Nat] Outcome
   (if (tbl-all (no-debtor z) (:edges w))
       (match (resource-find w z)
         [none (refuse w)]
         [(some zr) (accept (retire-check (ack-raw w z (:owner zr)) (:owner zr)))])
       (refuse w)))
 
-(a/theorem inv-retire [w :- World, r :- RunRow]
-  (=> (= (inv-sample w) true) (= (inv-sample (retire w r)) true))
+(a/theorem well-formed-retire [w :- World, r :- RunRow]
+  (=> (= (well-formed w) true) (= (well-formed (retire w r)) true))
   (intro h)
   (simp only [retire close-scope-shallow])
-  (exact (inv-cleanup-del _ (:id r) (inv-run-del _ (:id r)
-           (inv-scope-upd w (:scope r) scope-close scope-close-scope-id h)))))
+  (exact (well-formed-cleanup-del _ (:id r) (well-formed-run-del _ (:id r)
+           (well-formed-scope-upd w (:scope r) scope-close scope-close-scope-id h)))))
 
-(a/theorem inv-retire-check [w :- World, rid :- Nat]
-  (=> (= (inv-sample w) true) (= (inv-sample (retire-check w rid)) true))
+(a/theorem well-formed-retire-check [w :- World, rid :- Nat]
+  (=> (= (well-formed w) true) (= (well-formed (retire-check w rid)) true))
   (intro h)
   (cases hf (run-find w rid)) (case' [some r]) (case' [none])
   (simp only [retire-check hf]) (exact h)
   (cases hr (retirable r))
   (simp only [retire-check hf hr]) (exact h)
-  (simp only [retire-check hf hr]) (exact (inv-retire w r h)))
+  (simp only [retire-check hf hr]) (exact (well-formed-retire w r h)))
 
-(a/theorem inv-ack-raw [w :- World, z :- Nat, owner :- Nat]
-  (=> (= (tbl-all (no-debtor z) (:edges w)) true) (= (inv-sample w) true) (= (inv-sample (ack-raw w z owner)) true))
+(a/theorem well-formed-ack-raw [w :- World, z :- Nat, owner :- Nat]
+  (=> (= (tbl-all (no-debtor z) (:edges w)) true) (= (well-formed w) true) (= (well-formed (ack-raw w z owner)) true))
   (intros hu h)
   (simp only [ack-raw])
-  (exact (inv-cleanup-upd _ owner (cleanup-drop z)
-           (inv-run-upd _ owner (run-unres z) (run-unres-run-id z) (inv-resource-del w z hu h)))))
+  (exact (well-formed-cleanup-upd _ owner (cleanup-drop z)
+           (well-formed-run-upd _ owner (run-unres z) (run-unres-run-id z) (well-formed-resource-del w z hu h)))))
 
-(a/theorem t15-inv [w :- World, z :- Nat]
-  (=> (= (inv-sample w) true) (= (inv-sample (:world (t15-resource-ack w z))) true))
+(a/theorem well-formed-t15-resource-ack-basic [w :- World, z :- Nat]
+  (=> (= (well-formed w) true) (= (well-formed (:world (t15-resource-ack-basic w z))) true))
   (intro h)
   (cases hu (tbl-all (no-debtor z) (:edges w)))
-  (simp only [t15-resource-ack hu refuse]) (exact h)
+  (simp only [t15-resource-ack-basic hu refuse]) (exact h)
   (cases hf (resource-find w z)) (case' [some zr]) (case' [none])
-  (simp only [t15-resource-ack hu hf refuse]) (exact h)
-  (simp only [t15-resource-ack hu hf accept])
-  (exact (inv-retire-check _ (:owner zr) (inv-ack-raw w z (:owner zr) hu h))))
+  (simp only [t15-resource-ack-basic hu hf refuse]) (exact h)
+  (simp only [t15-resource-ack-basic hu hf accept])
+  (exact (well-formed-retire-check _ (:owner zr) (well-formed-ack-raw w z (:owner zr) hu h))))
 
-(a/theorem t15-refuse [w :- World, z :- Nat]
-  (=> (= (:accepted (t15-resource-ack w z)) false) (= (:world (t15-resource-ack w z)) w))
+(a/theorem t15-resource-ack-basic-refuse [w :- World, z :- Nat]
+  (=> (= (:accepted (t15-resource-ack-basic w z)) false) (= (:world (t15-resource-ack-basic w z)) w))
   (intro ha)
   (cases hu (tbl-all (no-debtor z) (:edges w)))
-  (simp only [t15-resource-ack hu refuse])
+  (simp only [t15-resource-ack-basic hu refuse])
   (cases hf (resource-find w z)) (case' [some zr]) (case' [none])
-  (simp only [t15-resource-ack hu hf refuse])
-  (simp [t15-resource-ack hu hf accept] at ha))
+  (simp only [t15-resource-ack-basic hu hf refuse])
+  (simp [t15-resource-ack-basic hu hf accept] at ha))
 
 (a/theorem res-tok-none [w :- World, z :- Nat]
   (=> (= (res-tok-ok w z) false) (= (resource-find w z) (Option.none ResRow)))
@@ -1142,13 +1142,13 @@
   (exact (tbl-find-has ResRow resource-id z zr (:res w) hf))
   (simp [res-tok-ok resource-has hh] at hg))
 
-(a/theorem t15-l4 [w :- World, z :- Nat]
-  (=> (= (ack-tok-ok w z) false) (= (:world (t15-resource-ack w z)) w))
+(a/theorem t15-resource-ack-basic-l4 [w :- World, z :- Nat]
+  (=> (= (ack-tok-ok w z) false) (= (:world (t15-resource-ack-basic w z)) w))
   (intro hg)
   (cases hu (tbl-all (no-debtor z) (:edges w)))
-  (simp only [t15-resource-ack hu refuse])
+  (simp only [t15-resource-ack-basic hu refuse])
   (have hr (= (res-tok-ok w z) false)) (simp only [ack-tok-ok hu Bool.and_true] at hg) (exact hg)
-  (simp only [t15-resource-ack hu (res-tok-none w z hr) refuse]))
+  (simp only [t15-resource-ack-basic hu (res-tok-none w z hr) refuse]))
 
 ;; ---- T17 arm (Z#55): the resource part; the item (resource, activation, wait edge, park) is
 ;; spindel.v2.engine's `t17-arm`
@@ -1158,12 +1158,12 @@
   (run-upd (bump (resource-ins w (ResRow.mk (:next-id w) (:id r) kind (:effect-index r) rp-armed)))
            (:id r) (run-arm (:next-id w))))
 
-(a/theorem inv-arm-raw [w :- World, r :- RunRow, kind :- Nat]
-  (=> (= (inv-sample w) true) (= (inv-sample (arm-raw w r kind)) true))
+(a/theorem well-formed-arm-raw [w :- World, r :- RunRow, kind :- Nat]
+  (=> (= (well-formed w) true) (= (well-formed (arm-raw w r kind)) true))
   (intro h)
   (simp only [arm-raw])
-  (exact (inv-run-upd _ (:id r) (run-arm (:next-id w)) (run-arm-run-id _)
-           (inv-resource-ins-fresh w (ResRow.mk (:next-id w) (:id r) kind (:effect-index r) rp-armed) (rfl) h))))
+  (exact (well-formed-run-upd _ (:id r) (run-arm (:next-id w)) (run-arm-run-id _)
+           (well-formed-resource-ins-fresh w (ResRow.mk (:next-id w) (:id r) kind (:effect-index r) rp-armed) (rfl) h))))
 
 ;; an updated row is in the updated table
 (a/theorem tbl-upd-mem-self [A :- Type, idf :- (=> A Nat), f :- (=> A A), r :- A, xs :- (List A)]
@@ -1201,18 +1201,18 @@
                                      (waits-on z (:edges w))))
                    (refuse w))]))
 
-(a/theorem t18-inv [w :- World, z :- Nat, tag :- Nat, v :- Nat]
-  (=> (= (inv-sample w) true) (= (inv-sample (:world (t18-resource-fire w z tag v))) true))
+(a/theorem well-formed-t18-resource-fire [w :- World, z :- Nat, tag :- Nat, v :- Nat]
+  (=> (= (well-formed w) true) (= (well-formed (:world (t18-resource-fire w z tag v))) true))
   (intro h)
   (cases hf (resource-find w z)) (case' [some zr]) (case' [none])
   (simp only [t18-resource-fire hf refuse]) (exact h)
   (cases hp (Nat.beq (:phase zr) rp-armed))
   (simp only [t18-resource-fire hf hp refuse]) (exact h)
   (simp only [t18-resource-fire hf hp accept])
-  (exact (nat-fold-inv (fire-edge (RunResult.mk tag v)) (inv-fire-edge (RunResult.mk tag v)) (waits-on z (:edges w)) _
-           (inv-resource-upd w z (res-set-phase rp-fired) (res-set-phase-resource-id rp-fired) h))))
+  (exact (well-formed-nat-fold (fire-edge (RunResult.mk tag v)) (well-formed-fire-edge (RunResult.mk tag v)) (waits-on z (:edges w)) _
+           (well-formed-resource-upd w z (res-set-phase rp-fired) (res-set-phase-resource-id rp-fired) h))))
 
-(a/theorem t18-refuse [w :- World, z :- Nat, tag :- Nat, v :- Nat]
+(a/theorem t18-resource-fire-refuse [w :- World, z :- Nat, tag :- Nat, v :- Nat]
   (=> (= (:accepted (t18-resource-fire w z tag v)) false) (= (:world (t18-resource-fire w z tag v)) w))
   (intro ha)
   (cases hf (resource-find w z)) (case' [some zr]) (case' [none])
@@ -1221,7 +1221,7 @@
   (simp only [t18-resource-fire hf hp refuse])
   (simp [t18-resource-fire hf hp accept] at ha))
 
-(a/theorem t18-l4 [w :- World, z :- Nat, tag :- Nat, v :- Nat]
+(a/theorem t18-resource-fire-l4 [w :- World, z :- Nat, tag :- Nat, v :- Nat]
   (=> (= (res-tok-ok w z) false) (= (:world (t18-resource-fire w z tag v)) w))
   (intro hg) (simp only [t18-resource-fire (res-tok-none w z hg) refuse]))
 
@@ -1248,10 +1248,10 @@
 (defmacro ^:private defdrop-lemmas
   "inv and refusal lemmas for one level of the T19 lookup chain."
   [f find row upd dec inv-lemma inv-args next-f next-inv next-refuse]
-  (let [inv (symbol (str f "-inv")) ref (symbol (str f "-refuse"))]
+  (let [inv (symbol (str "well-formed-" f)) ref (symbol (str f "-refuse"))]
     `(do
        (a/theorem ~inv [~'w :- ~'World, ~'x :- ~'Nat]
-         (~'=> (~'= (~'inv-sample ~'w) true) (~'= (~'inv-sample (:world (~f ~'w ~'x))) true))
+         (~'=> (~'= (~'well-formed ~'w) true) (~'= (~'well-formed (:world (~f ~'w ~'x))) true))
          (~'intro ~'h)
          (~'cases ~'hc (~find ~'w ~'x)) (~'case' [~'some ~'c]) (~'case' [~'none])
          ~@(if next-f
@@ -1272,18 +1272,18 @@
          (~'simp ~'only [~f ~'hc ~'hn ~'refuse])
          (~'simp [~f ~'hc ~'hn ~'accept] ~'at ~'ha)))))
 
-(defdrop-lemmas drop-pub-handle pub-find PubRow pub-upd pub-dec-handles inv-pub-upd [pub-dec-handles-pub-id]
+(defdrop-lemmas drop-pub-handle pub-find PubRow pub-upd pub-dec-handles well-formed-pub-upd [pub-dec-handles-pub-id]
   nil nil nil)
-(defdrop-lemmas drop-source-handle source-find SourceRow source-upd source-dec-handles inv-source-upd
-  [source-dec-handles-source-id] drop-pub-handle drop-pub-handle-inv drop-pub-handle-refuse)
-(defdrop-lemmas drop-task-handle task-find TaskRow task-upd task-dec-handles inv-task-upd
-  [task-dec-handles-task-id] drop-source-handle drop-source-handle-inv drop-source-handle-refuse)
-(defdrop-lemmas t19-handle-drop comp-find CompRow comp-upd comp-dec-handles inv-comp-upd
-  [comp-dec-handles-comp-id comp-dec-handles-pending] drop-task-handle drop-task-handle-inv drop-task-handle-refuse)
+(defdrop-lemmas drop-source-handle source-find SourceRow source-upd source-dec-handles well-formed-source-upd
+  [source-dec-handles-source-id] drop-pub-handle well-formed-drop-pub-handle drop-pub-handle-refuse)
+(defdrop-lemmas drop-task-handle task-find TaskRow task-upd task-dec-handles well-formed-task-upd
+  [task-dec-handles-task-id] drop-source-handle well-formed-drop-source-handle drop-source-handle-refuse)
+(defdrop-lemmas t19-handle-drop comp-find CompRow comp-upd comp-dec-handles well-formed-comp-upd
+  [comp-dec-handles-comp-id comp-dec-handles-pending] drop-task-handle well-formed-drop-task-handle drop-task-handle-refuse)
 
-(a/theorem t19-inv [w :- World, x :- Nat]
-  (=> (= (inv-sample w) true) (= (inv-sample (:world (t19-handle-drop w x))) true))
-  (exact (t19-handle-drop-inv w x)))
+(a/theorem well-formed-t19 [w :- World, x :- Nat]
+  (=> (= (well-formed w) true) (= (well-formed (:world (t19-handle-drop w x))) true))
+  (exact (well-formed-t19-handle-drop w x)))
 (a/theorem t19-refuse [w :- World, x :- Nat]
   (=> (= (:accepted (t19-handle-drop w x)) false) (= (:world (t19-handle-drop w x)) w))
   (exact (t19-handle-drop-refuse w x)))
@@ -1291,8 +1291,8 @@
 ;; ---- T20 pin / unpin (Z#16: pins : id -> count, encoded as a multiset: the count of x is its
 ;; multiplicity in `pins`, `pin-count`; a row is a root while it occurs, i.e. count > 0)
 
-(a/defn nat-is [x :- Nat, y :- Nat] Bool (Nat.beq y x))
-(a/defn pin-count [x :- Nat, ps :- (List Nat)] Nat (tbl-count (nat-is x) ps))
+(a/defn nat-eq-to [x :- Nat, y :- Nat] Bool (Nat.beq y x))
+(a/defn pin-count [x :- Nat, ps :- (List Nat)] Nat (tbl-count (nat-eq-to x) ps))
 ;; remove one occurrence
 (a/defn nat-del1 [x :- Nat, xs :- (List Nat)] (List Nat)
   (match xs [nil (List.nil Nat)] [(cons h t) (if (Nat.beq h x) t (List.cons Nat h (nat-del1 x t)))]))
@@ -1318,14 +1318,14 @@
   (case' [nil])
   (simp [nat-mem pin-count tbl-count])
   (cases hb (Nat.beq h x))
-  (all_goals (simp_all [nat-mem pin-count nat-is tbl-count beq-comm])))
+  (all_goals (simp_all [nat-mem pin-count nat-eq-to tbl-count beq-comm])))
 
-(a/theorem t20-pin-inv [w :- World, x :- Nat]
-  (=> (= (inv-sample w) true) (= (inv-sample (:world (t20-pin w x))) true))
+(a/theorem well-formed-t20-pin [w :- World, x :- Nat]
+  (=> (= (well-formed w) true) (= (well-formed (:world (t20-pin w x))) true))
   (intro h)
   (cases hg (pin-target w x))
   (simp only [t20-pin hg refuse]) (exact h)
-  (simp only [t20-pin hg accept]) (exact (inv-set-pins w (List.cons Nat x (:pins w)) h)))
+  (simp only [t20-pin hg accept]) (exact (well-formed-set-pins w (List.cons Nat x (:pins w)) h)))
 
 (a/theorem t20-pin-refuse [w :- World, x :- Nat]
   (=> (= (:accepted (t20-pin w x)) false) (= (:world (t20-pin w x)) w))
@@ -1334,12 +1334,12 @@
   (simp only [t20-pin hg refuse])
   (simp [t20-pin hg accept] at ha))
 
-(a/theorem t20-unpin-inv [w :- World, x :- Nat]
-  (=> (= (inv-sample w) true) (= (inv-sample (:world (t20-unpin w x))) true))
+(a/theorem well-formed-t20-unpin [w :- World, x :- Nat]
+  (=> (= (well-formed w) true) (= (well-formed (:world (t20-unpin w x))) true))
   (intro h)
   (cases hm (nat-mem x (:pins w)))
   (simp only [t20-unpin hm refuse]) (exact h)
-  (simp only [t20-unpin hm accept]) (exact (inv-set-pins w (nat-del1 x (:pins w)) h)))
+  (simp only [t20-unpin hm accept]) (exact (well-formed-set-pins w (nat-del1 x (:pins w)) h)))
 
 (a/theorem t20-unpin-refuse [w :- World, x :- Nat]
   (=> (= (:accepted (t20-unpin w x)) false) (= (:world (t20-unpin w x)) w))
@@ -1354,14 +1354,14 @@
 
 (a/defn dispatch [w :- World, it :- Item] Outcome
   (match it
-    [(create-source st kind v fresh) (t1-create-source w st kind v fresh)]
-    [(create-source-top scope kind v fresh) (t1-create-source-top w scope kind v fresh)]
+    [(create-source st kind v fresh) (t1-create-source-basic w st kind v fresh)]
+    [(create-source-top scope kind v fresh) (t1-create-nonstream-top w scope kind v fresh)]
     [(write x v) (t2-write w x v)]
     [(track st x k fresh) (t7-track w st x k fresh)]
-    [(observe d cb fresh) (t8-observe w d cb fresh)]
+    [(observe d cb fresh) (t8-observe-basic w d cb fresh)]
     [(unobserve e) (t8-unobserve w e)]
     [(fire e tag val) (t9-fire w e tag val)]
-    [(resource-ack z) (t15-resource-ack w z)]
+    [(resource-ack z) (t15-resource-ack-basic w z)]
     [(arm st kind k fresh) (refuse w)]
     [(resource-fire z tag val) (t18-resource-fire w z tag val)]
     [(handle-drop x) (t19-handle-drop w x)]
@@ -1457,23 +1457,23 @@
     [(drain ids) true]
     [(retire-local v) true]))
 
-(a/theorem dispatch-inv [w :- World, it :- Item]
-  (=> (= (inv-sample w) true) (= (inv-sample (:world (dispatch w it))) true))
+(a/theorem well-formed-dispatch [w :- World, it :- Item]
+  (=> (= (well-formed w) true) (= (well-formed (:world (dispatch w it))) true))
   (intro h)
   (cases it)
-  (exact (t1-inv w _ _ _ _ h))
-  (exact (t1-top-inv w _ _ _ _ h))
-  (exact (t2-inv w _ _ h))
-  (exact (t7-inv w _ _ _ _ h))
-  (exact (t8-observe-inv w _ _ _ h))
-  (exact (t8-unobserve-inv w _ h))
-  (exact (t9-inv w _ _ _ h))
-  (exact (t15-inv w _ h))
+  (exact (well-formed-t1-create-source-basic w _ _ _ _ h))
+  (exact (well-formed-t1-create-nonstream-top w _ _ _ _ h))
+  (exact (well-formed-t2-write w _ _ h))
+  (exact (well-formed-t7-track w _ _ _ _ h))
+  (exact (well-formed-t8-observe-basic w _ _ _ h))
+  (exact (well-formed-t8-unobserve w _ h))
+  (exact (well-formed-t9-fire w _ _ _ h))
+  (exact (well-formed-t15-resource-ack-basic w _ h))
   (simp only [dispatch refuse]) (exact h)
-  (exact (t18-inv w _ _ _ h))
-  (exact (t19-inv w _ h))
-  (exact (t20-pin-inv w _ h))
-  (exact (t20-unpin-inv w _ h))
+  (exact (well-formed-t18-resource-fire w _ _ _ h))
+  (exact (well-formed-t19 w _ h))
+  (exact (well-formed-t20-pin w _ h))
+  (exact (well-formed-t20-unpin w _ h))
   (simp only [dispatch refuse]) (exact h)
   (simp only [dispatch refuse]) (exact h)
   (simp only [dispatch refuse]) (exact h)
@@ -1506,16 +1506,16 @@
   (=> (= (:accepted (dispatch w it)) false) (= (:world (dispatch w it)) w))
   (intro ha)
   (cases it)
-  (exact (t1-refuse w _ _ _ _ ha))
-  (exact (t1-top-refuse w _ _ _ _ ha))
-  (exact (t2-refuse w _ _ ha))
-  (exact (t7-refuse w _ _ _ _ ha))
-  (exact (t8-observe-refuse w _ _ _ ha))
+  (exact (t1-create-source-basic-refuse w _ _ _ _ ha))
+  (exact (t1-create-nonstream-top-refuse w _ _ _ _ ha))
+  (exact (t2-write-refuse w _ _ ha))
+  (exact (t7-track-refuse w _ _ _ _ ha))
+  (exact (t8-observe-basic-refuse w _ _ _ ha))
   (exact (t8-unobserve-refuse w _ ha))
-  (exact (t9-refuse w _ _ _ ha))
-  (exact (t15-refuse w _ ha))
+  (exact (t9-fire-refuse w _ _ _ ha))
+  (exact (t15-resource-ack-basic-refuse w _ ha))
   (simp only [dispatch refuse])
-  (exact (t18-refuse w _ _ _ ha))
+  (exact (t18-resource-fire-refuse w _ _ _ ha))
   (exact (t19-refuse w _ ha))
   (exact (t20-pin-refuse w _ ha))
   (exact (t20-unpin-refuse w _ ha))
@@ -1551,16 +1551,16 @@
   (=> (= (item-token-ok w it) false) (= (:world (dispatch w it)) w))
   (intro hg)
   (cases it)
-  (exact (t1-l4 w _ _ _ _ hg))
+  (exact (t1-create-source-basic-l4 w _ _ _ _ hg))
   (simp [item-token-ok] at hg)
   (simp [item-token-ok] at hg)
-  (exact (t7-l4 w _ _ _ _ hg))
+  (exact (t7-track-l4 w _ _ _ _ hg))
   (simp [item-token-ok] at hg)
   (simp [item-token-ok] at hg)
-  (exact (t9-l4 w _ _ _ hg))
-  (exact (t15-l4 w _ hg))
+  (exact (t9-fire-l4 w _ _ _ hg))
+  (exact (t15-resource-ack-basic-l4 w _ hg))
   (simp only [dispatch refuse])
-  (exact (t18-l4 w _ _ _ hg))
+  (exact (t18-resource-fire-l4 w _ _ _ hg))
   (simp [item-token-ok] at hg)
   (simp [item-token-ok] at hg)
   (simp [item-token-ok] at hg)
@@ -1595,13 +1595,13 @@
 (a/defn run-items [w :- World, its :- (List Item)] World
   (match its [nil w] [(cons h t) (run-items (:world (dispatch w h)) t)]))
 
-(a/theorem run-items-inv [its :- (List Item)]
-  (forall [w :- World] (=> (= (inv-sample w) true) (= (inv-sample (run-items w its)) true)))
+(a/theorem well-formed-run-items [its :- (List Item)]
+  (forall [w :- World] (=> (= (well-formed w) true) (= (well-formed (run-items w its)) true)))
   (induction its)
   (case' [cons h t ih])
   (case' [nil])
   (intros w hw) (simp only [run-items]) (exact hw)
-  (intros w hw) (simp only [run-items]) (exact (ih (:world (dispatch w h)) (dispatch-inv w h hw))))
+  (intros w hw) (simp only [run-items]) (exact (ih (:world (dispatch w h)) (well-formed-dispatch w h hw))))
 
-(a/theorem run-items-from-empty [its :- (List Item)] (= (inv-sample (run-items empty-world its)) true)
-  (exact (run-items-inv its empty-world inv-sample-empty)))
+(a/theorem run-items-from-empty [its :- (List Item)] (= (well-formed (run-items empty-world its)) true)
+  (exact (well-formed-run-items its empty-world well-formed-empty)))

@@ -67,65 +67,65 @@
          (swap! footprints assoc '~base {:lemma '~lemma :writes '~fields :binders '~binders :edit '~edit}))))
 
 ;; one-table row edits
-(defwrites inv-scope-upd scope-upd [w :- World, x :- Nat, f :- (=> ScopeRow ScopeRow)] (scope-upd w x f) [scopes])
-(defwrites inv-close-scope-id close-scope-id [w :- World, x :- Nat] (close-scope-id w x) [scopes])
-(defwrites inv-scope-del scope-del [w :- World, x :- Nat] (scope-del w x) [scopes])
-(defwrites inv-comp-upd comp-upd [w :- World, x :- Nat, f :- (=> CompRow CompRow)] (comp-upd w x f) [comps])
-(defwrites inv-comp-del-unref comp-del [w :- World, x :- Nat] (comp-del w x) [comps])
-(defwrites inv-task-upd task-upd [w :- World, x :- Nat, f :- (=> TaskRow TaskRow)] (task-upd w x f) [tasks])
-(defwrites inv-run-upd run-upd [w :- World, x :- Nat, f :- (=> RunRow RunRow)] (run-upd w x f) [runs])
-(defwrites inv-run-del run-del [w :- World, x :- Nat] (run-del w x) [runs])
-(defwrites inv-source-upd source-upd [w :- World, x :- Nat, f :- (=> SourceRow SourceRow)] (source-upd w x f) [sources])
-(defwrites inv-edge-upd edge-upd [w :- World, x :- Nat, f :- (=> EdgeRow EdgeRow)] (edge-upd w x f) [edges])
-(defwrites inv-act-upd act-upd [w :- World, x :- Nat, f :- (=> ActRow ActRow)] (act-upd w x f) [acts])
-(defwrites inv-resource-upd resource-upd [w :- World, x :- Nat, f :- (=> ResRow ResRow)] (resource-upd w x f) [res])
-(defwrites inv-resource-del resource-del [w :- World, x :- Nat] (resource-del w x) [res])
-(defwrites inv-cleanup-upd cleanup-upd [w :- World, x :- Nat, f :- (=> CleanupRow CleanupRow)] (cleanup-upd w x f) [cleanup])
-(defwrites inv-cleanup-del cleanup-del [w :- World, x :- Nat] (cleanup-del w x) [cleanup])
-(defwrites inv-cleanup-ins cleanup-ins [w :- World, r :- CleanupRow] (cleanup-ins w r) [cleanup])
-(defwrites inv-pub-upd pub-upd [w :- World, x :- Nat, f :- (=> PubRow PubRow)] (pub-upd w x f) [pubs])
-(defwrites inv-fork-del fork-del [w :- World, x :- Nat] (fork-del w x) [forks])
+(defwrites well-formed-scope-upd scope-upd [w :- World, x :- Nat, f :- (=> ScopeRow ScopeRow)] (scope-upd w x f) [scopes])
+(defwrites well-formed-close-scope-id close-scope-id [w :- World, x :- Nat] (close-scope-id w x) [scopes])
+(defwrites well-formed-scope-del scope-del [w :- World, x :- Nat] (scope-del w x) [scopes])
+(defwrites well-formed-comp-upd comp-upd [w :- World, x :- Nat, f :- (=> CompRow CompRow)] (comp-upd w x f) [comps])
+(defwrites well-formed-comp-del-unref comp-del [w :- World, x :- Nat] (comp-del w x) [comps])
+(defwrites well-formed-task-upd task-upd [w :- World, x :- Nat, f :- (=> TaskRow TaskRow)] (task-upd w x f) [tasks])
+(defwrites well-formed-run-upd run-upd [w :- World, x :- Nat, f :- (=> RunRow RunRow)] (run-upd w x f) [runs])
+(defwrites well-formed-run-del run-del [w :- World, x :- Nat] (run-del w x) [runs])
+(defwrites well-formed-source-upd source-upd [w :- World, x :- Nat, f :- (=> SourceRow SourceRow)] (source-upd w x f) [sources])
+(defwrites well-formed-edge-upd edge-upd [w :- World, x :- Nat, f :- (=> EdgeRow EdgeRow)] (edge-upd w x f) [edges])
+(defwrites well-formed-act-upd act-upd [w :- World, x :- Nat, f :- (=> ActRow ActRow)] (act-upd w x f) [acts])
+(defwrites well-formed-resource-upd resource-upd [w :- World, x :- Nat, f :- (=> ResRow ResRow)] (resource-upd w x f) [res])
+(defwrites well-formed-resource-del resource-del [w :- World, x :- Nat] (resource-del w x) [res])
+(defwrites well-formed-cleanup-upd cleanup-upd [w :- World, x :- Nat, f :- (=> CleanupRow CleanupRow)] (cleanup-upd w x f) [cleanup])
+(defwrites well-formed-cleanup-del cleanup-del [w :- World, x :- Nat] (cleanup-del w x) [cleanup])
+(defwrites well-formed-cleanup-ins cleanup-ins [w :- World, r :- CleanupRow] (cleanup-ins w r) [cleanup])
+(defwrites well-formed-pub-upd pub-upd [w :- World, x :- Nat, f :- (=> PubRow PubRow)] (pub-upd w x f) [pubs])
+(defwrites well-formed-fork-del fork-del [w :- World, x :- Nat] (fork-del w x) [forks])
 
 ;; inserts with a fresh id: the row and the allocator
-(defwrites inv-scope-ins-fresh scope-ins-fresh [w :- World, r :- ScopeRow] (bump (scope-ins w r)) [scopes next-id])
-(defwrites inv-comp-ins-fresh comp-ins-fresh [w :- World, r :- CompRow] (bump (comp-ins w r)) [comps next-id])
-(defwrites inv-task-ins-fresh task-ins-fresh [w :- World, r :- TaskRow] (bump (task-ins w r)) [tasks next-id])
-(defwrites inv-run-ins-fresh run-ins-fresh [w :- World, r :- RunRow] (bump (run-ins w r)) [runs next-id])
-(defwrites inv-source-ins-fresh source-ins-fresh [w :- World, r :- SourceRow] (bump (source-ins w r)) [sources next-id])
-(defwrites inv-act-ins-fresh act-ins-fresh [w :- World, r :- ActRow] (bump (act-ins w r)) [acts next-id])
-(defwrites inv-resource-ins-fresh resource-ins-fresh [w :- World, r :- ResRow] (bump (resource-ins w r)) [res next-id])
-(defwrites inv-fork-ins-fresh fork-ins-fresh [w :- World, r :- ForkRow] (bump (fork-ins w r)) [forks next-id])
-(defwrites insert-edge-fresh-inv-sample insert-edge-fresh [w :- World, e :- EdgeRow] (insert-edge-fresh w e) [edges next-id])
-(defwrites inv-insert-edge-checked insert-edge-checked [w :- World, e :- EdgeRow] (insert-edge-checked w e) [edges next-id]
+(defwrites well-formed-scope-ins-fresh scope-ins-fresh [w :- World, r :- ScopeRow] (bump (scope-ins w r)) [scopes next-id])
+(defwrites well-formed-comp-ins-fresh comp-ins-fresh [w :- World, r :- CompRow] (bump (comp-ins w r)) [comps next-id])
+(defwrites well-formed-task-ins-fresh task-ins-fresh [w :- World, r :- TaskRow] (bump (task-ins w r)) [tasks next-id])
+(defwrites well-formed-run-ins-fresh run-ins-fresh [w :- World, r :- RunRow] (bump (run-ins w r)) [runs next-id])
+(defwrites well-formed-source-ins-fresh source-ins-fresh [w :- World, r :- SourceRow] (bump (source-ins w r)) [sources next-id])
+(defwrites well-formed-act-ins-fresh act-ins-fresh [w :- World, r :- ActRow] (bump (act-ins w r)) [acts next-id])
+(defwrites well-formed-resource-ins-fresh resource-ins-fresh [w :- World, r :- ResRow] (bump (resource-ins w r)) [res next-id])
+(defwrites well-formed-fork-ins-fresh fork-ins-fresh [w :- World, r :- ForkRow] (bump (fork-ins w r)) [forks next-id])
+(defwrites well-formed-insert-edge-fresh insert-edge-fresh [w :- World, e :- EdgeRow] (insert-edge-fresh w e) [edges next-id])
+(defwrites well-formed-insert-edge-checked insert-edge-checked [w :- World, e :- EdgeRow] (insert-edge-checked w e) [edges next-id]
   (cases hk (edge-ok-in w e))
   (all_goals (simp only [insert-edge-checked hk])))
 
 ;; the allocator and the scalar fields
-(defwrites inv-bump bump [w :- World] (bump w) [next-id])
-(defwrites inv-set-pins set-pins [w :- World, v :- (List Nat)] (set-pins w v) [pins])
-(defwrites inv-set-pending-act set-pending-act [w :- World, v :- Nat] (set-pending-act w v) [pending-act])
-(defwrites inv-set-released set-released [w :- World, v :- Bool] (set-released w v) [released])
+(defwrites well-formed-bump bump [w :- World] (bump w) [next-id])
+(defwrites well-formed-set-pins set-pins [w :- World, v :- (List Nat)] (set-pins w v) [pins])
+(defwrites well-formed-set-pending-act set-pending-act [w :- World, v :- Nat] (set-pending-act w v) [pending-act])
+(defwrites well-formed-set-released set-released [w :- World, v :- Bool] (set-released w v) [released])
 
 ;; edge edits that adjust the creditor's pending count: edges and computations
-(defwrites mark-edge-inv-sample mark-edge [w :- World, x :- Nat] (mark-edge w x) [comps edges]
+(defwrites well-formed-mark-edge mark-edge [w :- World, x :- Nat] (mark-edge w x) [comps edges]
   (cases hf (edge-find w x))
   (case [none] (simp only [mark-edge hf]))
   (case [some e] (cases hm (:marked e)) (all_goals (simp only [mark-edge hf hm]))))
-(defwrites unmark-edge-inv-sample unmark-edge [w :- World, x :- Nat] (unmark-edge w x) [comps edges]
+(defwrites well-formed-unmark-edge unmark-edge [w :- World, x :- Nat] (unmark-edge w x) [comps edges]
   (cases hf (edge-find w x))
   (case [none] (simp only [unmark-edge hf]))
   (case [some e] (cases hm (:marked e)) (all_goals (simp only [unmark-edge hf hm]))))
-(defwrites inv-remove-edge remove-edge [w :- World, x :- Nat] (remove-edge w x) [comps edges]
+(defwrites well-formed-remove-edge remove-edge [w :- World, x :- Nat] (remove-edge w x) [comps edges]
   (cases hf (edge-find w x))
   (case [none] (simp only [remove-edge hf]))
   (case [some e] (cases hm (:marked e)) (all_goals (simp only [remove-edge hf hm]))))
-(defwrites inv-drop-cred drop-cred-edges [w :- World, a :- Nat] (drop-cred-edges w a) [comps edges])
-(defwrites inv-drop-edges drop-edges [w :- World, p :- (=> EdgeRow Bool)] (drop-edges w p) [comps edges])
-(defwrites inv-drop-act drop-act [w :- World, a :- Nat] (drop-act w a) [acts comps edges])
+(defwrites well-formed-drop-cred-edges drop-cred-edges [w :- World, a :- Nat] (drop-cred-edges w a) [comps edges])
+(defwrites well-formed-drop-edges drop-edges [w :- World, p :- (=> EdgeRow Bool)] (drop-edges w p) [comps edges])
+(defwrites well-formed-drop-act drop-act [w :- World, a :- Nat] (drop-act w a) [acts comps edges])
 
 ;; Rule R's filter: every row table except cleanup (a part that reads only the scalar fields or the
 ;; cleanup table has it as a frame)
-(defwrites inv-filter-world filter-world [w :- World, K :- (=> Nat Bool)] (filter-world K w)
+(defwrites well-formed-filter-world filter-world [w :- World, K :- (=> Nat Bool)] (filter-world K w)
   [scopes comps tasks runs sources edges acts res pubs forks])
 
 ;; ===========================================================================
@@ -181,7 +181,7 @@
 (defn frame-theorem!
   "State and check `nm : rest params (edit ...) = rest params w` for the primitive `base`, proved by
   `frame-term` (its footprint and the view of `rest`). Used for the per-edit frame lemmas that parts
-  had written by hand (e.g. `g1-rest-mark-edge`), so they keep their names and statements."
+  had written by hand (e.g. `i1-scopes-rest-mark-edge`), so they keep their names and statements."
   [nm rest base]
   (let [{:keys [params]} (get @views rest)
         {:keys [binders edit]} (get @footprints base)

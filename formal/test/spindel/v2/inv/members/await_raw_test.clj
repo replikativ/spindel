@@ -40,8 +40,8 @@
    w1
    (cancel-jobs
     (tbl-gather (any-resolved w1) (loser-runs w1) (:acts w0))))),
- g10r
- (a/defn g10r [w :- World] Bool (g10 (List.nil Nat) (List.nil Nat) w)),
+ i10-current
+ (a/defn i10-current [w :- World] Bool (i10-current-exempt (List.nil Nat) (List.nil Nat) w)),
  host-item
  (a/defn
   host-item
@@ -112,25 +112,25 @@
      (Bool.and
       (Nat.beq (:owner t) s)
       (opt-test run-alive (run-find w1 (:run t))))]))),
- post
+ then-cancel-losers
  (a/defn
-  post
+  then-cancel-losers
   [w :- World o :- Outcome]
   Outcome
   (if (:accepted o) (accept (cancel-losers w (:world o))) o)),
  raw
- (a/defn raw [w :- World it :- Item] Outcome (post w (raw0g w it))),
- raw0g
+ (a/defn raw [w :- World it :- Item] Outcome (then-cancel-losers w (host-guarded-transition w it))),
+ host-guarded-transition
  (a/defn
-  raw0g
+  host-guarded-transition
   [w :- World it :- Item]
   Outcome
-  (if (host-shut w it) (refuse w) (raw0 w it)))}
+  (if (host-item-refused w it) (refuse w) (transition w it)))}
 )
 
 (defn expanded-contract [contract]
   (list 'let (vec (mapcat (fn [n] (let [[_ _ parameters _ body] (get expected-definitions n)]
-                                     [n (list 'fn parameters body)])) '[g10r raw0g post raw])) contract))
+                                     [n (list 'fn parameters body)])) '[i10-current host-guarded-transition then-cancel-losers raw])) contract))
 
 (deftest exact-manifest-and-safe-closed-contracts
   (is (= 5 (count public-contracts))) (is (empty? helper-definitions))
@@ -169,22 +169,22 @@
 
 (defn row [w table id] (fixture/row w table id))
 (defn check-support [w]
-  (is (true? (hmk/hmk [] w))) (is (true? (i10/g10 [] [] w))) (is (true? (hm6/ekb w))))
+  (is (true? (hmk/marks-waiting [] w))) (is (true? (i10/i10-current-exempt [] [] w))) (is (true? (hm6/edge-kinds w))))
 (defn check-post [w0 outcome xm]
-  (let [w1 (:world outcome), after (engine/post w0 outcome)]
-    (check-support w1) (is (true? (hm3/h3 xm w1)))
-    (is (true? (hm3/h3 xm (:world after))))
+  (let [w1 (:world outcome), after (engine/then-cancel-losers w0 outcome)]
+    (check-support w1) (is (true? (hm3/current-members xm w1)))
+    (is (true? (hm3/current-members xm (:world after))))
     (if (:accepted outcome)
       (is (= (step/->Outcome (engine/cancel-losers w0 w1) true) after))
       (is (= outcome after) "arbitrary refused Outcome itself is retained"))
     after))
 (defn check-await [w st ds mode k fresh mine xm]
-  (let [item [18 st ds mode k fresh mine], r0 (engine/raw0 w item)
-        rg (engine/raw0g w item), actual (engine/raw w item)]
-    (is (true? (base/p3la w))) (is (true? (hm3/h3 xm w)))
-    (is (false? (engine/host-item item))) (is (false? (engine/host-shut w item)))
+  (let [item [18 st ds mode k fresh mine], r0 (engine/transition w item)
+        rg (engine/host-guarded-transition w item), actual (engine/raw w item)]
+    (is (true? (base/chain-to-edge-kinds w))) (is (true? (hm3/current-members xm w)))
+    (is (false? (engine/host-item item))) (is (false? (engine/host-item-refused w item)))
     (is (= r0 rg)) (check-support (:world rg))
-    (is (true? (hm3/h3 xm (:world rg))))
+    (is (true? (hm3/current-members xm (:world rg))))
     (is (= actual (check-post w rg xm)))
     (is (= (:accepted r0) (:accepted actual)))
     (if (:accepted r0)
@@ -245,13 +245,13 @@
       (doseq [d [consuming semaphore], mode [s/am-one s/am-all s/am-any]
               :let [ds (if (= mode s/am-one) [d] [d deferred d])]]
         (is (true? (engine/await-ok w r ds mode (:next-id w))))
-        (is (true? (engine/await-kind-bad w ds)))
+        (is (true? (engine/await-kind-refused w ds)))
         (is (true? (:accepted (engine/t6-await w st ds mode 510 (:next-id w) [d]))))
         (is (false? (:accepted (check-await w st ds mode 510 (:next-id w) [d] [])))))))
   (let [w (assoc s/empty-world :released true), it [18 999999 [] s/am-any 0 (:next-id w) []]]
     ;; Generic structural non-host control; not labelled an accepted trace.
-    (is (false? (engine/host-item it))) (is (false? (engine/host-shut w it)))
-    (is (= (engine/raw0 w it) (engine/raw0g w it)))))
+    (is (false? (engine/host-item it))) (is (false? (engine/host-item-refused w it)))
+    (is (= (engine/transition w it) (engine/host-guarded-transition w it)))))
 
 (defn cancellation-input []
   (let [{:keys [w rid] :as f} (fixture/fixture :task), st (:stamp (row w :runs rid))
@@ -264,10 +264,10 @@
   (rule/cancel-jobs (vec (mapcat #(engine/loser-runs w1 %)
                                (filter #(engine/any-resolved w1 %) (:acts w0))))))
 (defn completion-post-point [{:keys [w item] :as f}]
-  (let [o (engine/raw0g w item), w1 (:world o)]
+  (let [o (engine/host-guarded-transition w item), w1 (:world o)]
     (is (= 20 (first item)) "nonempty cascade is COMPLETE-triggered, not AWAIT-triggered")
-    (is (true? (base/p3la w))) (is (true? (:accepted o)))
-    (check-support w1) (is (true? (hm3/h3 [] w1)))
+    (is (true? (base/chain-to-edge-kinds w))) (is (true? (:accepted o)))
+    (check-support w1) (is (true? (hm3/current-members [] w1)))
     (assoc f :before-post o :w1 w1)))
 
 (deftest nonempty-completion-triggered-generic-post-cascade-not-await
@@ -291,7 +291,7 @@
         (fill/check-old-unexempt f after xm)))
     (let [refused (step/->Outcome w1 false)]
       (is (not= w w1)) (is (= refused (check-post w refused [])))
-      (is (not= w (:world (engine/post w refused))) "arbitrary refused post does not imply original-world identity"))))
+      (is (not= w (:world (engine/then-cancel-losers w refused))) "arbitrary refused post does not imply original-world identity"))))
 
 (deftest no-loss-controls-retained-all-mode-shared-edge-wrong-owner
   (let [{:keys [w w1 before-post k2 a item] :as f} (completion-post-point (cancellation-input))
@@ -336,7 +336,7 @@
       (is (false? (engine/any-resolved ended old))))
     (let [{cw :w cr :rid} (fixture/fixture :comp), generic-old (assoc old :run cr)]
       ;; Generic old row with a valid output world; not an accepted await trace.
-      (check-support cw) (is (true? (hm3/h3 [] cw)))
+      (check-support cw) (is (true? (hm3/current-members [] cw)))
       (is (nil? (row cw :acts (:id generic-old))))
       (is (true? (retain/run-alive (row cw :runs cr))))
       (is (nil? (row cw :tasks (:of (row cw :runs cr)))))

@@ -25,7 +25,7 @@
     source-ins-fresh-ids-ok edge-ins-fresh-ids-ok act-ins-fresh-ids-ok resource-ins-fresh-ids-ok
     pub-ins-fresh-ids-ok fork-ins-fresh-ids-ok insert-edge-fresh-ids-ok
     mark-edge-ids-ok unmark-edge-ids-ok
-    inv-sample-empty mark-edge-inv-sample unmark-edge-inv-sample insert-edge-fresh-inv-sample])
+    well-formed-empty well-formed-mark-edge well-formed-unmark-edge well-formed-insert-edge-fresh])
 
 (deftest theorems-kernel-checked
   (doseq [t theorems]
@@ -55,7 +55,7 @@
 
 (defn checks [w]
   {:pending-exact (e/pending-exact w) :edges-ref-ok (e/edges-ref-ok w) :ids-ok (e/ids-ok w)
-   :inv-sample (e/inv-sample w)
+   :inv-sample (e/well-formed w)
    :reference (= (reference-pending w) (into {} (map (juxt :id :pending) (:comps w))))})
 
 (def all-true {:pending-exact true :edges-ref-ok true :ids-ok true :inv-sample true :reference true})

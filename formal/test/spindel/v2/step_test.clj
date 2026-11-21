@@ -1,7 +1,7 @@
 (ns spindel.v2.step-test
   "Loading spindel.v2.step kernel-checks every transition lemma (a failing proof throws at
   load). The deftests check the named theorems are in the kernel env, run scripted scenarios
-  through the compiled `dispatch`, and drive it with random items, checking inv-sample after
+  through the compiled `dispatch`, and drive it with random items, checking well-formed after
   every step and that every refusal leaves the world unchanged."
   (:require [clojure.test :refer [deftest is testing]]
             [ansatz.core :as a]
@@ -19,19 +19,19 @@
     act-upd-edges-ref-ok source-ins-edges-ref-ok remove-edge-ids-ok
     marked-in-filter-ne marked-in-filter-eq drop-cred-pending-exact drop-cred-edges-ref-ok
     drop-cred-ids-ok act-del-edges-ref-ok
-    inv-run-upd inv-scope-upd inv-resource-upd inv-pub-upd inv-source-upd inv-task-upd
-    inv-act-upd inv-comp-upd inv-edge-upd inv-cleanup-upd inv-cleanup-del inv-set-pins
-    inv-run-del inv-resource-del inv-source-ins-fresh inv-resource-ins-fresh
-    inv-remove-edge inv-drop-cred inv-drop-act nat-fold-inv tbl-find-has
+    well-formed-run-upd well-formed-scope-upd well-formed-resource-upd well-formed-pub-upd well-formed-source-upd well-formed-task-upd
+    well-formed-act-upd well-formed-comp-upd well-formed-edge-upd well-formed-cleanup-upd well-formed-cleanup-del well-formed-set-pins
+    well-formed-run-del well-formed-resource-del well-formed-source-ins-fresh well-formed-resource-ins-fresh
+    well-formed-remove-edge well-formed-drop-cred-edges well-formed-drop-act well-formed-nat-fold tbl-find-has
     ;; step.clj
-    run-tok-none res-tok-none inv-resume inv-fill-slot inv-invalidate inv-fire-dep
-    inv-fire-wait inv-fire-observe inv-fire-edge inv-create-source-raw inv-write-raw
-    inv-track-raw track-edge-ok inv-retire inv-retire-check inv-ack-raw
-    t1-inv t1-refuse t1-l4 t1-top-inv t1-top-refuse t2-inv t2-refuse t7-inv t7-refuse t7-l4
-    t8-observe-inv t8-observe-refuse t8-unobserve-inv t8-unobserve-refuse
-    t9-inv t9-refuse t9-l4 t15-inv t15-refuse t15-l4 t17-inv t17-refuse t17-l4
-    t18-inv t18-refuse t18-l4 t19-inv t19-refuse t20-pin-inv t20-pin-refuse t20-unpin-inv t20-unpin-refuse pin-count-pos
-    dispatch-inv dispatch-refuse dispatch-l4 run-items-inv run-items-from-empty])
+    run-tok-none res-tok-none well-formed-resume well-formed-fill-slot well-formed-invalidate well-formed-fire-dep
+    well-formed-fire-wait well-formed-fire-observe well-formed-fire-edge well-formed-create-source-raw well-formed-write-raw
+    well-formed-track-raw track-edge-ok well-formed-retire well-formed-retire-check well-formed-ack-raw
+    well-formed-t1-create-source-basic t1-create-source-basic-refuse t1-create-source-basic-l4 well-formed-t1-create-nonstream-top t1-create-nonstream-top-refuse well-formed-t2-write t2-write-refuse well-formed-t7-track t7-track-refuse t7-track-l4
+    well-formed-t8-observe-basic t8-observe-basic-refuse well-formed-t8-unobserve t8-unobserve-refuse
+    well-formed-t9-fire t9-fire-refuse t9-fire-l4 well-formed-t15-resource-ack-basic t15-resource-ack-basic-refuse t15-resource-ack-basic-l4 well-formed-t17-arm t17-arm-refuse t17-arm-l4
+    well-formed-t18-resource-fire t18-resource-fire-refuse t18-resource-fire-l4 well-formed-t19 t19-refuse well-formed-t20-pin t20-pin-refuse well-formed-t20-unpin t20-unpin-refuse pin-count-pos
+    well-formed-dispatch dispatch-refuse dispatch-l4 well-formed-run-items run-items-from-empty])
 
 (deftest theorems-kernel-checked
   (doseq [t theorems]
@@ -86,7 +86,7 @@
              [(:id c) (count (filter #(and (= (:creditor %) (:id c)) (:marked %)) (:edges w)))])))
 
 (defn ok? [w]
-  (and (e/inv-sample w) (= (reference-pending w) (into {} (map (juxt :id :pending) (:comps w))))))
+  (and (e/well-formed w) (= (reference-pending w) (into {} (map (juxt :id :pending) (:comps w))))))
 
 (defn step [w item] (st/dispatch w item))
 
