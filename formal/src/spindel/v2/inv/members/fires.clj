@@ -11,6 +11,7 @@
   holder not current; current: exempt, fill, undo), fire-wait (host wait: creditor 0 is no activation),
   fire-edge."
   (:require [ansatz.core :as a]
+            [spindel.v2.pres.tree :as tree]
             [clojure.string :as str]
             [clojure.walk :as walk]
             [spindel.v2.state :refer :all]
@@ -673,7 +674,7 @@
     (rw [ee ec]) (exact (hk-safe-nocomp xm (:comps w) 0 (comp-has-zero w hs)))
     (exact (h3-remove-edge xm w (:id e) hu fr h))))
 
-(lcopy! H3 'inv-fire-observe)
+(tree/restate! H3 '[inv-fire-observe])
 (a/theorem h3-fire-edge [xm :- (List Nat), res :- RunResult, w :- World, x :- Nat]
   (=> (= (h3 xm w) true) (= (h3 xm (fire-edge res w x)) true))
   (intro h)
@@ -721,36 +722,36 @@
   (have hi (= (:id e) x)) (exact (tbl-find-id EdgeRow edge-id x e (:edges w) hf))
   (apply (And.intro hi)) (rw [hi]) (exact hf))
 
-(override! H3 't22-un-inv '[]
-  '(a/theorem t22-un-hm3 [xm :- (List Nat), w :- World, x :- Nat]
-     (=> (= (h3 xm w) true) (= (h3 xm (:world (t22-host-unawait w x))) true))
-     (intro h)
-     (cases hf (edge-find w x)) (case' [some e]) (case' [none])
-     (simp only [t22-host-unawait hf refuse]) (exact h)
-     (cases hk (Bool.and (Nat.beq (:kind e) ek-wait) (Nat.beq (:creditor e) 0)))
-     (simp only [t22-host-unawait hf hk refuse]) (exact h)
-     (simp only [t22-host-unawait hf hk accept])
-     (simp only [Bool.and_eq_true] at hk)
-     (have nd (= (Nat.beq (:kind e) ek-dep) false)) (rw [(Nat.eq_of_beq_eq_true (And.left hk))])
-     (have p := (h3-find-id w x e hf))
-     (rw [← (And.left p)])
-     (exact (h3-remove-host xm w e (And.right p) nd (Nat.eq_of_beq_eq_true (And.right hk)) h))))
-(override! H3 't8-unobserve-inv '[]
-  '(a/theorem t8-unobserve-hm3 [xm :- (List Nat), w :- World, x :- Nat]
-     (=> (= (g7 w) true) (= (h3 xm w) true) (= (h3 xm (:world (t8-unobserve w x))) true))
-     (intros hg h)
-     (cases hf (edge-find w x)) (case' [some e]) (case' [none])
-     (simp only [t8-unobserve hf refuse]) (exact h)
-     (cases hk (Nat.beq (:kind e) ek-observe))
-     (simp only [t8-unobserve hf hk refuse]) (exact h)
-     (simp only [t8-unobserve hf hk accept])
-     (have p := (h3-find-id w x e hf))
-     (have me := (tbl-find-mem EdgeRow edge-id x e (:edges w) hf))
-     (have ob := (tbl-all-mem EdgeRow _ e (:edges w) (And.right (And.right (And.right (And.right (g7k-parts _ _ _ (g7-rest-of w hg)))))) me))
-     (simp only [obs-one hk Bool.not_true Bool.false_or] at ob)
-     (have nd (= (Nat.beq (:kind e) ek-dep) false)) (rw [(Nat.eq_of_beq_eq_true hk)])
-     (rw [← (And.left p)])
-     (exact (h3-remove-host xm w e (And.right p) nd (Nat.eq_of_beq_eq_true ob) h))))
+(a/theorem t22-un-hm3 [xm :- (List Nat), w :- World, x :- Nat]
+  (=> (= (h3 xm w) true) (= (h3 xm (:world (t22-host-unawait w x))) true))
+  (intro h)
+  (cases hf (edge-find w x)) (case' [some e]) (case' [none])
+  (simp only [t22-host-unawait hf refuse]) (exact h)
+  (cases hk (Bool.and (Nat.beq (:kind e) ek-wait) (Nat.beq (:creditor e) 0)))
+  (simp only [t22-host-unawait hf hk refuse]) (exact h)
+  (simp only [t22-host-unawait hf hk accept])
+  (simp only [Bool.and_eq_true] at hk)
+  (have nd (= (Nat.beq (:kind e) ek-dep) false)) (rw [(Nat.eq_of_beq_eq_true (And.left hk))])
+  (have p := (h3-find-id w x e hf))
+  (rw [← (And.left p)])
+  (exact (h3-remove-host xm w e (And.right p) nd (Nat.eq_of_beq_eq_true (And.right hk)) h)))
+(swap! (:renames H3) assoc 't22-un-inv 't22-un-hm3)
+(a/theorem t8-unobserve-hm3 [xm :- (List Nat), w :- World, x :- Nat]
+  (=> (= (g7 w) true) (= (h3 xm w) true) (= (h3 xm (:world (t8-unobserve w x))) true))
+  (intros hg h)
+  (cases hf (edge-find w x)) (case' [some e]) (case' [none])
+  (simp only [t8-unobserve hf refuse]) (exact h)
+  (cases hk (Nat.beq (:kind e) ek-observe))
+  (simp only [t8-unobserve hf hk refuse]) (exact h)
+  (simp only [t8-unobserve hf hk accept])
+  (have p := (h3-find-id w x e hf))
+  (have me := (tbl-find-mem EdgeRow edge-id x e (:edges w) hf))
+  (have ob := (tbl-all-mem EdgeRow _ e (:edges w) (And.right (And.right (And.right (And.right (g7k-parts _ _ _ (g7-rest-of w hg)))))) me))
+  (simp only [obs-one hk Bool.not_true Bool.false_or] at ob)
+  (have nd (= (Nat.beq (:kind e) ek-dep) false)) (rw [(Nat.eq_of_beq_eq_true hk)])
+  (rw [← (And.left p)])
+  (exact (h3-remove-host xm w e (And.right p) nd (Nat.eq_of_beq_eq_true ob) h)))
+(swap! (:renames H3) assoc 't8-unobserve-inv 't8-unobserve-hm3)
 
 ;; ---- invalidate-dependents: the scanned ids name dep edges, and every edit keeps the edges' kinds
 (a/defn h3-kd [x :- Nat, e :- EdgeRow] Bool (Bool.or (Bool.not (Nat.beq (:id e) x)) (Nat.beq (:kind e) ek-dep)))
@@ -825,23 +826,14 @@
   (simp only [h3-kds])
   (apply (tbl-all-mono EdgeRow _ _ _ (:edges w) u))
   (intros q z) (simp only [same-id-then] at z) (simp only [h3-kd]) (exact z))
-(override! H3 'inv-invalidate-dependents '[]
-  '(a/theorem hm3-invalidate-dependents [xm :- (List Nat), w :- World, d :- Nat]
-     (=> (= (h3 xm w) true) (= (h3 xm (invalidate-dependents w d)) true))
-     (intro h) (simp only [invalidate-dependents])
-     (exact (h3-inval-fold xm _ w (h3-kds-scan w d (h3-sample xm w h)) h))))
+(a/theorem hm3-invalidate-dependents [xm :- (List Nat), w :- World, d :- Nat]
+  (=> (= (h3 xm w) true) (= (h3 xm (invalidate-dependents w d)) true))
+  (intro h) (simp only [invalidate-dependents])
+  (exact (h3-inval-fold xm _ w (h3-kds-scan w d (h3-sample xm w h)) h)))
+(swap! (:renames H3) assoc 'inv-invalidate-dependents 'hm3-invalidate-dependents)
 
 ;; ===========================================================================
-;; Part C. The copies so far (each checks the bundle version of its whole inv-sample closure)
+;; Part C. h3's lemmas so far, restated from the generic tree
 ;; ===========================================================================
 
-(lcopy! H3 't22-un-inv)
-(lcopy! H3 't8-unobserve-inv)
-(lcopy! H3 'inv-invalidate-dependents)
-(lcopy! H3 't2-inv)
-(lcopy! H3 't9-inv)
-(lcopy! H3 't18-inv)
-(lcopy! H3 'inv-wake-closed)
-(lcopy! H3 'inv-settle-host)
-(lcopy! H3 'inv-fast-fill)
-(lcopy! H3 'inv-deliver-fire)
+(tree/restate! H3 '[t2-inv t9-inv t18-inv inv-wake-closed inv-settle-host inv-fast-fill inv-deliver-fire])

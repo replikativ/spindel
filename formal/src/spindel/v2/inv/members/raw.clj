@@ -2,6 +2,7 @@
   "release-world for the h-mem2 bundle h3 (P11): the dropped host edges are no member edges; and the
   assembly over the 38 items: raw0, raw0g and raw keep h3 on a world that satisfies p3la (h17-raw-h3)."
   (:require [ansatz.core :as a]
+            [spindel.v2.pres.tree :as tree]
             [spindel.v2.state :refer :all]
             [spindel.v2.edits :refer :all]
             [spindel.v2.reach :refer :all]
@@ -108,9 +109,7 @@
   (intros e me hp) (exact (h17-host-free xm (set-released w true) e e1 h1 me hp))
   (simp only [revoke-roots])
   (exact (hm3-set-pending-act xm _ 0 (hm3-set-pins xm _ _ (h3-drop-edges xm (set-released w true) not-host p fr h1)))))
-(lcopy! H3 'inv-zero-handles)
-(lcopy! EKB 'inv-zero-handles)
-(lcopy! EKB 'inv-revoke-roots)
+(tree/restate! H3 '[inv-zero-handles])
 (a/theorem h17-t-release-world [xm :- (List Nat), hx :- (List Nat), gx :- (List Nat), gk :- (List Nat), w :- World]
   (=> (= (g10 gx gk w) true) (= (hmk hx w) true) (= (ekb w) true) (= (h3 xm w) true)
       (= (h3 xm (:world (t-release-world w))) true))
@@ -126,12 +125,11 @@
 ;; ===========================================================================
 ;; The assembly: every item keeps h3 (raw0), through the host guard (raw0g) and post (raw)
 ;; ===========================================================================
-(doseq [t '[t1-full-inv t1-top-inv t19-inv t20-pin-inv t20-unpin-inv t3-inv t3-top-inv t4-inv t4-top-inv t5-inv sched-inv
+(tree/restate! H3 '[t1-full-inv t1-top-inv t19-inv t20-pin-inv t20-unpin-inv t3-inv t3-top-inv t4-inv t4-top-inv t5-inv sched-inv
             t-handle-new-inv t-post-inv t-release-inv t-finalize-inv t-open-scope-inv t-detach-inv t-finally-enter-inv
             t-finally-exit-inv t-finally-leave-inv
             t1-body-inv t1-top-full-inv t-create-link-inv t-create-link-top-inv t-link-demand-inv c0-gate-inv
-            t-own-inv t-owned-done-inv t-drain-inv]]
-  (lcopy! H3 t))
+            t-own-inv t-owned-done-inv t-drain-inv])
 
 ;; ---- C0: a link's realization, an append, a stream close (hmk: the realized link / closed stream is a source)
 (a/theorem h17-link-realize-raw [xm :- (List Nat), hx :- (List Nat), w :- World, l :- Nat, tag :- Nat, v :- Nat, n :- Nat]
@@ -194,7 +192,7 @@
 
 ;; ---- Z#77 T28 retire-local: each retired run completes (T12 on a task run without activation, h16) or retires
 ;; (T13); the bundles h16 reads are carried through the runs as h3ctx
-(lcopy! H3 'inv-retire-pre)
+(tree/restate! H3 '[inv-retire-pre])
 (a/defn h3ctx [w :- World] Bool
   (Bool.and (ga w) (Bool.and (gd w) (Bool.and (g7 w) (Bool.and (g10 (List.nil Nat) (List.nil Nat) w) (Bool.and (hmk (List.nil Nat) w) (ekb w)))))))
 (a/theorem h3ctx-parts [w :- World]

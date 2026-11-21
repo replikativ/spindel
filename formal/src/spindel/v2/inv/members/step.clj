@@ -1,6 +1,7 @@
 (ns spindel.v2.inv.members.step
   "Rule R for the h-mem2 bundle h3 (P11): detach, the normalization pass (demote), the filter."
   (:require [ansatz.core :as a]
+            [spindel.v2.pres.tree :as tree]
             [spindel.v2.state :refer :all]
             [spindel.v2.edits :refer :all]
             [spindel.v2.reach :refer :all]
@@ -87,7 +88,7 @@
 
 ;; ===========================================================================
 ;; The frame bundle fb zl zf zd zs: facts that the frame h3-fm transports, carried through the cascades
-;; of the normalization pass by the copier.
+;; of the normalization pass (a part of the generic tree: its sites below).
 ;;   - every id of zf is free (h3-free zl): the non-dep edges on the round's strays, free at the pass start
 ;;   - no activation holds a current run of a computation of zd (the strays demoted so far)
 ;;   - every edge is a dep edge, or its debtor is outside zs, or its id is in zf
@@ -181,7 +182,7 @@
   (exact (fm-runs-of w w (fm-refl w)))
   (intros k hc) (simp only [comp-del set-comps] at hc) (exact (h3-any-del-back CompRow comp-id x (h3-cur k) (:comps w) hc)))
 
-;; ---- the row-function edits (their callers are patched to these forms)
+;; ---- the row-function edits (the cells of fb's sites)
 (a/theorem fb-comp-upd-m [zl :- (List Nat), zf :- (List Nat), zd :- (List Nat), zs :- (List Nat), w :- World, x :- Nat, f :- (=> CompRow CompRow),
                           hid :- (forall [c :- CompRow] (= (comp-id (f c)) (comp-id c))),
                           hp :- (forall [c :- CompRow] (= (:pending (f c)) (:pending c))),
@@ -237,25 +238,22 @@
 (prim! FB 'unmark-edge-inv-sample
        '(fb-move zl zf zd zs w (unmark-edge w x) (h16-fm-unmark w x)
           (ep-unmark-edge (fb-e zs zf) (fn [e :- EdgeRow, q :- (= (fb-e zs zf e) true)] q) w x (fb-er zl zf zd zs w R)) R))
-(defn fb-patch [form]
-  (->> (@#'spindel.v2.inv.idle/fix-f form)
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-comp-upd (first y)) (>= (count y) 6)))
-                    (fn [[_ w x f hid hp & more]]
-                      (let [h (if (seq? f) (first f) f)
-                            lem (fn [l] (if (seq? f) (apply list l (rest f)) l))]
-                        (apply list 'fb-comp-upd-m 'zl 'zf 'zd 'zs w x f hid hp
-                               (if (contains? '#{comp-inc-epoch comp-demand-row comp-replace-row comp-start-row} h)
-                                 (lem (symbol (str h "-h3ep")))
-                                 '(fn [c :- CompRow] (Nat.le_refl (:epoch c))))
-                               more))))
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-run-upd (first y)) (>= (count y) 5)))
-                    (fn [[_ w x f hid & more]]
-                      (apply list 'fb-run-upd-m 'zl 'zf 'zd 'zs w x f hid '(fn [q :- RunRow] (Eq.refl (rk3 q))) more)))
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-act-upd (first y)) (>= (count y) 5) (seq? (nth y 3)) (= 'act-fill (first (nth y 3)))))
-                    (fn [[_ w x f hid & more]]
-                      (apply list 'fb-act-upd-m 'zl 'zf 'zd 'zs w x f hid (apply list 'fm-act-fill w x (rest f)) more)))))
-(doseq [[n _] @@#'spindel.v2.pres.part/source-theorems] (patch! FB n fb-patch))
-(lcopy! FB 'inv-demote)
+;; fb on the generic tree: a computation edit keeps fb when the epoch does not go down (by lemma where
+;; the row function changes it), a run edit keeps the run keys, a fill moves the member (fm-act-fill)
+(defn- fb-lapp [F lem] (if (seq? F) (apply list lem (rest F)) lem))
+(tree/part! FB
+  :sites (merge
+          (tree/row-sites 'inv-comp-upd (constantly true)
+                          (fn [F] (list 'fb-comp-upd-m 'zl 'zf 'zd 'zs 'w 'x F 'hid 'hp
+                                        (if (contains? '#{comp-inc-epoch comp-demand-row comp-replace-row comp-start-row} (if (seq? F) (first F) F))
+                                          (fb-lapp F (symbol (str (if (seq? F) (first F) F) "-h3ep")))
+                                          '(fn [c :- CompRow] (Nat.le_refl (:epoch c))))
+                                        'h0)))
+          (tree/row-sites 'inv-run-upd (constantly true)
+                          (fn [F] (list 'fb-run-upd-m 'zl 'zf 'zd 'zs 'w 'x F 'hf '(fn [q :- RunRow] (Eq.refl (rk3 q))) 'h0)))
+          (tree/row-sites 'inv-act-upd '#{act-fill}
+                          (fn [F] (list 'fb-act-upd-m 'zl 'zf 'zd 'zs 'w 'x F 'hf (apply list 'fm-act-fill 'w 'x (map (constantly '_) (rest F))) 'h0)))))
+(tree/restate! FB '[inv-demote])
 
 ;; ===========================================================================
 ;; demote of a stray x (x is in the list)

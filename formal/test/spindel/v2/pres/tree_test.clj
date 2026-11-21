@@ -14,6 +14,9 @@
             [spindel.v2.inv.idle :as idle]
             [spindel.v2.inv.comp-facts :as cf]
             [spindel.v2.inv.alive-runs :as ar]
+            [spindel.v2.inv.members.bundle :as mb]
+            [spindel.v2.inv.members.cascade :as mc]
+            [spindel.v2.inv.members.step :as mst]
             [spindel.v2.inv.marks :as mk]
             [spindel.v2.inv.marks-step]
             [spindel.v2.inv.tomb :as tomb]
@@ -241,3 +244,12 @@
          (sort (filter #(and (re-find #"^raw0-" (name %)) (tree/variant? ar/AR %)) (:nodes @tree/tree)))))
   ;; the retired run is dead: from the job down to the clear, forwarded
   (doseq [x '[inv-job-apply inv-retire-local inv-retire-with]] (is (tree/variant? ar/AR x) (str x))))
+
+(deftest h3-ekb-and-fb-are-not-copied
+  (doseq [B [mb/H3 mc/EKB mst/FB]]
+    (is (empty? @(:overrides B)) (str (:pred B)))
+    (is (empty? @(:patches B)) (str (:pred B)))
+    ;; sites only: none of them takes a fact from the path
+    (is (not-any? #(tree/variant? B %) (:nodes @tree/tree)) (str (:pred B))))
+  ;; ekb's only site: the await's edge, whose kind is not closed at the insertion
+  (is (= 1 (count (:sites (get @tree/parts 'ekb))))))

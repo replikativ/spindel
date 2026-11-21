@@ -2,6 +2,7 @@
   "Bounded P11 reactivation preserves explicit H3 obligations. Arbitrary fuel
    proves safety of the returned world, without a queue-completion claim."
   (:require [ansatz.core :as a]
+            [spindel.v2.pres.tree :as tree]
             [spindel.v2.state :refer :all]
             [spindel.v2.edits :refer :all]
             [spindel.v2.reach :refer :all]
@@ -150,12 +151,7 @@
   (apply all-of-mem) (intros r mr)
   (exact (h3-react-r xm w c b r mc hi hg ha h mb mr)))
 
-;; Generate every frame in load order, including rank-only computation edits.
-;; Fresh namespace loading must not depend on declarations from a prior REPL.
-(lcopy! H3 'inv-insert-edge-checked)
-(lcopy! H3 'inv-raise-for)
-(lcopy! AHA 'inv-react-one)
-(lcopy! G7 'inv-react-one)
+(tree/restate! H3 '[inv-raise-for])
 
 (a/theorem h3-react-add [xm :- (List Nat), w :- World, c :- Nat, v :- Valid]
   (=> (= (h3 xm w) true) (= (h3 xm (react-add w c v)) true))

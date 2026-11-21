@@ -2,6 +2,7 @@
   "Bounded await wiring certificate before member installation.
    Guarded structural outputs remain separate from general H3 transport."
   (:require [ansatz.core :as a]
+            [spindel.v2.pres.tree :as tree]
             [spindel.v2.state :refer :all]
             [spindel.v2.edits :refer :all]
             [spindel.v2.reach :refer :all]
@@ -97,12 +98,7 @@
       (And (= (:res W) (:res w))
            (forall [x :- Nat] (= (comp-has W x) (comp-has w x)))))))))
 
-;; Both copier families must materialize their actual dependency closures.
-(lcopy! H3 'inv-await-step)
-(lcopy! H3 'inv-await-wire)
-(doseq [B [G7 AHA GD AR HMK EKB GL AWO KA]]
-  (lcopy! B 'inv-await-pre)
-  (lcopy! B 'inv-await-wire))
+(tree/restate! H3 '[inv-await-step inv-await-wire])
 
 (a/theorem h3-await-step [xm :- (List Nat), r :- RunRow, a :- Nat, mode :- Nat, k :- Nat, acc :- AwAcc, d :- Nat]
   (=> (= (h3 xm (:world acc)) true) (= (h3 xm (:world (await-step r a mode k acc d))) true))

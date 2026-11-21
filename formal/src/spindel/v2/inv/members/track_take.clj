@@ -2,6 +2,7 @@
   "h-mem2 through `world-step` (P11, second half), continued from spindel.v2.inv.members.fires, kernel-checked (Init only):
   further overrides of the h3 copier (T7 track, new activations, take / T17 arm, the first cascade pieces)."
   (:require [ansatz.core :as a]
+            [spindel.v2.pres.tree :as tree]
             [clojure.string :as str]
             [clojure.walk :as walk]
             [spindel.v2.state :refer :all]
@@ -35,9 +36,7 @@
             [spindel.v2.inv.members.fires :refer :all]))
 
 ;; copies used below (each checks the bundle version of its inv-sample closure)
-(lcopy! H3 'inv-take-now)
-(lcopy! H3 'inv-arm-raw)
-(lcopy! H3 'inv-close-scope-id)
+(tree/restate! H3 '[inv-take-now inv-arm-raw])
 
 ;; ===========================================================================
 ;; Part A. Tools: freeness by contradiction, members name edges

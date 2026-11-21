@@ -13,6 +13,7 @@
   queue (h16-settle-loop), then complete-body by cases, complete-raw and T12 (h16-t12-h3; the result tag is
   ok or err, the step's guard)."
   (:require [ansatz.core :as a]
+            [spindel.v2.pres.tree :as tree]
             [spindel.v2.state :refer :all]
             [spindel.v2.edits :refer :all]
             [spindel.v2.reach :refer :all]
@@ -1515,7 +1516,7 @@
                (And.right (And.right (And.right pf))) aaW hcW hep cdW hk)))))
 
 ;; ---- complete-raw and T12
-(lcopy! H3 'inv-retire-after)
+(tree/restate! H3 '[inv-retire-after])
 (a/theorem h16-complete-raw-x [xm :- (List Nat), hx :- (List Nat), gx :- (List Nat), gk :- (List Nat), w :- World, r :- RunRow, res :- RunResult]
   (=> (List.Mem r (:runs w)) (= (run-alive r) true) (= (tbl-any (act-of-run (:id r)) (:acts w)) false)
       (= (Bool.or (Bool.not (gd-cce w r)) (tbl-all (gd-u1 r) (:runs w))) true) (= (Nat.beq (:tag res) res-none) false)
