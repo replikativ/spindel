@@ -170,35 +170,50 @@
      (v2/release-world! w))))
 
 (deftest the-installed-namespace-mappings-are-read-only
-  ;; SCI guards built-in vars, not mappings; ns-unmap, intern and remove-ns
-  ;; of an installed namespace would change what later code (any agent's)
-  ;; names. They are refused; other namespaces are unaffected
+  ;; the installed namespaces (and an exposed effect's) are SCI read-only
+  ;; namespaces: no name can be added, removed or reloaded, so later code
+  ;; (any agent's) names what install! put there. Other namespaces are
+  ;; unaffected
   (checked
    (let [w (s/vworld)
          ctx (s/interpreter {} {:effects {'fx/eff `effect-for-read-only-test}})
          attempt (fn [src] (try (ev w ctx src) :changed
                                 (catch Exception e
-                                  (if (some #(= ::v2sci/read-only-namespace (:type (ex-data %)))
+                                  (if (some #(re-find #"read-only" (str (ex-message %)))
                                             (take-while some? (iterate ex-cause e)))
                                     :refused
                                     e))))]
      (doseq [src ["(ns-unmap 'org.replikativ.spindel.v2.core 'task)"
                   "(intern 'org.replikativ.spindel.v2.core 'await (fn [x] [:plain x]))"
                   "(intern 'org.replikativ.spindel.v2.core 'spawn!)"
+                  "(in-ns 'org.replikativ.spindel.v2.core) (clojure.core/def spawn! (clojure.core/fn [] :mine))"
+                  "(in-ns 'org.replikativ.spindel.v2.core) (clojure.core/defmacro fork [] :mine)"
                   "(remove-ns 'org.replikativ.spindel.v2.core)"
+                  "(require 'org.replikativ.spindel.v2.core :reload)"
                   "(ns-unmap 'is.simm.partial-cps.ioc 'invert-impl)"
+                  "(in-ns 'is.simm.partial-cps.ioc) (clojure.core/def extra 1)"
                   "(remove-ns 'is.simm.partial-cps.ioc)"
                   "(ns-unmap 'is.simm.partial-cps.runtime 'thunk?)"
                   "(ns-unmap 'fx 'eff)"
                   "(intern 'fx 'eff identity)"
+                  "(intern 'fx 'other 1)"
                   "(remove-ns 'fx)"]]
-       (is (= :refused (attempt src)) src))
-     (is (= 1 (v (ev w ctx "(ns agent-b (:require [org.replikativ.spindel.v2.core :refer [task]])) (task 1)")))
-         "later code still names the v2 task")
-     (is (= 2 (v (ev w ctx "(ns agent-c (:require [org.replikativ.spindel.v2.core :refer [spin await]])) (spin (await (spin 2)))")))
-         "and the v2 await")
+       (is (= :refused (attempt (str src " (clojure.core/in-ns 'user)"))) src))
+     (ev w ctx "(clojure.core/in-ns 'user)")
+     (is (nil? (ev w ctx "(resolve 'org.replikativ.spindel.v2.core/spawn!)")))
+     (testing "refer, alias and ns forms inside an installed namespace change only code compiled there"
+       (ev w ctx "(ns evil) (defmacro task [& _] :hijacked) (defn await [x] [:plain x])")
+       (doseq [src ["(ns org.replikativ.spindel.v2.core (:require [evil :refer [task await]]))"
+                    "(in-ns 'org.replikativ.spindel.v2.core) (clojure.core/refer 'evil :only '[task await])"
+                    "(in-ns 'org.replikativ.spindel.v2.core) (clojure.core/alias 'core 'evil)"]]
+         (try (ev w ctx (str src " (clojure.core/in-ns 'user)")) (catch Exception _ nil)))
+       (ev w ctx "(clojure.core/in-ns 'user)")
+       (is (= :refused (attempt "(ns-unmap 'org.replikativ.spindel.v2.core 'task)")) "the ns form kept it read-only")
+       (is (= 1 (v (ev w ctx "(ns agent-b (:require [org.replikativ.spindel.v2.core :refer [task]])) (task 1)")))
+           "later code still names the v2 task")
+       (is (= 2 (v (ev w ctx "(ns agent-c (:require [org.replikativ.spindel.v2.core :as c])) (c/spin (c/await (c/spin 2)))"))))
+       (is (= 3 (v (ev w ctx "(ns agent-d) (org.replikativ.spindel.v2.core/task (org.replikativ.spindel.v2.core/await (org.replikativ.spindel.v2.core/task 3)))")))))
      (testing "other namespaces keep the usual behaviour"
-       (is (= :changed (attempt "(def x 1) (ns-unmap 'user 'x)")))
-       (is (= :changed (attempt "(intern 'fx 'other 1)")))
-       (is (= :changed (attempt "(create-ns 'scratch) (remove-ns 'scratch)"))))
+       (is (= :changed (attempt "(in-ns 'user) (def x 1) (ns-unmap 'user 'x)")))
+       (is (= :changed (attempt "(create-ns 'scratch) (intern 'scratch 'y 1) (remove-ns 'scratch)"))))
      (v2/release-world! w))))

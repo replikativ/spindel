@@ -15,9 +15,9 @@
    resolve against SCI's namespaces. Captured inputs are the locals in `&env`
    that occur in the body's text. The compiler is read-only to interpreted
    code: the installed vars and ioc's are `:sci/built-in`, the breakpoint
-   handler is a value, not a name, and `ns-unmap`, `intern` and `remove-ns`
-   refuse the installed namespaces (`guard-mappings!`). A `def` of a new name
-   inside one is still possible: SCI has no namespace-level guard.
+   handler is a value, not a name, and the installed namespaces (and those of
+   exposed effects) are read-only namespaces (`read-only-ns`): no new names,
+   `ns-unmap`, `remove-ns` or `require :reload`.
 
    **No engine internals in SCI.** The expansion calls host functions that
    are spliced into the code as values; no SCI namespace names them. They are
@@ -237,9 +237,9 @@
   "The host functions spliced into expansions for the lineage of `home`."
   [cfg home]
   (let [err* (fn [cap ek] (fn [e]
-                                (if (refused-here? e)
-                                  (do (.remove refusing) (throw e))   ; to the slice: the run fails
-                                  (in-run cfg cap #(ek e)))))
+                            (if (refused-here? e)
+                              (do (.remove refusing) (throw e))   ; to the slice: the run fails
+                              (in-run cfg cap #(ek e)))))
         k* (fn [cap k] (fn [v] (in-run cfg cap #(k v))))
         body* (fn [cap body] (fn [ok err] (in-run cfg cap #(body (settled ok) (settled err)))))
         fx (fn [native]
@@ -268,9 +268,9 @@
      :external (fn [f k ek]
                  (let [cap (capture home false)]
                    (thunk-or-nil (v2/external-effect! (fn [complete!]
-                                                         (let [c ((in-interpreter cap f) complete!)]
-                                                           (if (fn? c) (in-interpreter cap c) c)))
-                                                       (k* cap k) (err* cap ek)))))
+                                                        (let [c ((in-interpreter cap f) complete!)]
+                                                          (if (fn? c) (in-interpreter cap c) c)))
+                                                      (k* cap k) (err* cap ek)))))
      :await-op (fn [op opts k ek]
                  (let [cap (capture home false)]
                    (thunk-or-nil (v2/await-op-effect! (in-interpreter cap op) opts (k* cap k) (err* cap ek)))))
@@ -473,37 +473,13 @@
   [ns-obj]
   {:ns ns-obj :sci/built-in true})
 
-(defn- guard-mappings!
-  "SCI guards the root and metadata of `:sci/built-in` vars, not namespace
-   mappings: `ns-unmap`, `intern` and `remove-ns` change them for every
-   later evaluation. This replaces those three in the context's
-   `clojure.core` with versions that refuse to touch the installed
-   namespaces (`:protected` in `cfg`: namespace symbols, and qualified
-   symbols of single exposed effects) and otherwise do what SCI's do."
-  [ctx cfg]
-  (let [[unmap intern* remove-ns*] (sci/eval-string* ctx "[clojure.core/ns-unmap clojure.core/intern clojure.core/remove-ns]")
-        core (sci/create-ns 'clojure.core)
-        ns-sym (fn [x] (symbol (str x)))
-        protected? (fn [n sym]
-                     (let [ps (:protected @cfg)]
-                       (or (contains? ps n) (and sym (contains? ps (symbol (str n) (str sym)))))))
-        refuse (fn [n] (throw (ex-info (str "The mappings of namespace " n " are read-only.")
-                                       {:type ::read-only-namespace :ns n})))]
-    (sci/add-namespace!
-     ctx 'clojure.core
-     {'ns-unmap (sci/new-var 'ns-unmap (fn [n sym] (if (protected? (ns-sym n) sym) (refuse (ns-sym n)) (unmap n sym)))
-                             (read-only core))
-      'intern (sci/new-var 'intern (fn
-                                     ([n sym] (if (protected? (ns-sym n) sym) (refuse (ns-sym n)) (intern* n sym)))
-                                     ([n sym v] (if (protected? (ns-sym n) sym) (refuse (ns-sym n)) (intern* n sym v))))
-                           (read-only core))
-      'remove-ns (sci/new-var 'remove-ns (fn [n]
-                                           (let [n' (ns-sym n)]
-                                             (if (or (protected? n' nil)
-                                                     (some #(= (str n') (namespace %)) (filter qualified-symbol? (:protected @cfg))))
-                                               (refuse n')
-                                               (remove-ns* n))))
-                              (read-only core))})))
+(defn- read-only-ns
+  "A namespace object for `ns-sym` that SCI keeps read-only to interpreted
+   code (`:sci/built-in` on the namespace, SCI >= 0.15.59-replikativ.9): no
+   new names (`def`, `intern`, types), no `ns-unmap`, `remove-ns` or
+   `require :reload`. Keeps the metadata of the existing one."
+  [ctx ns-sym]
+  (sci/create-ns ns-sym (assoc (meta (get-in @(:env ctx) [:namespaces ns-sym :obj])) :sci/built-in true)))
 
 (def ^:private ioc-handler-lookup
   ["(let [handler (resolve (breakpoints (var-name env head)))"
@@ -525,6 +501,7 @@
                       "(alter-var-root #'is.simm.partial-cps.ioc/binding-restorers (constantly (delay {})))
                        (alter-var-root #'is.simm.partial-cps.ioc/binding-scopes (constantly (delay {})))
                        (doseq [[_ v] (ns-interns 'is.simm.partial-cps.ioc)] (alter-meta! v assoc :sci/built-in true))")
+    (sci/add-namespace! ctx 'is.simm.partial-cps.ioc {:obj (read-only-ns ctx 'is.simm.partial-cps.ioc)})
     (sci/eval-string* ctx "is.simm.partial-cps.ioc/invert")))
 
 (declare expose-effect!)
@@ -558,36 +535,37 @@
      (doseq [[n c] {'java.lang.Throwable Throwable 'is.simm.partial-cps.ioc/Throwable Throwable}]
        (sci/add-class! ctx n c))
      ;; ioc's output calls these by name; nothing else of the runtime
-     (let [n* (sci/create-ns 'is.simm.partial-cps.runtime)]
+     (let [n* (read-only-ns ctx 'is.simm.partial-cps.runtime)]
        (sci/add-namespace! ctx 'is.simm.partial-cps.runtime
-                           (into {} (map (fn [[n f]] [n (sci/new-var n f (read-only n*))]))
+                           (into {:obj n*}
+                                 (map (fn [[n f]] [n (sci/new-var n f (read-only n*))]))
                                  {'->thunk pr/->thunk 'thunk? pr/thunk? 'force-thunk pr/force-thunk
                                   'scope-continuation pr/scope-continuation})))
      (swap! cfg assoc
             :invert (load-ioc! ctx)
             :bp (with-meta (bp cfg a) {:is.simm.partial-cps.ioc/eager-arguments true}))
-     (let [n* (sci/create-ns core-ns)]
+     (let [n* (read-only-ns ctx core-ns)]
        (sci/add-namespace! ctx core-ns
-                           (merge (into {} (map (fn [[n f]] [n (sci/new-macro-var n f (read-only n*))])) ms)
+                           (merge {:obj n*}
+                                  (into {} (map (fn [[n f]] [n (sci/new-macro-var n f (read-only n*))])) ms)
                                   (into {} (map (fn [n] [n (sci/new-var n (outside n) (read-only n*))]))
                                         (keys builtin-effects)))))
      (when old
        (let [resolve-core #(sci/eval-string* ctx (str "(var " core-ns "/" % ")"))]
          (sci/add-namespace! ctx 'org.replikativ.spindel.spin.cps
-                             {'spin (resolve-core (if (= old :task) "task" "spin"))})
+                             {:obj (read-only-ns ctx 'org.replikativ.spindel.spin.cps)
+                              'spin (resolve-core (if (= old :task) "task" "spin"))})
          (sci/add-namespace! ctx 'org.replikativ.spindel.effects.await
-                             {'await (resolve-core "await")})))
-     (swap! cfg assoc :protected
-            (cond-> #{core-ns 'is.simm.partial-cps.ioc 'is.simm.partial-cps.runtime}
-              old (into ['org.replikativ.spindel.spin.cps 'org.replikativ.spindel.effects.await])))
-     (guard-mappings! ctx cfg)
+                             {:obj (read-only-ns ctx 'org.replikativ.spindel.effects.await)
+                              'await (resolve-core "await")})))
      (doseq [[s h] effects] (expose-effect! ctx s h))
      ctx)))
 
 (defn expose-effect!
   "Makes the effect the host registered as `registered-sym`
    (`v2/register-effect!`, `v2/defeffect`) callable from SCI bodies as
-   `sci-sym` (qualified). Bodies compiled before do not see it (R3).
+   `sci-sym` (qualified). Bodies compiled before do not see it (R3). The
+   namespace of `sci-sym` becomes read-only to interpreted code.
    Effects are data: a library that registers effects (foerster) can export
    the map `{sci-sym registered-sym}` for the host to pass to `install!`."
   [ctx sci-sym registered-sym]
@@ -598,8 +576,11 @@
   (let [cfg (config ctx)
         n (symbol (name sci-sym))
         ns-sym (symbol (namespace sci-sym))]
-    (sci/add-namespace! ctx ns-sym {n (sci/new-var n (outside n) (read-only (sci/create-ns ns-sym)))})
-    (swap! cfg update :protected conj sci-sym)
+    ;; the effect's namespace becomes read-only to interpreted code (the host
+    ;; may still add to it): a stub removed or replaced would change what
+    ;; later code names
+    (let [n* (read-only-ns ctx ns-sym)]
+      (sci/add-namespace! ctx ns-sym {:obj n* n (sci/new-var n (outside n) (read-only n*))}))
     (swap! cfg assoc-in [:effects sci-sym] ((:custom (:abi @cfg)) registered-sym))
     nil))
 
