@@ -470,9 +470,14 @@
   a primitive proved through others, e.g. insert-edge-checked)."
   []
   (let [prims (set (keys @frames/footprints))
-        probe (c/mk-bundle 'gpprobe '[] "gpprobe-" {})
-        _ (swap! (:renames probe) assoc 'inv-parts 'inv-parts)
-        closure (set (@#'c/closure probe 'step-inv))
+        ;; the lemmas step-inv's base proof depends on (inv-parts is a leaf)
+        closure (loop [todo ['step-inv] seen #{}]
+                  (if-let [n (first todo)]
+                    (if (or (seen n) (= n 'inv-parts))
+                      (recur (rest todo) (conj seen n))
+                      (recur (concat (rest todo) (filter @S0 (filter symbol? (flatten (drop 4 (base-theorem-source n))))))
+                             (conj seen n)))
+                    seen))
         derived? (fn [p] (let [cs (callees nil p)] (and (seq cs) (not-any? #(= 'inv-intro (second %)) cs))))
         nodes (vec (filter #(and (or (closure %) (contains? @derived %)) (not ('#{inv-parts inv-intro} %))
                                  (or (not (prims %)) (derived? %)))

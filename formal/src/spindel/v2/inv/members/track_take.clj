@@ -1,6 +1,6 @@
 (ns spindel.v2.inv.members.track-take
   "h-mem2 through `world-step` (P11, second half), continued from spindel.v2.inv.members.fires, kernel-checked (Init only):
-  further overrides of the h3 copier (T7 track, new activations, take / T17 arm, the first cascade pieces)."
+  further own proofs of h3 (T7 track, new activations, take / T17 arm, the first cascade pieces)."
   (:require [ansatz.core :as a]
             [spindel.v2.pres.tree :as tree]
             [clojure.string :as str]

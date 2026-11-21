@@ -114,32 +114,32 @@ comes from `p3b` by `step-rule-r-safe`):
 
 ### How the code expresses it today
 
-The proofs are not written part by part and edit by edit. A bundle's step theorem is obtained by
-re-checking the base proof once per bundle (`spindel.v2.pres.part`):
+The proofs are not written part by part and edit by edit. The base proof is checked once more over
+an abstract part, and every part's lemmas are that generic proof applied to the part's cells
+(`spindel.v2.pres.part`, `spindel.v2.pres.tree`):
 
 - `mk-bundle` declares a bundle and its parameters (an exemption set such as `g8`'s escape list `x8s`, or
   a fixed id that a helper bundle talks about).
 - `prim!` fills one cell: the base lemma of one primitive edit, plus a proof of the part. `nil` means a
-  frame, proved by `rfl`. Hand lemmas renamed into the bundle (`swap! (:renames B) …`) fill cells that need
-  an extra premise.
-- `lcopy!` copies every composite lemma of the base proof that `step-inv` needs, with `inv-sample`
-  replaced by the bundle and every callee by its copy: the glue is re-checked once per bundle.
-- `override!` replaces the copy of one composite lemma by a hand proof. Overrides are where a part is
-  deferred within a step (they use an exempt form), and where a leaf needs a fact the base proof does not
-  pass down (a guard, a found row, a companion): then every lemma from the item down to that leaf is
-  overridden to pass it.
-- `patch!` rewrites the text of a base proof before it is copied, for the same purpose.
+  frame, proved by `rfl`. Hand lemmas registered in the bundle (`swap! (:renames B) …`) fill cells that
+  need an extra premise.
+- `restate!` gives the part every composite lemma of the base proof that its step needs, as the
+  generic lemma applied to the part's lemma for every callee.
+- The part's table (`part!`) says where that is not enough: its own proofs (`:over`: a violation
+  deferred within a step, an argument over edits), the row functions that need a lemma (`:sites`), and
+  the facts a leaf needs that the base proof does not pass down (a guard, a found row, a companion),
+  with the terms that pass them (`:ctx`, `:own`, `:pass`).
 
-So the four reasons appear as: frames are the `nil` cells (969 of the 1,357 cells), and since the
-declarations below mostly generated cells (`frame!`); local obligations are the other cells and some
-overrides; deferred violations are overrides that use an exempt form;
-companions are bundle premises passed down by patches and overrides. About 10,000 of the 16,119
-theorems in the environment are copies. `notes/proof-layout.md` gives the counts and the target layout,
-in which a part declares what it reads (frames follow), its exempt form, and only the cells and
-composites that matter to it.
+So the four reasons appear as: frames are the `nil` cells and the generated frame cells (`frame!`);
+local obligations are the other cells and the sites; deferred violations are own proofs that use an
+exempt form; companions are facts in a part's table.
 
-**Declarations (stage 1 of that plan).** Most parts of the chain are now declared through a front end
-that emits the same copier calls:
+Until stage 4 of `notes/proof-layout.md` this was done by a source-level lemma copier (`lcopy!`,
+`override!`, `patch!`): the base proof's text was re-checked once per bundle, with a hand proof or a
+source rewrite wherever a part needed more (337 overrides, 94 patches). It is deleted; the notes give
+the counts before and after.
+
+**Declarations.** A part is declared through a front end:
 
 - `spindel.v2.pres.frames` states what every primitive edit writes (`writes-<edit>`: the edited world is
   the input world with only those fields replaced) and, through `defview`, what a part reads
@@ -158,13 +158,14 @@ that emits the same copier calls:
   the part's own lemma for every callee. The part's table (`part!`) declares where its own proof
   replaces the generic one, and the facts it takes from the path (the run is a row, a guard, a
   companion) with the terms that pass them; the nodes on those paths get the part's own generic lemma
-  (`pres-<x>@<part>`). On the tree so far: `gl` (`inv.i10-task`), `g9` (`inv.i9-res`), `g8` (`inv.i8`),
+  (`pres-<x>@<part>`). Every part is on the tree: `gl` (`inv.i10-task`), `g9` (`inv.i9-res`), `g8` (`inv.i8`),
   `g7` (`inv.idle`), `gd` (`inv.comp-facts`), `hmk` (`inv.marks`), `gy` (`inv.tomb`), `gcy`
   (`inv.acyclic`), `g1` (`inv.i1-scopes`), `gw` (`inv.i11`), `mdb`, `esb`, `aha` and `svb` (`inv.base`), `g10` and `g10r` (`inv.i10`), `g5` (`inv.i5`), `nzb` and `gso`
   (`inv.i1-owners`), `grx` and `gr0` (`inv.i1-runs`), `gox` and `gos`
-  (`completion.open-scopes`), `vq` and `vr` (`inv.i14`), `mb` (`progress.measures`), `grel`, `gc` and `gst`
-  (`completion`) and the companions `awo`, `edb`, `gnf`, `hkw`, `hsw`, `kc`, `kdb`, `krb`, `kx`,
-  `mdk`, `na`, `neb`, `nq` (notes/proof-layout.md sections 5b–5s).
+  (`completion.open-scopes`), `vq` and `vr` (`inv.i14`), `mb` (`progress.measures`), `grel`, `gk`, `gc` and `gst`
+  (`completion`), `ga` and `gx` (`inv.acts`), `ar` (`inv.alive-runs`), `h3`, `ekb` and `fb`
+  (`inv.members`) and the companions `awo`, `ch`, `edb`, `gnf`, `hkw`, `hsw`, `ka`, `kc`, `kdb`, `krb`, `kx`,
+  `mdk`, `na`, `neb`, `nq` (notes/proof-layout.md sections 5b–5x).
 
 `gl` (`inv.i10-task`), `g9` (`inv.i9-res`), `g1` (`inv.i1-scopes`) and `g8` (`inv.i8`) carry a fixed comment block before
 their declaration: the part in words, its view, its exempt form, its cells, where it is deferred within
@@ -190,8 +191,8 @@ Kernel names are global; find a name with `grep -rn "(a/theorem NAME \["` (or `a
 9. `gl-rest`, `l10k`, `kw`, `gl-rest-kw` (`inv.copier`): a part, its view (what it reads) and its frame.
 10. `glx`, `glx-kill`, `gl-task-done-x` (`inv.copier`), `gl-cancel-run-local-o` (`inv.i10-task`): a
     violation deferred within a step: its break and its repair.
-11. `mk-bundle`, `prim-form`, `copy-subst`, `lcopy!` (`pres.part`): how most parts reuse the base proof
-    today; `pres-form`, `restate!`, `part!` (`pres.tree`): how `gl` does, from the generic tree.
+11. `mk-bundle`, `prim-form` (`pres.part`): a part's record and its cells; `pres-form`, `restate!`,
+    `part!` (`pres.tree`): how every part reuses the base proof, from the generic tree.
 12. `g8-close-local`, `g8-cascade`, `g8-cascade-done` (`inv.i8`), `casc-done-ga` (`inv.acts`): an
     exemption set as ghost state in a loop, emptied by P4.
 13. `step-p3m`, `l5-safety-total` (`inv.members.step`): the end of the chain and what it buys (L5's
@@ -218,7 +219,7 @@ a `-` is `_` in the file name). Kernel names are global: a theorem is `step-p3m`
 | Layer 2 | `layer2.sys`, `layer2.skip`, `layer2.top` | cells, publications and their operations; an id taken by a sibling world (`bump`); `sysinv`, `SysReach`, `sys-reach-inv` |
 | Physical | `layer2.mvcc` | the MVCC row representation (tokens, versions, copy maps), `mv-refinement` |
 | Utilities | `util` | function update at a Nat key (`fupd`) |
-| Proof layout | `pres.part`, `pres.frames`, `pres.exempt`, `pres.tree` | part definitions: the base proof as data, the bundle record, the primitive cells, `defpart`, and the copier `lcopy!` for the parts not yet on the tree (part); footprints of the primitive edits and views of the parts (frames); the exemption forms and their uniform names; the generic step tree (`pres-<x>`, `part!`, `restate!`) that eight parts use instead of a copy |
+| Proof layout | `pres.part`, `pres.frames`, `pres.exempt`, `pres.tree` | part definitions: the base proof as data, the bundle record, the primitive cells, `defpart` (part); footprints of the primitive edits and views of the parts (frames); the exemption forms and their uniform names; the generic step tree (`pres-<x>`, `part!`, `restate!`) that gives every part its composite lemmas |
 | Oracle (tests) | `test/spindel/v2/oracle.clj`, `oracle_test.clj`, `oracle/` | replays commit logs recorded from the engine through the model, compares every committed state |
 
 `inv.*`, in load order (each requires the ones before it that it uses):
@@ -307,10 +308,10 @@ Unchanged: `state`, `edits`, `reach`, `retain`, `step`, `rule`, `engine`, `ledge
 `inv-sample w` (`edits`) is the base of every proof: exact pending counts, every edge's creditor and
 debtor exist and have the right kind, ids are unique and below the allocator. A *bundle* is
 `inv-sample w && rest w`. Its step theorem is built from one lemma per primitive table edit (the rest
-part under that edit) and then carried over every composite lemma of `step-inv` by a source-level lemma
-copier (`pres.part`: `mk-bundle`, `prim!`, `lcopy!`; `override!` supplies a hand proof for a
-transition whose rest part is not compositional, `patch!` adds a premise to a source proof). Every copy
-is kernel-checked.
+part under that edit) and then carried over every composite lemma of `step-inv` by the generic step
+tree (`pres.part`: `mk-bundle`, `prim!`; `pres.tree`: `part!`, `restate!`; the part's table supplies
+its own proof for a transition whose rest part is not compositional, and the facts a leaf needs).
+Every generated lemma is kernel-checked.
 
 The bundles form one chain, one link per proof campaign. Each link is `(Bool.and previous new)` and has
 `step-<link> : link w -> link (world-step w it)` and `<link>-empty`:
@@ -407,7 +408,7 @@ dirty cone and `cur-scope`.
 ## Trust boundary
 
 - **Kernel.** Every statement is checked by the ansatz kernel (a port of Lean 4's) when its namespace
-  loads. Generated theorems (the copier's) are checked like hand-written ones.
+  loads. Generated theorems (the tree's) are checked like hand-written ones.
 - **Model against spec.** The model's predicates and transitions are read against
   `docs/engine-v2-spec.md`; the namespaces' docstrings name the spec items they cover and list the
   readings where the model differs from the spec's wording (engine.clj's B1-B10, rule.clj's readings,

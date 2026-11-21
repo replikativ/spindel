@@ -1294,7 +1294,7 @@
   (simp only [deb-exists comp-has task-has source-has resource-has] at h)
   (simp [edge-ok-in edge-ok cred-ok deb-ok host-wait-edge host-cred ek-wait ek-dep h]))
 
-;; ---- the overrides (generic in the bundle parameters, as the copier calls them)
+;; ---- the parts' own proofs (generic in the bundle parameters)
 (tree/restate! VQ '[inv-await-post])
 (a/theorem vq-await-raw [zq9 :- (List Nat), zw9 :- (List Nat), zs9 :- Bool, w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
   (=> (= (vq zq9 zw9 zs9 w) true) (= (vq zq9 zw9 zs9 (await-raw w r ds mode k mine)) true))
