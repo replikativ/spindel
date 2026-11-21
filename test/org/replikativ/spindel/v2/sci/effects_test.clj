@@ -147,3 +147,26 @@
        (is (false? (sci/eval-string* p "@cancelled")) "the cancel fn did not run")
        (v2/release-world! w)
        (is (not= ::timeout (v2/await-complete w 2000 ::timeout)) "the resource joined; the world completed")))))
+
+(deftest an-effects-namespace-is-loaded-first-then-read-only
+  ;; the supported order: the namespace's SCI code is loaded, then the effect
+  ;; is exposed; afterwards only the host's add-namespace! extends it
+  (checked
+   (let [w (s/vworld)
+         p (s/interpreter)
+         refused? (fn [f] (try (f) false
+                               (catch Exception e
+                                 (boolean (some #(re-find #"read-only" (str (ex-message %)))
+                                                (take-while some? (iterate ex-cause e)))))))]
+     (ev w p "(ns fx) (defn helper [] :lib) (def state (atom 0)) (in-ns 'user)")
+     (v2sci/expose-effect! p 'fx/twice `twice)
+     (is (= [:lib 1 42] [(ev w p "(fx/helper)") (ev w p "(swap! fx/state inc)") (v (ev w p "(task (fx/twice 21))"))])
+         "the library loaded first still works, with the effect")
+     (sci/add-namespace! p 'fx {'added (fn [] :added)})
+     (is (= :added (ev w p "(fx/added)")) "the host extends it with add-namespace!")
+     (is (refused? #(ev w p "(intern 'fx 'later 1)")))
+     (is (refused? #(ev w p "(ns fx) (defn helper [] :lib2)")) "no redefinition by evaluated library code")
+     (is (refused? #(sci/intern p (sci/find-ns p 'fx) 'later 1)) "nor by sci/intern")
+     (is (refused? #(ev w p "(require 'fx :reload)")))
+     (ev w p "(in-ns 'user)")
+     (v2/release-world! w))))

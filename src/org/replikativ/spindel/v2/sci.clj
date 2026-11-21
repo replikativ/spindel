@@ -588,8 +588,15 @@
 (defn expose-effect!
   "Makes the effect the host registered as `registered-sym`
    (`v2/register-effect!`, `v2/defeffect`) callable from SCI bodies as
-   `sci-sym` (qualified). Bodies compiled before do not see it (R3). The
-   namespace of `sci-sym` becomes read-only to interpreted code.
+   `sci-sym` (qualified). Bodies compiled before do not see it (R3).
+
+   The namespace of `sci-sym` becomes a read-only SCI namespace: from then
+   on interpreted code, `sci/intern` and `require :reload` cannot add,
+   remove or reload names in it; only the host's `sci/add-namespace!` can
+   extend it. So expose effects from a dedicated effects namespace, or from
+   a namespace whose SCI-side code is loaded first. (Without this, code could
+   unmap the effect for everyone, or redefine its name as a macro that later
+   bodies, any agent's, would expand in place of the effect.)
    Effects are data: a library that registers effects (foerster) can export
    the map `{sci-sym registered-sym}` for the host to pass to `install!`."
   [ctx sci-sym registered-sym]
