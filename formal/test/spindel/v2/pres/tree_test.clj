@@ -202,9 +202,18 @@
   (is (= 1 ('inv-run-ins-fresh tree/dispatched))))
 
 (deftest grel-gc-and-gst-are-not-copied
-  (doseq [B [quiet/GR qw/GC stable/GST]]
+  (doseq [B [quiet/GR quiet/GK qw/GC stable/GST]]
     (is (empty? @(:overrides B)) (str (:pred B)))
     (is (empty? @(:patches B)) (str (:pred B))))
   ;; gst: T12 writes a result; the fact comes from raw0's complete arm
   (is (tree/variant? stable/GST 'raw0-complete-inv))
   (is (not-any? #(tree/variant? qw/GC %) '[raw-inv inv-normalize t14-inv])))
+
+(deftest gk-takes-the-guard-from-raw0
+  ;; a creation has handles 1 only while not released: the fact goes from raw0's arm down to the row
+  (doseq [x '[raw0-create-comp-inv t3-inv inv-create-comp-raw raw0-handle-new-inv t-handle-new-inv
+              new-task-handle-inv new-source-handle-inv inv-append-raw inv-stream-rows]]
+    (is (tree/variant? quiet/GK x) (str x)))
+  (is (= '[(= (root-shut w) false)] (vec (take-nth 2 (rest (get (tree/table-own quiet/GK) 't3-inv))))))
+  ;; it stops at raw0: the dispatcher and the step are the shared lemmas
+  (is (not-any? #(tree/variant? quiet/GK %) '[raw0-inv raw0g-inv raw-inv inv-normalize])))
