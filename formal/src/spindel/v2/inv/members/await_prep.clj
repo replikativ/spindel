@@ -29,16 +29,7 @@
             [spindel.v2.inv.members.base :refer :all]
             [spindel.v2.inv.members.react :refer :all]))
 
-;; Materialize support closure at namespace load, before any caller. H3's
-;; generic activation insertion remains unavailable: its new obligation is below.
-(lcopy! G7 'inv-demand-reactive)
-(lcopy! AHA 'inv-demand-reactive)
-(lcopy! G7 'inv-await-pre)
-(lcopy! AHA 'inv-await-pre)
-(lcopy! GD 'inv-await-pre)
-(lcopy! AR 'inv-await-pre)
-(lcopy! HMK 'inv-await-pre)
-(lcopy! EKB 'inv-await-pre)
+;; H3's generic activation insertion is unavailable: its new obligation is below.
 
 (a/theorem h3-demand-reactive [xm :- (List Nat), w :- World, d :- Nat]
   (=> (= (g7 w) true) (= (aha w) true) (= (h3 xm w) true)

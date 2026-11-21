@@ -52,12 +52,6 @@
                          (h10-pending-exempt ps t xm))]))
 
 
-;; Materialize actual support closures before any use, without placeholder overrides.
-(doseq [root '[inv-react-edges inv-react-loop inv-demand-reactive nat-fold-inv inv-await-wire]]
-  (lcopy! AWO root))
-(lcopy! H3 'inv-fast-fill)
-(lcopy! H3 'nat-fold-inv)
-(doseq [B [GD GL AWO], root '[inv-fast-fill nat-fold-inv]] (lcopy! B root))
 
 (a/theorem h10-fast-not-ready-waiting [w :- World, d :- Nat]
   (=> (= (gd w) true) (= (awake (:comps w) d) true) (= (fast-ready w d) false)

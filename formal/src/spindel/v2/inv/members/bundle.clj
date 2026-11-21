@@ -1,6 +1,6 @@
 (ns spindel.v2.inv.members.bundle
   "h-mem2 through `world-step` (P11, second half), kernel-checked (Init only), first stage: the bundle, its
-  transfer and primitive lemmas, the copier setup, the first fire overrides and the derivation of h-mem2.
+  transfer and primitive lemmas, its table in the generic step tree, the first fire proofs and the derivation of h-mem2.
   The later stages are the other spindel.v2.inv.members.* namespaces (formal/README.md lists them in
   load order); the step theorem `step-h3` and the chain link p3m are in spindel.v2.inv.members.step
   (`step-p3m`, `step-h-mem2-total`).
@@ -21,10 +21,11 @@
     h3-l5-safety   p3c w, gd w, h3 [] w, quiescent w, h-mark w, ... -> False   (L5, safety half)
   Part B: `h3-rest-rel` (transfer through any change of computations, tasks, runs, edges and allocator with the
   activations kept, given per-table conditions; free edges may change or go: `h3-free`); per-table forms and
-  the primitive edits. Part C: full-bundle forms, lit's copier bundle `H3` (prefix hm3-) with the source patch.
+  the primitive edits. Part C: full-bundle forms, the bundle `H3` (prefix hm3-) and its sites in the generic tree (spindel.v2.pres.tree).
   Part D: fires (invalidate, resume, fill-slot; exemption monotone and the undo of a free member-id exemption).
   Part F: h-mem2 and L5 from the bundle."
   (:require [ansatz.core :as a]
+            [spindel.v2.pres.tree :as tree]
             [spindel.v2.pres.exempt :as exempt]
             [clojure.string :as str]
             [clojure.walk :as walk]
@@ -1509,10 +1510,10 @@
   (exact (h3r-cs xm (set-edges w (tbl-filter p (:edges w))) (comps-resync (tbl-filter p (:edges w)) (:comps w)) hs1 a1 a2 a3 a4 a5 h1)))
 
 ;; ===========================================================================
-;; Part C. Full-bundle forms of the primitives and the bundle copy
+;; Part C. Full-bundle forms of the primitives; h3 on the generic tree
 ;; ===========================================================================
 
-;; ---- row-function facts for the source patch
+;; ---- row-function facts for the table's sites
 (a/theorem comp-inc-epoch-h3ep [c :- CompRow] (<= (:epoch c) (:epoch (comp-inc-epoch c)))
   (simp only [comp-inc-epoch]) (exact (Nat.le_succ _)))
 (a/theorem comp-demand-row-h3ep [c :- CompRow] (<= (:epoch c) (:epoch (comp-demand-row c)))
@@ -1639,8 +1640,10 @@
 (exempt/defexempt 'h3
   :form "h3 xm w" :ids "computation, debtor and member ids (ids are global and unique)" :commit "h3 [] (p3m)")
 (def H3 (mk-bundle 'h3 '[xm :- (List Nat)] "hm3-" {}))
-;; renamed to full-bundle forms with extra premises (their callers are overrides) or to a missing name
-;; (a primitive the bundle does not keep in general: every caller is an override)
+;; h3's lemma for a primitive is a full-bundle form with extra premises (its callers are h3's own proofs)
+;; or a missing name (a primitive the bundle does not keep in general: every caller is an own proof).
+;; h3's own proofs of composite lemmas are registered the same way where they are proved (the later
+;; `swap!`s in this namespace and in fires, track-take and cascade): the tree uses them from there on.
 (swap! (:renames H3) assoc 'inv-parts 'h3-parts
        'unmark-edge-inv-sample 'h3-unmark-edge 'inv-remove-edge 'h3-remove-edge 'inv-drop-cred 'h3-drop-cred
        'inv-drop-act 'h3-drop-act 'inv-drop-edges 'h3-drop-edges 'inv-run-del 'h3-run-del
@@ -1661,7 +1664,7 @@
 (prim! H3 'inv-insert-edge-checked '(h3r-insert-edge-checked xm w e (h3-sample xm w h0) R))
 (prim! H3 'inv-comp-del-unref '(h3r-comp-del xm w x (h3-db-of w (h3-sample xm w h1)) R))
 
-;; ---- the source patch: row-function edits go through the -m forms when the function keeps what h3 reads
+;; ---- the row functions that keep what h3 reads
 (def ^:private h3-comp-ok '#{comp-detach-row comp-set-rank comp-inc-epoch comp-dec-handles comp-start-row comp-set-run comp-h1
                              comp-adopt-row comp-consume-adopt comp-add-basis comp-h0 comp-replace-row comp-clear-run comp-demand-row
                              comp-cut-row comp-rebasis})
@@ -1671,47 +1674,41 @@
 (def ^:private h3-edge-ok '#{edge-reawait edge-set-seen edge-rearm edge-reread})
 (defn- h3-fhead [f] (if (seq? f) (first f) f))
 (defn- h3-lapp [f lem] (if (seq? f) (apply list lem (rest f)) lem))
-(defn h3-patch [form]
-  (->> (@#'spindel.v2.inv.idle/fix-f form)
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-comp-upd (first y)) (>= (count y) 6) (contains? h3-comp-ok (h3-fhead (nth y 3)))))
-                    (fn [[_ w x f hid hp & more]]
-                      (let [h (h3-fhead f)]
-                        (apply list 'h3-comp-upd-m 'xm w x f hid hp
-                               (if (contains? h3-comp-ep h) (h3-lapp f (symbol (str h "-h3ep"))) '(fn [c :- CompRow] (Nat.le_refl (:epoch c))))
-                               (if (contains? h3-comp-hkm h) (h3-lapp f (symbol (str h "-hkm"))) '(fn [c :- CompRow, hc :- (= (hk-wt c) true)] hc))
-                               (if (contains? h3-comp-ep h) (h3-lapp f (symbol (str h "-h3ds")))
-                                   '(fn [c :- CompRow, hc :- (= (Nat.blt (:done-epoch c) (:epoch c)) true)] hc))
-                               more))))
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-run-upd (first y)) (>= (count y) 5) (contains? h3-run-ok (h3-fhead (nth y 3)))))
-                    (fn [[_ w x f hid & more]]
-                      (apply list 'h3-run-upd-m 'xm w x f hid '(fn [r :- RunRow] (Eq.refl (:of r))) '(fn [r :- RunRow] (Eq.refl (:epoch r)))
-                             (case (h3-fhead f)
-                               run-wake 'run-wake-h3al
-                               (run-park-row run-tick-park) '(fn [r :- RunRow, q :- (= (run-alive r) true)] (Eq.refl true))
-                               '(fn [r :- RunRow, q :- (= (run-alive r) true)] q))
-                             more)))
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-task-upd (first y)) (>= (count y) 5) (not= 'task-clear-run (h3-fhead (nth y 3)))))
-                    (fn [[_ w x f hid & more]] (apply list 'h3-task-upd-m 'xm w x f hid '(fn [t :- TaskRow] (Eq.refl (:run t))) more)))
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-act-upd (first y)) (>= (count y) 5) (= 'act-fill (h3-fhead (nth y 3)))))
-                    (fn [[_ w x f hid & more]]
-                      (apply list 'h3-act-upd-m 'xm w x f hid '(fn [b :- ActRow] (Eq.refl (:run b))) (h3-lapp f 'act-fill-h3sub) more)))
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-edge-upd (first y)) (>= (count y) 9)
-                                 (or (contains? h3-edge-ok (h3-fhead (nth y 3))) (= '(edge-set-phase ph-armed) (nth y 3)))))
-                    (fn [[_ w x f hid hk hc hd hm & more]]
-                      (apply list 'h3-edge-upd-m 'xm w x f hid hk hc hd hm
-                             (if (= 'edge-set-seen (h3-fhead f)) '(fn [e :- EdgeRow, q :- (= (Nat.beq (:phase e) ph-armed) true)] q)
-                                 '(fn [e :- EdgeRow, q :- (= (Nat.beq (:phase e) ph-armed) true)] (Nat.beq_refl ph-armed)))
-                             more)))))
-(defn h3-patch2 [form]
-  (->> (h3-patch form)
-       (subst-forms (fn [y] (and (seq? y) (= 'inv-edge-set-phase (first y)) (= 'ph-armed (nth y 3 nil))))
-                    (fn [[_ w x p & more]]
-                      (apply list 'h3-edge-upd-m 'xm w x '(edge-set-phase ph-armed) '(edge-set-phase-edge-id ph-armed)
-                             '(fn [e :- EdgeRow] (Eq.refl (:kind e))) '(fn [e :- EdgeRow] (Eq.refl (:creditor e)))
-                             '(fn [e :- EdgeRow] (Eq.refl (:debtor e))) '(fn [e :- EdgeRow] (Eq.refl (:marked e)))
-                             '(fn [e :- EdgeRow, q :- (= (Nat.beq (:phase e) ph-armed) true)] (Nat.beq_refl ph-armed))
-                             more)))))
-(doseq [[n _] @@#'spindel.v2.pres.part/source-theorems] (patch! H3 n h3-patch2))
+(def ^:private h3-armed '(fn [e :- EdgeRow, q :- (= (Nat.beq (:phase e) ph-armed) true)] (Nat.beq_refl ph-armed)))
+;; h3 on the generic tree: its sites. h3 has no cell for an arbitrary row edit; an edit by a row function
+;; that keeps what h3 reads goes through the -m form with that function's lemmas. A site without an
+;; entry has no cell (the -NONE names above): every caller of it is one of h3's own proofs.
+(tree/part! H3
+  :sites (merge
+          (tree/row-sites 'inv-comp-upd h3-comp-ok
+                          (fn [F] (let [h (h3-fhead F)]
+                                    (list 'h3-comp-upd-m 'xm 'w 'x F 'hid 'hp
+                                          (if (contains? h3-comp-ep h) (h3-lapp F (symbol (str h "-h3ep"))) '(fn [c :- CompRow] (Nat.le_refl (:epoch c))))
+                                          (if (contains? h3-comp-hkm h) (h3-lapp F (symbol (str h "-hkm"))) '(fn [c :- CompRow, hc :- (= (hk-wt c) true)] hc))
+                                          (if (contains? h3-comp-ep h) (h3-lapp F (symbol (str h "-h3ds")))
+                                              '(fn [c :- CompRow, hc :- (= (Nat.blt (:done-epoch c) (:epoch c)) true)] hc))
+                                          'h0))))
+          (tree/row-sites 'inv-run-upd h3-run-ok
+                          (fn [F] (list 'h3-run-upd-m 'xm 'w 'x F 'hf '(fn [r :- RunRow] (Eq.refl (:of r))) '(fn [r :- RunRow] (Eq.refl (:epoch r)))
+                                        (case (h3-fhead F)
+                                          run-wake 'run-wake-h3al
+                                          (run-park-row run-tick-park) '(fn [r :- RunRow, q :- (= (run-alive r) true)] (Eq.refl true))
+                                          '(fn [r :- RunRow, q :- (= (run-alive r) true)] q))
+                                        'h0)))
+          (tree/row-sites 'inv-task-upd #(not= 'task-clear-run %)
+                          (fn [F] (list 'h3-task-upd-m 'xm 'w 'x F 'hf '(fn [t :- TaskRow] (Eq.refl (:run t))) 'h0)))
+          (tree/row-sites 'inv-act-upd '#{act-fill}
+                          (fn [F] (list 'h3-act-upd-m 'xm 'w 'x F 'hf '(fn [b :- ActRow] (Eq.refl (:run b))) (apply list 'act-fill-h3sub (map (constantly '_) (rest F))) 'h0)))
+          (tree/row-sites 'inv-edge-upd h3-edge-ok
+                          (fn [F] (list 'h3-edge-upd-m 'xm 'w 'x F 'hid 'hk 'hc 'hd 'hm
+                                        (if (= 'edge-set-seen (h3-fhead F)) '(fn [e :- EdgeRow, q :- (= (Nat.beq (:phase e) ph-armed) true)] q) h3-armed)
+                                        'h0)))
+          {'[inv-edge-upd (edge-set-phase ph-armed)]
+           (list 'h3-edge-upd-m 'xm 'w 'x '(edge-set-phase ph-armed) 'hid 'hk 'hc 'hd 'hm h3-armed 'h0)
+           '[inv-edge-set-phase ph-armed]
+           (list 'h3-edge-upd-m 'xm 'w 'x '(edge-set-phase ph-armed) '(edge-set-phase-edge-id ph-armed)
+                 '(fn [e :- EdgeRow] (Eq.refl (:kind e))) '(fn [e :- EdgeRow] (Eq.refl (:creditor e)))
+                 '(fn [e :- EdgeRow] (Eq.refl (:debtor e))) '(fn [e :- EdgeRow] (Eq.refl (:marked e))) h3-armed 'h0)}))
 
 ;; ===========================================================================
 ;; Part D. The fires

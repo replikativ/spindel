@@ -44,10 +44,6 @@
                          acc :- AwAcc, pre :- (List Nat)] World
   (nat-fold fin-if-final (h11-parked a rid ds acc) pre))
 
-;; Ordinary HMK materialization retains actual act-upd row-ID requirements.
-;; No H3 installation or finalization override is introduced here.
-(doseq [root '[inv-fast-fill nat-fold-inv inv-park-if inv-fin-if-final]]
-  (lcopy! HMK root))
 
 (a/theorem h11-park-hmk [xm :- (List Nat), w :- World, r :- RunRow,
          ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat),

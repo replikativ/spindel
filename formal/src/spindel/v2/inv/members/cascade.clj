@@ -4,6 +4,7 @@
   or an observe edge of the host: no savepoint edge exists in layer 1) through the step. Part B: freeness
   monotonicity (`h3-fm`: activations only shrink, run keys kept, currency only lost). Part C: the cascade."
   (:require [ansatz.core :as a]
+            [spindel.v2.pres.tree :as tree]
             [clojure.string :as str]
             [clojure.walk :as walk]
             [spindel.v2.state :refer :all]
@@ -104,57 +105,21 @@
 (prim! EKB 'inv-drop-edges '(ep-filter ekb-one p (:edges w) R))
 (prim! EKB 'inv-filter-world '(tbl-all-keep-same EdgeRow K edge-id ekb-one (:edges w) R))
 
-;; ---- overrides: the insertion sites whose edge is not a closed constructor term at the call
+;; ---- the await's edge is not a closed constructor term at its insertion
 (a/theorem ekb-await-edge [w :- World, r :- RunRow, a :- Nat, mode :- Nat, k :- Nat, d :- Nat]
   (= (ekb-one (await-edge w r a mode k d)) true)
   (cases hd (as-dep w r d))
   (case [false] (simp only [await-edge hd]) (try (rfl)))
   (case [true] (simp only [await-edge hd]) (try (rfl))))
 
-(override! EKB 'inv-react-add '[inv-raise-for]
-  '(a/theorem ekb-react-add [w :- World, c :- Nat, v :- Valid]
-     (=> (= (ekb w) true) (= (ekb (react-add w c v)) true))
-     (intro h)
-     (cases hk (react-ok w c v))
-     (case [false] (simp only [react-add hk]) (exact h))
-     (case [true]
-       (simp only [react-add hk])
-       (exact (ekb-raise-for _ c (:debtor v) (ekb-insert-edge-checked w (valid-edge w c v) (Eq.refl true) h))))))
+;; ekb on the generic tree: an inserted edge's kind is fine by computation (the bundle's extra argument),
+;; except the await's edge, whose kind depends on the dep test: by lemma (a site)
+(tree/part! EKB
+  :sites '{[inv-insert-edge-checked (await-edge (:world acc) r a mode k d)]
+           (ekb-insert-edge-checked w (await-edge (:world acc) r a mode k d) (ekb-await-edge _ r a mode k d) h0)})
 
-(override! EKB 'inv-await-step '[inv-comp-upd inv-raise-for inv-edge-upd]
-  '(a/theorem ekb-await-step [r :- RunRow, a :- Nat, mode :- Nat, k :- Nat, acc :- AwAcc, d :- Nat]
-     (=> (= (ekb (:world acc)) true) (= (ekb (:world (await-step r a mode k acc d))) true))
-     (intro h)
-     (cases hd (as-dep (:world acc) r d))
-     (case [false]
-       (simp only [await-step hd])
-       (exact (ekb-insert-edge-checked _ (await-edge (:world acc) r a mode k d) (ekb-await-edge (:world acc) r a mode k d) h)))
-     (case [true]
-       (cases hs (site-edge (:edges (:world acc)) (:of r) (:effect-index r) d))
-       (case [none]
-         (simp only [await-step hd hs])
-         (simp only [await-new-dep])
-         (exact (ekb-comp-upd _ (:of r) (comp-consume-adopt (:effect-index r) d)
-                  (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _)
-                  (ekb-raise-for _ (:of r) d (ekb-insert-edge-checked _ (await-edge (:world acc) r a mode k d) (ekb-await-edge (:world acc) r a mode k d) h)))))
-       (case [some e]
-         (simp only [await-step hd hs])
-         (exact (ekb-comp-upd _ (:of r) (comp-consume-adopt (:effect-index r) d)
-                  (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _)
-                  (ekb-edge-upd _ (:id e) (edge-reawait (await-cont r mode k)) (edge-reawait-edge-id _)
-                    (edge-reawait-kind _) (edge-reawait-creditor _) (edge-reawait-debtor _) (edge-reawait-marked _) h)))))))
-
-(override! EKB 'inv-take-park '[inv-run-upd inv-act-ins-fresh]
-  '(a/theorem ekb-take-park [w :- World, r :- RunRow, x :- Nat, k :- Nat]
-     (=> (= (ekb w) true) (= (ekb (take-park w r x k)) true))
-     (intro h)
-     (simp only [take-park])
-     (exact (ekb-run-upd _ (:id r) run-tick-park run-tick-park-id
-              (ekb-insert-edge-checked _ (take-edge r (:next-id w) x) (Eq.refl true)
-                (ekb-act-ins-fresh w (take-act w r k) (rfl) h))))))
-
-(lcopy! EKB 'raw-inv)
-(lcopy! EKB 'inv-normalize)
+(tree/restate! EKB '[raw-inv])
+(tree/restate! EKB '[inv-normalize])
 
 (a/theorem ekb-rule-r-round [w :- World]
   (=> (= (ekb w) true) (= (filter-safe (normalize w)) true) (= (ekb (rule-r-round w)) true))
@@ -484,11 +449,8 @@
 (a/theorem fm-cleanup-set [w :- World, rid :- Nat, rows :- (List Nat)] (h3-fm w (cleanup-set w rid rows))
   (exact (fm-same w (cleanup-set w rid rows) (rfl) (rfl) (rfl))))
 
-;; h3 copies used below (premise-free members of the raw closure)
-(lcopy! H3 'inv-cancel-res)
-(lcopy! H3 'inv-cleanup-set)
-(lcopy! H3 'inv-fire-waits-cancelled)
-(lcopy! H3 'inv-ack-raw)
+;; h3's lemmas used below (premise-free members of the raw closure), restated from the generic tree
+(tree/restate! H3 '[inv-cancel-res inv-cleanup-set inv-fire-waits-cancelled inv-ack-raw])
 
 ;; ===========================================================================
 ;; Part C. The cascade. First the transfer of hm3 with the task and done-epoch conditions required for
@@ -1377,7 +1339,7 @@
   (simp only [tof-pair rk10 tk10 rp er Bool.not_true Bool.false_or] at p)
   (exact (Eq.symm (Nat.eq_of_beq_eq_true p))))
 ;; C0: T14 on a realizer task clears its link's rtask (a source frame)
-(lcopy! H3 'inv-clear-rtasks)
+(tree/restate! H3 '[inv-clear-rtasks])
 (a/theorem h3-cancel-run-local-g [xm :- (List Nat), hx :- (List Nat), gx :- (List Nat), gk :- (List Nat), w :- World, r :- RunRow, rep :- Bool]
   (=> (List.Mem r (:runs w)) (= (g10 gx gk w) true) (= (hmk hx w) true) (= (ekb w) true) (= (h3 xm w) true)
       (= (h3 xm (cancel-run-local w r rep)) true))
@@ -1434,9 +1396,8 @@
         (exact (hm3-clear-rtasks xm _ (:of r) (h3-cancel-task xm hx w r hc htk hk h))))
       (case [false] (exact (hm3-clear-rtasks xm _ (:of r) (h3-cancel-task-x xm hx w r t0 hc ht hxk tf hk he h)))))))
 
-;; Retirement and scope-close use this frame lemma. Generate/check it during
-;; fresh namespace loading rather than relying on a prior REPL copier call.
-(lcopy! H3 'inv-remove-if-empty)
+;; Retirement and scope-close use this frame lemma.
+(tree/restate! H3 '[inv-remove-if-empty])
 
 ;; ---- T13 retire: the run row (retirable, so dead) stays dead through close-local (krb), so run-del is allowed
 (a/theorem h3-retire-with [xm :- (List Nat), hx :- (List Nat), w :- World, r :- RunRow, sub :- (List Nat)]
@@ -1633,7 +1594,7 @@
   (=> (= (hmk hxm w1) true) (= (g10 gxz gkz w1) true) (= (ekb w1) true) (= (h3 xm w1) true) (= (h3 xm (cancel-losers w0 w1)) true))
   (intros hk hg he h) (simp only [cancel-losers]) (exact (h3-run-cascade-g xm hxm gxz gkz w1 _ hg hk he h)))
 
-;; the H3 copier: these overrides take hmk, g10 and ekb of their input (their callers thread them; raw0's patch)
+;; h3's own proofs of the cascade and its callers: they take hmk, g10 and ekb of their input (their callers thread them)
 (swap! (:renames H3) assoc 'inv-run-cascade 'h3-run-cascade-g 't14-inv 't14-h3 't-cancel-inv 't-cancel-h3 't16-inv 't16-h3
        't-close-scope-inv 't-close-scope-h3 't15-full-inv 't15-full-h3 't-slice-exit-inv 't-slice-exit-h3 'inv-cancel-losers 'h3-cancel-losers
        'inv-retire-local 'h3-retire-local 'inv-close-scope-local 'h3-close-scope-local 'inv-job-apply 'h3-job-apply-g)
