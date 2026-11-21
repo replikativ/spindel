@@ -14,10 +14,10 @@
             structural (`current-members-s`): armed, a dep edge's creditor is R.of, another kind's creditor is A, and A is
               the first activation with member x (`act-with-member`: the one a fire of E reaches), and
             unless E's debtor is exempt (`current-members-m`): a task debtor's run is alive, a computation debtor is reached
-              by a dep edge and all its rows are strongly waiting (hmk's `waiting-strongly`).
+              by a dep edge and all its rows are strongly waiting (marks-waiting's `waiting-strongly`).
   The exemption list holds computation ids (an exempt computation's activations), debtor ids and member ids
   (ids are global and unique). Theorems:
-    current-members-h-mem2      current-members [] w, comp-facts w -> h-mem2 w          (gd's rof: C.run names a run of C)
+    current-members-h-mem2      current-members [] w, comp-facts w -> h-mem2 w          (comp-facts's rof: C.run names a run of C)
     current-members-l5-safety   chain-to-i10-current w, comp-facts w, current-members [] w, quiescent w, h-mark w, ... -> False   (L5, safety half)
   Part B: `current-members-rest-rel` (transfer through any change of computations, tasks, runs, edges and allocator with the
   activations kept, given per-table conditions; free edges may change or go: `current-members-free`); per-table forms and
@@ -1635,14 +1635,14 @@
   (intros hn h) (have hs := (current-members-well-formed xm w h))
   (exact (current-members-intro xm _ (well-formed-run-del w x hs) (current-members-rest-run-del xm w x hn (current-members-db-of w hs) (current-members-rest-of xm w h)))))
 
-;; h3's exempt form (spindel.v2.pres.exempt; recorded, no aliases yet); the `h3-undo-*` lemmas remove
+;; current-members's exempt form (spindel.v2.pres.exempt; recorded, no aliases yet); the `h3-undo-*` lemmas remove
 ;; an exemption once its fact holds
 (exempt/defexempt 'current-members
   :form "current-members xm w" :ids "computation, debtor and member ids (ids are global and unique)" :commit "current-members [] (chain)")
 (def H3 (mk-bundle 'current-members '[xm :- (List Nat)] "current-members-" {}))
-;; h3's lemma for a primitive is a full-bundle form with extra premises (its callers are h3's own proofs)
+;; current-members's lemma for a primitive is a full-bundle form with extra premises (its callers are current-members's own proofs)
 ;; or a missing name (a primitive the bundle does not keep in general: every caller is an own proof).
-;; h3's own proofs of composite lemmas are registered the same way where they are proved (the later
+;; current-members's own proofs of composite lemmas are registered the same way where they are proved (the later
 ;; `swap!`s in this namespace and in fires, track-take and cascade): the tree uses them from there on.
 (swap! (:renames H3) assoc 'well-formed-parts 'current-members-parts
        'well-formed-unmark-edge 'current-members-unmark-edge 'well-formed-remove-edge 'current-members-remove-edge 'well-formed-drop-cred-edges 'current-members-drop-cred
@@ -1677,7 +1677,7 @@
 (def ^:private h3-armed '(fn [e :- EdgeRow, q :- (= (Nat.beq (:phase e) ph-armed) true)] (Nat.beq_refl ph-armed)))
 ;; current-members on the generic tree: its sites. current-members has no cell for an arbitrary row edit; an edit by a row function
 ;; that keeps what current-members reads goes through the -m form with that function's lemmas. A site without an
-;; entry has no cell (the -NONE names above): every caller of it is one of h3's own proofs.
+;; entry has no cell (the -NONE names above): every caller of it is one of current-members's own proofs.
 (tree/part! H3
   :sites (merge
           (tree/row-sites 'well-formed-comp-upd h3-comp-ok
@@ -2101,7 +2101,7 @@
   (exact (tbl-all-mem-mono ActRow _ _ (:acts w) ga h)))
 
 ;; ===========================================================================
-;; Part F. The bundle gives h-mem2 (with gd's rof)
+;; Part F. The bundle gives h-mem2 (with comp-facts's rof)
 ;; ===========================================================================
 
 (a/theorem current-members-rm-head [x :- Nat, t :- (List Nat)] (= (reach-mem x (List.cons Nat x t)) true)
@@ -2232,7 +2232,7 @@
         (simp only [mem-y-ok2 lf Bool.true_or])))))
 
 
-;; h-mem2 from the bundle with no exemption and gd's rof (C.run names a run of C)
+;; h-mem2 from the bundle with no exemption and comp-facts's rof (C.run names a run of C)
 (a/theorem current-members-h-mem2 [w :- World] (=> (= (current-members (List.nil Nat) w) true) (= (comp-facts w) true) (= (h-mem2 w) true))
   (intros h hg)
   (have hs := (current-members-well-formed _ w h))

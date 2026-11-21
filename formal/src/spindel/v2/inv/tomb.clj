@@ -520,7 +520,7 @@
                           (fn [F] (list 'tombs-dormant-comp-upd-m 'ty 'w 'x F 'hid 'hp (list 'clear-ne F '(fn [c :- CompRow] (Eq.refl false))) 'h0)))
           '{[well-formed-run-upd run-wake] (tombs-dormant-run-upd ty w x run-wake hf run-wake-i7-idle-run-key h0)})
   ;; ---- facts from the path: T6 and T7 take i7-idle (the awaiting / tracking run is alive), from the
-  ;; step's input; T7 also raw0's guard (not in a cleanup slice)
+  ;; step's input; T7 also transition's guard (not in a cleanup slice)
   :ctx '{well-formed-t7-track [(= (i7-idle w) true) (= (in-cleanup w st) false)]
          well-formed-t6-await [(= (i7-idle w) true)]}
   :own '{well-formed-raw        [hg7 (= (i7-idle w) true)]
@@ -541,7 +541,7 @@
   (simp only [ta-one ha Bool.not_true Bool.false_or] at t)
   (exact t))
 
-;; T7's tracking run holds the slice in normal mode (not a cleanup slice), so it is alive (g7's sn)
+;; T7's tracking run holds the slice in normal mode (not a cleanup slice), so it is alive (i7-idle's sn)
 (a/theorem tok-alive [w :- World, st :- Nat, r :- RunRow]
   (=> (= (i7-idle w) true) (= (tok-run w st) (Option.some RunRow r)) (= (in-cleanup w st) false) (= (run-alive r) true))
   (intros h ht hc)

@@ -182,7 +182,7 @@
   (exact (fm-runs-of w w (fm-refl w)))
   (intros k hc) (simp only [comp-del set-comps] at hc) (exact (current-members-any-del-back CompRow comp-id x (current-members-cur k) (:comps w) hc)))
 
-;; ---- the row-function edits (the cells of fb's sites)
+;; ---- the row-function edits (the cells of members-round-frame's sites)
 (a/theorem members-round-frame-comp-upd-m [zl :- (List Nat), zf :- (List Nat), zd :- (List Nat), zs :- (List Nat), w :- World, x :- Nat, f :- (=> CompRow CompRow),
                           hid :- (forall [c :- CompRow] (= (comp-id (f c)) (comp-id c))),
                           hp :- (forall [c :- CompRow] (= (:pending (f c)) (:pending c))),

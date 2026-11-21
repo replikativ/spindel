@@ -1147,7 +1147,7 @@
            (fn [t :- TaskKey] (Eq.refl true)) hx))
   (exact (i10-task-intro _ (well-formed-task-upd w k f hf hs) hr)))
 
-;; ---- gl's exempt form, uniform names (spindel.v2.pres.exempt): `i10-task-exempt k` waives clause (c) for task k
+;; ---- i10-task's exempt form, uniform names (spindel.v2.pres.exempt): `i10-task-exempt k` waives clause (c) for task k
 (exempt/defexempt 'i10-task
   :form "i10-task-exempt k w (i10-task-rest with (c) waived for task k)" :ids "one task id" :commit "i10-task (no task waived)"
   :break '{run-done i10-task-exempt-kill}                  ; a run of task k is made done: k may lack a run
@@ -2224,7 +2224,7 @@
 (swap! (:renames G9) assoc 'well-formed-run-upd 'i9-res-run-upd)
 
 ;; a token outside a cleanup slice holds a run that is not unwinding (the tree's pass at T17's arm-park,
-;; from raw0's guard arm-refused)
+;; from transition's guard arm-refused)
 (a/theorem cleanup-not-unw [w :- World, st :- Nat, r :- RunRow]
   (=> (= (in-cleanup w st) false) (= (tok-run w st) (Option.some RunRow r)) (= (run-unwinding r) false))
   (intros hc ht) (simp only [in-cleanup ht opt-test] at hc) (exact hc))

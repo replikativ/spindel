@@ -2,9 +2,9 @@
   "h-mark through `world-step` (P11), kernel-checked (Init only). Bundle `marks-waiting hxm`: every marked
   edge is a dep edge whose debtor is a computation row that is waiting in the strong form `waiting-strongly`
   (not idle, and done-epoch < epoch or pending /= 0), or is in the exemption list hxm. The strict
-  `<` makes every epoch step a frame (no dle needed); with gd's dle it is the same as waiting.
+  `<` makes every epoch step a frame (no dle needed); with comp-facts's dle it is the same as waiting.
   Marked edges' debtors are waiting (h-mark) when hxm = [] (`hk-h-mark`). Every well-formed lemma is
-  restated for marks-waiting by the generic tree (Part C's table); hmk's own proofs are the table's :over."
+  restated for marks-waiting by the generic tree (Part C's table); marks-waiting's own proofs are the table's :over."
   (:require [ansatz.core :as a]
             [spindel.v2.pres.tree :as tree]
             [spindel.v2.pres.exempt :as exempt]
@@ -588,7 +588,7 @@
 ;; Part C. The bundle copy
 ;; ===========================================================================
 
-;; hmk's exempt form (spindel.v2.pres.exempt; recorded, no aliases yet)
+;; marks-waiting's exempt form (spindel.v2.pres.exempt; recorded, no aliases yet)
 (exempt/defexempt 'marks-waiting
   :form "marks-waiting hxm w" :ids "debtor ids: a marked dep edge on a debtor in hxm need not be strongly waiting"
   :commit "marks-waiting [] (chain-to-marks-waiting)")
@@ -603,7 +603,7 @@
 (prim! HMK 'well-formed-insert-edge-fresh '(hkr-insert-edge-fresh hxm w e R))
 (prim! HMK 'well-formed-insert-edge-checked '(hkr-insert-edge-checked hxm w e R))
 
-;; the row functions that change a computation's keys (hmk's sites, by lemma)
+;; the row functions that change a computation's keys (marks-waiting's sites, by lemma)
 (def ^:private hk-cm '#{comp-inc-epoch comp-demand-row comp-replace-row comp-start-row comp-make-idle comp-result-row comp-react-row})
 (defn- hk-fhead [f] (if (seq? f) (first f) f))
 (defn- hk-lapp [f lem] (if (seq? f) (apply list lem (rest f)) lem))
@@ -655,7 +655,7 @@
                                        (if (contains? hk-cm (hk-fhead F)) (hk-lapp F (symbol (str (hk-fhead F) "-hkm")))
                                            '(fn [c :- CompRow, hc :- (= (waiting-strongly c) true)] hc))
                                        'h0)))
-  ;; ---- facts from the path: what hmk's own proofs take ...
+  ;; ---- facts from the path: what marks-waiting's own proofs take ...
   :ctx '{well-formed-drop-act       [(= (tbl-has comp-id a (:comps w)) false)]   ; activations are no computations
          well-formed-t10-finalize-debtor [(= (tbl-has comp-id d (:comps w)) false)]  ; a source or task debtor: no computation
          well-formed-t2-write             [(= (comp-facts w) true) (= (i7-idle w) true) (= (acts-parked w) true)]
@@ -665,7 +665,7 @@
          well-formed-t12-complete            [(= (i10-current w) true) (= (comp-facts w) true) (= (i7-idle w) true)]
          well-formed-t28-retire-local [(= (comp-facts w) true) (= (i7-idle w) true)]}
   ;; ---- ... and the facts nodes take from above them and pass on: comp-facts, i7-idle, acts-parked, i10-current from the step's
-  ;; input (T2, T3, T11, T12, T13); raw0's branches forward them (inferred)
+  ;; input (T2, T3, T11, T12, T13); transition's branches forward them (inferred)
   :own '{;; "not a computation id": the source, link or activation an edit finalizes or resumes
          well-formed-resume              [ha (= (tbl-has comp-id (:id a) (:comps w)) false)]
          well-formed-close-raw           [hx (= (tbl-has comp-id x (:comps w)) false)]
@@ -702,7 +702,7 @@
                                                     (link-pending-has w (:tail s) (bool-and-right _ _ (bool-and-right _ _ hg))))]}})
 
 ;; ===========================================================================
-;; Part D. hmk's own proofs: activations are no computations, removed edges are unmarked
+;; Part D. marks-waiting's own proofs: activations are no computations, removed edges are unmarked
 ;; ===========================================================================
 
 ;; ---- ids: a row of another table is no computation
@@ -1348,7 +1348,7 @@
 
 ;; ===========================================================================
 ;; Part E. T11: the dispatched computation C is strong (done-epoch < epoch) from the needs-run
-;; guard and gd's dle; watch bundle done-epoch-below c (rows with id c keep done-epoch < epoch: every comp-facts-cmono
+;; guard and comp-facts's dle; watch bundle done-epoch-below c (rows with id c keep done-epoch < epoch: every comp-facts-cmono
 ;; edit keeps it) through the predecessor's cancel; the entry edge keeps its debtor (p3's edge-debtor-kept)
 ;; ===========================================================================
 
@@ -1479,7 +1479,7 @@
 (prim! HSW 'well-formed-comp-del-unref '(hswr-comp-del hsc w x R))
 (prim! HSW 'well-formed-filter-world '(hswr-filter-world hsc w K R))
 (def ^:private hk-gd-cm '#{comp-inc-epoch comp-demand-row comp-replace-row comp-make-idle comp-demote-row comp-clear-run})
-;; done-epoch-below on the generic tree: a computation edit keeps done-epoch-below by gd's key lemmas
+;; done-epoch-below on the generic tree: a computation edit keeps done-epoch-below by comp-facts's key lemmas
 (tree/part! HSW
   :sites (tree/row-sites 'well-formed-comp-upd (constantly true)
                          (fn [F] (if (contains? hk-gd-cm (hk-fhead F))

@@ -948,7 +948,7 @@
 ;;    functions that change a key (a run dies, is made parked, a task's owner changes, a source
 ;;    closes or is orphaned, `serve-or`'s `keep`).
 ;; 5. Deferred within a step: the cascade (`well-formed-run-cascade`: break inside the close and retire
-;;    jobs, repair by the cancel jobs, ghost `cj`, exit by P4), g8's own proof in the table. The facts
+;;    jobs, repair by the cancel jobs, ghost `cj`, exit by P4), i8-closed's own proof in the table. The facts
 ;;    i8-closed takes from the path are its table's `:ctx`, `:own` and `:pass` (Part H): owners of new tasks
 ;;    and sources are open (the guards `cur-closed`, which is P10, `root-open-if`, `scope-open-at`), a
 ;;    run made parked was alive (`awaiting-run-alive` through the await), and the companion `acts-parked` to the cascades.
@@ -1326,7 +1326,7 @@
 (a/theorem i8-closed-run-cascade-acts-parked [x8s :- (List Nat), w :- World, js :- (List Job)]
   (=> (= (acts-parked w) true) (= (i8-closed x8s w) true) (= (i8-closed x8s (run-cascade w js)) true))
   (intros hga h) (exact (i8-closed-cascade-done x8s w js (cascade-done-acts-parked w js hga) h)))
-;; ---- g8's exempt form, uniform names (spindel.v2.pres.exempt): the escape list x8s holds the
+;; ---- i8-closed's exempt form, uniform names (spindel.v2.pres.exempt): the escape list x8s holds the
 ;; deferred violations of I8; `inv` uses i8-closed [] (chain-to-i8-closed)
 (exempt/defexempt 'i8-closed
   :form "i8-closed x8s w" :ids "run ids: alive runs of tasks owned by a closed scope" :commit "i8-closed [] (chain-to-i8-closed)"
@@ -1545,7 +1545,7 @@
 
 ;; ===========================================================================
 ;; C0: a link owned by the root scope (a stream's first tail, a pull link in a run, the next pull link
-;; of a realization, an appended tail) is created only while the root scope is open: raw0's `require-root-open`
+;; of a realization, an appended tail) is created only while the root scope is open: transition's `require-root-open`
 ;; (engine.clj) refuses the item otherwise; the transitions below take the gate's fact
 ;; ===========================================================================
 (a/theorem root-ok-any [b :- Bool, w :- World] (=> (= (root-open-if true w) true) (= (root-open-if b w) true))
@@ -1601,7 +1601,7 @@
           well-formed-start-raw        i8-closed-start-raw          ; T5: a computation's run (not a task)
           well-formed-new-run-of       i8-closed-new-run-of-comp    ; T11: same
           well-formed-t28-retire-local   i8-closed-t28-retire-local}    ; T13: i8-closed and acts-parked together through the retire fold
-  ;; ---- sites: the row functions that change g8's keys
+  ;; ---- sites: the row functions that change i8-closed's keys
   :sites '{[well-formed-run-upd run-wake]            (i8-closed-run-upd x8s w x run-wake hf run-wake-run-key h0)          ; resume: key kept, by lemma
            [well-formed-run-upd run-complete-row]    (i8-closed-run-kill x8s w x run-complete-row hf                  ; T12: the run dies
                                                (fn [q :- RunRow] (Eq.refl (run-key-down (run-key q)))) h0)
@@ -1617,7 +1617,7 @@
            [well-formed-source-upd source-detach-row] (i8-closed-source-detach x8s w x h0)                            ; a source is orphaned
            [well-formed-serve-or (source-enqueue v)] (i8-closed-serve-or x8s w x res (source-enqueue v) hk (fn [s :- SourceRow] (Eq.refl (i8-closed-source-key s))) h0)
            [well-formed-serve-or source-permit]      (i8-closed-serve-or x8s w x res source-permit hk (fn [s :- SourceRow] (Eq.refl (i8-closed-source-key s))) h0)}
-  ;; ---- facts from the path: what g8's own proofs and cells take ...
+  ;; ---- facts from the path: what i8-closed's own proofs and cells take ...
   :ctx '{well-formed-run-cascade      [(= (acts-parked w) true)]                                       ; P4 needs acts-parked (cascade-done-acts-parked)
          well-formed-add-run-scope    [(= (tclosed (i8-closed-task-keys (:tasks w)) (i8-closed-scope-keys (:scopes w)) of) false)]
          well-formed-spawn-rows       [(= (sclosed (i8-closed-scope-keys (:scopes w)) owner) false)]
@@ -1661,7 +1661,7 @@
          well-formed-t11-dispatch              [hga (= (acts-parked w) true)]
          well-formed-dispatch-raw     [hga (= (acts-parked w) true) hc (= (comp-has w (:id c)) true)]}
   :gates '{well-formed-require-root-open hc0}                                                                 ; C0: the root scope is open
-  :pass '{;; raw0's guards, per item: create-in-scope-refused gives cur-closed (P10); C0's gate gives root-open-if
+  :pass '{;; transition's guards, per item: create-in-scope-refused gives cur-closed (P10); C0's gate gives root-open-if
           well-formed-transition-spawn         {well-formed-t4-spawn [(bshut-cur w st hc)]}
           well-formed-transition-create-source {well-formed-t1-create-source [(bshut-cur w st hc) hc0]}
           well-formed-transition-create-source-top {well-formed-t1-create-source-top [hc0]}
@@ -1703,7 +1703,7 @@
           well-formed-await-post       {well-formed-park-if [(awaiting-run-alive-rest-of rid _ (awaiting-run-alive-nat-fold rid (fast-fill (:pairs acc)) (awaiting-run-alive-fast-fill rid (:pairs acc)) (nat-distinct ds) _
                                                 (awaiting-run-alive-act-upd rid (:world acc) a (act-set-members (mk-members (:pairs acc) 0 ds))
                                                   (act-set-members-id (mk-members (:pairs acc) 0 ds)) hk)))]}
-          ;; acts-parked to the cascades, carried by ga's own lemmas
+          ;; acts-parked to the cascades, carried by acts-parked's own lemmas
           well-formed-t15-resource-ack         {well-formed-run-cascade [(acts-parked-ack-raw w z (:owner zr) hu hga)]}
           well-formed-t-slice-exit     {well-formed-run-cascade [(acts-parked-run-upd-free w rid run-fin-pop-end run-fin-pop-end-id (slice-exit-free w rid r hf hg hga) hga)]}
           well-formed-t21-release-world  {well-formed-run-cascade [(acts-parked-zero-handles _ (acts-parked-revoke-roots w hga))]}
@@ -1729,7 +1729,7 @@
                     (comp-exists-rest-of (:id c) _ (comp-exists-consume-entry (:id c) _ e (comp-exists-cut-suffix (:id c) _ (:id c) true (:at e) (:id e) k1)))
                     (well-formed-consume-entry _ e (well-formed-cut-suffix _ (:id c) true (:at e) (:id e) h1)))))})
 
-;; ---- g8's own proofs (the table's :over), over the cells and restated lemmas they use
+;; ---- i8-closed's own proofs (the table's :over), over the cells and restated lemmas they use
 
 (tree/restate! G8 '[well-formed-comp-upd well-formed-fire-edge])
 

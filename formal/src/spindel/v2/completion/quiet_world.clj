@@ -17,7 +17,7 @@
                 world holds no computation (tombstones included), task, run, source, edge, activation,
                 resource, cleanup entry or publication.
     quiet-refused  every item is refused in a quiet world with quiet-world-inv: host items by `host-item-refused` (no run
-                holds a slice), creations and roots by raw0's released guards, token items for want of
+                holds a slice), creations and roots by transition's released guards, token items for want of
                 a run, the others for want of their row; so `world-step` leaves a quiet world as it
                 is (`quiet-step`).
 
@@ -270,7 +270,7 @@
 ;; C1c (question 10): and every open non-root scope lies in a run's run-scope subtree (spindel.v2.completion.open-scopes `open-scopes-have-runs-rest`)
 (a/defn quiet-world-inv [w :- World] Bool (Bool.and (chain-to-marks-waiting w) (Bool.and (host-roots-revoked-rest w) (Bool.and (cleanup-runs-exist-rest w) (Bool.and (i3 w) (open-scopes-have-runs-rest w))))))
 
-;; p3l's parts the closure reads
+;; chain-to-marks-waiting's parts the closure reads
 (a/theorem chain-to-marks-waiting-implies-chain-to-i1-scopes [w :- World] (=> (= (chain-to-marks-waiting w) true) (= (chain-to-i1-scopes w) true))
   (intro h)
   (exact (And.left (chain-to-i5-dep-final-parts _ (And.left (chain-to-i1-detached-closed-parts _ (And.left (chain-to-i1-runs-parts _ (And.left (chain-to-i8-closed-parts _
@@ -739,7 +739,7 @@
 ;; Part C. The refusal lemma: every item is refused in a quiet world
 ;; ===========================================================================
 
-;; a non-host item: raw0's released guards (creations, roots, link items), a token for want of a
+;; a non-host item: transition's released guards (creations, roots, link items), a token for want of a
 ;; run, the rest for want of their row
 (a/theorem transition-quiet [w :- World, it :- Item]
   (=> (= (host-item it) false) (= (:runs w) (List.nil RunRow)) (= (:comps w) (List.nil CompRow))

@@ -5,7 +5,7 @@
 ;;   (require 'spindel.v2.inv.copier)          ; about 3 minutes
 ;;   (load-file "notes/generic-preservation-proto.clj")
 ;; It defines GPrim, gq (the generic bundle), the gq-* generic lemmas, pgl : GPrim i10-task-rest, and the chk-*
-;; restatements of gl's copies proved from the generic lemmas, then prints the timings. It uses the copier's
+;; restatements of i10-task's copies proved from the generic lemmas, then prints the timings. It uses the copier's
 ;; private functions, so it runs inside spindel.v2.inv.copier.
 
 (in-ns 'spindel.v2.inv.copier)
@@ -13,7 +13,7 @@
 ;; ---- the source lemmas that mention well-formed (S) and their proof dependencies
 (def S (set (keep (fn [[n g]] (when (statement-mentions-inv? g) n)) @source-theorems)))
 (defn pdeps [n] (let [[_ _ _ _ & proof] (theorem-source n)] (distinct (filter S (filter symbol? (flatten proof))))))
-;; ---- gl's primitives, overrides and patches; roots whose closure (stopping at gl's primitives and
+;; ---- i10-task's primitives, overrides and patches; roots whose closure (stopping at i10-task's primitives and
 ;; overrides) contains no patched lemma
 (def copied (set @(:copied GL)))
 (def gl-prims (set (keep (fn [[o n]] (when-not (copied n) o)) @(:renames GL))))
@@ -27,7 +27,7 @@
    (map (fn [n] (let [c (clos2 n stop)] [n (count (remove stop c)) (count (filter gl-prims c)) (count (filter gl-ovr c)) (count (filter gl-pat c))])))
    (remove (fn [[_ _ _ _ p]] (pos? p)))
    (sort-by second >)))
-;; ---- the patch-free part of gl's tree, and its maximal roots
+;; ---- the patch-free part of i10-task's tree, and its maximal roots
 (def clean-roots (map first cands2))
 (def clean-union (set (mapcat #(clos2 % stop) clean-roots)))
 (def clean-comp (set (remove stop clean-union)))
@@ -93,7 +93,7 @@
          (catch Throwable e (println "theorem failed:" (subs (ex-message e) 0 (min 200 (count (ex-message e)))))
            (eval (list 'a/defn pname [] (list 'GPrim (symbol (str (name (:pred B)) "-rest"))) (apply list 'GPrim.mk (map #(field-proof B %) fields))))))
     (/ (- (System/nanoTime) t0) 1e9)))
-;; ---- instantiation: pgl : GPrim i10-task-rest from gl's primitive lemmas (a structure in Type, hence a/defn)
+;; ---- instantiation: pgl : GPrim i10-task-rest from i10-task's primitive lemmas (a structure in Type, hence a/defn)
 ;; restate B's copy of orig and prove it from the generic lemma
 (defn check-form [B pname orig]
   (let [[_ _ binders stmt] (copy-form B (source-of B orig) 'x @(:renames B))]

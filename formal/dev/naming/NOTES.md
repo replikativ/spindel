@@ -43,3 +43,16 @@ All commands from `formal/`. JVM steps go through `~/Development/ansatz/.interna
 Files: `dump.clj` (model to EDN), `renames.clj` (map, checks, dry run, `--apply`), `lex.clj`
 (whole-symbol lexer), `scope.clj` (locals and constructors), `fingerprint.clj`, `compare.clj`,
 `stale.clj`.
+
+## State (2026-11-21)
+
+Commits on `formal/naming`: rules and tooling, generator edits, the substitution, the exposition,
+then one follow-up that (a) replaces old names written in the possessive in prose (`raw0's`), which
+the lexer had skipped, and (b) fixes the two regexes over names in `test/spindel/v2/pres/tree_test.clj`
+(generator edits). With the current `dev/naming`, `renames.clj --apply` on the pre-substitution tree
+gives the substitution commit plus that follow-up in one step (checked: the only difference from the
+branch head is the exposition commit). `bb dev/naming/stale.clj --fix` replaces whatever `stale.clj`
+still lists.
+
+Gate at the head: 22,033 constants before and after, fingerprints identical, 9,709 predicted
+generated names present, 310 tests / 208,521 assertions, 0 failures. Nothing pushed.

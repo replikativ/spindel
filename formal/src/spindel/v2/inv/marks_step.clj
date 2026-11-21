@@ -8,7 +8,7 @@
   of another id (`hk-sv-*`). Part C: a computation row property kept by epoch steps and pending
   changes survives every fire (`hk-cs-*`). Part D: T2: a root (creditor of an armed dep edge on the
   written source) is strong after its edge's fire (an invalidation steps the epoch; a delivery needs
-  a current alive run, so done-epoch /= epoch by gd's cde); the cone's creditors keep their in-edge,
+  a current alive run, so done-epoch /= epoch by comp-facts's cde); the cone's creditors keep their in-edge,
   which is marked by the fold; `marks-waiting-write-raw-x`, `marks-waiting-t2-write`. Part E: T12: the completed computation is
   exempt until it settles; a settle exempts the creditors of the unmarked edges until they are queued
   (a live creditor is settle-ready by comp-facts) or found waiting; the loop empties (P7);

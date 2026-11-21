@@ -40,7 +40,14 @@
              :when (if (= kind :code)
                      (case (get sc start) :local false :constructor (not (ctor-shorts name)) true)
                      (not (and (prose-words name) (not backtick?))))]
-         [f (lex/line-at idx start) name])))
+         [f (lex/line-at idx start) name start])))
+;; --fix: replace what is left (the same replacement `renames.clj --apply` makes from a clean tree)
+(when (some #{"--fix"} *command-line-args*)
+  (doseq [[f hs] (group-by first hits)]
+    (let [sb (StringBuilder. ^String (slurp f))]
+      (doseq [[_ _ n start] (sort-by #(nth % 3) > hs)] (.replace sb (int start) (int (+ start (count n))) ^String (m n)))
+      (spit f (str sb))))
+  (println "fixed" (count hits)) (System/exit 0))
 (doseq [[f l n] (take 200 hits)] (println (str f ":" l) n "->" (m n)))
 (println "old names left:" (count hits) "in" (count (distinct (map first hits))) "files")
 (System/exit (if (empty? hits) 0 1))

@@ -37,7 +37,7 @@
 ;;    cancelled: `i9-res-cancel-mid`), T15's ack (the resource goes and leaves its owner's list:
 ;;    `i9-res-ack-raw-hand`), T17's arm (a new armed resource of a run that is not unwinding, Z#40:
 ;;    `i9-res-arm-hand`). The facts these take from the path (:ctx, :own, :pass below): the run is a row;
-;;    the arming run is not unwinding, from raw0's guard `arm-refused`.
+;;    the arming run is not unwinding, from transition's guard `arm-refused`.
 ;; 6. Companions: none.
 
 (tree/part! G9
@@ -52,7 +52,7 @@
           well-formed-arm-park         i9-res-arm-park}            ; T17: arm (i9-res-arm-hand), then the generic park
   :ctx '{well-formed-cancel-run-local [(List.Mem r (:runs w))]                         ; the cancelled run is a row
          well-formed-arm-park         [(List.Mem r (:runs w)) (= (run-unwinding r) false)]}  ; the arming run: a row, not unwinding
-  :own '{well-formed-t17-arm [hc (= (arm-refused w st) false)]}                               ; raw0's guard: not in a cleanup slice
+  :own '{well-formed-t17-arm [hc (= (arm-refused w st) false)]}                               ; transition's guard: not in a cleanup slice
   :pass '{well-formed-job-apply {well-formed-cancel-run-local [(tbl-find-mem RunRow run-id rid r (:runs w) hf)]}     ; run-find found it
           well-formed-transition-arm  {well-formed-t17-arm [hc]}                                                               ; the guard
           well-formed-t17-arm       {well-formed-arm-park [(And.left (tok-facts w st r ht))                              ; the token's run,

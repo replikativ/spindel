@@ -26,14 +26,14 @@
   the base proof with the part's passes; every other node uses the shared `pres-x`. So a part's
   facts reach only its own lemmas, and a reader finds all of them in the part's table.
 
-  A part may be parameterised (g8's x8s, g7's companions comp-awake-owns-run awc awr and alive-runs-listed kc0 kl0 kd0): its
+  A part may be parameterised (i8-closed's x8s, i7-idle's companions comp-awake-owns-run awc awr and alive-runs-listed kc0 kl0 kd0): its
   predicate is Q := (B p) for the fixed parameters p, which every restated lemma takes first, as the
   copier's lemmas did. The shared generic lemmas do not see them; the part's own (pres-x@<part>)
-  take them after Q, so that the part's facts may mention them (g10's job condition names its
+  take them after Q, so that the part's facts may mention them (i10-current-exempt's job condition names its
   exempt lists). A part that is another part at fixed parameters (i1-runs = i1-runs-exempt []) uses that part's
   lemmas as its cells: the bundle's extra argument in first position (`(grx-x (List.nil Nat))`).
 
-  transition, the item dispatcher, is cut by item: the tree derives `raw0-<item>-inv` from raw0-inv's base
+  transition, the item dispatcher, is cut by item: the tree derives `raw0-<item>-inv` from well-formed-transition's base
   proof (one branch each) and proves well-formed-transition by dispatching to them, so a part that passes into one
   transition regenerates one branch, not the dispatcher (`raw0-split`)."
   (:require [ansatz.core :as a]
@@ -63,7 +63,7 @@
 ;; `well-formed` (pres/part.clj, copy-name).
 
 (def ^:private base-theorem-source @#'c/theorem-source)
-;; lemmas the tree derives from a base proof (raw0's branches, below), by name
+;; lemmas the tree derives from a base proof (transition's branches, below), by name
 (defonce ^:private derived (atom {}))
 (declare fill-rows)
 (defn- theorem-source [x] (some-> (or (get @derived x) (base-theorem-source x)) fill-rows))
@@ -112,7 +112,7 @@
 
 (defn- generic-row
   "F as a site generic in its arguments: (site-gen [params] (f params) args), params named as f's id
-  lemma's binders (renamed apart from inv-comp-upd's)."
+  lemma's binders (renamed apart from well-formed-comp-upd's)."
   [F hid]
   (if-let [[f idl] (id-lemma-row ["-comp-id" "-id"] hid)]
     (let [args (cond (seq? F) (vec (rest F)) (= '_ F) (if (seq? hid) (vec (rest hid)) []) :else [])
@@ -129,19 +129,19 @@
                               :else y))
                 form))
 
-;; transition by item. raw0-inv's base proof is one `cases it` over the 49 items, each branch the item's
+;; transition by item. well-formed-transition's base proof is one `cases it` over the 49 items, each branch the item's
 ;; guard (if any) and its transition. A part that passes a fact into one transition would need its
-;; own copy of the whole dispatcher; so the tree cuts raw0's base proof into one lemma per item,
+;; own copy of the whole dispatcher; so the tree cuts transition's base proof into one lemma per item,
 ;; `raw0-<item>-inv` (the branch's tactics, found by counting the goals they open and close), checks
 ;; each for well-formed, and proves well-formed-transition by dispatching to them (`sources`). A part then gets its
-;; own lemma only for the branches it passes into. raw0-inv's statement is the base one.
+;; own lemma only for the branches it passes into. well-formed-transition's statement is the base one.
 (defn- item-ctors []
   (let [[_ _ _ & ctors] (first (filter #(and (seq? %) (= 'a/inductive (first %)) (= 'Item (second %)))
                                        (@#'c/ns-source-forms 'spindel.v2.step)))]
     (for [[nm & fields] ctors] [nm (mapv (fn [[f t]] [f t]) fields)])))
 
 (defn- raw0-branches
-  "[ctor fields segment] per item: raw0-inv's tactics for that item, rename_i dropped (its names
+  "[ctor fields segment] per item: well-formed-transition's tactics for that item, rename_i dropped (its names
   become the fields' names)."
   []
   (let [[_ _ _ _ & proof] (base-theorem-source 'well-formed-transition)
@@ -187,7 +187,7 @@
                   (theorem-source x))))
 
 ;; a cascade of one retire or close job: the base proof leaves the job list (and sometimes the world) to
-;; unification; named, so that a part's job condition can be passed by computation (g10's `job-ok`)
+;; unification; named, so that a part's job condition can be passed by computation (i10-current-exempt's `job-ok`)
 (defn- name-cascade [x w js]
   (walk/prewalk (fn [y] (if (and (seq? y) (= 'well-formed-run-cascade (first y))) (let [[hd _ _ h] y] (list hd w js h)) y))
                 (theorem-source x)))
@@ -234,7 +234,7 @@
 
 (def ^:private S0 (delay (set (keep (fn [[n g]] (when (@#'c/statement-mentions-inv? g) n)) @@#'c/source-theorems))))
 (def ^:private S (delay (into @S0 (keys @derived))))
-;; the lemmas in load order: the base sources, raw0's branches just before well-formed-transition
+;; the lemmas in load order: the base sources, transition's branches just before well-formed-transition
 (def ^:private order
   (delay (vec (mapcat (fn [[n _]] (if (= n 'well-formed-transition) (concat (map first (sort-by key @derived)) [n]) [n]))
                       @@#'c/source-theorems))))
@@ -483,7 +483,7 @@
   a primitive proved through others, e.g. insert-edge-checked)."
   []
   (let [prims (set (keys @frames/footprints))
-        ;; the lemmas step-inv's base proof depends on (well-formed-parts is a leaf)
+        ;; the lemmas step-well-formed's base proof depends on (well-formed-parts is a leaf)
         closure (loop [todo ['step-well-formed] seen #{}]
                   (if-let [n (first todo)]
                     (if (or (seen n) (= n 'well-formed-parts))
@@ -495,7 +495,7 @@
         nodes (vec (filter #(and (or (closure %) (contains? @derived %)) (not ('#{well-formed-parts well-formed-intro} %))
                                  (or (not (prims %)) (derived? %)))
                             @order))]
-    (doseq [[_ f] (sort-by key @derived)] (ev f))   ; raw0's branches, checked for well-formed
+    (doseq [[_ f] (sort-by key @derived)] (ev f))   ; transition's branches, checked for well-formed
     (doseq [x nodes] (ev (pres-form nil x)))
     (reset! tree {:nodes nodes :prims prims})))
 

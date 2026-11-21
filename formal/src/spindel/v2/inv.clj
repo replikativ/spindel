@@ -1984,7 +1984,7 @@
 
 (a/theorem i10-slice-empty [] (= (inv-i10-slice empty-world) true) (rfl))
 
-;; with unique run ids (inv-sample's ids-ok), inv-i10-slice is "at most one run holds the slice"
+;; with unique run ids (well-formed's ids-ok), inv-i10-slice is "at most one run holds the slice"
 (a/theorem slice-count-zero [x :- Nat, rs :- (List RunRow)]
   (=> (= (tbl-all (slice-only x) rs) true) (= (nat-mem x (tbl-ids run-id rs)) false)
       (= (tbl-count run-slice rs) 0))
@@ -2055,7 +2055,7 @@
 ;; `inv-i9 w`: every run with mode unwinding has no activation in `acts`. Only T14's local
 ;; part makes a run unwinding (`run-cancel-row`), and it removes the run's activations in the
 ;; same edit (`cancel-acts`); activations are inserted only for a normal run (T6, take), whose
-;; id is unique (inv-sample's ids-ok). The `s9-` chain below is the `sl-` chain of Part C with
+;; id is unique (well-formed's ids-ok). The `s9-` chain below is the `sl-` chain of Part C with
 ;; the predicate replaced: tables other than runs and acts are frames.
 ;; ===========================================================================
 

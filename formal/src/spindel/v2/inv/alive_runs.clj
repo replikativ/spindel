@@ -393,7 +393,7 @@
           '{[well-formed-run-upd run-wake]      (alive-run-latest-run-upd-a w x run-wake hf run-wake-arrk h0)          ; resume: key kept, by lemma
             [well-formed-run-upd run-park-row]  (alive-run-latest-run-upd-on w x run-park-row hf (fn [q :- RunRow] (Eq.refl (:of q))) h0 h1)    ; await: made
             [well-formed-run-upd run-tick-park] (alive-run-latest-run-upd-on w x run-tick-park hf (fn [q :- RunRow] (Eq.refl (:of q))) h0 h1)}) ; parked; take
-  ;; ---- facts from the path: what ar's own proofs and sites take ...
+  ;; ---- facts from the path: what alive-run-latest's own proofs and sites take ...
   :ctx '{[well-formed-run-upd run-park-row]  [(= (tbl-all (run-ok-for x) (:runs w)) true)]              ; every row of the run is alive
          [well-formed-run-upd run-tick-park] [(= (tbl-all (run-ok-for x) (:runs w)) true)]
          well-formed-clear-comp-run [(List.Mem r (:runs w)) (= (run-alive r) false)]                    ; t13-retire-with-subtree and retire-run forward it: inferred
@@ -434,7 +434,7 @@
                                            (act-set-members-id (mk-members (:pairs acc) 0 ds)) hk)))]}})
 
 ;; ===========================================================================
-;; Part D. ar's own proofs (the table's :over)
+;; Part D. alive-run-latest's own proofs (the table's :over)
 ;; ===========================================================================
 
 ;; ---- T13's clear: the retired run is dead, so its computation has no alive run (AR + unique ids)
@@ -647,7 +647,7 @@
            (rfl) (rfl) l2 l3 hn r0))
   (exact (alive-run-latest-intro _ (well-formed-new-run-of w c ei hs) rr)))
 
-;; T5: a startable computation has no alive run (AR; g7's a7 for an idle one; run ids are not 0)
+;; T5: a startable computation has no alive run (AR; i7-idle's a7 for an idle one; run ids are not 0)
 (a/theorem alive-run-latest-startable-none [w :- World, c :- CompRow]
   (=> (= (i7-idle w) true) (= (alive-run-latest w) true) (List.Mem c (:comps w)) (= (startable w c) true)
       (= (tbl-all (not-alive-of (:id c)) (:runs w)) true))

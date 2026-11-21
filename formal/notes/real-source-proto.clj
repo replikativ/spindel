@@ -47,5 +47,5 @@
              (fn [rep :- Bool, w :- World, r :- RunRow, h :- (= (gp triv w) true)] (triv-up _ (well-formed-cancel-debtor rep w r (triv-down w h))))
              (triv-up w h)))))
 
-;; ---- gl's lemma from the hand-written source: unchanged, it is gl's override (content)
-;; ---- g9's (no override needed with the context): the generic lemma with g9's lemmas for the callees
+;; ---- i10-task's lemma from the hand-written source: unchanged, it is i10-task's override (content)
+;; ---- i9-res's (no override needed with the context): the generic lemma with i9-res's lemmas for the callees

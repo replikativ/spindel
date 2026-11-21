@@ -65,7 +65,7 @@
          :let [lead (count (re-find #"^(?:#'|['`~^#])*" piece))
                body (subs piece lead)
                ;; drop sentence punctuation after a name in prose: "raw0." "raw0:" "raw0'"
-               body (if (#{:comment :prose :string} kind) (str/replace body #"[.:']+$" "") body)
+               body (if (#{:comment :prose :string} kind) (-> body (str/replace #"'s$" "") (str/replace #"[.:']+$" "")) body)
                dot (.indexOf ^String body ".")
                head (if (neg? dot) body (subs body 0 dot))
                start (+ ts off lead)]

@@ -94,6 +94,17 @@
   :old ":transport '{kw glx-kw}" :new ":transport '{view i10-task-exempt-frame}"
   :why "the site name is a quoted symbol; the substitution would write i10-task-view. gl-exempt-transport-kw -> i10-task-exempt-transport-view"}
 
+ ;; ---- tests that match names by a regex
+ {:file "test/spindel/v2/pres/tree_test.clj" :line 54 :old "(deftest raw0-is-cut-by-item" :new "(deftest transition-is-cut-by-item"
+  :why "the test's own name"}
+ {:file "test/spindel/v2/pres/tree_test.clj" :line 58 :old "#\"raw0-.+-inv\"" :new "#\"well-formed-transition-.+\""
+  :why "the 49 per-item lemmas raw0-<item>-inv -> well-formed-transition-<item>"}
+ {:file "test/spindel/v2/pres/tree_test.clj" :line 201 :old "'[raw0-dispatch-comp-inv raw0-inv raw0-start-inv]"
+  :new "'[well-formed-transition well-formed-transition-dispatch-comp well-formed-transition-start]"
+  :why "the expected list is sorted by name; the new names sort differently"}
+ {:file "test/spindel/v2/pres/tree_test.clj" :line 202 :old "#\"^raw0-\"" :new "#\"^well-formed-transition\""
+  :why "as line 58"}
+
  ;; ---- a test that selects names by a string prefix
  {:file "test/spindel/v2/inv/members/dispatch_test.clj" :line 12
   :old "(.startsWith (str (:name %)) \"h14-\")" :new "(#{$H14-NAMES} (str (:name %)))"

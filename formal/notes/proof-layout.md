@@ -602,7 +602,7 @@ The costs of changes:
          task-upd/result i10-task-task-done-x         ; REPAIR
          new-run-of/comp i10-task-comp-run-hand          ; `of` is a computation, not a task (comp-has on the path)
          bump            i10-task-rest-bump           ; (a) is monotone in the allocator
-         filter-world    i10-task-filter-world-hand}     ; Rule R keeps alive runs (normalized; uses ga's acts-alive)
+         filter-world    i10-task-filter-world-hand}     ; Rule R keeps alive runs (normalized; uses acts-parked's acts-alive)
   :over {cancel-run-local i10-task-cancel-run-local-hand ; T14 local: break at run-upd, repair in debtor-side
          complete-raw     i10-task-complete-raw-hand     ; T12: break at run-upd, repair at complete-task
          retire-run     i10-task-retire-run-hand     ; T13: clear the task's run, delete the dead run (retire-rest)
@@ -1045,7 +1045,7 @@ base proof itself is to be read as the generic one, which no reader asked for.
   `inv-step`, `reach-inv`, `inv-empty`, `sys-reach-inv`, `l5-safety-total`, `step-chain`, `mv-refinement`
   unchanged; `inv` is a definition, its source untouched.
 - **Load**, two runs back to back (one JVM each, 1 GB): the namespaces this stage touches took 63.4 s
-  before and 65.7 s after: `inv.copier` 15.4 → 11.4 s (gl's copies gone), `pres.tree` 1.8 → 10.3 s (it
+  before and 65.7 s after: `inv.copier` 15.4 → 11.4 s (i10-task's copies gone), `pres.tree` 1.8 → 10.3 s (it
   now covers the whole step: 189 generic lemmas instead of 59 composites twice), `inv.i10-task` 0.6 s,
   the five stage-2 parts' namespaces 46.0 → 43.5 s. The untouched namespaces went 315.9 → 295.6 s (host
   load); the whole model 379 → 361 s. The tree is a one-time cost of about 8.5 s; `i10-task` alone saved 4 s
@@ -1100,7 +1100,7 @@ redesign of how contexts are declared, which this stage was told not to start.
 |---|---|---|
 | resource updates | patches of `well-formed-res-cancel` and `well-formed-t18-resource-fire` (`i9-res-res-upd-q` at the call) | 2 site entries: `resource-upd` at `res-cancel-row` and at `res-set-phase rp-fired` |
 | own proofs | overrides of `cancel-run-local`, `ack-raw`, `arm-park` | `:over` entries: `i9-res-cancel-run-local`, `i9-res-ack-raw-hand` (the old name an alias), `i9-res-arm-park` |
-| plumbing | override of `well-formed-t17-arm`; patches of `well-formed-job-apply`, `well-formed-transition` | none in `i9-res`; in the tree: 1 context (`arm-park`), 1 own context (`t17`: raw0's guard `arm-refused`), 2 passes |
+| plumbing | override of `well-formed-t17-arm`; patches of `well-formed-job-apply`, `well-formed-transition` | none in `i9-res`; in the tree: 1 context (`arm-park`), 1 own context (`t17`: transition's guard `arm-refused`), 2 passes |
 | generated | 187 copies (`lcopy!` of `well-formed-cancel-debtor`, `step-well-formed`) | 184 restatements, 1 alias, 2 hand lemmas |
 
 The estimate of §5c held: 2 sites, 3 own proofs, 2 contexts, 1 pass (2 counting the pass into `arm-park`).
@@ -1187,7 +1187,7 @@ with `i10-task`'s own contexts at `t12` and `dispatch-raw` (1. above) before the
 The I8 table under per-part contexts would show the model-only guard `cur-closed` (P10) as one row:
 
 ```clojure
-:own '{well-formed-t4-spawn [hcc (= (cur-closed w st) false)] ...}   ; raw0's create-in-scope-refused guard; P10: a run's current scope is open
+:own '{well-formed-t4-spawn [hcc (= (cur-closed w st) false)] ...}   ; transition's create-in-scope-refused guard; P10: a run's current scope is open
 ```
 
 ### Revised plan
@@ -1205,14 +1205,14 @@ About 2½–3 weeks, as §5c's total, with the redesign first instead of per-par
 
 - **Statements** (name-independent fingerprints of every theorem, f87fb4f against this stage): 16,691
   identical, none missing. 2 changed, both internals of the tree: `pres-transition` (its call of `t17` now
-  passes raw0's guard) and `pres-t17-arm` (it takes the guard and passes it to `arm-park`); nothing outside
+  passes transition's guard) and `pres-t17-arm` (it takes the guard and passes it to `arm-park`); nothing outside
   the tree's restatements references a `pres-` lemma. 8 new: `pres-t12-bare`, `pres-t17-bare`,
   `pres-dispatch-raw-bare`, `ctx-t12`, `ctx-t17`, `ctx-dispatch-raw`, `ctx-arm-park`, `tag-ok-res`.
   Every old `i9-res` and `i10-task` name has its old statement (`i9-res-t12-complete` and `i9-res-dispatch-raw` stay bare,
   `i9-res-t17-arm` keeps `arm-refused`). `inv-step`, `reach-inv`, `inv-empty`, `sys-reach-inv`, `l5-safety-total`,
   `step-chain`, `mv-refinement` unchanged; `inv` is a definition, its source untouched.
 - **Load**, two runs back to back (one JVM each, 1 GB): the namespaces this stage touches took 64.7 s
-  before and 64.7 s after: `inv.copier` 14.6 → 8.2 s (g9's copies gone), `pres.tree` 13.2 → 14.5 s
+  before and 64.7 s after: `inv.copier` 14.6 → 8.2 s (i9-res's copies gone), `pres.tree` 13.2 → 14.5 s
   (3 bare lemmas, 4 context defaults), `inv.i9-res` 0.8 s, `inv.i10-task` 0.9 → 1.0 s, `inv.base`
   36.1 → 40.1 s. The untouched namespaces went 392.5 → 572.5 s (host load); the whole model 457 → 637 s.
 - **Suite**: `clojure -M:test`, 290 tests, 208,315 assertions, 0 failures, 0 errors (the oracle on
@@ -1224,7 +1224,7 @@ About 2½–3 weeks, as §5c's total, with the redesign first instead of per-par
   `cancel-run-local`), but not once two parts need different facts at the same callee, or facts in their
   own vocabulary (above). Own contexts as global premises changed other parts' statements.
 - §4.6: "the creation overrides become two leaf entries whose path condition carries the guard": the
-  guards sit on transitions (own contexts at T1, T4, raw0's `require-root-open`), and reach the insert composites
+  guards sit on transitions (own contexts at T1, T4, transition's `require-root-open`), and reach the insert composites
   through about ten passes; not two entries.
 - §5c, R4: the first obstacle for companions is where they are declared, before how they are carried.
 
@@ -1307,7 +1307,7 @@ lemmas (`acts-parked-ack-raw`, `acts-parked-run-upd-free`, `acts-parked-retire-p
 bridge lemma (`slice-exit-free`, the exiting run has no activation). The helper bundle `awaiting-run-alive` (the
 awaiting run stays alive) is carried the same way through the await, with its copier lemmas.
 
-The P10 guard is one group of rows in the table: raw0's `create-in-scope-refused` refusal gives `cur-closed w st =
+The P10 guard is one group of rows in the table: transition's `create-in-scope-refused` refusal gives `cur-closed w st =
 false` to T4 and T1, and T1 carries it to its two creations (four rows, one comment). Every other fact
 `i8-closed` takes is a projection of a transition's own guard, by a one-line lemma next to the table
 (`root-ok-of-true`, `i8-closed-source-ok-new-source`, `i8-closed-source-ok-link-open`, `detach-open`, `await-ok-normal`, `take-park-ok`).
@@ -1367,7 +1367,7 @@ complete-raw and retire-one say how it is carried; the 12 nodes between them wou
 that is not host load is `transition`: a part that passes a guard into a transition needs its own variant of
 `transition`, the item dispatcher (49 items, the guard checks and a `simp only` per branch), and that
 variant costs about 6 s, once per part (`i10-task`, `i9-res`; `i8-closed` adds one, gated). The variants cannot share
-the shared `pres-transition`: their passes use the hypotheses raw0's branches introduce (`hc`, `ht`), which
+the shared `pres-transition`: their passes use the hypotheses transition's branches introduce (`hc`, `ht`), which
 exist only inside its proof. They could share work if `transition`'s proof were split per item (one lemma
 per branch, `transition` a dispatch over them): a part's variant would then regenerate only the branches it
 passes into (`i9-res`: one, `i10-task`: one, `i8-closed`: about 15), and the rest would stay shared. That is a change to
@@ -1409,9 +1409,9 @@ arguments are not x's binders (an intermediate world): there the part writes the
 | pass entries / terms | 62 / 74 | 42 / 54 |
 | code lines of `part!` | 142 | 121 (14 comment lines, 27 inline reasons, unchanged) |
 
-`i10-task` and `i9-res` lose no rows: their passes are real terms, and `i9-res`'s `transition -> t17 [hc]` forwards raw0's
+`i10-task` and `i9-res` lose no rows: their passes are real terms, and `i9-res`'s `transition -> t17 [hc]` forwards transition's
 local guard (a `cases` hypothesis), not a declared fact, which the rule does not see. The 10 forwards
-left in `i8-closed`'s table are the gated `hc0` (the gate's flag is left to unification by raw0's call), `hal`
+left in `i8-closed`'s table are the gated `hc0` (the gate's flag is left to unification by transition's call), `hal`
 at `arm-park` (a definitional step), and terms in entries that also carry a real term (a pass entry is
 written whole).
 
@@ -1435,7 +1435,7 @@ carried; the 10 nodes between are inferred.
 
 **Result.** `transition`, the item dispatcher, was the largest part lemma: a part that passed one guard into
 one transition (`i10-task`: T12's refusal guard; `i9-res`: T17's `arm-refused`; `i8-closed`: the create-in-scope-refused and C0 guards)
-got its own copy of the whole 49-way `cases`. The tree now cuts raw0's base proof by item
+got its own copy of the whole 49-way `cases`. The tree now cuts transition's base proof by item
 (`tree/raw0-split`): one lemma per item, `raw0-<item>-inv`, whose proof is that item's branch (found by
 counting the goals its tactics open and close; `rename_i`'s names become the item's fields), each
 checked for `well-formed`; `well-formed-transition` is proved by dispatching to them (`tree/sources`). The base proof
@@ -1969,7 +1969,7 @@ Nine of the ten overrides are content. The tenth, `cleanup-runs-exist`'s `gc-cle
 - **The threaded premise is inferred.** The copier listed the 27 theorems between a transition arm and a
   creation (`gk-threaded`) and added the premise to each. The table states the fact once, at the
   three creations and at handle-new's three row edits (`:ctx`), and where it comes from (15 `:pass`
-  rows at raw0's arms). The tree's forwarding finds the nodes in between: 28 of the 33 own-fact
+  rows at transition's arms). The tree's forwarding finds the nodes in between: 28 of the 33 own-fact
   nodes are inferred, and they are the copier's 27 plus the T8 and T22 chain.
 - **The inserted edges are one fact.** Six patches each rewrote one call to pass "this edge is no
   host root" in a different form. In the table the two edge insertions take the fact
@@ -2007,7 +2007,7 @@ No tree change.
   branches replace 138 copied proofs.
 - **Suite**: `clojure -M:test`, 306 tests, 208,554 assertions, 0 failures, 0 errors (oracle samples
   1–62; the tree test also checks that `host-roots-revoked` has no overrides or patches, that the guard goes from
-  raw0's arm to the row, and that it stops at transition).
+  transition's arm to the row, and that it stops at transition).
 
 ## 5u. Stage 4: the part definitions move to `pres.part` (before group 8)
 
@@ -2140,7 +2140,7 @@ No tree change.
   namespaces moved by up to ±8 s each).
 - **Suite**: `clojure -M:test`, 308 tests, 208,595 assertions, 0 failures, 0 errors (oracle samples
   1–62; the tree test also checks that `alive-run-latest` has no overrides or patches and that `i7-idle` and `acts-parked`
-  reach exactly raw0's T5 and T11 branches).
+  reach exactly transition's T5 and T11 branches).
 - Copier call forms left in `formal/src`: `lcopy!` 50, `override!` 6, `patch!` 2.
 
 ## 5x. Stage 4, group 9: the member parts `current-members`, `edge-kinds` and `members-round-frame` on the tree; no copier call is left

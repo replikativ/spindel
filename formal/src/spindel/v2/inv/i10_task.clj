@@ -42,7 +42,7 @@
 ;;    cancel, repair in `cancel-debtor`), T12 (break at the run's completion, repair at
 ;;    `complete-task`), T13 (`retire-rest`), new runs (T4 with its task, T5 and T11 of a computation).
 ;;    The facts these take from the path (:ctx, :own, :pass below): the run is a row, it is dead,
-;;    the result is not none (raw0's refusal guard), the computation exists (carried through T11's
+;;    the result is not none (transition's refusal guard), the computation exists (carried through T11's
 ;;    cancel and cut by the bundle `comp-exists`).
 ;; 6. Companions: `acts-parked` (`step-i10-task`: acts-alive for Rule R's filter).
 
@@ -64,7 +64,7 @@
                                (= (Nat.beq (:tag res) res-none) false)]        ;   its result is not none
          well-formed-start-raw        [(= (comp-has w (:id c)) true)]                  ; the new run's `of` is a computation
          well-formed-new-run-of       [(= (comp-has w (:id c)) true)]}                 ; same
-  :own '{well-formed-t12-complete          [hg (= (res-tag-ok tag) true)]                       ; raw0's refusal guard: an ok or err tag
+  :own '{well-formed-t12-complete          [hg (= (res-tag-ok tag) true)]                       ; transition's refusal guard: an ok or err tag
          well-formed-dispatch-raw [hc (= (comp-has w (:id c)) true)]}                  ; T11's computation exists
   :pass '{well-formed-job-apply  {well-formed-cancel-run-local [(tbl-find-mem RunRow run-id rid r (:runs w) hf)]     ; run-find found it
                           well-formed-retire-run     [(tbl-find-mem RunRow run-id rid r (:runs w) hf)

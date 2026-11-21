@@ -712,7 +712,7 @@
   (exact h1)
   (exact (i1-runs-exempt-intro _ _ (well-formed-run-upd w x f hid (i1-runs-exempt-well-formed xr w h)) (grk-mk _ _ b1 b2 b3))))
 
-;; ---- grx's exempt form, uniform names (spindel.v2.pres.exempt): R3 waived for the runs in xr
+;; ---- i1-runs-exempt's exempt form, uniform names (spindel.v2.pres.exempt): R3 waived for the runs in xr
 (exempt/defexempt 'i1-runs
   :form "i1-runs-exempt xr w" :ids "run ids: a run made done before its cleanup entry is set" :commit "i1-runs-exempt [] = i1-runs (chain-to-i1-runs)"
   :break '{run-done i1-runs-exempt-run-upd-x}             ; a run made done joins the exemptions
@@ -797,7 +797,7 @@
 
 ;; the local retire's lemma is a cell under its own name (the copier's name for it is not used)
 (swap! (:renames GR0) assoc 'well-formed-t28-retire-local 'i1-runs-t28-retire-local)
-;; i1-runs on the generic tree: its table. Its cells are grx's lemmas at the empty list (the bundle's
+;; i1-runs on the generic tree: its table. Its cells are i1-runs-exempt's lemmas at the empty list (the bundle's
 ;; first-position argument) wherever i1-runs-exempt has one; its own proofs are below.
 (tree/part! GR0
   :over '{well-formed-spawn-rows     i1-runs-spawn-rows       ; T4: a task's run, in a new scope

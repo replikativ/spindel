@@ -474,7 +474,7 @@
 ;;    (`i1-scopes-scope-ins-fresh`; the premise is the guard `open-ok` at T16's open, `task-scope-parent` at a
 ;;    run's scope); closing a subtree that is removed whole (`i1-scopes-remove-if-empty`); re-parenting to
 ;;    an open scope (`i1-scopes-set-parent`, T-detach). Every other primitive is a frame.
-;; 5. Deferred within a step: none. g1's own proofs (`well-formed-spawn-rows`, `well-formed-t-open-scope`,
+;; 5. Deferred within a step: none. i1-scopes's own proofs (`well-formed-spawn-rows`, `well-formed-t-open-scope`,
 ;;    `well-formed-t-detach`) and passes (`well-formed-start-raw`, `well-formed-new-run-of`) give the parent's existence
 ;;    from the guard on the path to the new scope.
 ;; 6. Companions: none (`step-i1-scopes`).

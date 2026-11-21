@@ -422,7 +422,7 @@
   (exact (tbl-all-keep EdgeRow K edge-id _ _ (fn [q :- EdgeRow, h1 :- (= (dfk xd (fin-st (:sources w) (:tasks w)) q) true), h2 :- (= (K (edge-id q)) true)] h1) (:edges w) rr))
   (exact (i5-dep-final-intro xd _ (well-formed-filter-world w K (i5-dep-final-well-formed xd w h) hf) (g5r-gen xd w (filter-world K w) e r2))))
 
-;; g5's exempt form (spindel.v2.pres.exempt; recorded, no aliases yet): finality sites discharge in
+;; i5-dep-final's exempt form (spindel.v2.pres.exempt; recorded, no aliases yet): finality sites discharge in
 ;; the same commit through the escape predicate `jw` (see the namespace docstring)
 (exempt/defexempt 'i5-dep-final
   :form "i5-dep-final xd w" :ids "debtor ids: an armed dep edge on a final debtor in xd is allowed" :commit "i5-dep-final [] (chain-to-i5-dep-final)")

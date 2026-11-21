@@ -8,9 +8,9 @@
   comp-facts = well-formed && comp-facts-rest, every well-formed lemma restated for comp-facts by the generic tree (`GD`'s table).
   Computation edits: a row function that keeps the id, keeps C.run or clears it, does not lower
   the epoch, and keeps done-epoch or clears it (`cmono`) is a frame; run edits that keep id, of and
-  epoch and never revive (`rmono`) are frames (the table's sites). gd's own proofs: T12's result row (done-epoch := epoch: the
+  epoch and never revive (`rmono`) are frames (the table's sites). comp-facts's own proofs: T12's result row (done-epoch := epoch: the
   completed run is C.run by i10's cur-ok, so no other alive run is current), reactivation
-  (done-epoch := epoch on an idle computation: no alive run, g7's a7), T5/T11 (a new run at C's
+  (done-epoch := epoch on an idle computation: no alive run, i7-idle's a7), T5/T11 (a new run at C's
   epoch: C needs a run, done-epoch /= its epoch), new runs of tasks (their `of` is no computation).
   Threads: i7-idle (reactivation: T6, T8, T22) and i10-current (T12) from the step's input (own facts); T11's
   new run is at the epoch read before the predecessor's cancel: watch bundle `dispatch-epoch-kept c e` (rows with id
@@ -585,7 +585,7 @@
 (prim! GD 'well-formed-run-del '(gdr-run-del w x R))
 (prim! GD 'well-formed-filter-world '(gdr-filter-world w K R))
 
-;; the row functions that change gd's keys (computation / run edits), by lemma (gd's sites)
+;; the row functions that change comp-facts's keys (computation / run edits), by lemma (comp-facts's sites)
 (def ^:private gd-cm '#{comp-inc-epoch comp-demand-row comp-replace-row comp-make-idle comp-demote-row comp-clear-run})
 (def ^:private gd-rm '#{run-cancel-row run-complete-row run-wake})
 (defn- gd-fhead [f] (if (seq? f) (first f) f))
@@ -611,7 +611,7 @@
           well-formed-await-raw       comp-facts-await-raw
           well-formed-host-await-raw  comp-facts-host-await-raw
           well-formed-t8-observe-any-kind         comp-facts-t8-observe-any-kind}
-  ;; ---- sites: every computation and run edit is monotone in gd's keys (cmono / rmono); by lemma
+  ;; ---- sites: every computation and run edit is monotone in comp-facts's keys (cmono / rmono); by lemma
   ;; where the row function changes them, else the keys are kept
   :sites (merge
           (tree/row-sites 'well-formed-comp-upd (constantly true)
@@ -624,7 +624,7 @@
                                     (list 'comp-facts-run-upd-m 'w 'x F 'hf (list 'fn '[r :- RunRow] (list 'comp-facts-rmono-key 'r (list F 'r) '(Eq.refl (gdrk r)))) 'h0))))
           '{[well-formed-run-upd run-park-row]  (comp-facts-run-upd-on w x run-park-row hf comp-facts-keeps-park h0 h1)       ; await: the parked rows are alive
             [well-formed-run-upd run-tick-park] (comp-facts-run-upd-on w x run-tick-park hf comp-facts-keeps-tick-park h0 h1)}) ; take: same
-  ;; ---- facts from the path: what gd's own proofs and sites take ...
+  ;; ---- facts from the path: what comp-facts's own proofs and sites take ...
   :ctx '{[well-formed-run-upd run-park-row]  [(= (tbl-all (run-ok-for x) (:runs w)) true)]
          [well-formed-run-upd run-tick-park] [(= (tbl-all (run-ok-for x) (:runs w)) true)]
          well-formed-await-raw               [(= (i7-idle w) true) (List.Mem r (:runs w)) (= (run-alive r) true)]
@@ -651,7 +651,7 @@
                                            (act-set-members-id (mk-members (:pairs acc) 0 ds)) hk)))]}})
 
 ;; ===========================================================================
-;; Part D. gd's own proofs: new runs, dispatch, completion, reactivation
+;; Part D. comp-facts's own proofs: new runs, dispatch, completion, reactivation
 ;; ===========================================================================
 
 ;; a run edit on the rows with id x, all alive: the edit keeps id, of and epoch
@@ -1032,7 +1032,7 @@
 (prim! HKW 'well-formed-drop-edges '(hkwr-drop-edges hkc hke w p R))
 (prim! HKW 'well-formed-comp-del-unref '(hkwr-comp-del hkc hke w x R))
 (prim! HKW 'well-formed-filter-world '(hkwr-filter-world hkc hke w K R))
-;; dispatch-epoch-kept on the generic tree: a computation edit keeps dispatch-epoch-kept by gd's key lemmas (as gd's sites)
+;; dispatch-epoch-kept on the generic tree: a computation edit keeps dispatch-epoch-kept by comp-facts's key lemmas (as comp-facts's sites)
 (tree/part! HKW
   :sites (tree/row-sites 'well-formed-comp-upd (constantly true)
                          (fn [F] (if (contains? gd-cm (gd-fhead F))
@@ -1310,7 +1310,7 @@
   (simp only [t12-complete ht hn accept])
   (exact (comp-facts-complete-raw w r _ (comp-facts-u1-of-i10-current w r hg (And.left (tok-facts w st r ht))) h)))
 
-;; ---- reactivation (done-epoch := epoch on an idle computation): no alive run (g7's a7, threaded)
+;; ---- reactivation (done-epoch := epoch on an idle computation): no alive run (i7-idle's a7, threaded)
 (a/theorem comp-facts-noal-idle [w :- World, c :- CompRow]
   (=> (= (i7-idle w) true) (List.Mem c (:comps w)) (= (:idle c) true) (= (tbl-all (comp-facts-noal (:id c) (:epoch c)) (:runs w)) true))
   (intros h mc hi)
@@ -1470,7 +1470,7 @@
   (case [true] (have e2 := (step-accepted w it ha)) (rw [e2]) (exact (comp-facts-rule-r (:world (raw w it)) (comp-facts-raw w it hg7 hg10 h) hs))))
 (a/theorem comp-facts-empty [] (= (comp-facts empty-world) true) (rfl))
 
-;; the context facts from chain-to-i8-closed: i7-idle (in p3b's round-facts) and i10-current (chain-to-i10-current)
+;; the context facts from chain-to-i8-closed: i7-idle (in chain-start's round-facts) and i10-current (chain-to-i10-current)
 (a/theorem chain-to-i8-closed-ctx [w :- World] (=> (= (chain-to-i8-closed w) true) (And (= (chain-start w) true) (= (i10-current w) true)))
   (intro h)
   (have ph := (And.left (chain-to-i8-closed-parts w h)))

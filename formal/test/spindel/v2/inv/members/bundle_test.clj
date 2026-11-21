@@ -2,7 +2,7 @@
   "Loading spindel.v2.inv.members.bundle kernel-checks the h-mem2 bundle `current-members xm` (member edges of a current activation exist,
   are armed, structured, first-held, and their debtors are alive tasks or strongly waiting computations, unless
   exempt), its transfer and primitive lemmas, the first fire overrides, and the derivation of h-mem2
-  (`current-members-h-mem2`: current-members [] and gd's rof give h-mem2; `current-members-l5-safety`). Tripwire: `current-members []` after every step of the
+  (`current-members-h-mem2`: current-members [] and comp-facts's rof give h-mem2; `current-members-l5-safety`). Tripwire: `current-members []` after every step of the
   random drivers and every commit of the oracle samples 7-13 (the step proof is open: notes/history/PLAN.md, branch hm3)."
   (:require [clojure.test :refer [deftest is]]
             [ansatz.core :as a]

@@ -14,7 +14,7 @@
                     writes a result only over none (`task-unheld-scope-absent-task-tcr`), T13's `task-clear-run` writes run 0
                     (`task-unheld-scope-absent-task-tcl`), and T12's `task-result-row res` keeps run 0 and writes a result
                     whose tag is ok or err (`complete-refused`; overrides `task-unheld-scope-absent-complete-body`,
-                    `task-unheld-scope-absent-complete-raw`, `task-unheld-scope-absent-t12-complete`, patch of raw0's complete arm, as spindel.v2.inv.copier's GL);
+                    `task-unheld-scope-absent-complete-raw`, `task-unheld-scope-absent-t12-complete`, patch of transition's complete arm, as spindel.v2.inv.copier's GL);
                   - scope rows are updated id-preservingly, deleted (Z#18) or filtered (Rule R): the
                     filter only removes rows.
 

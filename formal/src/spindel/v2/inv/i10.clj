@@ -822,7 +822,7 @@
 ;; Part B. The bundle copy
 ;; ===========================================================================
 
-;; g10's exempt form (spindel.v2.pres.exempt; recorded, no aliases yet)
+;; i10-current-exempt's exempt form (spindel.v2.pres.exempt; recorded, no aliases yet)
 (exempt/defexempt 'i10-current
   :form "i10-current-exempt gxz gkz w"
   :ids "gxz computation ids (demoted later in the same normalization round: E2 waived); gkz run ids (being retired: E1, E2, rof waived)"
@@ -852,7 +852,7 @@
 (prim! G10 'well-formed-insert-edge-fresh '(i10-current-exempt-rest-bump gxz gkz (insert-edge w (edge-set-id (:next-id w) e)) (Eq.trans (rfl) R)))
 
 ;; i10-current-exempt on the generic tree (spindel.v2.pres.tree): its table. Its own proofs are in Parts D to H.
-(def ^:private up-comp-fns   ; computation row functions that change a key, with g10's lemma
+(def ^:private up-comp-fns   ; computation row functions that change a key, with i10-current-exempt's lemma
   '{comp-react-row i10-current-exempt-up-react comp-demand-row i10-current-exempt-up-demand comp-inc-epoch i10-current-exempt-up-inc-epoch comp-replace-row i10-current-exempt-up-replace})
 (tree/part! G10
   ;; ---- the part's own proofs (content)
@@ -2898,9 +2898,9 @@
 (a/theorem t5-start-g-st [fresh :- Nat, n :- Nat, w :- World, c :- CompRow]
   (=> (= (Bool.and (Nat.beq fresh n) (startable w c)) true) (= (startable w c) true))
   (intro h) (simp only [Bool.and_eq_true] at h) (exact (And.right h)))
-;; g10r's rest part, for the tree (Q := i10-current-rest): g10's at empty exempt lists
+;; i10-current's rest part, for the tree (Q := i10-current-rest): i10-current-exempt's at empty exempt lists
 (a/defn i10-current-rest [w :- World] Bool (i10-current-exempt-rest (List.nil Nat) (List.nil Nat) w))
-;; i10-current on the generic tree: raw0's transitions are g10's at empty exempt lists (the wrappers above);
+;; i10-current on the generic tree: transition's transitions are i10-current-exempt's at empty exempt lists (the wrappers above);
 ;; T5's start takes "the computation is a startable row" from T5's guard
 (tree/part! G10R
   :over '{well-formed-start-raw i10-current-start-raw-hand}

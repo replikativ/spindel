@@ -52,10 +52,10 @@
   (is (= 10 (count (filter #(and (tree/variant? (if (= 'i10-task (first %)) c/GL c/G9) (second %)))
                            (for [p '[i10-task i9-res] x (:nodes @tree/tree)] [p x]))))))
 
-(deftest raw0-is-cut-by-item
+(deftest transition-is-cut-by-item
   ;; one lemma per item, each checked for well-formed; well-formed-transition dispatches to them, and a part that
   ;; passes into one transition gets that branch's lemma, not the dispatcher's
-  (is (= 49 (count (filter #(re-matches #"raw0-.+-inv" (name %)) (:nodes @tree/tree)))))
+  (is (= 49 (count (filter #(re-matches #"well-formed-transition-.+" (name %)) (:nodes @tree/tree)))))
   (is (declared? 'well-formed-transition-complete))
   (doseq [B [c/GL c/G9]] (is (not (tree/variant? B 'well-formed-transition))))
   (is (tree/variant? c/GL 'well-formed-transition-complete))
@@ -63,7 +63,7 @@
   (is (not (tree/variant? c/G9 'well-formed-transition-complete))))
 
 (deftest a-gate-gives-the-continuation-its-fact
-  ;; a part taking C0's gate: raw0's continuations receive root-open-if (checked for any Q); only the
+  ;; a part taking C0's gate: transition's continuations receive root-open-if (checked for any Q); only the
   ;; branches of transition that call the gate get the part's lemma, not the dispatcher
   (let [B (part/mk-bundle 'tgate [] "tgate-" {})]
     (tree/part! B :gates '{well-formed-require-root-open hc0})
@@ -99,13 +99,13 @@
   ;; a computation edit is one site per row function, generic in its arguments
   (is (some #{'(comp-start-row rid)} (tree/site-keys 'well-formed-comp-upd)))
   (is (contains? (get-in @tree/parts ['comp-awake-owns-run :sites]) '[well-formed-comp-upd (comp-cut-row h k bs)]))
-  ;; T6, T-take, T17, T11, schedule, finalize: plumbing in the table, not g7's own proofs
+  ;; T6, T-take, T17, T11, schedule, finalize: plumbing in the table, not i7-idle's own proofs
   (doseq [x '[well-formed-t6-await well-formed-t-take well-formed-t17-arm well-formed-t11-dispatch well-formed-t-schedule well-formed-t-finalize well-formed-take-park well-formed-arm-park]]
     (is (tree/variant? idle/G7 x) (str x))))
 
 (deftest gd-is-not-copied
   ;; i7-idle and i10-current from the step's input reach T6, T22, T8 and T12 through raw: declared at raw, host-guarded-transition,
-  ;; transition, inferred at raw0's branches
+  ;; transition, inferred at transition's branches
   (is (= '[(= (i7-idle w) true) (= (i10-current w) true)] (vec (take-nth 2 (rest (get (tree/table-own cf/GD) 'well-formed-transition))))))
   (doseq [x '[well-formed-transition-await well-formed-transition-host-await well-formed-transition-complete well-formed-transition-observe well-formed-t6-await well-formed-t22-host-await]]
     (is (tree/variant? cf/GD x) (str x))))
@@ -124,7 +124,7 @@
   (doseq [p '[i1-scopes scope-parents-acyclic]] (is (contains? (get-in @tree/parts [p :ctx]) 'well-formed-add-run-scope) (str p))))
 
 (deftest base-parts-are-not-copied
-  ;; an activation edit and a cleanup edit are sites per row function (na's and aha's extra argument
+  ;; an activation edit and a cleanup edit are sites per row function (no-act-of-run's and act-runs-alive's extra argument
   ;; is rfl only at a concrete row function; refs-not-edges proves cleanup-drop by its own lemma)
   (is (seq (tree/site-keys 'well-formed-act-upd)))
   (is (some #(and (seq? %) (= 'cleanup-drop (first %))) (tree/site-keys 'well-formed-cleanup-upd)))
@@ -139,7 +139,7 @@
   (is (= 5 (count (tree/site-keys 'well-formed-edge-upd)))))
 
 (deftest g10-is-not-copied
-  ;; g10's job condition names its exempt lists: the part lemmas of a parameterised part take the
+  ;; i10-current-exempt's job condition names its exempt lists: the part lemmas of a parameterised part take the
   ;; part's parameters after Q
   (doseq [x '[well-formed-t16-close-scope well-formed-t15-resource-ack well-formed-t-slice-exit well-formed-t21-release-world well-formed-retire-one well-formed-t12-complete well-formed-t11-dispatch]]
     (is (tree/variant? i10/G10 x) (str x)))
@@ -159,7 +159,7 @@
   (is (not-any? #(tree/variant? i1o/NZ %) '[well-formed-normalize well-formed-normalize-round well-formed-detach])))
 
 (deftest the-run-parts-are-not-copied
-  ;; i1-runs is i1-runs-exempt at the empty list: its cell for a lemma i1-runs-exempt has is grx's, at that argument
+  ;; i1-runs is i1-runs-exempt at the empty list: its cell for a lemma i1-runs-exempt has is i1-runs-exempt's, at that argument
   (is (= 'i1-runs-exempt-cancel-run-local (get @(:renames i1r/GR0) 'well-formed-cancel-run-local)))
   (is (= '[(List.nil Nat) 0] (get (:extra-args i1r/GR0) 'well-formed-cancel-run-local)))
   ;; the companion acts-parked goes from the step's input down to T12
@@ -167,19 +167,19 @@
   (is (tree/variant? i1r/GRX 'well-formed-job-apply)))
 
 (deftest open-scopes-i14-and-the-measure-are-not-copied
-  ;; mb's hypothesis "the parking run is not the tracked one" goes from the await and the take
+  ;; l2-measure's hypothesis "the parking run is not the tracked one" goes from the await and the take
   ;; down to the park, as an own fact
   (doseq [x '[well-formed-await-raw well-formed-await-post well-formed-take-park well-formed-transition-arm]] (is (tree/variant? ms/MB x) (str x)))
   (is (tree/variant? os/GOS 'well-formed-job-apply))
   (is (= 1 ('well-formed-run-ins-fresh tree/dispatched))))
 
 (deftest grel-gc-and-gst-are-not-copied
-  ;; task-unheld-scope-absent: T12 writes a result; the fact comes from raw0's complete arm
+  ;; task-unheld-scope-absent: T12 writes a result; the fact comes from transition's complete arm
   (is (tree/variant? stable/GST 'well-formed-transition-complete))
   (is (not-any? #(tree/variant? qw/GC %) '[well-formed-raw well-formed-normalize well-formed-t14-cancel])))
 
 (deftest gk-takes-the-guard-from-raw0
-  ;; a creation has handles 1 only while not released: the fact goes from raw0's arm down to the row
+  ;; a creation has handles 1 only while not released: the fact goes from transition's arm down to the row
   (doseq [x '[well-formed-transition-create-comp well-formed-t3-create well-formed-create-comp-raw well-formed-transition-handle-new well-formed-t-handle-new
               well-formed-new-task-handle well-formed-new-source-handle well-formed-append-raw well-formed-stream-rows]]
     (is (tree/variant? quiet/GK x) (str x)))
@@ -188,7 +188,7 @@
   (is (not-any? #(tree/variant? quiet/GK %) '[well-formed-transition well-formed-host-guarded-transition well-formed-raw well-formed-normalize])))
 
 (deftest ga-gx-ch-and-ka-are-not-copied
-  ;; ga's own proofs take their facts from their own callers, which are own proofs too: no node
+  ;; acts-parked's own proofs take their facts from their own callers, which are own proofs too: no node
   ;; takes or passes a fact
   (is (not-any? #(tree/variant? acts/GA %) (:nodes @tree/tree)))
   (is (= 21 (count (:over (get @tree/parts 'acts-parked)))))
@@ -198,8 +198,8 @@
   ;; i7-idle and acts-parked come from the step's input; transition hands each to one branch (T5, T11) and to no other
   (is (= '[(= (i7-idle w) true)] (vec (take-nth 2 (rest (get (tree/table-own ar/AR) 'well-formed-transition-start))))))
   (is (= '[(= (acts-parked w) true)] (vec (take-nth 2 (rest (get (tree/table-own ar/AR) 'well-formed-transition-dispatch-comp))))))
-  (is (= '[well-formed-transition-dispatch-comp well-formed-transition well-formed-transition-start]
-         (sort (filter #(and (re-find #"^raw0-" (name %)) (tree/variant? ar/AR %)) (:nodes @tree/tree)))))
+  (is (= '[well-formed-transition well-formed-transition-dispatch-comp well-formed-transition-start]
+         (sort (filter #(and (re-find #"^well-formed-transition" (name %)) (tree/variant? ar/AR %)) (:nodes @tree/tree)))))
   ;; the retired run is dead: from the job down to the clear, forwarded
   (doseq [x '[well-formed-job-apply well-formed-retire-run well-formed-t13-retire-with-subtree]] (is (tree/variant? ar/AR x) (str x))))
 
@@ -207,7 +207,7 @@
   (doseq [B [mb/H3 mc/EKB mst/FB]]
     ;; sites only: none of them takes a fact from the path
     (is (not-any? #(tree/variant? B %) (:nodes @tree/tree)) (str (:pred B))))
-  ;; ekb's only site: the await's edge, whose kind is not closed at the insertion
+  ;; edge-kinds's only site: the await's edge, whose kind is not closed at the insertion
   (is (= 1 (count (:sites (get @tree/parts 'edge-kinds))))))
 
 (deftest the-copier-is-gone

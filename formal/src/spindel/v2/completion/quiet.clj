@@ -9,10 +9,10 @@
                task and source has handle count 0 (`host-roots-revoked-handles-rest`, `hz-all`); `step-k`, `k-empty`. On the
                generic tree; its table (`tree/part! GK`) says where the base proof is not enough: where
                an edge is inserted (track, reactivation, await, take: no host root, `host-free`; T8,
-               T22: only while not released, raw0's `world-released`/`host-await-refused`), at pin/unpin, at a
+               T22: only while not released, transition's `world-released`/`host-await-refused`), at pin/unpin, at a
                row edit of a computation/task/source (the count stays 0: default, a site rule for
                decrements, `-open` for handle-new's h1 under the guard), at the creations (handles 1,
-               only while not released: the fact `world-released w = false` comes from raw0's guards and
+               only while not released: the fact `world-released w = false` comes from transition's guards and
                is forwarded down to the creation) and at T21 (`host-roots-revoked-t21-release-world`: revoke, then
                `zero-handles-hz`).
 
@@ -586,7 +586,7 @@
                 (tree/row-sites 'well-formed-task-ins-fresh (constantly true) (fn [F] (list 'host-roots-revoked-task-ins-fresh 'w F 'h1 'h0 'h2)))
                 (tree/row-sites 'well-formed-source-ins-fresh (constantly true) (fn [F] (list 'host-roots-revoked-source-ins-fresh 'w F 'h1 'h0 'h2))))
   ;; ---- facts from the path: a creation, handle-new's h1 and pin run only while not released
-  ;; (raw0's guards); a new edge is no host root, or the world is not released
+  ;; (transition's guards); a new edge is no host root, or the world is not released
   :ctx '{well-formed-comp-ins-fresh             [(= (world-released w) false)]
          well-formed-task-ins-fresh             [(= (world-released w) false)]
          well-formed-source-ins-fresh           [(= (world-released w) false)]

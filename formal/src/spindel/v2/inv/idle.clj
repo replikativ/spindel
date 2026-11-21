@@ -11,7 +11,7 @@
   Every composite well-formed lemma is restated for the bundle by the generic tree
   (spindel.v2.pres.tree, Part C's table); primitives: an edit that keeps the computation keys (id,
   idle, clean), the run keys (id, of, alive, slice and mode) and the edge keys (kind, creditor,
-  marked) is a frame; sites where a computation wakes, a run ends, enters a slice or parks; g7's own
+  marked) is a frame; sites where a computation wakes, a run ends, enters a slice or parks; i7-idle's own
   proofs where a computation wakes or sleeps, a run is created, a dep edge is inserted. The
   companions comp-awake-owns-run (Part D) and alive-runs-listed (Part G) are parameterised parts of the tree."
   (:require [ansatz.core :as a]
@@ -770,7 +770,7 @@
           well-formed-normalize-round       i7-idle-normalize-round        ; normalization with acts-alive (demote's cascade)
           well-formed-normalize-loop        i7-idle-normalize-loop
           well-formed-normalize        i7-idle-normalize}
-  ;; ---- sites: the row functions that change g7's keys
+  ;; ---- sites: the row functions that change i7-idle's keys
   :sites (merge
           ;; a computation wakes, or keeps its idle state and clean shape: no-sleep and keeps-clean, by lemma
           (tree/row-sites 'well-formed-comp-upd comp-fns (fn [F] (list 'i7-idle-comp-upd-m 'w 'x F 'hid 'hp (row-lemma F "-nsl") (row-lemma F "-kcl") 'h0)))
@@ -780,7 +780,7 @@
           '{[well-formed-run-upd run-wake]      (i7-idle-run-upd w x run-wake hf run-wake-i7-idle-run-key h0)        ; resume: keys kept, by lemma
             [well-formed-run-upd run-enter-row] (i7-idle-run-upd-q w x run-enter-row hf h0 h1)          ; schedule, finalize: enter a slice
             [well-formed-run-upd run-tick-park] (i7-idle-run-upd-q w x run-tick-park hf h0 h1)})        ; take: the run parks
-  ;; ---- facts from the path: what g7's own proofs and sites take ...
+  ;; ---- facts from the path: what i7-idle's own proofs and sites take ...
   :ctx '{well-formed-t7-track                      [(= (in-cleanup w st) false)]
          well-formed-dispatch-raw            [(= (awake (:comps w) (:id c)) true)]
          well-formed-await-raw               [(List.Mem r (:runs w)) (= (run-alive r) true)]
@@ -789,7 +789,7 @@
   ;; ---- ... and the facts nodes take from above them and pass on
   :own '{well-formed-take-park  [hm (List.Mem r (:runs w)) hal (= (run-alive r) true)]           ; take: the run is a row, alive
          well-formed-arm-park   [hm (List.Mem r (:runs w)) hal (= (run-alive r) true)]}
-  :pass '{well-formed-transition-track {well-formed-t7-track [hc]}                                                       ; raw0's guard: not in a cleanup slice
+  :pass '{well-formed-transition-track {well-formed-t7-track [hc]}                                                       ; transition's guard: not in a cleanup slice
           well-formed-t-schedule      {[well-formed-run-upd run-enter-row] [(enter-q w rid r (base-of w h) hf (t-schedule-sn w r hg))]}  ; an active run
           well-formed-t-finalize {[well-formed-run-upd run-enter-row] [(enter-q w rid r (base-of w h) hf (fin-sn w r hg))]}    ; an unwinding run
           well-formed-take-park  {[well-formed-run-upd run-tick-park] [(tick-park-q w r x k (base-of w h) hm hal)]}
@@ -1231,7 +1231,7 @@
                      well-formed-await-wire well-formed-fast-fill well-formed-finalize-if-final])
 
 ;; ===========================================================================
-;; Part E. g7's own proofs through the chains (with comp-awake-owns-run)
+;; Part E. i7-idle's own proofs through the chains (with comp-awake-owns-run)
 ;; ===========================================================================
 
 (a/theorem of-at-zero [awc :- Nat, w :- World] (=> (= (well-formed w) true) (= (tbl-all (run-of-at 0 awc) (:runs w)) true))

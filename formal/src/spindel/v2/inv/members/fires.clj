@@ -340,7 +340,7 @@
   (have hx2 (= (reach-mem (:of (current-members-run-key r)) xm) false)) (exact hx)
   (simp only [current-members-ob hx2 hc Bool.not_true Bool.false_or Bool.and_eq_true] at ob)
   (exact (And.left ob)))
-;; a current run (h3's sense) is current for the engine's run-current
+;; a current run (current-members's sense) is current for the engine's run-current
 (a/theorem current-members-cur-run-current [xm :- (List Nat), w :- World, b :- ActRow, r :- RunRow]
   (=> (= (well-formed w) true) (= (current-members-rest xm w) true) (List.Mem b (:acts w)) (List.Mem r (:runs w)) (= (:id r) (:run b))
       (= (tbl-any (current-members-cur (current-members-run-key r)) (:comps w)) true) (= (run-current w (:id r)) true))
@@ -697,7 +697,7 @@
           (case [false] (simp only [fire-edge hf hp hk1 hk2 hk3 fire-savepoint-todo]) (exact h)))))))
 (swap! (:renames H3) assoc 'well-formed-fire-edge 'current-members-fire-edge 'well-formed-invalidate 'current-members-invalidate 'well-formed-resume 'current-members-resume 'well-formed-fill-slot 'current-members-fill-slot)
 
-;; ---- host edges (creditor 0) are held by no activation: T8 unobserve (g7's obs-one), T22 unawait
+;; ---- host edges (creditor 0) are held by no activation: T8 unobserve (i7-idle's obs-one), T22 unawait
 (a/theorem current-members-remove-host [xm :- (List Nat), w :- World, e :- EdgeRow]
   (=> (= (edge-find w (:id e)) (Option.some EdgeRow e)) (= (Nat.beq (:kind e) ek-dep) false) (= (:creditor e) 0) (= (current-members xm w) true)
       (= (current-members xm (remove-edge w (:id e))) true))
@@ -833,7 +833,7 @@
 (swap! (:renames H3) assoc 'well-formed-invalidate-dependents 'current-members-invalidate-dependents)
 
 ;; ===========================================================================
-;; Part C. h3's lemmas so far, restated from the generic tree
+;; Part C. current-members's lemmas so far, restated from the generic tree
 ;; ===========================================================================
 
 (tree/restate! H3 '[well-formed-t2-write well-formed-t9-fire well-formed-t18-resource-fire well-formed-wake-closed well-formed-settle-host well-formed-fast-fill well-formed-deliver-fire])

@@ -45,7 +45,7 @@ re-elaboration).
 
 `generic-preservation-proto.clj`, run in a REPL after `(require 'spindel.v2.inv.copier)`:
 
-1. gl's part of the tree: 156 composite lemmas in the closure of `step-well-formed` (gl's 9 overrides and 32
+1. i10-task's part of the tree: 156 composite lemmas in the closure of `step-well-formed` (i10-task's 9 overrides and 32
    primitives as stop points). 112 of them have no lemma in their closure that i10-task patches.
 2. Of those, the prototype takes the roots whose primitives have a bundle-independent shape (no
    `run-upd` / `task-upd`, see obstacle 1): 19 primitives, which become the 19 fields of `GPrim`.
@@ -54,9 +54,9 @@ re-elaboration).
    `well-formed-t3-create-top`, `well-formed-t8-observe-basic`, `well-formed-t8-unobserve`, `well-formed-t20-pin`, `well-formed-t20-unpin`, `well-formed-t22-host-unawait`,
    `well-formed-t-open-scope`, `well-formed-t-drain`, `well-formed-t-own`, `well-formed-t-owned-done`, `well-formed-cancel-res`,
    `well-formed-invalidate-dependents`, `well-formed-retire-after`, `well-formed-demote-epoch`, `well-formed-await-wire`).
-4. `pgl : GPrim i10-task-rest` from gl's primitive lemmas (19 fields; a structure of proofs is in `Type`, so it
+4. `pgl : GPrim i10-task-rest` from i10-task's primitive lemmas (19 fields; a structure of proofs is in `Type`, so it
    is an `a/defn`).
-5. Each of gl's own copies of those lemmas, restated with its exact statement, is proved by
+5. Each of i10-task's own copies of those lemmas, restated with its exact statement, is proved by
    `(exact (gq-<lemma> i10-task-rest pgl ...))`: 46 of 46 (the 47th, `well-formed-t8-observe-basic`, has no i10-task copy because
    i10-task never needed it).
 
@@ -68,7 +68,7 @@ parentheses):
 | per-bundle copy of these 47 lemmas (a concrete bundle `gt` with a trivial rest part) | 1.05 (1.42) |
 | the generic copy of the same 47 lemmas (`gq2`), once | 0.96 (1.67) |
 | instantiation for i10-task (`pgl`) | 0.07 (0.16) |
-| restating and checking gl's lemmas from the generic ones (optional) | 0.11 (0.27) |
+| restating and checking i10-task's lemmas from the generic ones (optional) | 0.11 (0.27) |
 
 So for this slice a bundle costs well under 0.1-0.2 s instead of 1-1.4 s, after a one-time copy of about the
 same cost as one bundle's. At 20-30 ms per copied lemma (this slice; larger lemmas cost more) and roughly
@@ -77,8 +77,8 @@ generic form would elaborate the tree once plus one instance per bundle.
 
 ## Obstacles found
 
-1. **Primitive side conditions are bundle-specific.** gl's `run-upd`/`task-upd` primitives need the row
-   function to keep gl's keys (`extra-args` inserts `(fn [r] (Eq.refl (run-key r)))` at each call site, true
+1. **Primitive side conditions are bundle-specific.** i10-task's `run-upd`/`task-upd` primitives need the row
+   function to keep i10-task's keys (`extra-args` inserts `(fn [r] (Eq.refl (run-key r)))` at each call site, true
    by definition for the concrete function there). i9-res has no general `resource-upd` primitive at all: it
    patches each call site with a lemma for that row function (`i9-res-res-upd-q` with `res-cancel-row`,
    `res-set-phase rp-fired`). Instantiating the prototype's `GPrim` for i9-res fails exactly at that field.
@@ -89,7 +89,7 @@ generic form would elaborate the tree once plus one instance per bundle.
    `C w -> well-formed w -> Q w -> Q (edit w)`, and `C` carried through the intermediate worlds (C is itself
    a bundle, so its own instance gives that).
 3. **Overrides are not compositional.** The 337 overrides prove a transition through an intermediate
-   world where the invariant is broken (exemption lists such as gl's `i10-task-exempt`, h3's member exemptions).
+   world where the invariant is broken (exemption lists such as i10-task's `i10-task-exempt`, current-members's member exemptions).
    They become **composite-level fields**: the generic tree takes `T12-pres Q`, `cancel-run-local-pres Q`,
    ... as hypotheses at the points some bundle overrides, and a bundle that does not override supplies the
    default, proved once generically from `GPrim` (`default-t12 : GPrim Q -> T12-pres Q`).

@@ -915,7 +915,7 @@
     (is (= w4 w5) "observe on a stream is refused")))
 
 ;; C0 (engine session, feat/v2-world-completion): a link owned by the root scope is created only
-;; while the root scope is open, and no link is realized once it is closed (raw0's `require-root-open`): with
+;; while the root scope is open, and no link is realized once it is closed (transition's `require-root-open`): with
 ;; the root scope closed (T21) an append is refused (the engine logs [:append s v 0] accepted false),
 ;; so are create-link-top and link-realize with every tag (the engine's link-done! realizes nothing)
 (deftest c0-root-gate

@@ -449,7 +449,7 @@
 (a/theorem fm-cleanup-set [w :- World, rid :- Nat, rows :- (List Nat)] (current-members-fm w (cleanup-set w rid rows))
   (exact (fm-same w (cleanup-set w rid rows) (rfl) (rfl) (rfl))))
 
-;; h3's lemmas used below (premise-free members of the raw closure), restated from the generic tree
+;; current-members's lemmas used below (premise-free members of the raw closure), restated from the generic tree
 (tree/restate! H3 '[well-formed-cancel-res well-formed-cleanup-set well-formed-fire-waits-cancelled well-formed-ack-raw])
 
 ;; ===========================================================================
@@ -1327,7 +1327,7 @@
   (exact (current-members-dx-of _ _ _ (:of r) e de (tbl-all-mem EdgeRow _ e _ (edge-kinds-rest-of _ E7) me) (tbl-all-mem EdgeRow _ e _ C7 me)))
   (exact (current-members-intro xm _ (current-members-well-formed _ _ H7) (current-members-undo-d xm _ (:of r) hcx hdx (current-members-well-formed _ _ H7) hfr (current-members-rest-of _ _ H7)))))
 
-;; ---- T14's local part (cancel-run-local): a computation run (no task points at it: g10's tof-pair), a task run
+;; ---- T14's local part (cancel-run-local): a computation run (no task points at it: i10-current-exempt's tof-pair), a task run
 ;; whose task is absent or already exempt, or a task run with the task exempt until its on-task edges have fired
 (a/theorem current-members-tof-g [gx :- (List Nat), gk :- (List Nat), w :- World, r :- RunRow]
   (=> (= (i10-current-exempt gx gk w) true) (List.Mem r (:runs w))
@@ -1594,7 +1594,7 @@
   (=> (= (marks-waiting hxm w1) true) (= (i10-current-exempt gxz gkz w1) true) (= (edge-kinds w1) true) (= (current-members xm w1) true) (= (current-members xm (cancel-losers w0 w1)) true))
   (intros hk hg he h) (simp only [cancel-losers]) (exact (current-members-run-cascade-g xm hxm gxz gkz w1 _ hg hk he h)))
 
-;; h3's own proofs of the cascade and its callers: they take marks-waiting, i10-current-exempt and edge-kinds of their input (their callers thread them)
+;; current-members's own proofs of the cascade and its callers: they take marks-waiting, i10-current-exempt and edge-kinds of their input (their callers thread them)
 (swap! (:renames H3) assoc 'well-formed-run-cascade 'current-members-run-cascade-g 'well-formed-t14-cancel 'current-members-t14-cancel 'well-formed-t14-host-cancel 'current-members-t14-host-cancel 'well-formed-t16-close-scope 'current-members-t16-close-scope
        'well-formed-t-close-scope 'current-members-t-close-scope 'well-formed-t15-resource-ack 'current-members-t15-resource-ack 'well-formed-t-slice-exit 'current-members-t-slice-exit 'well-formed-cancel-losers 'current-members-cancel-losers
        'well-formed-retire-run 'current-members-retire-run 'well-formed-close-scope-local 'current-members-close-scope-local 'well-formed-job-apply 'current-members-job-apply-g)
