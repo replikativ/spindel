@@ -13,7 +13,7 @@
             [spindel.v2.step :refer :all]
             [spindel.v2.rule :refer :all]
             [spindel.v2.engine :refer :all]
-            [spindel.v2.inv.copier :refer [mk-bundle prim! lcopy! override!]]
+            [spindel.v2.inv.copier :refer [mk-bundle prim!]]
             [spindel.v2.inv.base]
             [spindel.v2.inv.acts]
             [spindel.v2.inv.marks-step :refer [p3l]]
@@ -71,7 +71,7 @@
 (prim! GNF 'inv-fork-del '(gnf-rest-fork-del nids w x R))
 (prim! GNF 'inv-filter-world '(gnf-rest-filter nids w K R))
 
-(tree/restate! GNF '[inv-remove-empty-at nat-fold-inv inv-cancel-losers inv-normalize])   ; the generic tree (spindel.v2.pres.tree) instead of a copy
+(tree/restate! GNF '[inv-remove-empty-at nat-fold-inv inv-cancel-losers inv-normalize])
 
 (a/theorem gnf-rule-r-round [nids :- (List Nat), w :- World]
   (=> (= (gnf nids w) true) (= (filter-safe (normalize w)) true) (= (gnf nids (rule-r-round w)) true))

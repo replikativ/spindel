@@ -21,7 +21,7 @@
                 a run, the others for want of their row; so `world-step` leaves a quiet world as it
                 is (`quiet-step`).
 
-  The copy machinery is spindel.v2.inv.copier's (`mk-bundle`, `prim!`, `lcopy!`)."
+  The bundle goes through the generic step tree (spindel.v2.pres.tree)."
   (:require [ansatz.core :as a]
             [spindel.v2.pres.frames :as frames]
             [clojure.string :as str]
@@ -35,6 +35,7 @@
             [spindel.v2.progress.casc :refer :all]
             [spindel.v2.inv.acts :refer :all]
             [spindel.v2.inv :refer :all]
+            [spindel.v2.pres.tree :as tree]
             [spindel.v2.inv.copier :refer :all]
             [spindel.v2.inv.base :refer :all]
             [spindel.v2.inv.marks-step :refer [p3l]]
@@ -170,52 +171,57 @@
   (simp only [cancel-acts])
   (exact (nat-fold-frame (List RunRow) (fn [v :- World] (:runs v)) drop-act (fn [v :- World, y :- Nat] (Eq.refl (:runs v))) _ w)))
 
-(override! GC 'inv-cleanup-set '[]
-  '(a/theorem gc-cleanup-set-x [w :- World, rid :- Nat, rows :- (List Nat)]
-     (=> (= (tbl-has run-id rid (:runs w)) true) (= (gc w) true) (= (gc (cleanup-set w rid rows)) true))
-     (intros hr h) (exact (gc-cleanup-set w rid rows hr h))))
-(override! GC 'inv-retire-after '[]
-  '(a/theorem gc-retire-after [w :- World, rid :- Nat]
-     (=> (= (gc w) true) (= (gc (retire-after w rid)) true))
-     (intro h)
-     (cases hr (run-find w rid)) (case' [some r]) (case' [none])
-     (simp only [retire-after hr]) (exact h)
-     (cases ht (retirable r))
-     (simp only [retire-after hr ht]) (exact (gc-cleanup-set w rid _ (tbl-find-has RunRow run-id rid r (:runs w) hr) h))
-     (simp only [retire-after hr ht]) (exact h)))
-(override! GC 'inv-cancel-run-local '[inv-cancel-debtor inv-cancel-res inv-cancel-acts]
-  '(a/theorem gc-cancel-run-local [w :- World, r :- RunRow, rep :- Bool]
-     (=> (= (tbl-has run-id (:id r) (:runs w)) true) (= (gc w) true) (= (gc (cancel-run-local w r rep)) true))
-     (intros hr h)
-     (have hr2 (= (tbl-has run-id (:id r) (:runs (cancel-res (cancel-acts (run-upd w (:id r) run-cancel-row) (:id r)) r))) true))
-     (rw [runs-cancel-res runs-cancel-acts])
-     (simp only [run-upd set-runs (tbl-has-upd RunRow run-id (:id r) (:id r) run-cancel-row run-cancel-row-id (:runs w)) hr])
-     (simp only [cancel-run-local])
-     (exact (gc-cancel-debtor rep _ r (gc-cleanup-set _ (:id r) (cleanup-rows-of w r) hr2
-              (gc-cancel-res _ r (gc-cancel-acts _ (:id r) (gc-run-upd w (:id r) run-cancel-row run-cancel-row-id h))))))))
-(override! GC 'inv-retire-with '[inv-remove-if-empty inv-close-local inv-clear-comp-run]
-  '(a/theorem gc-retire-with [w :- World, r :- RunRow, sub :- (List Nat)]
-     (=> (= (gc w) true) (= (gc (retire-with w r sub)) true))
-     (intro h) (simp only [retire-with])
-     (exact (gc-remove-if-empty _ sub (gc-del-both _ (:id r) (gc-close-local _ sub (gc-clear-comp-run w r h)))))))
-(override! GC 'inv-job-apply '[inv-cancel-run-local inv-retire-local inv-close-scope-local]
-  '(a/theorem gc-job-apply [w :- World, j :- Job]
-     (=> (= (gc w) true) (= (gc (job-apply w j)) true))
-     (intro h)
-     (cases j)
-     (rename_i rid rep) (cases hf (run-find w rid)) (case' [some r]) (case' [none])
-     (simp only [job-apply hf]) (exact h)
-     (cases ha (run-alive r)) (simp only [job-apply hf ha]) (exact h)
-     (simp only [job-apply hf ha]) (exact (gc-cancel-run-local w r rep (run-has-of-find w rid r hf) h))
-     (rename_i rid) (cases hf (run-find w rid)) (case' [some r]) (case' [none])
-     (simp only [job-apply hf]) (exact h)
-     (cases ha (retirable r)) (simp only [job-apply hf ha]) (exact h)
-     (simp only [job-apply hf ha]) (exact (gc-retire-local w r h))
-     (rename_i s) (cases hs (scope-has w s)) (simp only [job-apply hs]) (exact h)
-     (simp only [job-apply hs]) (exact (gc-close-scope-local w s h))))
+;; gc on the generic tree (spindel.v2.pres.tree): its table. Its own proofs follow; the cleanup-set
+;; lemma is the hand lemma above.
+(swap! (:renames GC) assoc 'inv-cleanup-set 'gc-cleanup-set)
+(tree/part! GC
+  :over '{inv-retire-after     gc-retire-after
+          inv-cancel-run-local gc-cancel-run-local
+          inv-retire-with      gc-retire-with
+          inv-job-apply        gc-job-apply}
+  ;; ---- facts from the path: the run whose cleanups are set or cancelled is a row
+  :ctx '{inv-cleanup-set      [(= (tbl-has run-id rid (:runs w)) true)]
+         inv-cancel-run-local [(= (tbl-has run-id (:id r) (:runs w)) true)]})
+(a/theorem gc-retire-after [w :- World, rid :- Nat]
+  (=> (= (gc w) true) (= (gc (retire-after w rid)) true))
+  (intro h)
+  (cases hr (run-find w rid)) (case' [some r]) (case' [none])
+  (simp only [retire-after hr]) (exact h)
+  (cases ht (retirable r))
+  (simp only [retire-after hr ht]) (exact (gc-cleanup-set w rid _ (tbl-find-has RunRow run-id rid r (:runs w) hr) h))
+  (simp only [retire-after hr ht]) (exact h))
+(tree/restate! GC '[inv-cancel-debtor inv-cancel-res inv-cancel-acts])
+(a/theorem gc-cancel-run-local [w :- World, r :- RunRow, rep :- Bool]
+  (=> (= (tbl-has run-id (:id r) (:runs w)) true) (= (gc w) true) (= (gc (cancel-run-local w r rep)) true))
+  (intros hr h)
+  (have hr2 (= (tbl-has run-id (:id r) (:runs (cancel-res (cancel-acts (run-upd w (:id r) run-cancel-row) (:id r)) r))) true))
+  (rw [runs-cancel-res runs-cancel-acts])
+  (simp only [run-upd set-runs (tbl-has-upd RunRow run-id (:id r) (:id r) run-cancel-row run-cancel-row-id (:runs w)) hr])
+  (simp only [cancel-run-local])
+  (exact (gc-cancel-debtor rep _ r (gc-cleanup-set _ (:id r) (cleanup-rows-of w r) hr2
+           (gc-cancel-res _ r (gc-cancel-acts _ (:id r) (gc-run-upd w (:id r) run-cancel-row run-cancel-row-id h)))))))
+(tree/restate! GC '[inv-remove-if-empty inv-close-local inv-clear-comp-run])
+(a/theorem gc-retire-with [w :- World, r :- RunRow, sub :- (List Nat)]
+  (=> (= (gc w) true) (= (gc (retire-with w r sub)) true))
+  (intro h) (simp only [retire-with])
+  (exact (gc-remove-if-empty _ sub (gc-del-both _ (:id r) (gc-close-local _ sub (gc-clear-comp-run w r h))))))
+(tree/restate! GC '[inv-retire-local inv-close-scope-local])
+(a/theorem gc-job-apply [w :- World, j :- Job]
+  (=> (= (gc w) true) (= (gc (job-apply w j)) true))
+  (intro h)
+  (cases j)
+  (rename_i rid rep) (cases hf (run-find w rid)) (case' [some r]) (case' [none])
+  (simp only [job-apply hf]) (exact h)
+  (cases ha (run-alive r)) (simp only [job-apply hf ha]) (exact h)
+  (simp only [job-apply hf ha]) (exact (gc-cancel-run-local w r rep (run-has-of-find w rid r hf) h))
+  (rename_i rid) (cases hf (run-find w rid)) (case' [some r]) (case' [none])
+  (simp only [job-apply hf]) (exact h)
+  (cases ha (retirable r)) (simp only [job-apply hf ha]) (exact h)
+  (simp only [job-apply hf ha]) (exact (gc-retire-local w r h))
+  (rename_i s) (cases hs (scope-has w s)) (simp only [job-apply hs]) (exact h)
+  (simp only [job-apply hs]) (exact (gc-close-scope-local w s h)))
 
-(lcopy! GC 'raw-inv)
-(lcopy! GC 'inv-normalize)
+(tree/restate! GC '[raw-inv inv-normalize])
 
 (a/theorem gc-rule-r-round [w :- World]
   (=> (= (gc w) true) (= (filter-safe (normalize w)) true) (= (gc (rule-r-round w)) true))

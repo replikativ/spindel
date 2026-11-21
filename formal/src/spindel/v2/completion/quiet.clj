@@ -28,6 +28,7 @@
             [spindel.v2.progress.casc :refer :all]
             [spindel.v2.inv.acts :refer :all]
             [spindel.v2.inv :refer :all]
+            [spindel.v2.pres.tree :as tree]
             [spindel.v2.inv.copier :refer :all]
             [spindel.v2.inv.base :refer :all]
             [spindel.v2.inv.marks-step :refer [p3l]]))
@@ -61,16 +62,16 @@
 (frames/frame-theorem! 'grel-rest-mark-edge 'grel-rest 'mark-edge-inv-sample)
 (frames/frame-theorem! 'grel-rest-unmark-edge 'grel-rest 'unmark-edge-inv-sample)
 (frames/frame-theorem! 'grel-rest-remove-edge 'grel-rest 'inv-remove-edge)
-(override! GR 'inv-revoke-roots '[]
-  '(a/theorem grel-revoke-roots [rb :- Bool, w :- World]
-     (=> (= (grel rb w) true) (= (grel rb (revoke-roots w)) true))
-     (intro h)
-     (have r (= (grel-rest rb (revoke-roots w)) true))
-     (simp only [grel-rest revoke-roots set-pending-act set-pins drop-edges set-released Bool.or_true])
-     (exact (grel-intro rb _ (inv-revoke-roots w (grel-sample rb w h)) r))))
+;; grel on the generic tree (spindel.v2.pres.tree): one own proof
+(tree/part! GR :over '{inv-revoke-roots grel-revoke-roots})
+(a/theorem grel-revoke-roots [rb :- Bool, w :- World]
+  (=> (= (grel rb w) true) (= (grel rb (revoke-roots w)) true))
+  (intro h)
+  (have r (= (grel-rest rb (revoke-roots w)) true))
+  (simp only [grel-rest revoke-roots set-pending-act set-pins drop-edges set-released Bool.or_true])
+  (exact (grel-intro rb _ (inv-revoke-roots w (grel-sample rb w h)) r)))
 
-(lcopy! GR 'raw-inv)
-(lcopy! GR 'inv-normalize)
+(tree/restate! GR '[raw-inv inv-normalize])
 
 (a/theorem grel-rule-r-round [rb :- Bool, w :- World]
   (=> (= (grel rb w) true) (= (filter-safe (normalize w)) true) (= (grel rb (rule-r-round w)) true))

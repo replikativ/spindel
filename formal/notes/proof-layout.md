@@ -1914,6 +1914,38 @@ there that is `rfl` at a concrete row. One shared lemma changes (`pres-add-run-s
   1–62; the tree test also checks that the
   five parts have no overrides or patches and where `mb` takes its facts).
 
+## 5s. Stage 4, group 7a: `grel`, `gc` and `gst` on the tree
+
+**Result.** Three of the completion parts go through the tree: `grel` (`completion.quiet`), `gc`
+(`completion.quiet-world`) and `gst` (`completion.stable`). `gnf` (`completion.drained`) was on
+the tree already. Group 7 of the plan is cut in two: `gk` (`completion.quiet`) follows as 7b,
+because its patches thread a premise (`root-shut w = false`) through many nodes and add a
+per-row-function argument at six primitives.
+
+| | before (copier): overrides / patches / `lcopy!` | after (tree) |
+|---|---|---|
+| `grel` | 1 / 0 / 2 | 1 own proof |
+| `gc` | 5 / 0 / 2 | 4 own proofs, `:ctx` 2 |
+| `gst` | 4 / 3 / 2 | 4 own proofs, 2 sites, `:ctx` 3, `:pass` 1 caller; 1 part lemma |
+
+Nine of the ten overrides are content. The tenth, `gc`'s `gc-cleanup-set-x`, was never evaluated
+(nothing reached it; the own proofs call the hand lemma `gc-cleanup-set`) and is deleted. `gst`'s two patches at one call each are sites (the row lemmas
+`gst-task-tcr` and `gst-task-tcl`); its patch of `raw0` is a `:pass` row at `raw0-complete-inv`.
+
+### Gate (group 7a)
+
+- **Statements** (name-independent fingerprints, against group 6): all 18,003 identical; none
+  changed, none missing; 148 new: 147 `raw0-<item>-<part>` (`grel`, `gc`, `gst`) and
+  `pres-raw0-complete@gst`. `gc-cleanup-set-x` is not among the 18,003: the copier never evaluated
+  it. `inv-step`, `reach-inv`, `inv-empty`, `sys-reach-inv`, `l5-safety-total`, `step-p3m`,
+  `mv-refinement` unchanged.
+- **Load**, one JVM at a time, against group 6's measure: `completion.quiet` 15.7 → 7.3 s (`gk` is
+  still copied there), `completion.quiet-world` 10.0 → 3.6 s, `completion.stable` 8.4 → 1.7 s;
+  untouched 345 → 359 s, whole model 380 → 372 s.
+- **Suite**: `clojure -M:test`, 305 tests, 208,541 assertions, 0 failures, 0 errors (oracle samples
+  1–62; the tree test also checks that
+  `grel`, `gc` and `gst` have no overrides or patches).
+
 ## 6. Key pieces to read: the whole proof in 14 stops, in reading order (current names)
 
 1. `inv`, `inv-step`, `Reach1`, `reach-inv` (`top.clj`): the headline and its four-line induction.

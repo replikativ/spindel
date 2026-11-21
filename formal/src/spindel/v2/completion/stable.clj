@@ -5,9 +5,8 @@
 
     gst k s w   inv-sample w and `gst-rest`: k is below the allocator and task k is not held (no
                 task row k, or its result is not none and its run is 0), s is below the allocator and
-                there is no scope row s. Parametric bundle (parameters `tk9`, `sc9`), copied over the
-                raw transition and normalization by spindel.v2.inv.copier's copier (`mk-bundle`, `prim!`,
-                `lcopy!`):
+                there is no scope row s. Parametric bundle (parameters `tk9`, `sc9`), restated over the
+                raw transition and normalization by the generic step tree (spindel.v2.pres.tree):
                   - ids are never re-inserted: a task or scope row is only ever inserted at the
                     allocator (`*-ins-fresh`), which is above k and s;
                   - a task row update keeps \"not held\" (the extra argument of `gst-task-upd`): every
@@ -39,6 +38,7 @@
             [spindel.v2.progress.casc :refer :all]
             [spindel.v2.inv.acts :refer :all]
             [spindel.v2.inv :refer :all]
+            [spindel.v2.pres.tree :as tree]
             [spindel.v2.inv.copier :refer :all]
             [spindel.v2.inv.base :refer :all]
             [spindel.v2.ledger :refer :all]))
@@ -238,8 +238,7 @@
 
 (def GST (mk-bundle 'gst '[tk9 :- Nat, sc9 :- Nat] "gst-"
            {'inv-task-upd ['(fn [t :- TaskRow, q :- (= (th-row t) false)] q) 4]}))
-(swap! (:renames GST) assoc 'inv-parts 'gst-parts 'inv-task-upd 'gst-task-upd
-       'inv-task-upd-tcr 'gst-task-tcr 'inv-task-upd-tcl 'gst-task-tcl)
+(swap! (:renames GST) assoc 'inv-parts 'gst-parts 'inv-task-upd 'gst-task-upd)
 
 (defpart GST :reads '[next-id scopes tasks])
 (frames/frame-theorem! 'gst-rest-mark-edge 'gst-rest 'mark-edge-inv-sample)
@@ -255,79 +254,81 @@
 (prim! GST 'inv-scope-del '(gst-rest-scope-del tk9 sc9 w x R))
 (prim! GST 'inv-filter-world '(gst-rest-filter tk9 sc9 w K R))
 
-;; T14's debtor side writes ::cancelled over a result none only; T13 clears the run
-(patch! GST 'inv-debtor-side
-  (fn [form] (subst-forms #(= % '(inv-task-upd w (:of r) task-cancel-result task-cancel-result-id h))
-                          (fn [_] '(inv-task-upd-tcr w (:of r) h)) form)))
-(patch! GST 'inv-clear-task-run
-  (fn [form] (subst-forms #(= % '(inv-task-upd w (:of r) task-clear-run task-clear-run-id h))
-                          (fn [_] '(inv-task-upd-tcl w (:of r) h)) form)))
+;; gst on the generic tree (spindel.v2.pres.tree): its table. Its own proofs follow.
+(tree/part! GST
+  :over '{inv-complete-body gst-complete-body
+          inv-complete-raw  gst-complete-raw
+          t12-inv           t12-gst
+          inv-retire-one    gst-retire-one}
+  ;; ---- sites: T14's debtor side writes ::cancelled over a result none only; T13 clears the run
+  :sites '{[inv-task-upd task-cancel-result] (gst-task-tcr tk9 sc9 w x h0)
+           [inv-task-upd task-clear-run]     (gst-task-tcl tk9 sc9 w x h0)}
+  ;; ---- facts from the path: T12 writes a result (ok or err, never none)
+  :ctx '{inv-complete-body [(= (Nat.beq (:tag res) res-none) false)]
+         inv-complete-raw  [(= (Nat.beq (:tag res) res-none) false)]
+         t12-inv           [(= (res-tag-ok tag) true)]}
+  :pass '{raw0-complete-inv {t12-inv [(refused-tag-ok w st tag hc)]}})   ; complete not refused
 
 ;; T12: the result written is ok or err (complete-refused), so run 0 with a result stays not held
-(override! GST 'inv-complete-body '[nat-fold-inv inv-fire-edge inv-cancel-res inv-settle inv-comp-upd]
-  '(a/theorem gst-complete-body [tk9 :- Nat, sc9 :- Nat, w :- World, r :- RunRow, res :- RunResult]
-     (=> (= (Nat.beq (:tag res) res-none) false) (= (gst tk9 sc9 w) true) (= (gst tk9 sc9 (:world (complete-body w r res))) true))
-     (intros ht h)
-     (cases hc (comp-find w (:of r)))
-     (case [none]
-       (cases hk (task-find w (:of r)))
-       (case [none] (simp only [complete-body hc hk]) (exact h))
-       (case [some kt]
-         (simp only [complete-body hc hk complete-task])
-         (exact (nat-fold-gst tk9 sc9 (fire-edge res) (gst-fire-edge tk9 sc9 res) _ _
-                  (gst-cancel-res tk9 sc9 _ r (gst-task-upd tk9 sc9 w (:id kt) (task-result-row res) (task-result-row-id res)
-                                                (th-trr res ht) h))))))
-     (case [some c]
-       (cases he (Nat.beq (:epoch r) (:epoch c)))
-       (case [false] (simp only [complete-body hc he]) (exact h))
-       (case [true]
-         (simp only [complete-body hc he complete-comp])
-         (exact (gst-settle tk9 sc9 _ (:id c) _ (gst-cancel-res tk9 sc9 _ r
-                  (gst-comp-upd tk9 sc9 w (:id c) (comp-result-row res (:epoch r)) (comp-result-row-id res (:epoch r))
-                    (comp-result-row-pending res (:epoch r)) h))))))))
-(override! GST 'inv-complete-raw '[inv-complete-body inv-fin-if-final inv-run-cascade inv-retire-after inv-run-upd]
-  '(a/theorem gst-complete-raw [tk9 :- Nat, sc9 :- Nat, w :- World, r :- RunRow, res :- RunResult]
-     (=> (= (Nat.beq (:tag res) res-none) false) (= (gst tk9 sc9 w) true) (= (gst tk9 sc9 (complete-raw w r res)) true))
-     (intros ht h)
-     (have h0 (= (gst tk9 sc9 (run-upd w (:id r) run-complete-row)) true))
-     (exact (gst-run-upd tk9 sc9 w (:id r) run-complete-row run-complete-row-id h))
-     (simp only [complete-raw])
-     (exact (gst-fin-if-final tk9 sc9 _ (:of r) (gst-run-cascade tk9 sc9 _ _ (gst-retire-after tk9 sc9 _ (:id r)
-              (gst-complete-body tk9 sc9 _ r res ht h0)))))))
-(override! GST 't12-inv '[inv-complete-raw]
-  '(a/theorem t12-gst [tk9 :- Nat, sc9 :- Nat, w :- World, st :- Nat, tag :- Nat, v :- Nat]
-     (=> (= (res-tag-ok tag) true) (= (gst tk9 sc9 w) true) (= (gst tk9 sc9 (:world (t12-complete w st tag v))) true))
-     (intros hg h)
-     (cases ht (tok-run w st)) (case' [some r]) (case' [none])
-     (simp only [t12-complete ht refuse]) (exact h)
-     (cases hn (run-normal r))
-     (simp only [t12-complete ht hn refuse]) (exact h)
-     (simp only [t12-complete ht hn accept])
-     (exact (gst-complete-raw tk9 sc9 w r (RunResult.mk tag v) (tag-ok-none tag hg) h))))
-(override! GST 'inv-retire-one '[inv-retire-pre inv-complete-raw inv-run-cascade]
-  '(a/theorem gst-retire-one [tk9 :- Nat, sc9 :- Nat, v :- Nat, w :- World, rid :- Nat]
-     (=> (= (gst tk9 sc9 w) true) (= (gst tk9 sc9 (retire-one v w rid)) true))
-     (intro h)
-     (cases hf (run-find w rid))
-     (case [none] (simp only [retire-one hf]) (exact h))
-     (case [some r]
-       (have hp := (gst-retire-pre tk9 sc9 w r h))
-       
-       (cases hf1 (run-find (retire-pre w r) rid))
-       (case [none] (simp only [retire-one hf hf1]) (exact hp))
-       (case [some r1]
-         (have hm1 := (retire-r1-mem w r r1 rid hf1))
-         (have hn1 := (retire-r1-noact w r r1 rid hf hf1))
-         (have ht1 := (task-final-res-tag (retire-pre w r) (:of r1) v))
-         (cases ha (Bool.and (run-alive r1) (run-of-local (retire-pre w r) r1)))
-         (case [true] (simp only [retire-one hf hf1 ha]) (exact (gst-complete-raw tk9 sc9 _ r1 _ ht1 hp)))
-         (case [false] (simp only [retire-one hf hf1 ha retire-full]) (exact (gst-run-cascade tk9 sc9 _ _ hp)))))))
+(tree/restate! GST '[nat-fold-inv inv-fire-edge inv-cancel-res inv-settle inv-comp-upd])
+(a/theorem gst-complete-body [tk9 :- Nat, sc9 :- Nat, w :- World, r :- RunRow, res :- RunResult]
+  (=> (= (Nat.beq (:tag res) res-none) false) (= (gst tk9 sc9 w) true) (= (gst tk9 sc9 (:world (complete-body w r res))) true))
+  (intros ht h)
+  (cases hc (comp-find w (:of r)))
+  (case [none]
+    (cases hk (task-find w (:of r)))
+    (case [none] (simp only [complete-body hc hk]) (exact h))
+    (case [some kt]
+      (simp only [complete-body hc hk complete-task])
+      (exact (nat-fold-gst tk9 sc9 (fire-edge res) (gst-fire-edge tk9 sc9 res) _ _
+               (gst-cancel-res tk9 sc9 _ r (gst-task-upd tk9 sc9 w (:id kt) (task-result-row res) (task-result-row-id res)
+                                             (th-trr res ht) h))))))
+  (case [some c]
+    (cases he (Nat.beq (:epoch r) (:epoch c)))
+    (case [false] (simp only [complete-body hc he]) (exact h))
+    (case [true]
+      (simp only [complete-body hc he complete-comp])
+      (exact (gst-settle tk9 sc9 _ (:id c) _ (gst-cancel-res tk9 sc9 _ r
+               (gst-comp-upd tk9 sc9 w (:id c) (comp-result-row res (:epoch r)) (comp-result-row-id res (:epoch r))
+                 (comp-result-row-pending res (:epoch r)) h)))))))
+(tree/restate! GST '[inv-fin-if-final inv-run-cascade inv-retire-after inv-run-upd])
+(a/theorem gst-complete-raw [tk9 :- Nat, sc9 :- Nat, w :- World, r :- RunRow, res :- RunResult]
+  (=> (= (Nat.beq (:tag res) res-none) false) (= (gst tk9 sc9 w) true) (= (gst tk9 sc9 (complete-raw w r res)) true))
+  (intros ht h)
+  (have h0 (= (gst tk9 sc9 (run-upd w (:id r) run-complete-row)) true))
+  (exact (gst-run-upd tk9 sc9 w (:id r) run-complete-row run-complete-row-id h))
+  (simp only [complete-raw])
+  (exact (gst-fin-if-final tk9 sc9 _ (:of r) (gst-run-cascade tk9 sc9 _ _ (gst-retire-after tk9 sc9 _ (:id r)
+           (gst-complete-body tk9 sc9 _ r res ht h0))))))
+(a/theorem t12-gst [tk9 :- Nat, sc9 :- Nat, w :- World, st :- Nat, tag :- Nat, v :- Nat]
+  (=> (= (res-tag-ok tag) true) (= (gst tk9 sc9 w) true) (= (gst tk9 sc9 (:world (t12-complete w st tag v))) true))
+  (intros hg h)
+  (cases ht (tok-run w st)) (case' [some r]) (case' [none])
+  (simp only [t12-complete ht refuse]) (exact h)
+  (cases hn (run-normal r))
+  (simp only [t12-complete ht hn refuse]) (exact h)
+  (simp only [t12-complete ht hn accept])
+  (exact (gst-complete-raw tk9 sc9 w r (RunResult.mk tag v) (tag-ok-none tag hg) h)))
+(tree/restate! GST '[inv-retire-pre inv-run-cascade])
+(a/theorem gst-retire-one [tk9 :- Nat, sc9 :- Nat, v :- Nat, w :- World, rid :- Nat]
+  (=> (= (gst tk9 sc9 w) true) (= (gst tk9 sc9 (retire-one v w rid)) true))
+  (intro h)
+  (cases hf (run-find w rid))
+  (case [none] (simp only [retire-one hf]) (exact h))
+  (case [some r]
+    (have hp := (gst-retire-pre tk9 sc9 w r h))
+    
+    (cases hf1 (run-find (retire-pre w r) rid))
+    (case [none] (simp only [retire-one hf hf1]) (exact hp))
+    (case [some r1]
+      (have hm1 := (retire-r1-mem w r r1 rid hf1))
+      (have hn1 := (retire-r1-noact w r r1 rid hf hf1))
+      (have ht1 := (task-final-res-tag (retire-pre w r) (:of r1) v))
+      (cases ha (Bool.and (run-alive r1) (run-of-local (retire-pre w r) r1)))
+      (case [true] (simp only [retire-one hf hf1 ha]) (exact (gst-complete-raw tk9 sc9 _ r1 _ ht1 hp)))
+      (case [false] (simp only [retire-one hf hf1 ha retire-full]) (exact (gst-run-cascade tk9 sc9 _ _ hp))))))
 
-(patch! GST 'raw0-inv
-  (fn [form] (subst-forms #(= % '(t12-inv w _ _ _ h)) (fn [_] '(t12-inv w _ _ _ (refused-tag-ok w st tag hc) h)) form)))
-
-(lcopy! GST 'raw-inv)
-(lcopy! GST 'inv-normalize)
+(tree/restate! GST '[raw-inv inv-normalize])
 
 ;; ===========================================================================
 ;; Part C. Rule R and the step
