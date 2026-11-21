@@ -17,7 +17,7 @@
   :old "(str/ends-with? s \"-inv\") (str (subs s 0 (- (count s) 4)) \"-\" (name (:pred B)))" :new ""
   :why "copy-name: case removed"}
  {:file "src/spindel/v2/pres/part.clj" :line 130
-  :old ":else (str s \"-\" (name (:pred B)))))))" :new "(str s \"-\" (name (:pred B))))))))"
+  :old ":else (str s \"-\" (name (:pred B)))))))" :new "(str s \"-\" (name (:pred B)))))))"
   :why "copy-name: the else branch of the `if`"}
 
  ;; ---- pres/tree.clj
@@ -26,8 +26,8 @@
   :why "the 49 derived per-item base lemmas raw0-<item>-inv -> well-formed-transition-<item>; the defn's own name is in rules.edn :clj-vars"}
  {:file "src/spindel/v2/pres/tree.clj" :line 437
   :old "base (str \"pres-\" (cond (str/starts-with? s \"inv-\") (subs s 4)"
-  :new "base (str \"pres-\" (str/replace-first s \"well-formed-\" \"\"))]"
-  :why "pres-name: pres-<x> for base lemma well-formed-<x>. Lines 438-440 (the other cond cases) go"}
+  :new "base (str \"pres-\" (-> s (str/replace-first \"well-formed-\" \"\") (str/replace-first \"-well-formed\" \"\")))]"
+  :why "pres-name: pres-<x> for base lemma well-formed-<x> (and pres-step for step-well-formed). Lines 438-440 (the other cond cases) go"}
  {:file "src/spindel/v2/pres/tree.clj" :line 438
   :old "(str/ends-with? s \"-inv-sample\") (subs s 0 (- (count s) 11))" :new "" :why "pres-name: case removed"}
  {:file "src/spindel/v2/pres/tree.clj" :line 439
@@ -78,6 +78,10 @@
  {:file "src/spindel/v2/inv/i10.clj" :line 840 :old "(subs (name o) 4)" :new "(subs (name o) 12)" :why "as above"}
  {:file "src/spindel/v2/inv/i11.clj" :line 188 :old "(subs (name o) 4)" :new "(subs (name o) 12)" :why "as above"}
  {:file "src/spindel/v2/progress/measures.clj" :line 550 :old "(subs (name o) 4)" :new "(subs (name o) 12)" :why "as above"}
+
+ ;; ---- a template name ($x is the bundle prefix + x, pres.part/inst)
+ {:file "src/spindel/v2/inv/acts.clj" :line 572 :old "($resume-o w a hs h)" :new "($resume-hand w a hs h)"
+  :why "ga-resume-o / gx-resume-o -> <part>-resume-hand"}
 
  ;; ---- the exemption API: <part>-exempt-<role>[-<site>] is built from defexempt's first argument
  {:file "src/spindel/v2/inv/i10.clj" :line 826

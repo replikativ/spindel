@@ -171,5 +171,10 @@
   (let [starts (vec (cons 0 (map inc (keep-indexed (fn [i c] (when (= c \newline) i)) s))))]
     (into {} (for [{:keys [sym row col what]} (scan s)
                    :let [off (+ (starts (dec row)) (dec col))
-                         off (if-let [n (namespace sym)] (+ off (count n) 1) off)]]
+                         off (if-let [n (namespace sym)] (+ off (count n) 1) off)
+                         ;; generator code that builds a proof term: (list 'lemma 'w F 'h2 'h0 'h1 'h3).
+                         ;; A quoted hN next to other quoted hypothesis names is a hypothesis.
+                         line (when (and (= what :global) (re-matches #"h\d+" (name sym)) (pos? off) (= \' (.charAt ^String s (dec off))))
+                                (subs s (starts (dec row)) (let [e (.indexOf ^String s "\n" (int off))] (if (neg? e) (count s) e))))
+                         what (if (and line (> (count (re-seq #"'h\d+(?![A-Za-z0-9-])" line)) 1)) :local what)]]
                [off what]))))
