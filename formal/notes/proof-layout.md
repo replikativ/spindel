@@ -2080,6 +2080,61 @@ No tree change.
   1–62; the tree test also checks that the four parts have no overrides or patches and that `ga`
   has no part lemma).
 
+## 5w. Stage 4, group 8b: `ar` on the tree; `g8`'s park templates go
+
+**Result.** `ar` (`inv.alive-runs`: an alive run of a computation is its `C.run`) is a part of the
+tree. With it the last reader of `inv.i8/park-overrides` is gone, and that map (`g8`'s former
+proofs of the parks and the await, kept as templates that `gd` and `ar` renamed into their own
+vocabulary) is deleted: `inv.i8` 2066 → 1985 lines, `inv.alive-runs` 949 → 909.
+
+| | before (copier) | after (tree) |
+|---|---|---|
+| overrides | 23: 14 written out, 6 renamed from `g8`'s templates, 3 renamed from `g7`'s source | 10 own proofs |
+| patches | 1 over every source (`ar-patch`), 3 that add `g7` and `ga` to raw0, raw0g, raw | 7 sites, 3 `:own` rows |
+| `lcopy!` | 3 | restated |
+
+- **Thirteen overrides were plumbing** and are rows now. `retire-with` and `retire-local` only
+  carried "the retired run is a row and dead" down to the clear: inferred from the clear's `:ctx`.
+  `job-apply`, T5 and T11 only produced a fact from their own locals: one `:pass` each. `park-if`
+  and `take-park` only chose the run edit's lemma: two sites with their `:ctx`. The six templates
+  (take, arm, T17, T6, the await and its post) are the `:own` and `:pass` rows `g8` and `gd`
+  already have for the same facts.
+- **The three proofs renamed from `g7`'s source are written out** (`ar-norm-round`,
+  `ar-norm-loop`, `ar-normalize`, 22 lines): a reader of `ar` no longer needs `inv.idle`'s source
+  and a renaming function to see them. They are not rows because the loop's induction carries
+  `acts-alive` through idle's `bn`, which is an argument, not a forwarded fact.
+- **raw0 hands each fact to one branch.** `g7` is needed at T5 only (a startable computation has
+  no alive run) and `ga` at T11 only (the predecessor's cascade). `raw0-inv`, `raw0g-inv` and
+  `raw-inv` take both, in the copier's order, so their statements are the old ones; the T5 branch
+  takes `g7` and the T11 branch `ga`, each inferred from its transition's `:own` row. `ar` has its
+  own lemma for those two branches and the dispatcher, and uses the shared one for the other 47.
+- `ar-run-ins-NONE`, a deliberately missing cell name for fresh runs, is gone: every caller of
+  that edit is one of `ar`'s own proofs, and the tree reports a reached site without a cell itself.
+
+**What the plan got wrong.** The scouting asked whether the tree lets raw0 pass a different fact to
+each arm and expected that to need design. It does not: passes are keyed by callee, the arms are
+separate callees since §5h, and forwarding infers both. It also expected the template proofs to
+be written out as `ar`'s own (about 60 lines); they are rows instead, as are seven more overrides the
+scouting counted as content.
+
+No tree change.
+
+### Gate (group 8b)
+
+- **Statements** (name-independent fingerprints, against §5v): all 18,299 identical; none changed,
+  none missing; 67 new: the 49 `raw0-<item>-ar` and 18 part lemmas `pres-x@ar` (raw, raw0g, raw0
+  and its T5 and T11 branches, T5, T11, job-apply, retire-local, retire-with, park-if, take-park,
+  arm-park, T-take, T17, T6, await-raw, await-post). Every `ar` name keeps its statement, the 13
+  former plumbing overrides among them. `inv-step`, `reach-inv`, `inv-empty`, `sys-reach-inv`,
+  `l5-safety-total`, `step-p3m`, `mv-refinement` unchanged.
+- **Load**, one JVM at a time, against §5v's measure: `inv.alive-runs` 14.3 → 6.1 s, `inv.i8`
+  16.2 → 12.8 s; untouched 350 → 316 s, whole model 381 → 335 s (the host was quieter: untouched
+  namespaces moved by up to ±8 s each).
+- **Suite**: `clojure -M:test`, 308 tests, 208,595 assertions, 0 failures, 0 errors (oracle samples
+  1–62; the tree test also checks that `ar` has no overrides or patches and that `g7` and `ga`
+  reach exactly raw0's T5 and T11 branches).
+- Copier call forms left in `formal/src`: `lcopy!` 50, `override!` 6, `patch!` 2.
+
 ## 6. Key pieces to read: the whole proof in 14 stops, in reading order (current names)
 
 1. `inv`, `inv-step`, `Reach1`, `reach-inv` (`top.clj`): the headline and its four-line induction.

@@ -13,6 +13,7 @@
             [spindel.v2.inv.i8 :as i8]
             [spindel.v2.inv.idle :as idle]
             [spindel.v2.inv.comp-facts :as cf]
+            [spindel.v2.inv.alive-runs :as ar]
             [spindel.v2.inv.marks :as mk]
             [spindel.v2.inv.marks-step]
             [spindel.v2.inv.tomb :as tomb]
@@ -229,3 +230,14 @@
   (is (not-any? #(tree/variant? acts/GA %) (:nodes @tree/tree)))
   (is (= 21 (count (:over (get @tree/parts 'ga)))))
   (is (= 4 (count (:over (get @tree/parts 'gx))))))
+
+(deftest ar-is-not-copied
+  (is (empty? @(:overrides ar/AR)))
+  (is (empty? @(:patches ar/AR)))
+  ;; g7 and ga come from the step's input; raw0 hands each to one branch (T5, T11) and to no other
+  (is (= '[(= (g7 w) true)] (vec (take-nth 2 (rest (get (tree/table-own ar/AR) 'raw0-start-inv))))))
+  (is (= '[(= (ga w) true)] (vec (take-nth 2 (rest (get (tree/table-own ar/AR) 'raw0-dispatch-comp-inv))))))
+  (is (= '[raw0-dispatch-comp-inv raw0-inv raw0-start-inv]
+         (sort (filter #(and (re-find #"^raw0-" (name %)) (tree/variant? ar/AR %)) (:nodes @tree/tree)))))
+  ;; the retired run is dead: from the job down to the clear, forwarded
+  (doseq [x '[inv-job-apply inv-retire-local inv-retire-with]] (is (tree/variant? ar/AR x) (str x))))
