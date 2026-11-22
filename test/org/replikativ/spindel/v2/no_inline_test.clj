@@ -224,3 +224,24 @@
      (is (true? (deref ran 1000 false)) "the queued item ran")
      (v2/release-world! w)
      (run-captured))))
+
+(deftest an-interrupted-fork-still-starts-the-childs-work
+  ;; the fork item commits after its opted-in caller stopped waiting; the
+  ;; child's inherited task start must still be scheduled
+  (checked
+   (let [[ex run-captured] (capturing-executor)
+         w (vworld {:executor ex :budget 1})
+         worlds (atom [])
+         waiting (promise)
+         forker (off-thread (fn []
+                              (binding [v2/*world* w] (task (swap! worlds conj (v2/current-world)) :x))
+                              (deliver waiting (Thread/currentThread))
+                              (try (v2/fork! w) (catch InterruptedException _ :interrupted))))
+         ^Thread th (deref waiting 2000 nil)]
+     (Thread/sleep 50)
+     (.interrupt th)
+     (is (= :interrupted (deref forker 2000 ::stuck)))
+     (loop [n 0] (when (and (< n 20) (pos? (run-captured))) (recur (inc n))))
+     (is (= 2 (count (distinct @worlds))) "the task started in the parent and in the child")
+     (v2/release-world! w)
+     (run-captured))))

@@ -5164,6 +5164,9 @@
                          (catch #?(:clj Exception :cljs :default) _
                            (release-child! w c))))
                   (commit! w [:fork-host (g c rw/ID)])
+                  ;; the child's inherited work is scheduled after this gate,
+                  ;; also when the caller stopped waiting for the reply (D)
+                  (aadd! (g w rw/W-AFTER) c)
                   c)))]
        (handoff! c)
        c))))
