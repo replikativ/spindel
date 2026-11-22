@@ -342,6 +342,11 @@ prototypes are not acceptance evidence for this smaller operation API.
     leaving the world marked scheduled with its queue stranded. No
     transition changes (another legal commit order); the model needs no
     change.
+  - Z#80 (B3; user decision 2026-11-21, dvergr step 6b): **hard abort of a
+    runaway SCI activation** (`v2.sci`, `:slice-budget-ms`). An explicit B3
+    exception for misbehaving code, see B3. No transition changes: the run
+    completes through T12 with an ordinary error, after its open regions
+    exit and leave in the model's order.
   - Z#77 (§1, §2, T4, T28, §5.2, I16, §8.1 F6, D3, S3/S8, §13; user decision
     2026-11-18, dvergr F9, `fork-local-design.md`): **fork-local tasks.**
     - A task started with `task-with {:fork-local true}` is fork-local, and
@@ -1245,6 +1250,23 @@ interpreter of the same trees:
   during normal-entry cleanup preserves its continuation and then unwinds
   outer regions, without restarting that finalizer or running a body suffix.
   T11 transfers no open region: re-entry requires a site with none (§2).
+  - **Exception: hard abort of misbehaving code (Z#80).** The SCI adapter
+    (`v2.sci`, `:slice-budget-ms`) hard-aborts an adapter activation that
+    runs past its wall-clock budget, with SCI's uncatchable interrupt. This
+    is a bound for code that violates B9, not a cleanup protocol:
+    - finalizers of the aborted activation may be skipped or truncated
+      (SCI native `finally` blocks are attempted; partial-cps's generated
+      handlers and user catches do not run);
+    - effects already performed persist;
+    - a resource a skipped finalizer would have returned (a semaphore
+      permit, a host close) stays taken until its owner scope closes (T16);
+    - the open regions still exit and leave in the model's stack order
+      (an open region exits then leaves, a running clause leaves, innermost
+      first), so the run retires (T13) and its world can complete;
+    - the run completes through T12 with an ordinary error
+      (`::budget-exceeded`, `:hard true`, no cause): creditors see that
+      error, never the interrupt; a run already cancelled stays cancelled
+      (T14), and no SCI code of the run runs afterwards.
 - **B4:** effects occur only at lexically visible registered sites
   (CLAUDE.md Rule 2).
 - **B5:** closures held by user code are not engine state.

@@ -45,6 +45,31 @@
    code; its open finally regions are dropped (their finalizers are SCI
    code), so it retires.
 
+   **Budget (B3 exception, spec Z#80).** A hard bound for misbehaving code,
+   off by default (`install!`'s `:slice-budget-ms`). The unit is an adapter
+   activation: the outermost entry of a run's code on a thread, including
+   continuations of the run resumed synchronously on that stack; a nested
+   activation of another run (a computation demanded on the stack) has its
+   own clock and pauses the parent's. The embedding's `:interrupt-fn` calls
+   `check-budget!`; past the budget it throws SCI's uncatchable interrupt,
+   so no catch (user or generated) handles it and SCI native `finally`
+   blocks are attempted. At the activation's `in-run` the abort becomes:
+   - the run's open finally regions closed innermost first in the model's
+     order (an open region exits and leaves, a running clause leaves), so the
+     run retires and its world completes;
+   - an ordinary error `{:type ::budget-exceeded :hard true}` without a
+     cause, through the normal error path (T12): creditors catch it like any
+     error and never see the interrupt; a run already cancelled stays
+     cancelled;
+   - no SCI code of the run afterwards: its error continuation passes the
+     error on, and effects, creations and completions of the aborted
+     activation throw the interrupt again;
+   - `:on-abandon` once, off the gate.
+   This breaks B3 for the aborted activation: finalizers not yet run are
+   skipped or truncated, effects already performed persist, and a resource
+   a skipped finalizer would have returned (a semaphore permit) stays taken
+   until its owner scope closes. Allocation is not bounded here.
+
    **No waiting in a slice (B7).** SCI evaluation holds no lock that a fork
    or retirement waits for (replikativ SCI >= 0.15.59-replikativ.9), so a
    slice enters the interpreter directly, and a resolver may `sci/fork`
@@ -53,8 +78,10 @@
             [is.simm.partial-cps.runtime :as pr]
             [org.replikativ.spindel.v2.core :as v2]
             [org.replikativ.spindel.v2.rows :as rw]
+            [org.replikativ.spindel.v2.host :as hs]
             [sci.core :as sci]
-            [sci.ctx-store :as store]))
+            [sci.ctx-store :as store]
+            [sci.interrupt :as interrupt]))
 
 (set! *warn-on-reflection* true)
 
@@ -74,37 +101,86 @@
   (or (::config @(:env ctx))
       (throw (ex-info "v2.sci is not installed in this SCI context" {:type ::not-installed}))))
 
-;; [world run regions] of the adapter running on this thread; `regions` is
-;; [open-finally-regions in-finally-clauses] of the run as SCI code changed
-;; them through the spliced functions (the engine's R-FINS and R-INFIN)
+;; The adapter activation running on this thread: the outermost `in-run`
+;; entry of a run in a world, an array [world run regions deadline budget
+;; aborted?]. `regions` holds the run's finally stack as SCI code changed it
+;; through the spliced functions, innermost last: `:open` (a region whose
+;; body runs, the engine's R-FINS) or `:running` (its finally clause runs,
+;; R-INFIN). `deadline` and `budget` are nanos (nil: no budget).
 (def ^:private ^ThreadLocal adapting (ThreadLocal.))
 
-(defn- regions
-  "The region counts of the run on this thread, when the adapter runs it."
-  ^longs []
+(defn- activation
+  "The activation of the run on this thread, when the adapter runs it."
+  ^objects []
   (when-let [^objects a (.get adapting)]
     (when (and (identical? (aget a 0) (v2/cw)) (identical? (aget a 1) (v2/active-run)))
-      (aget a 2))))
+      a)))
+
+(defn- regions
+  "The finally stack holder of the run on this thread, when the adapter
+   runs it."
+  ^objects []
+  (when-let [a (activation)] (aget a 2)))
 
 (defn- close-regions!
-  "Drops the run's open regions, whose SCI code cannot run (refusal) or which
-   SCI code left open (completion), so the run can retire."
-  [^longs b]
-  (dotimes [_ (aget b 1)] (v2/leave-finalizer!))
-  (dotimes [_ (aget b 0)] (v2/exit-finally!) (v2/leave-finalizer!))
-  (aset b 0 0)
-  (aset b 1 0))
+  "Closes the run's open regions, whose SCI code cannot run (refusal, hard
+   abort) or which SCI code left open (completion), so the run can retire.
+   Innermost first, each in the model's order: an open region exits, then
+   leaves; a running clause leaves. Returns how many were closed."
+  [^objects b]
+  (loop [st (aget b 0) n 0]
+    (if-let [top (peek st)]
+      (do (when (= :open top) (v2/exit-finally!))
+          (v2/leave-finalizer!)
+          (aset b 0 (pop st))
+          (recur (pop st) (inc n)))
+      n)))
+
+(defn- abort-again!
+  "Continues a hard abort: SCI's uncatchable interrupt, so no interpreted
+   catch (user or generated) handles it on its way to the activation's
+   `in-run`."
+  []
+  (interrupt/interrupt! "SCI slice budget exceeded" {::budget true}))
+
+(defn- live!
+  "Nothing of an aborted activation runs on: no effect, creation or
+   completion (B1: its slice can then only throw)."
+  []
+  (when-let [a (activation)] (when (aget a 5) (abort-again!))))
+
+(defn check-budget!
+  "The budget poll (`:slice-budget-ms`, see `install!`). The embedding calls
+   it from the SCI context's `:interrupt-fn`, which SCI calls at every
+   interpreted fn and loop entry. When the activation running on this
+   thread is past its budget, it is aborted with SCI's uncatchable interrupt
+   (`sci.interrupt/interrupt!`); code that keeps running after the abort (a
+   native `finally` that loops, or a host helper that swallowed the
+   interrupt) is interrupted again after another budget. Outside an
+   activation it does nothing."
+  []
+  (when-let [^objects a (.get adapting)]
+    (when-let [dl (aget a 3)]
+      (let [now (System/nanoTime)]
+        (when (and (> (- now (long dl)) 0)
+                   (identical? (aget a 0) (v2/cw)) (identical? (aget a 1) (v2/active-run)))
+          (aset a 5 true)
+          (aset a 3 (num (+ now (long (aget a 4)))))
+          (abort-again!)))))
+  nil)
 
 (defn- capture
-  "[interpreter continuation-context fins infins] of the SCI code running
-   now. The interpreter is SCI's current context when it belongs to `home`'s
+  "[interpreter continuation-context regions] of the SCI code running now.
+   The interpreter is SCI's current context when it belongs to `home`'s
    lineage, else `home` (a host thread calling an SCI function). A body
-   (`body? true`) starts with no open region; a continuation with the run's."
+   (`body? true`) starts with no open region; a continuation with the run's
+   finally stack (an immutable snapshot: savepoint instances share it)."
   [home body?]
+  (live!)
   (let [cur store/*ctx*
         ctx (if (and cur (identical? (:sci.impl/lineage cur) (:sci.impl/lineage home))) cur home)
         b (when-not body? (regions))]
-    [ctx (sci/capture-continuation-context ctx) (if b (aget b 0) 0) (if b (aget b 1) 0)]))
+    [ctx (sci/capture-continuation-context ctx) (if b (aget b 0) [])]))
 
 (defn- select
   "The interpreter to run captured code of `ctx` in, for world `w`."
@@ -135,64 +211,116 @@
       cause
       t)))
 
-;; [world run refusal] of the last refusal on this thread
-(def ^:private ^ThreadLocal refusing (ThreadLocal.))
+;; [world run error] while a run's continuation hands its own failure (a
+;; refusal or a hard abort) to its error continuation: set when `k` leaves
+;; with it, taken by the next error continuation entered on the thread,
+;; which the engine calls at once (resume-k)
+(def ^:private ^ThreadLocal handing-off (ThreadLocal.))
 
 (defn- refuse!
   "The run's SCI code cannot run here: its open regions are dropped (their
    finalizers are SCI code) and the slice fails, so the run fails and
-   retires without running SCI code. The engine routes a throw from a
-   resumed continuation to its error continuation; that one recognizes this
-   refusal (`refused-here?`) and passes it on without entering SCI."
+   retires without running SCI code. Returns the error to throw."
   [b t]
   (close-regions! b)
-  (let [e (if (= ::no-interpreter (:type (ex-data t)))
-            t
-            (ex-info "no SCI interpreter for this world" {:type ::no-interpreter} t))]
-    (.set refusing (doto (object-array 3) (aset 0 (v2/cw)) (aset 1 (v2/active-run)) (aset 2 e)))
-    (throw e)))
+  (if (= ::no-interpreter (:type (ex-data t)))
+    t
+    (ex-info "no SCI interpreter for this world" {:type ::no-interpreter} t)))
 
-(defn- refused-here?
-  "Whether `e` is the refusal of the run on this thread just thrown (not
-   another run's refusal this run awaited, which its code may catch)."
+(defn- handed-off?
+  "Whether `e` is the run's own failure its continuation just handed on
+   (not another run's error this run awaited, which its code may catch).
+   Takes the record."
   [e]
-  (let [^objects a (.get refusing)]
-    (and a (identical? e (aget a 2))
+  (when-let [^objects a (.get handing-off)]
+    (.remove handing-off)
+    (and (identical? e (aget a 2))
          (identical? (aget a 0) (v2/cw)) (identical? (aget a 1) (v2/active-run)))))
+
+(defn- budget-ex
+  "The error a hard-aborted run completes with: ordinary, with no cause (the
+   SCI interrupt never reaches a creditor)."
+  [budget-nanos]
+  (ex-info "SCI slice budget exceeded"
+           {:type ::budget-exceeded :hard true :budget-ms (quot (long budget-nanos) 1000000)}))
+
+(defn- notify-abandon!
+  "Delivers `:on-abandon` once, off the gate; its throw is reported and
+   changes nothing."
+  [cfg report]
+  (when-let [f (:on-abandon @cfg)]
+    (hs/execute-surely! (hs/executor)
+                        (fn [] (try (f report)
+                                    (catch Throwable t
+                                      (binding [*out* *err*] (println "v2.sci :on-abandon failed:" t))))))))
+
+(defn- abandon!
+  "The hard path: the aborted activation's open regions are closed in the
+   model's order (their remaining finalizers are skipped, a B3 exception)
+   and the run fails with the budget error. Returns the error to throw."
+  [cfg ^objects a]
+  (let [r (aget a 1)
+        n (close-regions! (aget a 2))]
+    (notify-abandon! cfg {:world (aget a 0) :run-id (rw/g r rw/ID) :regions n
+                          :budget-ms (quot (long (aget a 4)) 1000000)})
+    (budget-ex (aget a 4))))
 
 (defn- thunk-or-nil
   "What an effect returns to the body: a Thunk of its own code, else nothing."
   [x]
   (when (pr/thunk? x) x))
 
-(defn- in-run
+(defn- in-run*
   "Runs `(f)` as code of the active run: in the interpreter selected for the
-   processed world, with the SCI bindings and region counts of `cap`,
+   processed world, with the SCI bindings and finally stack of `cap`,
    forcing its Thunks. Entering the interpreter waits for nothing: SCI
-   evaluation holds no lock a fork or retirement waits for."
-  [cfg [ctx cc fins infins] f]
+   evaluation holds no lock a fork or retirement waits for.
+
+   An outermost entry is an activation, with its own budget clock; a nested
+   activation of another run pauses it. A hard-aborted activation leaves
+   with the budget error (`abandon!`), a refused one with the refusal; both
+   are put in `own` when given (a continuation hands them on)."
+  [cfg [ctx cc stack] f ^objects own]
   (let [w (v2/cw)
         r (v2/active-run)
         ^objects prev (.get adapting)]
     (if (and r prev (identical? w (aget prev 0)) (identical? r (aget prev 1)))
-      (f)
-      (let [b (doto (long-array 2) (aset 0 (long fins)) (aset 1 (long infins)))
-            entered (volatile! false)]
-        (.set adapting (doto (object-array 3) (aset 0 w) (aset 1 r) (aset 2 b)))
-        (try
-          (let [target (select cfg w ctx)
-                run (sci/continuation-context-fn (sci/retarget-continuation-context cc target)
-                                                 (fn [] (vreset! entered true) (force-all (f))))]
-            (run))
-          (catch Throwable t
-            (if @entered (throw (unwrap t)) (refuse! b t)))
-          (finally (.set adapting prev)))))))
+      (do (when (aget prev 5) (abort-again!)) (f))
+      (let [b (doto (object-array 1) (aset 0 stack))
+            budget (when-let [ms (:slice-budget-ms @cfg)] (* 1000000 (long ms)))
+            t0 (System/nanoTime)
+            a (doto (object-array 6)
+                (aset 0 w) (aset 1 r) (aset 2 b)
+                (aset 3 (when budget (+ t0 (long budget)))) (aset 4 budget) (aset 5 false))
+            entered (volatile! false)
+            fail (fn [e] (when own (aset own 0 e)) (throw e))]
+        (.set adapting a)
+        (let [v (try
+                  (let [target (select cfg w ctx)
+                        run (sci/continuation-context-fn (sci/retarget-continuation-context cc target)
+                                                         (fn [] (vreset! entered true) (force-all (f))))]
+                    (run))
+                  (catch Throwable t
+                    (cond (aget a 5) a          ; aborted: abandoned below
+                          @entered (throw (unwrap t))
+                          :else (fail (refuse! b t))))
+                  (finally
+                    (.set adapting prev)
+                    ;; the parent's clock does not run while a nested activation does
+                    (when prev
+                      (when-let [dl (aget prev 3)]
+                        (aset prev 3 (num (+ (long dl) (- (System/nanoTime) t0))))))))]
+          ;; also when a host helper swallowed the abort and the code returned
+          (if (aget a 5) (fail (abandon! cfg a)) v))))))
+
+(defn- in-run [cfg cap f] (in-run* cfg cap f nil))
 
 (defn- settled
   "The engine continuation `k` (a body's ok or err): regions SCI code left
    open are closed first, so the completed run retires."
   [k]
   (fn [v]
+    (live!)
     (when-let [b (regions)] (close-regions! b))
     (k v)))
 
@@ -212,7 +340,9 @@
                                            (fn [] (vreset! entered true) (apply f args)))))
            (catch Throwable t
              (if @entered
-               (throw (unwrap t))
+               ;; called in an aborted activation (e.g. an external's f in
+               ;; the slice): what an engine catch may keep is ordinary
+               (throw (let [a (activation)] (if (and a (aget a 5)) (budget-ex (aget a 4)) (unwrap t))))
                (refused (if (= ::no-interpreter (:type (ex-data t)))
                           t
                           (ex-info "no SCI interpreter for this world" {:type ::no-interpreter} t)))))))))
@@ -258,10 +388,19 @@
   "The host functions spliced into expansions for the lineage of `home`."
   [cfg home]
   (let [err* (fn [cap ek] (fn [e]
-                            (if (refused-here? e)
-                              (do (.remove refusing) (throw e))   ; to the slice: the run fails
+                            (if (handed-off? e)
+                              (throw e)   ; to the slice: the run fails without SCI code
                               (in-run cfg cap #(ek e)))))
-        k* (fn [cap k] (fn [v] (in-run cfg cap #(k v))))
+        ;; the engine routes a throw of `k` to `ek` (resume-k): the run's own
+        ;; failure is recorded for exactly that handoff
+        k* (fn [cap k] (fn [v]
+                         (let [own (object-array 1)]
+                           (try (in-run* cfg cap #(k v) own)
+                                (catch Throwable t
+                                  (when (identical? t (aget own 0))
+                                    (.set handing-off (doto (object-array 3)
+                                                        (aset 0 (v2/cw)) (aset 1 (v2/active-run)) (aset 2 t))))
+                                  (throw t))))))
         body* (fn [cap body] (fn [ok err] (in-run cfg cap #(body (settled ok) (settled err)))))
         fx (fn [native]
              (fn [x k ek]
@@ -305,16 +444,19 @@
                (fn [args site k ek]
                  (let [cap (capture home false)]
                    (thunk-or-nil (v2/custom-effect! sym args site (k* cap k) (err* cap ek))))))
-     ;; balanced only: a region opens in a run the adapter runs and closes
-     ;; only when one is open (B3; unbalanced calls change nothing)
-     :enter-finally (fn [] (when-let [b (regions)] (v2/enter-finally!) (aset b 0 (inc (aget b 0)))) nil)
+     ;; balanced only: a region opens in a run the adapter runs; the
+     ;; innermost open region exits, the innermost running clause leaves
+     ;; (B3; unbalanced calls change nothing)
+     :enter-finally (fn [] (when-let [b (regions)] (v2/enter-finally!) (aset b 0 (conj (aget b 0) :open))) nil)
      :exit-finally (fn [] (when-let [b (regions)]
-                            (when (pos? (aget b 0))
-                              (v2/exit-finally!) (aset b 0 (dec (aget b 0))) (aset b 1 (inc (aget b 1)))))
+                            (let [st (aget b 0)]
+                              (when (= :open (peek st))
+                                (v2/exit-finally!) (aset b 0 (conj (pop st) :running)))))
                      nil)
      :leave-finalizer (fn [] (when-let [b (regions)]
-                               (when (pos? (aget b 1))
-                                 (v2/leave-finalizer!) (aset b 1 (dec (aget b 1)))))
+                               (let [st (aget b 0)]
+                                 (when (= :running (peek st))
+                                   (v2/leave-finalizer!) (aset b 0 (pop st)))))
                         nil)
      ;; a scope or saved path acts only in the run that opened it (refused,
      ;; with no effect, in another run or an unrelated world)
@@ -537,6 +679,13 @@
 
    - `:select` – the resolver, see `set-resolver!`.
    - `:effects` – `{sci-sym registered-sym}`, see `expose-effect!`.
+   - `:slice-budget-ms` – nil (default: off) or the wall-clock budget of one
+     adapter activation, a hard bound for runaway code (see the namespace
+     doc, Budget). It needs `ctx` to have an `:interrupt-fn` that calls
+     `check-budget!`.
+   - `:on-abandon` – called once, off the gate, with `{:world :run-id
+     :regions :budget-ms}` when an activation is hard-aborted (`:regions`:
+     how many open finally regions were closed without their finalizers).
    - `:old-names` – nil (default), `:task` or `:spin`: also install
      `org.replikativ.spindel.spin.cps/spin` as v2 `task` (one-shot, started
      at once) or as v2 `spin` (a cached, lazy computation), and
@@ -545,13 +694,20 @@
    Code then acts in the world the host binds (`v2/*world*`) or, inside a
    body, in the world of the slice."
   ([ctx] (install! ctx {}))
-  ([ctx {:keys [select effects] old :old-names}]
+  ([ctx {:keys [select effects slice-budget-ms on-abandon] old :old-names}]
    (lineage ctx)
    (when (::config @(:env ctx))
      (throw (ex-info "v2.sci is already installed in this SCI context" {:type ::installed})))
    (when-not (contains? #{nil :task :spin} old)
      (throw (ex-info ":old-names is nil, :task or :spin" {:type ::invalid-options})))
-   (let [cfg (atom {:select select :effects {}})
+   (when-not (or (nil? slice-budget-ms) (pos-int? slice-budget-ms))
+     (throw (ex-info ":slice-budget-ms is nil or a positive integer" {:type ::invalid-options})))
+   (when (and slice-budget-ms (nil? (:interrupt-fn ctx)))
+     (throw (ex-info ":slice-budget-ms needs an :interrupt-fn in the SCI context that calls check-budget!"
+                     {:type ::invalid-options})))
+   (when-not (or (nil? on-abandon) (ifn? on-abandon))
+     (throw (ex-info ":on-abandon is nil or a function" {:type ::invalid-options})))
+   (let [cfg (atom {:select select :effects {} :slice-budget-ms slice-budget-ms :on-abandon on-abandon})
          a (abi cfg ctx)
          ms (macros cfg a)]
      (swap! cfg assoc :abi a)
