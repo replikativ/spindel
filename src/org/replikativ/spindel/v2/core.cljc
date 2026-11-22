@@ -5086,9 +5086,10 @@
 (defn- instance-world*
   "S3: a fork of the savepoint basis `b` (never run, owns no rows): the basis
    is not changed (no ordinal, no token); the instance reads through the
-   basis's lineage, whose tokens keep the versions it needs. Not yet
-   published to its family (`publish-world!`)."
-  [b]
+   basis's lineage, whose tokens keep the versions it needs. Born with all
+   its birth fields (E4: unborn, its pending activation `act`, its owner, its
+   initial world state), not yet published to its family (`publish-world!`)."
+  [b act owner state]
   (share-token! b)
   (let [c (aclone ^objects b)
         id (alloc-id! b)]
@@ -5105,8 +5106,12 @@
     (s! c rw/W-OWNED-N nil)             ; a basis never runs: it has no counts, only W-NORMALIZE
     (s! c rw/W-HOLDER nil)
     (s! c rw/W-AFTER (alist))
-    (s! c rw/W-UNBORN false)
-    (s! c rw/W-PUB-WORLD nil)
+    ;; E4: unborn until activate!: host items commit, but its inherited work
+    ;; and dormant resources wait; dropped unactivated, it is collected
+    ;; without running anything (it never ran)
+    (s! c rw/W-UNBORN true)
+    (s! c rw/W-PUB-WORLD owner)
+    (s! c rw/W-STATE state)
     (s! c rw/W-WATCHES (lt/index))
     (s! c rw/W-SWEEP-PENDING (hs/flag false))
     (s! c rw/W-META-CLOSED false)
@@ -5123,7 +5128,7 @@
     (s! c rw/W-COMPLETE false)
     (s! c rw/W-COMPLETE-SUBS nil)
     (s! c rw/W-JOIN-SUBS nil)
-    (s! c rw/W-PENDING-ACT nil)
+    (s! c rw/W-PENDING-ACT act)
     (s! c rw/W-MBASE nil)
     (s! c rw/W-SEALED (hs/flag false))   ; C2: a fork starts unsealed
     (s! c rw/W-ADMITTING (hs/kids))
@@ -5613,16 +5618,14 @@
        (throw (ex-info "instantiate: the owner belongs to an unrelated world" {:spindel/invalid :lineage})))
      (when (:fork-local pub)
        (throw (invalid-op :fork-local "instantiate: the run is fork-local, every instance would retire it (Z#77)")))
-     (let [c (doto (instance-world* b) publish-world!)]
-       (s! c rw/W-PENDING-ACT (:act pub))
-       ;; E4: unborn until activate!: host items commit, but its inherited work
-       ;; and dormant resources wait; dropped unactivated, it is collected
-       ;; without running anything (it never ran)
-       (s! c rw/W-UNBORN true)
-       (s! c rw/W-PUB-WORLD owner)
-       ;; nobody else can reach the instance yet: its initial state is set
-       ;; directly, without a host item (so also from another world's slice)
-       (when init-state (s! c rw/W-STATE (init-state (g c rw/W-STATE))))
+     ;; nobody else can reach the instance yet: its initial state is set
+     ;; directly, without a host item (so also from another world's slice),
+     ;; and computed before anything is allocated
+     (let [st (if init-state (init-state (g b rw/W-STATE)) (g b rw/W-STATE))
+           c (instance-world* b (:act pub) owner st)]
+       ;; published with every birth field set: the family's maintenance
+       ;; can enter it from here on, and finds it unborn
+       (publish-world! c)
        c))))
 
 (defn consume
