@@ -5563,7 +5563,9 @@
                 (s! r rw/R-BIND (thread-frame))   ; the child resumes with the frame live at the effect
                 (aadd! (g w rw/W-RESUME) a)
                 (unregister! w a)                 ; a delivery carrier, not a parked activation
-                (let [child (doto (fork-world* w) publish-world!)]
+                ;; built privately: published to its family only once the fork
+                ;; has committed (§8.1 F7), so no maintenance enters it before
+                (let [child (fork-world* w)]
                   (own-child! w owner child true)
           ;; the parent takes the delivery back and continues on its own copy
                   (remove-row! (g w rw/W-RESUME) a)
@@ -5572,8 +5574,16 @@
                     (s! r rw/R-EIDX eidx)
                     (set-active! r)
                     (commit! w [:fork (g r rw/ID) (g child rw/ID)])
+                    ;; a failure after the registry insertion is the published
+                    ;; child's (reported); one before it leaves the committed
+                    ;; child unpublished, and it is released (its owner scope
+                    ;; is acknowledged by its completion)
+                    (if (try (publish-world! child #(report! "fork publication" %)) true
+                             (catch #?(:clj Throwable :cljs :default) t
+                               (report! "fork publication" t) false))
             ;; scheduled after the parent's gate is released (E3)
-                    (aadd! (g w rw/W-AFTER) child)
+                      (aadd! (g w rw/W-AFTER) child)
+                      (release-child! w child))
                     (k [:parent child])))))
             (unwind! ek))))
 

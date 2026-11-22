@@ -434,3 +434,24 @@
          (let [i (doto (v2/instantiate p) (v2/activate! :go))]
            (is (wait-until #(some (fn [[id]] (= (v2/world-id i) id)) @seen)))))
        (v2/abandon! p)))))
+
+(deftest a-fork-effects-child-runs-only-after-the-fork-commits
+  ;; the child is published after `[:fork r c]`: maintenance forced at its
+  ;; publication enters it, and its first slice finds the fork logged
+  (checked
+   (let [w (vworld {:executor caller-runs})
+         seen (atom [])
+         forked? (fn [cid] (boolean (some #(and (= :fork (first (:item %))) (= cid (nth (:item %) 2)))
+                                          (verify/log w))))]
+     (stale-generation! w)
+     (with-synchronous-maintenance
+       (binding [v2/*world* w]
+         (task (let [[side child] (v2/fork)]
+                 (if (= side :child)
+                   (let [id (v2/world-id (v2/current-world))]
+                     (swap! seen conj [id (forked? id) (.getName (Thread/currentThread))]))
+                   (await (v2/deferred)))))))
+     (is (= 1 (count @seen)) "the child's copy of the run resumed")
+     (let [[_ logged? thread] (first @seen)]
+       (is (= "test-maintenance" thread) "maintenance entered the child at its publication")
+       (is (true? logged?) "after the parent logged [:fork r c]")))))
