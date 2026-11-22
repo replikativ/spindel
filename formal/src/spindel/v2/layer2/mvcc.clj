@@ -2670,9 +2670,9 @@
 
 (a/inductive MIReach [cs (List MCell) ts (=> Nat Nat) o Nat f Nat x0 MI] :in Prop :indices [x MI]
   (init [x MI] [e (= x x0)] :where [x])
-  (oacq [x MI] [r (MIReach cs ts o f x0 x)] [h1 (= (:opc x) 0)] [h2 (= (:m x) 0)] [current-members (< (:so x) o)]
+  (oacq [x MI] [r (MIReach cs ts o f x0 x)] [h1 (= (:opc x) 0)] [h2 (= (:m x) 0)] [h3 (< (:so x) o)]
         :where [(MI.mk (:so x) (:val x) (:vers x) 1 1 (:rpc x) (:ls x) (:res x))])
-  (ofast [x MI] [r (MIReach cs ts o f x0 x)] [h1 (= (:opc x) 0)] [current-members (= (:so x) o)]
+  (ofast [x MI] [r (MIReach cs ts o f x0 x)] [h1 (= (:opc x) 0)] [h3 (= (:so x) o)]
          :where [(MI.mk (:so x) (:val x) (:vers x) (:m x) 3 (:rpc x) (:ls x) (:res x))])
   (opres [x MI] [r (MIReach cs ts o f x0 x)] [h1 (= (:opc x) 1)]
          :where [(MI.mk o (:val x) (:vers (mv-pres cs ts o (mi-row x))) (:m x) 2 (:rpc x) (:ls x) (:res x))])

@@ -87,7 +87,13 @@
                     (when (symbol? nm) (emit nm :global))
                     (doseq [c more]
                       (if (and (seq? c) (symbol? (first c)))
-                        (do (emit (first c) :constructor) (walk-seq (rest c) env))
+                        ;; a constructor's fields [name type] name its arguments: locals of the fields after them
+                        (do (emit (first c) :constructor)
+                            (reduce (fn [env f]
+                                      (if (and (vector? f) (= 2 (count f)) (symbol? (first f)))
+                                        (do (walk (second f) env) (bind! (first f)) (add env [(first f)]))
+                                        (do (walk f env) env)))
+                                    env (rest c)))
                         (walk c env)))
                     env)
 
@@ -143,6 +149,13 @@
                   ;; tactics that name what they introduce
                   (= 'have h)
                   (let [[_ nm & more] x] (walk-seq more env) (if (symbol? nm) (do (bind! nm) (add env [nm])) env))
+                  ;; (rcases h (or h1 (or h2 h3))): the pattern's symbols are the names it introduces
+                  (and (= 'rcases h) (seq? (nth x 2 nil)))
+                  (let [[_ t & pats] x
+                        names (remove '#{or and} (mapcat syms-in pats))]
+                    (walk t env)
+                    (doseq [y names] (bind! y))
+                    (add env names))
                   (binder-tactics h)
                   (let [names (filter symbol? (take-while #(not (seq? %)) (rest x)))
                         more (drop-while #(not (seq? %)) (rest x))]

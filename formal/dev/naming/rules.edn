@@ -209,7 +209,10 @@
   swc14 i14-stamps-below
   rk-up run-key-up, rk-down run-key-down, tk-done task-key-done
   hk-wt waiting-strongly
-  gr acts-ok-with}
+  gr acts-ok-with
+  ;; names the rules would build with the part's name twice
+  h3-rk3-eq current-members-run-key-eq            ; by rule: current-members-current-members-run-key-eq
+  gl-i10-task inv-i10-task-of}                    ; by rule: i10-task-i10-task; named as lit-i1-runs-of
 
  ;; ---------------------------------------------------------------------------------------------
  ;; Parts: every pres.part bundle (old predicate -> new). The bundle prefix becomes "<new>-" for

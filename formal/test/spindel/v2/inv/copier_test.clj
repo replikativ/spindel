@@ -13,7 +13,7 @@
 
 (def theorems
   '[i10-task-cancel-run-local i10-task-retire-run i10-task-complete-raw i10-task-t12-complete i10-task-spawn-rows i10-task-start-raw i10-task-new-run-of
-    i10-task-dispatch-raw i10-task-filter-world-hand i10-task-rule-r i10-task-raw step-i10-task i10-task-empty i10-task-i10-task step-lit-i10-task
+    i10-task-dispatch-raw i10-task-filter-world-hand i10-task-rule-r i10-task-raw step-i10-task i10-task-empty inv-i10-task-of step-lit-i10-task
     ;; I9 resources
     i9-res-cancel-run-local i9-res-ack-raw i9-res-t17-arm step-i9-res i9-res-empty step-lit-i9-res
     ;; P3 core

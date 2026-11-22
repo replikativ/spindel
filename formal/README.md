@@ -338,6 +338,11 @@ A name says what the thing is about, in the spec's words. The grammar:
 
 `i1-runs`: its R3 clause is I4's cleanup-entry clause.
 
+A part's name may end in the word its lemma's subject begins with: `i10-task-task-upd` is the part
+`i10-task` and the edit `task-upd`, `comp-awake-owns-run-run-del` the part `comp-awake-owns-run` and
+`run-del`. The repeated word is the rule `<part>-<x>` applied, and the name is found by it. 8 generated
+and 19 hand-written names read this way.
+
 The full old → new map is `notes/renames.edn`.
 
 ## Old kernel names

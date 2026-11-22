@@ -62,5 +62,13 @@ gives the substitution commit plus that follow-up in one step (checked: the only
 branch head is the exposition commit). `bb dev/naming/stale.clj --fix` replaces whatever `stale.clj`
 still lists.
 
+Later (2026-11-22, branch `formal/cleanup-names`): a search for names that repeat a word found 37 of
+22,007. They are `<part>-<x>` with x beginning with the part's last word (the rule; kept), lemma
+shapes (`filter-filter`, `keep-keep`; kept), and two that named the part twice, now exact rules:
+`current-members-run-key-eq`, `inv-i10-task-of`. The substitution had also renamed seven local
+hypotheses to a part's name (`h3` in an `rcases` pattern and in a constructor's fields became
+`current-members`, `g1` became `i1-scopes`, `rkey` became `run-key`); they have their old names again,
+and `scope.clj` now reads `rcases` patterns and constructor fields as binders.
+
 Gate at the head: 22,033 constants before and after, fingerprints identical, 9,709 predicted
 generated names present, 310 tests / 208,521 assertions, 0 failures. Nothing pushed.
