@@ -313,7 +313,7 @@
 (deftest the-checking-harness-records-its-own-errors
   (let [acc (atom [])]
     ((verify/checking-hook acc) (object-array 1) [:x])
-    (is (= [[:x true]] (mapv (juxt :item (comp some? :observer-error)) @acc))
+    (is (= [[[:x] true]] (mapv (juxt :item (comp some? :observer-error)) @acc))
         "a check that throws is a divergence, not an empty list")))
 
 (deftest a-failing-report-cannot-interrupt-a-fork
