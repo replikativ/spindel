@@ -1028,6 +1028,13 @@ Each `track` *site* in a run (identified by `at`) has its own edge, with
   - **Handoff:** after releasing the gate, a thread re-checks the queue. If
     the queue is non-empty and no drainer is scheduled, it schedules one.
     Queued work is therefore never stranded.
+    - The scheduling claim belongs to that submission until its drainer
+      starts, once. If the executor refuses the submission (it throws: a
+      rejection, a shutdown, or a run followed by a throw), the drainer runs
+      on a fresh platform thread (JVM) instead. The caller sees no error,
+      already-accepted work makes progress, a failed handoff after a gate
+      skips none of the others, and a submission never clears a later
+      submission's claim (Z#79).
   - No host thread ever blocks on a world.
   - **Throws belong to their caller (Z#78).** An item that its own caller
     processes inline throws to that caller. A queued item processed by

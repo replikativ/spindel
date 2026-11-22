@@ -134,6 +134,19 @@
      :cljs (js/setTimeout f 0))
   nil)
 
+(defn execute-surely!
+  "Runs `f` later, also when the executor refuses it. JVM: when `ex` throws
+   instead of accepting `f` (rejection, shutdown, or an executor that ran or
+   queued `f` and then threw), `f` runs on a fresh daemon platform thread.
+   `f` may therefore start twice and must claim its work itself. Throws only
+   when no thread can be started."
+  [ex f]
+  #?(:clj (try (.execute ^java.util.concurrent.Executor ex ^Runnable f)
+               (catch Throwable _
+                 (.start (doto (Thread. ^Runnable f "spindel-v2-handoff") (.setDaemon true)))))
+     :cljs (js/setTimeout f 0))
+  nil)
+
 #?(:clj
    (def ^:private metadata-executor
      (delay (java.util.concurrent.ScheduledThreadPoolExecutor.

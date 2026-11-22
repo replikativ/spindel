@@ -2916,7 +2916,8 @@
                (catch #?(:clj Throwable :cljs :default) t
                  #?(:clj (binding [*out* *err*] (println "after-gate action failed:" t))
                     :cljs (js/console.error "after-gate action failed:" t))))
-          :else (handoff! x))))))
+          ;; a failed handoff skips none of the others
+          :else (isolated! "handoff" #(handoff! x)))))))
 
 (defn- process!
   "H2: try the gate; the winner runs a bounded turn, then hands off. The
@@ -2940,11 +2941,24 @@
 
 (defn- handoff!
   "H2: after releasing the gate, queued work is never stranded: schedule the
-   world's drainer when work remains and none is scheduled."
+   world's drainer when work remains and none is scheduled. The scheduling
+   claim belongs to this submission until its runnable starts, once: an
+   executor that refuses the runnable (or runs it and then throws) makes it
+   run on a fresh thread (hs/execute-surely!), and a second start finds the
+   claim taken, so it never clears a later submission's claim."
   [w]
   (let [sched (g w rw/W-SCHEDULED)]
     (when (and (work-pending? w) (hs/flag-cas! sched false true))
-      (hs/execute! (g w rw/W-EXEC) (fn [] (hs/flag-set! sched false) (process! w))))))
+      (let [claim (hs/flag true)]
+        (try
+          (hs/execute-surely! (g w rw/W-EXEC)
+                              (fn [] (when (hs/flag-cas! claim true false)
+                                       (hs/flag-set! sched false)
+                                       (process! w))))
+          (catch #?(:clj Throwable :cljs :default) t
+            ;; no thread could be started: give back a claim still ours
+            (when (hs/flag-cas! claim true false) (hs/flag-set! sched false))
+            (throw t)))))))
 
 (defn released-ex [] (control-ex "world released" {:spindel/released true}))
 
