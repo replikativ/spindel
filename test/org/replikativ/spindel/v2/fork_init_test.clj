@@ -235,36 +235,64 @@
 
 (def ^:private objects-class (Class/forName "[Ljava.lang.Object;"))
 
+(defn- world-row? [x] (and (instance? objects-class x) (= rw/T-WORLD (aget ^objects x rw/TYPE))))
+
 (deftest a-failure-after-insertion-is-the-published-childs
-  ;; a concurrent atom collection captures the inserted entry, and the
-  ;; collection action cannot be installed: the child has already run
+  ;; the insertion publishes the child (maintenance enters it at once), then
+  ;; the sweep request fails: the fork returns its published child, whose
+  ;; collection action was installed before the insertion
   (checked
    (let [w (vworld {:executor caller-runs})
-         fam (aget ^objects w rw/W-FAMILY)
          seen (atom [])
          err (java.io.StringWriter.)
          on-collect hs/on-collect!
-         fired (atom false)
-         child-world? (fn [x] (and (instance? objects-class x) (= rw/T-WORLD (aget ^objects x rw/TYPE))
-                                   (not (identical? x w)) (member? w (aget ^objects x rw/ID))))
-         c (with-synchronous-maintenance
-             (with-redefs [hs/on-collect! (fn [x action]
-                                            (if (and (child-world? x) (compare-and-set! fired false true))
-                                              (do (lt/atom-collected! fam (fn [y] (when-not (identical? y w)
-                                                                                    (#'v2/request-atom-sweep! y))))
-                                                  (throw (ex-info "cleaner failed" {})))
-                                              (on-collect x action)))]
-               (binding [*err* err]
-                 (v2/host-call! w (fn []
-                                    (binding [v2/*world* w] (task (swap! seen conj (recorder))))
-                                    (v2/fork! w {:init-state (fn [s _] (assoc s :k :init))}))))))
+         actions (atom {})
+         fail-once (atom true)
+         _ (stale-generation! w)
+         c (with-redefs [hs/metadata-later! (fn [f & _]
+                                              (on-thread "test-maintenance" f)
+                                              (when (compare-and-set! fail-once true false)
+                                                (throw (ex-info "scheduler down" {}))))
+                         hs/on-collect! (fn [x action]
+                                          (when (and (world-row? x) (not (identical? x w)))
+                                            (swap! actions assoc (aget ^objects x rw/ID)
+                                                   [action (member? w (aget ^objects x rw/ID))]))
+                                          (on-collect x action))]
+             (binding [*err* err]
+               (v2/host-call! w (fn []
+                                  (binding [v2/*world* w] (task (swap! seen conj (recorder))))
+                                  (v2/fork! w {:init-state (fn [s _] (assoc s :k :init))})))))
          cid (v2/world-id c)
-         mine (filterv #(= cid (first %)) @seen)]
-     (is @fired)
-     (is (= [[cid {:k :init} "test-maintenance"]] mine) "the collection entered the child at its insertion")
+         [action member-at-install] (get @actions cid)]
+     (is (false? @fail-once) "the sweep request failed")
+     (is (= [[cid {:k :init} "test-maintenance"]] (filterv #(= cid (first %)) @seen))
+         "maintenance entered the child at its publication")
      (is (member? w cid) "the fork returned its published child")
      (is (committed? w cid))
-     (is (re-find #"fork publication failed" (str err)) "the failure is reported"))))
+     (is (re-find #"fork publication failed" (str err)) "the failure is reported")
+     (is (false? member-at-install) "the collection action was installed before the insertion")
+     (action)                                ; the child's collection
+     (is (not (member? w cid)) "its collection removes its registry entry")
+     (is (= :done (.get ^java.util.concurrent.atomic.AtomicReference (aget ^objects c rw/W-KID-TOKEN)))
+         "and acknowledges its owner"))))
+
+(deftest a-failed-collection-action-leaves-the-child-unpublished
+  ;; sol's probe: a child whose collection action cannot be installed must
+  ;; not strand its owner
+  (checked
+   (let [w (vworld)
+         on-collect hs/on-collect!
+         e (with-redefs [hs/on-collect! (fn [x action]
+                                          (if (and (world-row? x) (not (identical? x w)))
+                                            (throw (ex-info "cleaner failed" {}))
+                                            (on-collect x action)))]
+             (try (v2/fork! w) nil (catch clojure.lang.ExceptionInfo e e)))
+         c (:child (ex-data e))]
+     (is (:spindel/unpublished (ex-data e)) "a failure before the insertion: unpublished")
+     (is (not (member? w (v2/world-id c))) "never in the registry")
+     (is (true? (v2/await-complete c 2000 ::timeout)) "the child is released and completes")
+     (v2/release-world! w)
+     (is (true? (v2/await-complete w 2000 ::timeout)) "the owner is acknowledged and completes"))))
 
 (deftest a-throwing-observer-cannot-block-a-release
   (binding [*divergences* (atom [])]

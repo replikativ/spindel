@@ -5016,7 +5016,8 @@
    enter `c` and hand it off (a stale copied sweep generation, or a
    concurrent atom collection, schedules that at once), so every field a
    first entry reads must be set before. `fork-world*` and `instance-world*`
-   leave this to their callers. With `failed!`, a throw after the insertion
+   leave this to their callers. The collection action is installed before
+   the insertion. With `failed!` (non-throwing), a throw after the insertion
    goes to `(failed! t)`: it is a failure of a published world; only a throw
    before the insertion propagates."
   ([c] (publish-world! c nil))
@@ -5206,12 +5207,13 @@
    4. `w`'s root scope owns it, weakly (F2);
    5. acceptance: Rule R and the logged `[:fork-host c]` (`commit!`). The
       outcome is fixed here; the commit observer is isolated (`log-commit!`);
-   6. publication: the family registry insertion. From then on the family's
-      atom maintenance can enter the child (on its own thread, also before
-      `w`'s gate is released); a failure after the insertion is the
-      published child's, reported, and the child stays published and owned.
-      A failure before it leaves the child unpublished: it is released
-      through its ingress (processed after `w`'s gate) and the fork throws
+   6. publication: the child's collection action, then the family registry
+      insertion. From then on the family's atom maintenance can enter the
+      child (on its own thread, also before `w`'s gate is released); a
+      failure after the insertion (the sweep request) is the published
+      child's, reported, and the child stays published and owned. A failure
+      before it leaves the child unpublished: it is released through its
+      ingress (processed after `w`'s gate) and the fork throws
       `{:spindel/unpublished true :child c}`;
    7. `W-AFTER`: the child is handed off after `w`'s gate is released. This
       is the fork's only handoff of the child (`fork!` adds none).
