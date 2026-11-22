@@ -685,17 +685,22 @@
     (aadd! (g w rw/W-LOG) {:item item :accepted true})
     item))
 
-(defn log-commit!
-  "Verify mode, at the end of a transition: the accepted entry, then the
-   commit observer (`W-HOOK`). The transition is complete before the
-   observer runs, so the observer is isolated: its throw is reported
-   (`report!`) and never interrupts the transition (T21, a fork, ...)."
-  [w item0]
-  (let [item (log-accept! w item0)]
+(defn- observe-commit!
+  "Verify mode: the commit observer (`W-HOOK`) on the logged `item` (nil:
+   nothing logged), once the transition is complete. It is isolated: its
+   throw is reported (`report!`) and never interrupts the transition."
+  [w item]
+  (when item
     (when-let [hook (g w rw/W-HOOK)]
       (try (hook w item)
            (catch #?(:clj Throwable :cljs :default) t (report! "commit observer" t)))))
   nil)
+
+(defn log-commit!
+  "Verify mode, at the end of a transition: the accepted entry, then the
+   commit observer (`observe-commit!`)."
+  [w item0]
+  (observe-commit! w (log-accept! w item0)))
 
 #?(:clj
    (defmacro commit!
@@ -4878,10 +4883,14 @@
     (if (g w rw/W-UNBORN)
       ;; E4: an instance that never ran is discarded as if dropped: nothing
       ;; in it runs, its copied finalizers included
-      (do (commit! w [:release-world]) (s! w rw/W-RELEASED true) (finish-metadata! w) (maybe-finish-token! w)
+      (let [item (do (rule-r! w) (when (some? (g w rw/W-LOG)) (log-accept! w [:release-world])))]
+          ;; the observer runs once the transition is complete (released)
+        (s! w rw/W-RELEASED true)
+        (observe-commit! w item)
+        (finish-metadata! w) (maybe-finish-token! w)
           ;; nothing in it ever ran: complete at once (C1 W1, E4 abandonment)
-          (some-> (g w rw/W-KIDS) hs/kids-released!)
-          (complete-world! w))
+        (some-> (g w rw/W-KIDS) hs/kids-released!)
+        (complete-world! w))
       (let [ex (released-ex)
             roots (g w rw/W-ROOTS)]
         (doseq [e (map #(rv w %) (hs/mvals roots))]
@@ -4903,9 +4912,11 @@
               (let [x (rv w x0)]
                 (s! x rw/HANDLES 0)
                 (when (zero? (gl x rw/REFS)) (aadd! (g w rw/W-RQ) x))))))
-        (commit! w [:release-world])
-        (s! w rw/W-RELEASED true)
-        (some-> (g w rw/W-KIDS) hs/kids-released!)
+        (let [item (do (rule-r! w) (when (some? (g w rw/W-LOG)) (log-accept! w [:release-world])))]
+          ;; the observer runs once the transition is complete (released)
+          (s! w rw/W-RELEASED true)
+          (some-> (g w rw/W-KIDS) hs/kids-released!)
+          (observe-commit! w item))
         (maybe-complete! w)))))
 
 (declare work-pending?)

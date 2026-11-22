@@ -300,6 +300,22 @@
       (binding [*err* (java.io.StringWriter.)] (v2/release-world! w))
       (is (true? (v2/await-complete w 2000 ::timeout)) "T21 commits and the world completes"))))
 
+(deftest the-release-observer-sees-the-released-world
+  (let [seen (atom [])
+        w (v2/world {:verify? true
+                     :hook (fn [w item]
+                             (when (= :release-world (first item))
+                               (swap! seen conj (aget ^objects w rw/W-RELEASED))))})]
+    (v2/release-world! w)
+    (is (= [true] @seen) "T21 is complete when its observer runs")
+    (is (true? (v2/await-complete w 2000 ::timeout)))))
+
+(deftest the-checking-harness-records-its-own-errors
+  (let [acc (atom [])]
+    ((verify/checking-hook acc) (object-array 1) [:x])
+    (is (= [[:x true]] (mapv (juxt :item (comp some? :observer-error)) @acc))
+        "a check that throws is a divergence, not an empty list")))
+
 (deftest a-failing-report-cannot-interrupt-a-fork
   (let [w (v2/world {:verify? true
                      :hook (fn [_ item] (when (= :fork-host (first item)) (throw (ex-info "observer failed" {}))))})

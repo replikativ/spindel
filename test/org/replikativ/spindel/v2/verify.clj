@@ -135,11 +135,16 @@
          {:type (t row) :id (f row rw/ID) :removed true})))))
 
 (defn checking-hook
-  "A world hook that records Rule R divergences per commit into `acc`."
+  "A world hook that records Rule R divergences per commit into `acc`. The
+   engine isolates its observer (a throw is only reported), so a check that
+   throws is recorded as a divergence too."
   [acc]
   (fn [w item]
-    (let [v (violations w)]
-      (when (seq v) (swap! acc conj {:item item :violations v})))))
+    (try
+      (let [v (violations w)]
+        (when (seq v) (swap! acc conj {:item item :violations v})))
+      (catch Throwable t
+        (swap! acc conj {:item item :observer-error t})))))
 
 ;; ---------------------------------------------------------------------------
 ;; Projection of the engine state to the §2 tables (oracle input, §11.4)
@@ -272,9 +277,12 @@
    (fn [w item]
      (let [^java.util.ArrayList log (f w rw/W-LOG)
            i (dec (.size log))]
-       ;; T21 commits before the world's flag is set: the committed state is released
-       (.set log i (assoc (.get log i) :proj (cond-> (projection w)
-                                               (= :release-world (first item)) (assoc :released true)))))
+       ;; the observer of T21 runs with the world released already
+       ;; (a projection that throws is recorded on the entry: the engine
+       ;; isolates its observer, so the throw alone would go unnoticed)
+       (.set log i (assoc (.get log i) :proj (try (cond-> (projection w)
+                                                    (= :release-world (first item)) (assoc :released true))
+                                                  (catch Throwable t {:projection-error (str t)})))))
      (when inner (inner w item)))))
 
 (defn log
