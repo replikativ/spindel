@@ -22,6 +22,11 @@ leaves the world unchanged.
   demanded computation that is waiting has in its cone a blocked dependency, a computation that can be
   run, or a parked task that is not blocked (a user deadlock).
 - `step-l4` (L4): an item with an invalid token changes nothing.
+- `reentrant-cont-needs-no-finalizer` (§2, re-entrant sites): a dependency edge is given a cont other
+  than restart only by a run that holds no finalizer entry and no resource (and, at an await, only in
+  mode `one`). It is a postcondition of the transitions that write the cont, not an invariant of later
+  worlds: `t7-track-reentrant-needs-no-finalizer` for the edge an accepted T7 writes (the world before
+  Rule R, `step`), `t6-await-reentrant-needs-no-finalizer` for the rows T6's wiring writes (`engine`).
 
 **A system of worlds (layer 2).** Forks, savepoints (publish, resume, instantiate, activate, abandon),
 release, joins, owned forks, seal and merge, transfer and fork-local retirement are operations on a

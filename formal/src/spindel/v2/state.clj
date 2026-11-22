@@ -26,6 +26,7 @@
     a release at the maximum is refused. A T1 row sets max = v for every kind; only a
     semaphore's is read (links and streams set 0).
   - Edge `cont`: `cont-restart` (0) is the reserved restart code; any other Nat is a k.
+    Which edges get a k: `reentrant-cont-needs-no-finalizer` (engine.clj).
   - Edge `seen : Nat?` (Z#15): the pair (`has-seen`, `seen`), none = (false, 0).
   - Activation `members : [(E, i)]` (Z#7): `Member {edge, idx}`; `slots` has one RunResult per
     debtor (tag none = unfilled). `spawned` (model field, not in §2): the debtor tasks that R

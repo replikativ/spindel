@@ -31,7 +31,11 @@
     well-formed-t8-observe-basic t8-observe-basic-refuse well-formed-t8-unobserve t8-unobserve-refuse
     well-formed-t9-fire t9-fire-refuse t9-fire-l4 well-formed-t15-resource-ack-basic t15-resource-ack-basic-refuse t15-resource-ack-basic-l4 well-formed-t17-arm t17-arm-refuse t17-arm-l4
     well-formed-t18-resource-fire t18-resource-fire-refuse t18-resource-fire-l4 well-formed-t19 t19-refuse well-formed-t20-pin t20-pin-refuse well-formed-t20-unpin t20-unpin-refuse pin-count-pos
-    well-formed-dispatch dispatch-refuse dispatch-l4 well-formed-run-items run-items-from-empty])
+    well-formed-dispatch dispatch-refuse dispatch-l4 well-formed-run-items run-items-from-empty
+    ;; §2 re-entrant sites: the cont T7 writes
+    track-cont-restart-with-finalizer track-cont-restart-with-resource track-cont-reentrant-needs-no-finalizer
+    track-edge-cont edge-reread-cont tbl-find-del-self edge-find-remove-edge-self tbl-find-upd-self-cont
+    track-raw-new-edge-cont track-raw-reused-edge-cont track-raw-edge-cont t7-track-reentrant-needs-no-finalizer])
 
 (deftest theorems-kernel-checked
   (doseq [t theorems]
