@@ -781,7 +781,7 @@ remains pending and observable; a timeout cannot certify retirement.
 
 ### 3.3 Rule R (A#3, X#10)
 
-After every commit:
+As the last part of every transition, before it commits (§5.1):
 
 1. **Normalize, to a fixpoint.** Repeat until nothing changes:
    1. recompute `live(W)`;
