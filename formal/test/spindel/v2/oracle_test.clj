@@ -840,3 +840,21 @@
       (is (= [(count (:log (spec k))) 0 0] ((juxt :checked :n-divergences :resyncs) res)) (str "sample 66 " k)))
     (doseq [n ["66-root" "66-child" "66-held"]]
       (is (= [] (o/roundtrip (log n))) (str "sample " n)))))
+
+;; Publication order of the `(fork)` effect and of a savepoint basis (sample 67, generator
+;; oracle/gen/samples-fork-init.clj): the effect's child is published after `[:fork r c]` and counted on the run's
+;; scope until `[:owned-done s c]`; the basis is unborn, so the sibling that was runnable at the savepoint runs in
+;; the root and in the activated instance only. Publication is outside the replay; every world replays with no
+;; divergence and no resync.
+(deftest effect-and-basis-publication-sample
+  (let [r (log "67-root")
+        idx (fn [pred] (first (keep-indexed (fn [i c] (when (pred (:item c)) i)) r)))
+        spec {:root {:log r :kind :root}
+              :effect {:log (log "67-effect") :from :root :kind :fork :at (idx #(= :fork (first %)))}
+              :instance {:log (log "67-instance") :from :root :kind :instance
+                         :at (idx #(= [:arm :savepoint] [(first %) (nth % 2 nil)]))}}
+        fam (o/replay-family spec)]
+    (doseq [[k {:keys [res]}] fam]
+      (is (= [(count (:log (spec k))) 0 0] ((juxt :checked :n-divergences :resyncs) res)) (str "sample 67 " k)))
+    (doseq [n ["67-root" "67-effect" "67-instance"]]
+      (is (= [] (o/roundtrip (log n))) (str "sample " n)))))
