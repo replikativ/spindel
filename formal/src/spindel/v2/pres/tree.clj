@@ -3,7 +3,7 @@
 
   Every composite lemma x of the base proof is checked once, over an abstract rest part Q, by open
   recursion: `pres-x` takes one hypothesis per lemma x's proof calls (S c over Q: c's statement with
-  inv-sample replaced by `gp Q`, Base and Q) and proves S x over Q by x's base proof. A part restates
+  well-formed replaced by `gp Q`, Base and Q) and proves S x over Q by x's base proof. A part restates
   each lemma the copier used to generate for it, under the old name and statement, as pres-x applied
   to the part's lemma for every callee (`restate!`). Its table (`part!`) says where that is not
   enough:
@@ -26,15 +26,15 @@
   the base proof with the part's passes; every other node uses the shared `pres-x`. So a part's
   facts reach only its own lemmas, and a reader finds all of them in the part's table.
 
-  A part may be parameterised (g8's x8s, g7's companions awo awc awr and kdb kc0 kl0 kd0): its
+  A part may be parameterised (i8-closed's x8s, i7-idle's companions comp-awake-owns-run awc awr and alive-runs-listed kc0 kl0 kd0): its
   predicate is Q := (B p) for the fixed parameters p, which every restated lemma takes first, as the
   copier's lemmas did. The shared generic lemmas do not see them; the part's own (pres-x@<part>)
-  take them after Q, so that the part's facts may mention them (g10's job condition names its
-  exempt lists). A part that is another part at fixed parameters (gr0 = grx []) uses that part's
+  take them after Q, so that the part's facts may mention them (i10-current-exempt's job condition names its
+  exempt lists). A part that is another part at fixed parameters (i1-runs = i1-runs-exempt []) uses that part's
   lemmas as its cells: the bundle's extra argument in first position (`(grx-x (List.nil Nat))`).
 
-  raw0, the item dispatcher, is cut by item: the tree derives `raw0-<item>-inv` from raw0-inv's base
-  proof (one branch each) and proves raw0-inv by dispatching to them, so a part that passes into one
+  transition, the item dispatcher, is cut by item: the tree derives `raw0-<item>-inv` from well-formed-transition's base
+  proof (one branch each) and proves well-formed-transition by dispatching to them, so a part that passes into one
   transition regenerates one branch, not the dispatcher (`raw0-split`)."
   (:require [ansatz.core :as a]
             [clojure.string :as str]
@@ -46,8 +46,24 @@
             [spindel.v2.pres.frames :as frames]
             [spindel.v2.pres.exempt :as exempt]))
 
+;; Reading map
+;;
+;;   gp Q                  an abstract part: `well-formed` and a rest predicate Q
+;;   pres-<x>              the base lemma well-formed-<x>, proved once for gp Q from one hypothesis
+;;                         per lemma its proof calls
+;;   pres-<x>@<part>       the same with the part's own facts passed along the path
+;;   part!                 a part's table: where its own proof replaces the generic one, and the
+;;                         facts it takes from the path
+;;   restate!              gives the part its lemmas `<part>-<x>`: pres-<x> applied to the part's
+;;                         lemma for every callee
+;;   well-formed-transition-<item>
+;;                         the branches of `transition`, derived one per item so that each is a node
+;;
+;; The name of a part's lemma is the base lemma's name with the part's name in place of
+;; `well-formed` (pres/part.clj, copy-name).
+
 (def ^:private base-theorem-source @#'c/theorem-source)
-;; lemmas the tree derives from a base proof (raw0's branches, below), by name
+;; lemmas the tree derives from a base proof (transition's branches, below), by name
 (defonce ^:private derived (atom {}))
 (declare fill-rows)
 (defn- theorem-source [x] (some-> (or (get @derived x) (base-theorem-source x)) fill-rows))
@@ -63,12 +79,12 @@
 ;; The generic part: gp Q w = Base w and Q w
 ;; ===========================================================================
 
-(ev '(a/defn gp [Q :- (=> World Bool), w :- World] Bool (Bool.and (inv-sample w) (Q w))))
-(ev '(a/theorem gp-sample [Q :- (=> World Bool), w :- World] (=> (= (gp Q w) true) (= (inv-sample w) true))
+(ev '(a/defn gp [Q :- (=> World Bool), w :- World] Bool (Bool.and (well-formed w) (Q w))))
+(ev '(a/theorem gp-well-formed [Q :- (=> World Bool), w :- World] (=> (= (gp Q w) true) (= (well-formed w) true))
        (intro h) (simp only [gp Bool.and_eq_true] at h) (exact (And.left h))))
 (ev '(a/theorem gp-parts [Q :- (=> World Bool), w :- World]
        (=> (= (gp Q w) true) (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
-       (intro h) (exact (inv-parts w (gp-sample Q w h)))))
+       (intro h) (exact (well-formed-parts w (gp-well-formed Q w h)))))
 
 ;; ===========================================================================
 ;; The tree's own declarations
@@ -76,15 +92,15 @@
 
 ;; Callees dispatched per row function (or per inserted row or edge), with that argument's position.
 ;; A part's fact or extra argument may then depend on the row: an inserted edge is a site so that a
-;; bundle's `edge-new-ok` is rfl at a concrete edge (g7).
-(def dispatched '{inv-run-upd 2 inv-task-upd 2 inv-resource-upd 2 inv-source-upd 2 inv-scope-upd 2 inv-serve-or 3
-                  inv-scope-ins-fresh 1 inv-comp-upd 2 inv-comp-ins-fresh 1 insert-edge-fresh-inv-sample 1
-                  inv-insert-edge-checked 1 inv-cleanup-upd 2 inv-act-upd 2 inv-edge-upd 2
-                  inv-source-ins-fresh 1 inv-task-ins-fresh 1 inv-edge-set-phase 2 inv-run-ins-fresh 1})
+;; bundle's `edge-new-ok` is rfl at a concrete edge (i7-idle).
+(def dispatched '{well-formed-run-upd 2 well-formed-task-upd 2 well-formed-resource-upd 2 well-formed-source-upd 2 well-formed-scope-upd 2 well-formed-serve-or 3
+                  well-formed-scope-ins-fresh 1 well-formed-comp-upd 2 well-formed-comp-ins-fresh 1 well-formed-insert-edge-fresh 1
+                  well-formed-insert-edge-checked 1 well-formed-cleanup-upd 2 well-formed-act-upd 2 well-formed-edge-upd 2
+                  well-formed-source-ins-fresh 1 well-formed-task-ins-fresh 1 well-formed-edge-set-phase 2 well-formed-run-ins-fresh 1})
 
 ;; A computation edit is one site per row function: its arguments are the site's parameters
 ;; (`site-gen`, named as the binders of the function's id lemma `<f>-comp-id` / `<f>-id`), so a part
-;; states it once, e.g. [inv-comp-upd (comp-start-row rid)]. A row function the base proof leaves to
+;; states it once, e.g. [well-formed-comp-upd (comp-start-row rid)]. A row function the base proof leaves to
 ;; unification (`_`) is read off that id lemma, its next argument, as the copier's bundles did.
 (defn- id-lemma-row [sufs hid]
   (let [h (if (seq? hid) (first hid) hid) n (name h)
@@ -96,7 +112,7 @@
 
 (defn- generic-row
   "F as a site generic in its arguments: (site-gen [params] (f params) args), params named as f's id
-  lemma's binders (renamed apart from inv-comp-upd's)."
+  lemma's binders (renamed apart from well-formed-comp-upd's)."
   [F hid]
   (if-let [[f idl] (id-lemma-row ["-comp-id" "-id"] hid)]
     (let [args (cond (seq? F) (vec (rest F)) (= '_ F) (if (seq? hid) (vec (rest hid)) []) :else [])
@@ -108,28 +124,28 @@
 
 (defn- fill-rows [form]
   (walk/prewalk (fn [y] (cond (not (seq? y)) y
-                              (and (= 'inv-comp-upd (first y)) (or (= '_ (nth y 3 nil)) (seq? (nth y 3 nil))) (not (gen? (nth y 3 nil))))
+                              (and (= 'well-formed-comp-upd (first y)) (or (= '_ (nth y 3 nil)) (seq? (nth y 3 nil))) (not (gen? (nth y 3 nil))))
                               (apply list (assoc (vec y) 3 (generic-row (nth y 3) (nth y 4 nil))))
                               :else y))
                 form))
 
-;; raw0 by item. raw0-inv's base proof is one `cases it` over the 49 items, each branch the item's
+;; transition by item. well-formed-transition's base proof is one `cases it` over the 49 items, each branch the item's
 ;; guard (if any) and its transition. A part that passes a fact into one transition would need its
-;; own copy of the whole dispatcher; so the tree cuts raw0's base proof into one lemma per item,
+;; own copy of the whole dispatcher; so the tree cuts transition's base proof into one lemma per item,
 ;; `raw0-<item>-inv` (the branch's tactics, found by counting the goals they open and close), checks
-;; each for inv-sample, and proves raw0-inv by dispatching to them (`sources`). A part then gets its
-;; own lemma only for the branches it passes into. raw0-inv's statement is the base one.
+;; each for well-formed, and proves well-formed-transition by dispatching to them (`sources`). A part then gets its
+;; own lemma only for the branches it passes into. well-formed-transition's statement is the base one.
 (defn- item-ctors []
   (let [[_ _ _ & ctors] (first (filter #(and (seq? %) (= 'a/inductive (first %)) (= 'Item (second %)))
                                        (@#'c/ns-source-forms 'spindel.v2.step)))]
     (for [[nm & fields] ctors] [nm (mapv (fn [[f t]] [f t]) fields)])))
 
 (defn- raw0-branches
-  "[ctor fields segment] per item: raw0-inv's tactics for that item, rename_i dropped (its names
+  "[ctor fields segment] per item: well-formed-transition's tactics for that item, rename_i dropped (its names
   become the fields' names)."
   []
-  (let [[_ _ _ _ & proof] (base-theorem-source 'raw0-inv)
-        _ (assert (= (take 3 proof) '((intro h) (cases it) (all_goals (simp only [raw0])))))]
+  (let [[_ _ _ _ & proof] (base-theorem-source 'well-formed-transition)
+        _ (assert (= (take 3 proof) '((intro h) (cases it) (all_goals (simp only [transition])))))]
     (loop [tacs (drop 3 proof) ctors (item-ctors) acc []]
       (if-let [[nm fields] (first ctors)]
         (let [[seg rest-tacs]
@@ -142,23 +158,23 @@
           (recur rest-tacs (rest ctors) (conj acc [nm fields (remove #(= 'rename_i (first %)) seg)])))
         (do (assert (empty? tacs)) acc)))))
 
-(defn- raw0-branch-name [ctor] (symbol (str "raw0-" (name ctor) "-inv")))
+(defn- transition-branch-name [ctor] (symbol (str "well-formed-transition-" (name ctor))))
 
 (defn- raw0-branch-form [[ctor fields seg]]
   (let [item (if (seq fields) (apply list (symbol (str "Item." (name ctor))) (map first fields)) (symbol (str "Item." (name ctor))))]
-    (apply list 'a/theorem (raw0-branch-name ctor) (vec (concat '[w :- World] (mapcat (fn [[f t]] [f :- t]) fields)))
-           (list '=> '(= (inv-sample w) true) (list '= (list 'inv-sample (list :world (list 'raw0 'w item))) true))
-           '(intro h) '(simp only [raw0]) seg)))
+    (apply list 'a/theorem (transition-branch-name ctor) (vec (concat '[w :- World] (mapcat (fn [[f t]] [f :- t]) fields)))
+           (list '=> '(= (well-formed w) true) (list '= (list 'well-formed (list :world (list 'transition 'w item))) true))
+           '(intro h) '(simp only [transition]) seg)))
 
 (defn- raw0-dispatch [branches]
-  (let [[hd nm binders stmt] (base-theorem-source 'raw0-inv)]
+  (let [[hd nm binders stmt] (base-theorem-source 'well-formed-transition)]
     (apply list hd nm binders stmt '(intro h) '(cases it)
            (for [[ctor fields] branches]
-             (list 'exact (apply list (raw0-branch-name ctor) (concat ['w] (repeat (count fields) '_) ['h])))))))
+             (list 'exact (apply list (transition-branch-name ctor) (concat ['w] (repeat (count fields) '_) ['h])))))))
 
 (def ^:private raw0-split
   (let [bs (raw0-branches)]
-    (reset! derived (into {} (for [b bs] [(raw0-branch-name (first b)) (raw0-branch-form b)])))
+    (reset! derived (into {} (for [b bs] [(transition-branch-name (first b)) (raw0-branch-form b)])))
     {:branches bs :dispatch (raw0-dispatch bs)}))
 
 ;; Sources: nodes whose generic proof is not their base proof: a row function (or a cascade's job
@@ -171,46 +187,46 @@
                   (theorem-source x))))
 
 ;; a cascade of one retire or close job: the base proof leaves the job list (and sometimes the world) to
-;; unification; named, so that a part's job condition can be passed by computation (g10's `job-ok`)
+;; unification; named, so that a part's job condition can be passed by computation (i10-current-exempt's `job-ok`)
 (defn- name-cascade [x w js]
-  (walk/prewalk (fn [y] (if (and (seq? y) (= 'inv-run-cascade (first y))) (let [[hd _ _ h] y] (list hd w js h)) y))
+  (walk/prewalk (fn [y] (if (and (seq? y) (= 'well-formed-run-cascade (first y))) (let [[hd _ _ h] y] (list hd w js h)) y))
                 (theorem-source x)))
 
 (def sources
-  {'raw0-inv (:dispatch raw0-split)
-   't16-inv (name-cascade 't16-inv 'w '(List.cons Job (Job.jclose s) (List.nil Job)))
-   't15-full-inv (name-cascade 't15-full-inv '(ack-raw w z (:owner zr)) '(List.cons Job (Job.jretire (:owner zr)) (List.nil Job)))
-   't-slice-exit-inv (name-cascade 't-slice-exit-inv '(run-upd w rid run-fin-pop-end) '(List.cons Job (Job.jretire rid) (List.nil Job)))
-   't-release-world-inv (name-cascade 't-release-world-inv '(zero-handles (revoke-roots w)) '(List.cons Job (Job.jclose root-scope-id) (List.nil Job)))
-   'inv-retire-one (name-cascade 'inv-retire-one '(retire-pre w r) '(List.cons Job (Job.jretire rid) (List.nil Job)))
-   'inv-link-demand-raw (name-row-fn 'inv-link-demand-raw 'inv-source-upd '(link-set-rtask (:next-id w)))
-   'inv-take-park (name-row-fn 'inv-take-park 'inv-insert-edge-checked '(take-edge r (:next-id w) x))
-   'inv-react-add (name-row-fn 'inv-react-add 'inv-insert-edge-checked '(valid-edge w c v))
-   'inv-await-step (name-row-fn 'inv-await-step 'inv-insert-edge-checked '(await-edge (:world acc) r a mode k d))
-   't-open-scope-inv
+  {'well-formed-transition (:dispatch raw0-split)
+   'well-formed-t16-close-scope (name-cascade 'well-formed-t16-close-scope 'w '(List.cons Job (Job.jclose s) (List.nil Job)))
+   'well-formed-t15-resource-ack (name-cascade 'well-formed-t15-resource-ack '(ack-raw w z (:owner zr)) '(List.cons Job (Job.jretire (:owner zr)) (List.nil Job)))
+   'well-formed-t-slice-exit (name-cascade 'well-formed-t-slice-exit '(run-upd w rid run-fin-pop-end) '(List.cons Job (Job.jretire rid) (List.nil Job)))
+   'well-formed-t21-release-world (name-cascade 'well-formed-t21-release-world '(zero-handles (revoke-roots w)) '(List.cons Job (Job.jclose root-scope-id) (List.nil Job)))
+   'well-formed-retire-one (name-cascade 'well-formed-retire-one '(retire-pre w r) '(List.cons Job (Job.jretire rid) (List.nil Job)))
+   'well-formed-link-demand-raw (name-row-fn 'well-formed-link-demand-raw 'well-formed-source-upd '(link-set-rtask (:next-id w)))
+   'well-formed-take-park (name-row-fn 'well-formed-take-park 'well-formed-insert-edge-checked '(take-edge r (:next-id w) x))
+   'well-formed-react-add (name-row-fn 'well-formed-react-add 'well-formed-insert-edge-checked '(valid-edge w c v))
+   'well-formed-await-step (name-row-fn 'well-formed-await-step 'well-formed-insert-edge-checked '(await-edge (:world acc) r a mode k d))
+   'well-formed-t-open-scope
    (walk/postwalk-replace
     {'(ScopeRow.mk s (cur-scope w r) scope-explicit true)
      '(site-gen [p :- Nat] (ScopeRow.mk s p scope-explicit true) (cur-scope w r))}
-    (theorem-source 't-open-scope-inv))
-   't-finally-enter-inv
+    (theorem-source 'well-formed-t-open-scope))
+   'well-formed-t-finally-enter
    (walk/postwalk-replace
-    {'(inv-run-upd w (:id r) _ (run-fin-push-id _) h)
-     '(inv-run-upd w (:id r) (site-gen [fz :- Finalizer] (run-fin-push fz) (Finalizer.mk 0 (:effect-index r) (List.nil Nat)))
+    {'(well-formed-run-upd w (:id r) _ (run-fin-push-id _) h)
+     '(well-formed-run-upd w (:id r) (site-gen [fz :- Finalizer] (run-fin-push fz) (Finalizer.mk 0 (:effect-index r) (List.nil Nat)))
         (run-fin-push-id (Finalizer.mk 0 (:effect-index r) (List.nil Nat))) h)}
-    (theorem-source 't-finally-enter-inv))})
+    (theorem-source 'well-formed-t-finally-enter))})
 
 ;; Gates: a node whose last premise is a continuation (the item's world) that runs only past a
 ;; guard. For a part that takes the gate, the continuation receives the guard's fact: the gate's
 ;; statement and proof are :src, and its callers' continuations become `(fn [name :- _] ...)`.
 (def gates
-  '{c0-gate-inv
-    {:src (a/theorem c0-gate-inv [w :- World, b :- Bool, o :- Outcome]       ; C0: raw0 runs a link-creating
-            (=> (= (inv-sample w) true) (=> (= (root-ok-if b w) true) (= (inv-sample (:world o)) true))  ; item only
-                (= (inv-sample (:world (c0-gate w b o))) true))               ; while the root scope is open
+  '{well-formed-require-root-open
+    {:src (a/theorem well-formed-require-root-open [w :- World, b :- Bool, o :- Outcome]       ; C0: transition runs a link-creating
+            (=> (= (well-formed w) true) (=> (= (root-open-if b w) true) (= (well-formed (:world o)) true))  ; item only
+                (= (well-formed (:world (require-root-open w b o))) true))               ; while the root scope is open
             (intros h ho)
-            (cases hg (root-ok-if b w))
-            (simp only [c0-gate hg refuse]) (exact h)
-            (simp only [c0-gate hg]) (exact (ho hg)))}})
+            (cases hg (root-open-if b w))
+            (simp only [require-root-open hg refuse]) (exact h)
+            (simp only [require-root-open hg]) (exact (ho hg)))}})
 
 ;; ===========================================================================
 ;; Generation
@@ -218,9 +234,9 @@
 
 (def ^:private S0 (delay (set (keep (fn [[n g]] (when (@#'c/statement-mentions-inv? g) n)) @@#'c/source-theorems))))
 (def ^:private S (delay (into @S0 (keys @derived))))
-;; the lemmas in load order: the base sources, raw0's branches just before raw0-inv
+;; the lemmas in load order: the base sources, transition's branches just before well-formed-transition
 (def ^:private order
-  (delay (vec (mapcat (fn [[n _]] (if (= n 'raw0-inv) (concat (map first (sort-by key @derived)) [n]) [n]))
+  (delay (vec (mapcat (fn [[n _]] (if (= n 'well-formed-transition) (concat (map first (sort-by key @derived)) [n]) [n]))
                       @@#'c/source-theorems))))
 
 ;; pred -> the part's table (see part!)
@@ -259,7 +275,7 @@
                     (when (and (seq? y) (symbol? (first y)))
                       (let [h (first y)]
                         (cond (dispatched h) (swap! out conj [[h (site-key (nth (rest y) (dispatched h) nil))] (vec (rest y))])
-                              (and (@S h) (not= h x) (not= h 'inv-parts)) (swap! out conj [h (vec (rest y))]))))
+                              (and (@S h) (not= h x) (not= h 'well-formed-parts)) (swap! out conj [h (vec (rest y))]))))
                     y)
                   (drop 4 (base-form x)))
     @out))
@@ -333,7 +349,7 @@
   (let [[binders stmt] (node-stmt nil p)
         ns (bnames binders)
         ;; a variable bound inside p's binder types (forall [e :- EdgeRow] ...) that F mentions is renamed
-        ;; apart too, or it would capture F's (inv-edge-upd at a row function of the edge e)
+        ;; apart too, or it would capture F's (well-formed-edge-upd at a row function of the edge e)
         fsyms (set (filter symbol? (flatten (list (site-key F)))))
         inner (filter fsyms (mapcat (fn [y] (when (and (seq? y) (= 'forall (first y)) (vector? (second y))) (bnames (second y))))
                                     (tree-seq coll? seq binders)))
@@ -345,9 +361,9 @@
     [(vec (concat (site-params F) bs)) (sub (if (seq ps) (insert-before-inv stmt ps) stmt)) i]))
 
 (defn- gpify [Q form]
-  (walk/postwalk (fn [y] (cond (and (seq? y) (= 'inv-sample (first y))) (list 'gp Q (second y))
-                               (= y 'inv-parts) (list 'gp-parts Q)
-                               (= y 'base-of) (list 'gp-sample Q)
+  (walk/postwalk (fn [y] (cond (and (seq? y) (= 'well-formed (first y))) (list 'gp Q (second y))
+                               (= y 'well-formed-parts) (list 'gp-parts Q)
+                               (= y 'base-of) (list 'gp-well-formed Q)
                                :else y))
                  form))
 (defn- stated [Q binders stmt] (gpify Q (if (seq binders) (list 'forall binders stmt) stmt)))
@@ -355,12 +371,12 @@
 ;; ---- a part's proof of a node: its source, own facts, passes and gates
 
 (defn- with-own
-  "x's own facts: they join the statement before the inv-sample premise; the first intro names them."
+  "x's own facts: they join the statement before the well-formed premise; the first intro names them."
   [B x [hd nm binders stmt & proof]]
   (let [i (first (keep-indexed (fn [i p] (when (inv-premise? p) i)) (butlast (rest stmt))))
         [pre [intro & post]] (split-with #(not (and (seq? %) ('#{intro intros} (first %)))) proof)
         names (rest intro)]
-    (when-not (< i (count names)) (throw (ex-info (str x ": the first intro does not name the inv-sample premise") {})))
+    (when-not (< i (count names)) (throw (ex-info (str x ": the first intro does not name the well-formed premise") {})))
     (apply list hd nm binders (insert-before-inv stmt (facts B x))
            (concat pre [(apply list 'intros (concat (take i names) (own-names B x) (drop i names)))] post))))
 
@@ -369,7 +385,7 @@
     (if-let [i (dispatched h)] [h (site-key (nth (rest y) i nil))] h)))
 
 (defn- with-passes
-  "Insert the passes m at the calls in a proof, before the inv-sample argument."
+  "Insert the passes m at the calls in a proof, before the well-formed argument."
   [m form]
   (if (empty? m)
     form
@@ -401,7 +417,7 @@
   (let [out (atom [])]
     (walk/prewalk (fn [y]
                     (cond (and (seq? y) (dispatched (first y))) (do (swap! out conj [:site (first y) (nth y (inc (dispatched (first y))))]) y)
-                          (and (symbol? y) (@S y) (not= y x) (not (dispatched y)) (not= y 'inv-parts)) (do (swap! out conj [:node y]) y)
+                          (and (symbol? y) (@S y) (not= y x) (not (dispatched y)) (not= y 'well-formed-parts)) (do (swap! out conj [:node y]) y)
                           :else y))
                   proof)
     (vec (distinct @out))))
@@ -434,10 +450,7 @@
   ([x] (pres-name nil x))
   ([B x]
    (let [s (name x)
-         base (str "pres-" (cond (str/starts-with? s "inv-") (subs s 4)
-                                 (str/ends-with? s "-inv-sample") (subs s 0 (- (count s) 11))
-                                 (str/ends-with? s "-inv") (subs s 0 (- (count s) 4))
-                                 :else s))]
+         base (str "pres-" (-> s (str/replace-first "well-formed-" "") (str/replace-first "-well-formed" "")))]
      (symbol (if B (str base "@" (name (:pred B))) base)))))
 
 (defn pres-form
@@ -457,7 +470,7 @@
                              (map sub (concat (site-vals F) (subvec args 0 i) (subvec args (inc i))))))
                     (seq? y) (apply list (map sub y))
                     (vector? y) (mapv sub y)
-                    (and (symbol? y) (@S y) (not= y 'inv-parts) (not= y x)) (hyp-name y)
+                    (and (symbol? y) (@S y) (not= y 'well-formed-parts) (not= y x)) (hyp-name y)
                     :else y))]
     (apply list 'a/theorem (pres-name B x) (vec (concat '[Q :- (=> World Bool)] (when B (:params B)) (gpify 'Q binders) hyps))
            (gpify 'Q stmt) (map (comp #(gpify 'Q %) sub) proof))))
@@ -470,19 +483,19 @@
   a primitive proved through others, e.g. insert-edge-checked)."
   []
   (let [prims (set (keys @frames/footprints))
-        ;; the lemmas step-inv's base proof depends on (inv-parts is a leaf)
-        closure (loop [todo ['step-inv] seen #{}]
+        ;; the lemmas step-well-formed's base proof depends on (well-formed-parts is a leaf)
+        closure (loop [todo ['step-well-formed] seen #{}]
                   (if-let [n (first todo)]
-                    (if (or (seen n) (= n 'inv-parts))
+                    (if (or (seen n) (= n 'well-formed-parts))
                       (recur (rest todo) (conj seen n))
                       (recur (concat (rest todo) (filter @S0 (filter symbol? (flatten (drop 4 (base-theorem-source n))))))
                              (conj seen n)))
                     seen))
-        derived? (fn [p] (let [cs (callees nil p)] (and (seq cs) (not-any? #(= 'inv-intro (second %)) cs))))
-        nodes (vec (filter #(and (or (closure %) (contains? @derived %)) (not ('#{inv-parts inv-intro} %))
+        derived? (fn [p] (let [cs (callees nil p)] (and (seq cs) (not-any? #(= 'well-formed-intro (second %)) cs))))
+        nodes (vec (filter #(and (or (closure %) (contains? @derived %)) (not ('#{well-formed-parts well-formed-intro} %))
                                  (or (not (prims %)) (derived? %)))
                             @order))]
-    (doseq [[_ f] (sort-by key @derived)] (ev f))   ; raw0's branches, checked for inv-sample
+    (doseq [[_ f] (sort-by key @derived)] (ev f))   ; transition's branches, checked for well-formed
     (doseq [x nodes] (ev (pres-form nil x)))
     (reset! tree {:nodes nodes :prims prims})))
 
@@ -491,7 +504,7 @@
 ;; ===========================================================================
 
 ;; A :ctx or :pass row keyed by a dispatched callee itself (not by one site [p F]) holds at every
-;; site of it: the facts are over the callee's binders, the row among them (g8: a new source's owner
+;; site of it: the facts are over the callee's binders, the row among them (i8-closed: a new source's owner
 ;; is not closed, whichever row is inserted).
 (defn- per-site [table]
   (let [whole? (fn [k] (and (symbol? k) (dispatched k)))
@@ -560,7 +573,7 @@
             (let [[e k] ((:extra-args B) a) h (papp B l)]
               (cond (nil? e) h
                     ;; an extra argument in first position instantiates a parameter of the cell: a part
-                    ;; that is another part at fixed parameters uses that part's lemmas (gr0 = grx [])
+                    ;; that is another part at fixed parameters uses that part's lemmas (i1-runs = i1-runs-exempt [])
                     (= k 0) (if (seq? h) (apply list (first h) e (rest h)) (list h e))
                     :else (throw (ex-info (str (:pred B) ": its cell for " a " takes an extra argument: dispatch " a " per row (`dispatched`)") {})))))))
 

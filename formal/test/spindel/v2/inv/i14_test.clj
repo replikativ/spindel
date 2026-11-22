@@ -1,8 +1,8 @@
 (ns spindel.v2.inv.i14-test
   "Loading spindel.v2.inv.i14 kernel-checks I14 (the validity graph over idle computations has no cycle)
-  through `world-step`: the step invariant `v14` (iv14 over the model-only (stamp, crank) of validity
-  entries, and no dep edge on an idle computation) with `step-p3k` (p3k = p3j && v14, no honest
-  hypothesis) and `i14-acyclic` / `step-i14-total`. Tripwires: `v14` and the literal I14 (a DFS over
+  through `world-step`: the step invariant `i14-ordered` (i14-idle-entries-ok over the model-only (stamp, crank) of validity
+  entries, and no dep edge on an idle computation) with `step-chain-to-i14-ordered` (chain-to-i14-ordered = chain-to-comp-facts && i14-ordered, no honest
+  hypothesis) and `i14-acyclic` / `step-i14-total`. Tripwires: `i14-ordered` and the literal I14 (a DFS over
   the validity graph) after every step of the random drivers and every commit of the oracle samples
   7-13; a validity chain demoted in one Rule R pass (equal stamps, cranks strictly decreasing along
   the chain) and reactivated."
@@ -17,12 +17,12 @@
             [spindel.v2.inv-test :as it]))
 
 (def theorems
-  '[dom14-key cpres-upd iv14-pres iv14-next vqk-frame vqk-up vrk-frame vq-insert-edge-fresh vq-comp-ins-fresh
-    ivs14-pres iv-of-ivs vq-set-rank vq-raise-loop vq-react-one vq-r8 vq-demand vq-demand-fold vq-await-pre
-    vq-await-step vq-await-raw vq-track-raw t22-vq t8-full-vq vq-take-park raw-vq
-    deb-new-all deb-old-all iv14-make-idle vrk-make-idle vent-edge vent-all vr-demote-tail vr-demote
-    vr-pass-start vr-pass-end vr-fold vr-norm-round vr-normalize vr-rule-r
-    step-v14 v14-empty step-p3k p3k-empty prec-trans prec-irrefl reach-above i14-acyclic step-i14-total
+  '[dom14-key cpres-upd i14-idle-entries-ok-pres i14-idle-entries-ok-next i14-validity-raw-keys-ok-frame i14-validity-raw-keys-ok-up i14-validity-rule-r-keys-ok-frame i14-validity-raw-insert-edge-fresh i14-validity-raw-comp-ins-fresh
+    ivs14-pres iv-of-ivs i14-validity-raw-set-rank i14-validity-raw-raise-loop i14-validity-raw-react-one i14-validity-raw-i8-closed-run-ok i14-validity-raw-demand i14-validity-raw-demand-fold i14-validity-raw-await-pre
+    i14-validity-raw-await-step i14-validity-raw-await-raw i14-validity-raw-track-raw i14-validity-raw-t22-host-await i14-validity-raw-t8-observe-any-kind i14-validity-raw-take-park i14-validity-raw-raw
+    deb-new-all deb-old-all i14-idle-entries-ok-make-idle i14-validity-rule-r-keys-ok-make-idle vent-edge vent-all i14-validity-rule-r-demote-tail i14-validity-rule-r-demote
+    i14-validity-rule-r-pass-start i14-validity-rule-r-pass-end i14-validity-rule-r-fold i14-validity-rule-r-normalize-round i14-validity-rule-r-normalize i14-validity-rule-r-rule-r
+    step-i14-ordered i14-ordered-empty step-chain-to-i14-ordered chain-to-i14-ordered-empty prec-trans prec-irrefl reach-above i14-acyclic step-i14-total
     nat-max-cases oec-reach scope-open-of-row cur-open-of-run-scope cur-open-of-rso])
 
 (deftest theorems-kernel-checked
@@ -68,7 +68,7 @@
                  task-runs)}))
 
 (defn- checks [w tag]
-  (is (true? (i14/v14 w)) (str "v14 " tag))
+  (is (true? (i14/i14-ordered w)) (str "i14-ordered " tag))
   (is (acyclic? (validity-graph w)) (str "I14 " tag))
   (is (true? (i8/cur-open-ok w)) (str "cur-open-ok " tag))
   (is (= {:rso true :c true :d true :e true :si true} (p10-facts w)) (str "P10 facts " tag)))

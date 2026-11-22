@@ -274,7 +274,7 @@
 ;; a task parked on a timer and a task parked on an offload. The child's first turn settles the
 ;; inherited offload with err ::forked (the timer stays armed) and the child writes the signal;
 ;; the parent's offload completes on its own. The worlds share one allocator: the replay raises
-;; `next-id` between items (`o/align`, kept by `spindel.v2.layer2.skip/p3l-skip-ids`).
+;; `next-id` between items (`o/align`, kept by `spindel.v2.layer2.skip/chain-to-marks-waiting-skip-ids`).
 (deftest sample-14-fork
   (let [pl (o/read-log "test/spindel/v2/oracle/log-sample-14-parent.edn")
         cl (vec (filter :proj (o/read-log "test/spindel/v2/oracle/log-sample-14-child.edn")))

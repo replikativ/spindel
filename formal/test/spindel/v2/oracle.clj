@@ -284,7 +284,7 @@
 ;;    (the model's T12 releases the slice and retires in the same step);
 ;;  - resume: a filled activation (remaining 0, or an `any` with a filled slot) stays until the
 ;;    run's next `[:schedule r]` (the model's T9 resumes at the fill, T6/T9).
-;; `quiesce` applies both with the model's own functions (st/resume, rule/retire-full, then
+;; `quiesce` applies both with the model's own functions (st/resume, rule/t13-retire, then
 ;; Rule R). Used to re-sync and to classify a divergence as granularity-only.
 
 (defn- act-full? [a]
@@ -301,11 +301,11 @@
         w1 (reduce st/resume w full)
         exits (filter #(and (= s/act-done (:act %)) (:slice %)) (:runs w1))
         w2 (reduce (fn [w x] (s/run-upd w (:id x) (fn [row] (assoc row :slice false)))) w1 exits)
-        w3 (reduce (fn [w x] (r/retire-full w (:id x))) w2 exits)
+        w3 (reduce (fn [w x] (r/t13-retire w (:id x))) w2 exits)
         ;; Z#49 logs: the engine commits `[:slice-exit r]` before T13 retires r (the retirement
         ;; shows in the next commit): retire every retirable run still in cleanup
         idle (filter #(and (st/retirable %) (some (fn [c] (= (:run c) (:id %))) (:cleanup w3))) (:runs w3))
-        w4 (reduce (fn [w x] (r/retire-full w (:id x))) w3 idle)]
+        w4 (reduce (fn [w x] (r/t13-retire w (:id x))) w3 idle)]
     (if (or (seq full) (seq exits) (seq idle)) (r/rule-r w4) w)))
 
 (defn resync
@@ -601,7 +601,7 @@
 
 (defn skip-to
   "`w` with its allocator raised to `n` (`spindel.v2.layer2.skip/skip-ids`: iterated `bump`, which
-  keeps `p3l`). The worlds of a family draw their ids from one allocator, so a world's log shows
+  keeps `chain-to-marks-waiting`). The worlds of a family draw their ids from one allocator, so a world's log shows
   `next-id` jump between its own items."
   [w n]
   (loop [w w] (if (< (:next-id w) n) (recur (s/bump w)) w)))
@@ -681,16 +681,16 @@
   "Rule R's honest hypotheses (rule.clj/engine.clj) and the compiled tripwire for an accepted
   raw world `rw` and the step's result `w'`."
   [rw w']
-  (let [n (r/normalize (r/rule-r-pre rw))]
+  (let [n (r/normalize (r/rule-r-last-input rw))]
     {:rule-r-safe (r/rule-r-safe rw)
      :live-converged-pre (rt/live-converged n)
      :live-converged (rt/live-converged w')
      :normalized (r/normalized n)
      :filter-safe (r/filter-safe n)
      :no-orphans (r/no-orphans w')
-     :inv-sample (ed/inv-sample w')
+     :inv-sample (ed/well-formed w')
      :acts-alive (casc/acts-alive rw)
-     :ga (acts/ga w')
+     :ga (acts/acts-parked w')
      ;; I3 as qworld's `i3` (tbl-all (keep-fn w) all-ids), with keep-fn's live list, cleanup rows and
      ;; storage computed once (keep-fn = keep-with w (live-list w) (cleanup-rows w) (storage w))
      :i3 (let [lv (rt/live-list w') cl (rt/cleanup-rows w') st (rt/storage w')]

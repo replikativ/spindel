@@ -264,7 +264,7 @@
 ;; storage (X#7, Z#3): the finalizer refs of the runs in live
 (a/defn stored-run [lv :- (List Nat), r :- RunRow] Bool (reach-mem (:id r) lv))
 (a/defn run-refs [r :- RunRow] (List Nat) (fin-refs (:finalizers r)))
-(a/defn storage-gather0 [w :- World, lv :- (List Nat)] (List Nat)
+(a/defn storage-seeds [w :- World, lv :- (List Nat)] (List Nat)
   (tbl-gather (stored-run lv) run-refs (:runs w)))
 ;; C1c stage B (Z#71): a fork marker keeps itself and its owner scope (with the owner's ancestors, by the
 ;; closure below). A marker is a counted owned fork (engine W-OWNED-N) or, in a world that has not normalized
@@ -274,7 +274,7 @@
   (match fs [nil (List.nil Nat)]
          [(cons h t) (List.cons Nat (:id h) (List.cons Nat (:owner h) (fork-keep t)))]))
 (a/defn storage-gather [w :- World, lv :- (List Nat)] (List Nat)
-  (List.append Nat (storage-gather0 w lv) (fork-keep (:forks w))))
+  (List.append Nat (storage-seeds w lv) (fork-keep (:forks w))))
 ;; closed upward like the cleanup rows (refs are sources by Z#3 and layer 1 registers none, so
 ;; this adds nothing in practice; it keeps every retained scope's parent, I1)
 (a/defn storage-with [w :- World, lv :- (List Nat)] (List Nat) (anc-close w (storage-gather w lv)))
@@ -315,9 +315,9 @@
             (:pending-act w) (:released w) (:next-id w)))
 
 ;; live is computed once and shared by the keep set
-(a/defn rule-r-filter-lv [w :- World, lv :- (List Nat)] World
+(a/defn rule-r-filter-with-live [w :- World, lv :- (List Nat)] World
   (filter-world (keep-with w lv (cleanup-rows w) (storage-with w lv)) w))
-(a/defn rule-r-filter [w :- World] World (rule-r-filter-lv w (live-list w)))
+(a/defn rule-r-filter [w :- World] World (rule-r-filter-with-live w (live-list w)))
 
 ;; ---------------------------------------------------------------------------
 ;; Generic lemmas: one membership function, filtered tables (keep), gather/scan/any
@@ -995,8 +995,8 @@
   (have ef (= (tbl-keep K fork-id (:forks w)) (:forks w)))
   (apply fork-keep-filter) (intro a ha) (apply hk2)
   (simp only [storage-with anc-close storage-gather reach-mem-append ha Bool.or_true Bool.true_or])
-  (have eg0 (= (storage-gather0 (filter-world K w) lv2) (storage-gather0 w lv)))
-  (simp only [storage-gather0 fw-runs])
+  (have eg0 (= (storage-seeds (filter-world K w) lv2) (storage-seeds w lv)))
+  (simp only [storage-seeds fw-runs])
   (apply gather-keep)
   (intro r hr hp) (apply hk)
   (exact hp)

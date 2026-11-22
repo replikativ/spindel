@@ -146,7 +146,7 @@
       (reset! ws {:parent w})
       (prn :sample-35-collected
            (loop [n 0] (cond (nil? (.get probe)) true (> n 80) false
-                             :else (do (System/gc) (Thread/sleep 25) (recur (inc n))))))
+                             :else (do (System/cleanup-runs-exist) (Thread/sleep 25) (recur (inc n))))))
       (checkpoint! sc seen @ws :collected)
       (prn (dump! (str dir "log-sample-35-child.edn") @child-log))
       (finish! 35 @ws sc acc))))

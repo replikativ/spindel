@@ -11,9 +11,9 @@
 
     anc-close-closed     a retained id's parent (scope-up) is retained
     cleanup-closed       the same for all cleanup rows
-    filter-lit-i1-scope  inv-sample w, lit-i1-scope w -> lit-i1-scope (rule-r-filter w)
+    filter-lit-i1-scope  well-formed w, lit-i1-scope w -> lit-i1-scope (rule-r-filter w)
 
-  Through the step: bundle g1 (p3e = p3d && g1), `step-lit-i1-scope-total` below (the transition
+  Through the step: bundle i1-scopes (chain-to-i1-scopes = chain-to-i11a && i1-scopes), `step-lit-i1-scope-total` below (the transition
   and normalization keep every scope's parent: new scopes get an existing parent, remove-if-empty
   removes whole subtrees, detach re-parents to an open scope). The other I1 clauses are proved in
   spindel.v2.inv.i1-owners (owners) and spindel.v2.inv.i1-runs (resource owners, run entities and scopes; `inv-i1`)."
@@ -100,14 +100,14 @@
 ;; ===========================================================================
 
 (a/theorem scopes-nodup1 [w :- World]
-  (=> (= (inv-sample w) true) (= (nat-nodup (tbl-ids scope-id (:scopes w))) true))
+  (=> (= (well-formed w) true) (= (nat-nodup (tbl-ids scope-id (:scopes w))) true))
   (intro h)
   (have u := (ids-unique-of w h))
   (simp only [all-ids] at u)
   (exact (nat-nodup-app-left _ _ u)))
 
 (a/theorem scope-up-of-mem [w :- World, s :- ScopeRow]
-  (=> (= (inv-sample w) true) (List.Mem s (:scopes w)) (= (Nat.beq (:parent s) 0) false)
+  (=> (= (well-formed w) true) (List.Mem s (:scopes w)) (= (Nat.beq (:parent s) 0) false)
       (= (reach-mem (:parent s) (scope-up w (:id s))) true))
   (intros hs ms hp)
   (have u := (uniq-all ScopeRow scope-id (fn [q :- ScopeRow] (Nat.beq (:parent q) (:parent s))) s (:scopes w)
@@ -152,7 +152,7 @@
   (intro h) (simp only [adm-pub Bool.and_eq_true] at h) (exact (Nat.eq_of_beq_eq_true (And.left h))))
 
 (a/theorem scope-not-admitted [w :- World, s :- ScopeRow]
-  (=> (= (inv-sample w) true) (List.Mem s (:scopes w)) (= (admitted w (:id s)) false))
+  (=> (= (well-formed w) true) (List.Mem s (:scopes w)) (= (admitted w (:id s)) false))
   (intros hs ms)
   (have u := (ids-unique-of w hs))
   (simp only [all-ids] at u)
@@ -214,7 +214,7 @@
       (exact (And.intro (h hd (List.Mem.head t) (And.left hp) hk) (ih ht (And.right hp)))))))
 
 (a/theorem filter-lit-i1-scope [w :- World]
-  (=> (= (inv-sample w) true) (= (lit-i1-scope w) true)
+  (=> (= (well-formed w) true) (= (lit-i1-scope w) true)
       (= (lit-i1-scope (rule-r-filter w)) true))
   (intros hs hl)
   (rw [rule-r-filter-eq])
@@ -253,20 +253,20 @@
       (simp only [kp hh2 Bool.and_self]))
 
 ;; ===========================================================================
-;; Part D. The bundle g1 = inv-sample && lit-i1-scope through the transition and normalization
+;; Part D. The bundle i1-scopes = well-formed && lit-i1-scope through the transition and normalization
 ;; ===========================================================================
 
-(a/defn g1-rest [w :- World] Bool (lit-i1-scope w))
-(a/defn g1 [w :- World] Bool (Bool.and (inv-sample w) (g1-rest w)))
-(a/theorem g1-sample [w :- World] (=> (= (g1 w) true) (= (inv-sample w) true))
-  (intro h) (simp only [g1 Bool.and_eq_true] at h) (exact (And.left h)))
-(a/theorem g1-rest-of [w :- World] (=> (= (g1 w) true) (= (g1-rest w) true))
-  (intro h) (simp only [g1 Bool.and_eq_true] at h) (exact (And.right h)))
-(a/theorem g1-intro [w :- World] (=> (= (inv-sample w) true) (= (g1-rest w) true) (= (g1 w) true))
-  (intros h1 h2) (simp only [g1 h1 h2 Bool.and_self]))
-(a/theorem g1-parts [w :- World]
-  (=> (= (g1 w) true) (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
-  (intro h) (exact (inv-parts w (g1-sample w h))))
+(a/defn i1-scopes-rest [w :- World] Bool (lit-i1-scope w))
+(a/defn i1-scopes [w :- World] Bool (Bool.and (well-formed w) (i1-scopes-rest w)))
+(a/theorem i1-scopes-well-formed [w :- World] (=> (= (i1-scopes w) true) (= (well-formed w) true))
+  (intro h) (simp only [i1-scopes Bool.and_eq_true] at h) (exact (And.left h)))
+(a/theorem i1-scopes-rest-of [w :- World] (=> (= (i1-scopes w) true) (= (i1-scopes-rest w) true))
+  (intro h) (simp only [i1-scopes Bool.and_eq_true] at h) (exact (And.right h)))
+(a/theorem i1-scopes-intro [w :- World] (=> (= (well-formed w) true) (= (i1-scopes-rest w) true) (= (i1-scopes w) true))
+  (intros h1 h2) (simp only [i1-scopes h1 h2 Bool.and_self]))
+(a/theorem i1-scopes-parts [w :- World]
+  (=> (= (i1-scopes w) true) (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
+  (intro h) (exact (well-formed-parts w (i1-scopes-well-formed w h))))
 
 ;; ---- scope rows updated in place
 
@@ -290,36 +290,36 @@
   (= (lit-scope-parent (scope-upd w x f) r) (lit-scope-parent w r))
   (simp only [lit-scope-parent scope-has scope-upd set-scopes (tbl-has-upd ScopeRow scope-id x (:parent r) f hf (:scopes w))]))
 
-(a/theorem g1-scope-upd-ok [w :- World, x :- Nat, f :- (=> ScopeRow ScopeRow),
+(a/theorem i1-scopes-scope-upd-ok [w :- World, x :- Nat, f :- (=> ScopeRow ScopeRow),
                             hf :- (forall [s :- ScopeRow] (= (scope-id (f s)) (scope-id s))),
                             hr :- (forall [s :- ScopeRow] (=> (List.Mem s (:scopes w)) (= (lit-scope-parent w s) true) (= (lit-scope-parent w (f s)) true)))]
-  (=> (= (g1 w) true) (= (g1 (scope-upd w x f)) true))
+  (=> (= (i1-scopes w) true) (= (i1-scopes (scope-upd w x f)) true))
   (intro h)
-  (have r (= (g1-rest (scope-upd w x f)) true))
-  (have h0 := (g1-rest-of w h)) (simp only [g1-rest lit-i1-scope] at h0)
-  (simp only [g1-rest lit-i1-scope])
+  (have r (= (i1-scopes-rest (scope-upd w x f)) true))
+  (have h0 := (i1-scopes-rest-of w h)) (simp only [i1-scopes-rest lit-i1-scope] at h0)
+  (simp only [i1-scopes-rest lit-i1-scope])
   (apply (tbl-all-upd-gen ScopeRow scope-id x f (lit-scope-parent w) (lit-scope-parent (scope-upd w x f)) (:scopes w) _ _ h0))
   (intros s ms ps) (rw [(lsp-upd w x f hf (f s))]) (exact (hr s ms ps))
   (intros s ms ps) (rw [(lsp-upd w x f hf s)]) (exact ps)
-  (exact (g1-intro _ (inv-scope-upd w x f hf (g1-sample w h)) r)))
+  (exact (i1-scopes-intro _ (well-formed-scope-upd w x f hf (i1-scopes-well-formed w h)) r)))
 
 ;; the copier's form: f keeps (id, kind, parent)
-(a/theorem g1-scope-upd [w :- World, x :- Nat, f :- (=> ScopeRow ScopeRow),
+(a/theorem i1-scopes-scope-upd [w :- World, x :- Nat, f :- (=> ScopeRow ScopeRow),
                          hf :- (forall [s :- ScopeRow] (= (scope-id (f s)) (scope-id s))),
-                         hk :- (forall [s :- ScopeRow] (= (skw (f s)) (skw s)))]
-  (=> (= (g1 w) true) (= (g1 (scope-upd w x f)) true))
+                         hk :- (forall [s :- ScopeRow] (= (root-scope-reserved-scope-key (f s)) (root-scope-reserved-scope-key s)))]
+  (=> (= (i1-scopes w) true) (= (i1-scopes (scope-upd w x f)) true))
   (intro h)
-  (apply (g1-scope-upd-ok w x f hf _ h))
+  (apply (i1-scopes-scope-upd-ok w x f hf _ h))
   (intros s ms ps)
-  (have e1 (= (:kind (f s)) (:kind s))) (exact (congrArg (fn [k :- SKW] (:kind k)) (hk s)))
-  (have e2 (= (:parent (f s)) (:parent s))) (exact (congrArg (fn [k :- SKW] (:parent k)) (hk s)))
+  (have e1 (= (:kind (f s)) (:kind s))) (exact (congrArg (fn [k :- RootScopeReservedScopeKey] (:kind k)) (hk s)))
+  (have e2 (= (:parent (f s)) (:parent s))) (exact (congrArg (fn [k :- RootScopeReservedScopeKey] (:parent k)) (hk s)))
   (simp only [lit-scope-parent e1 e2]) (exact ps))
 
 ;; detach: the run scope gets an existing parent
-(a/theorem g1-set-parent [w :- World, x :- Nat, p :- Nat]
-  (=> (= (scope-has w p) true) (= (g1 w) true) (= (g1 (scope-upd w x (scope-set-parent p))) true))
+(a/theorem i1-scopes-set-parent [w :- World, x :- Nat, p :- Nat]
+  (=> (= (scope-has w p) true) (= (i1-scopes w) true) (= (i1-scopes (scope-upd w x (scope-set-parent p))) true))
   (intros hp h)
-  (apply (g1-scope-upd-ok w x (scope-set-parent p) (scope-set-parent-id p) _ h))
+  (apply (i1-scopes-scope-upd-ok w x (scope-set-parent p) (scope-set-parent-id p) _ h))
   (intros s ms ps)
   (simp only [lit-scope-parent scope-set-parent hp Bool.or_true]))
 
@@ -329,11 +329,11 @@
   (=> (= (tbl-has idf y t) true) (= (tbl-has idf y (List.cons A h t)) true))
   (intro e) (cases hb (Nat.beq (idf h) y)) (all_goals (simp only [tbl-has hb e Bool.true_or Bool.or_true])))
 
-(a/theorem g1-scope-ins-fresh [w :- World, r :- ScopeRow]
+(a/theorem i1-scopes-scope-ins-fresh [w :- World, r :- ScopeRow]
   (=> (= (scope-id r) (:next-id w)) (= (Bool.or (Nat.beq (:parent r) 0) (scope-has w (:parent r))) true)
-      (= (g1 w) true) (= (g1 (bump (scope-ins w r))) true))
+      (= (i1-scopes w) true) (= (i1-scopes (bump (scope-ins w r))) true))
   (intros hr hp h)
-  (have h0 := (g1-rest-of w h)) (simp only [g1-rest lit-i1-scope] at h0)
+  (have h0 := (i1-scopes-rest-of w h)) (simp only [i1-scopes-rest lit-i1-scope] at h0)
   (have mono (forall [s :- ScopeRow] (=> (= (lit-scope-parent w s) true) (= (lit-scope-parent (scope-ins w r) s) true))))
   (intros s ps)
   (simp only [lit-scope-parent Bool.or_eq_true] at ps)
@@ -350,12 +350,12 @@
   (cases hp)
   (case [inl a] (exact (Or.inr (Or.inl a))))
   (case [inr b] (exact (Or.inr (Or.inr (has-cons-r ScopeRow scope-id (:parent r) r (:scopes w) b)))))
-  (have r1 (= (g1-rest (scope-ins w r)) true))
+  (have r1 (= (i1-scopes-rest (scope-ins w r)) true))
   (have es (= (:scopes (scope-ins w r)) (List.cons ScopeRow r (:scopes w)))) (rfl)
   (have tm := (tbl-all-mono ScopeRow (lit-scope-parent w) (lit-scope-parent (scope-ins w r)) mono (:scopes w) h0))
-  (simp only [g1-rest lit-i1-scope es tbl-all hnew tm Bool.and_self])
-  (have r2 (= (g1-rest (bump (scope-ins w r))) true)) (exact r1)
-  (exact (g1-intro _ (inv-scope-ins-fresh w r hr (g1-sample w h)) r2)))
+  (simp only [i1-scopes-rest lit-i1-scope es tbl-all hnew tm Bool.and_self])
+  (have r2 (= (i1-scopes-rest (bump (scope-ins w r))) true)) (exact r1)
+  (exact (i1-scopes-intro _ (well-formed-scope-ins-fresh w r hr (i1-scopes-well-formed w h)) r2)))
 
 ;; ---- remove-if-empty: the subtree goes as a whole (no scope outside it has its parent in it)
 
@@ -396,10 +396,10 @@
   (rw [keep-true] at a)
   (rw [a])
   (apply keep-ext) (intro y) (simp only [Bool.and_true]))
-(a/theorem g1-remove-if-empty [w :- World, sub :- (List Nat)]
-  (=> (= (g1 w) true) (= (g1 (remove-if-empty w sub)) true))
+(a/theorem i1-scopes-remove-if-empty [w :- World, sub :- (List Nat)]
+  (=> (= (i1-scopes w) true) (= (i1-scopes (remove-if-empty w sub)) true))
   (intro h)
-  (have i := (inv-remove-if-empty w sub (g1-sample w h)))
+  (have i := (well-formed-remove-if-empty w sub (i1-scopes-well-formed w h)))
   (cases he (subtree-empty w sub))
   (case [false] (simp only [remove-if-empty he]) (exact h))
   (case' [true])
@@ -407,11 +407,11 @@
   (simp only [subtree-empty Bool.and_eq_true] at he) (exact (And.left he))
   (simp only [remove-if-empty he] at i)
   (simp only [remove-if-empty he])
-  (have h0 := (g1-rest-of w h)) (simp only [g1-rest lit-i1-scope] at h0)
+  (have h0 := (i1-scopes-rest-of w h)) (simp only [i1-scopes-rest lit-i1-scope] at h0)
   (have hsd (forall [y :- Nat] (= (scope-has (nat-fold scope-del w sub) y) (Bool.and (not-in sub y) (scope-has w y)))))
   (intro y) (simp only [scope-has scope-del-fold tbl-has-keep])
-  (have r (= (g1-rest (nat-fold scope-del w sub)) true))
-  (simp only [g1-rest lit-i1-scope])
+  (have r (= (i1-scopes-rest (nat-fold scope-del w sub)) true))
+  (simp only [i1-scopes-rest lit-i1-scope])
   (rw [scope-del-fold])
   (apply (tbl-all-keep-mem ScopeRow (not-in sub) scope-id (lit-scope-parent w) (lit-scope-parent (nat-fold scope-del w sub)) (:scopes w) _ h0))
   (intros s ms ps ks)
@@ -435,7 +435,7 @@
         (cases b2)
         (case [inl c2] (exact (Or.inr (Or.inl c2))))
         (case [inr d2] (exact (Or.inr (Or.inr (And.intro d2 d))))))))
-  (exact (g1-intro _ i r)))
+  (exact (i1-scopes-intro _ i r)))
 
 ;; open-at-has: engine.clj (C1c stage B)
 
@@ -447,70 +447,70 @@
 
 ;; ---- run + run scope (T4 / T5 / T11), the parent given
 
-(a/theorem g1-add-run-scope [w :- World, of :- Nat, epoch :- Nat, parent :- Nat, ei :- Nat]
-  (=> (= (Bool.or (Nat.beq parent 0) (scope-has w parent)) true) (= (g1 w) true)
-      (= (g1 (add-run-scope w of epoch parent ei)) true))
+(a/theorem i1-scopes-add-run-scope [w :- World, of :- Nat, epoch :- Nat, parent :- Nat, ei :- Nat]
+  (=> (= (Bool.or (Nat.beq parent 0) (scope-has w parent)) true) (= (i1-scopes w) true)
+      (= (i1-scopes (add-run-scope w of epoch parent ei)) true))
   (intros hp h)
   (simp only [add-run-scope])
-  (have h1 (= (g1 (bump (run-ins w (new-run-row (:next-id w) of epoch (+ (:next-id w) 1) ei)))) true))
-  (exact (g1-intro _ (inv-run-ins-fresh w (new-run-row (:next-id w) of epoch (+ (:next-id w) 1) ei) (rfl) (g1-sample w h)) (g1-rest-of w h)))
+  (have h1 (= (i1-scopes (bump (run-ins w (new-run-row (:next-id w) of epoch (+ (:next-id w) 1) ei)))) true))
+  (exact (i1-scopes-intro _ (well-formed-run-ins-fresh w (new-run-row (:next-id w) of epoch (+ (:next-id w) 1) ei) (rfl) (i1-scopes-well-formed w h)) (i1-scopes-rest-of w h)))
   (have he (= (scope-id (new-scope-row (+ (:next-id w) 1) parent))
               (:next-id (bump (run-ins w (new-run-row (:next-id w) of epoch (+ (:next-id w) 1) ei))))))
   (rfl)
-  (exact (g1-scope-ins-fresh _ (new-scope-row (+ (:next-id w) 1) parent) he hp h1)))
+  (exact (i1-scopes-scope-ins-fresh _ (new-scope-row (+ (:next-id w) 1) parent) he hp h1)))
 
 ;; ===========================================================================
 ;; Part E. The copy
 ;; ===========================================================================
 
 ;; ---------------------------------------------------------------------------
-;; The part g1: I1, scope parents (spec §6 I1; formal/notes/proof-layout.md)
+;; The part i1-scopes: I1, scope parents (spec §6 I1; formal/notes/proof-layout.md)
 ;;
 ;; 1. In words: every scope's parent is 0 (a root) or an existing scope (`lit-i1-scope`).
 ;; 2. View: scopes (`g1-rest-frame-<field>` for every other field, from `defpart`).
-;; 3. Exempt form: none (g1 is never broken inside a step).
+;; 3. Exempt form: none (i1-scopes is never broken inside a step).
 ;; 4. Cells, the edits that write the view: a scope update that keeps the parent and kind
-;;    (`g1-scope-upd`, key `skw`, `rfl` at every call site); a new scope whose parent exists
-;;    (`g1-scope-ins-fresh`; the premise is the guard `open-ok` at T16's open, `task-scope-parent` at a
-;;    run's scope); closing a subtree that is removed whole (`g1-remove-if-empty`); re-parenting to
-;;    an open scope (`g1-set-parent`, T-detach). Every other primitive is a frame.
-;; 5. Deferred within a step: none. g1's own proofs (`inv-spawn-rows`, `t-open-scope-inv`,
-;;    `t-detach-inv`) and passes (`inv-start-raw`, `inv-new-run-of`) give the parent's existence
+;;    (`i1-scopes-scope-upd`, key `root-scope-reserved-scope-key`, `rfl` at every call site); a new scope whose parent exists
+;;    (`i1-scopes-scope-ins-fresh`; the premise is the guard `open-ok` at T16's open, `task-scope-parent` at a
+;;    run's scope); closing a subtree that is removed whole (`i1-scopes-remove-if-empty`); re-parenting to
+;;    an open scope (`i1-scopes-set-parent`, T-detach). Every other primitive is a frame.
+;; 5. Deferred within a step: none. i1-scopes's own proofs (`well-formed-spawn-rows`, `well-formed-t-open-scope`,
+;;    `well-formed-t-detach`) and passes (`well-formed-start-raw`, `well-formed-new-run-of`) give the parent's existence
 ;;    from the guard on the path to the new scope.
-;; 6. Companions: none (`step-g1`).
+;; 6. Companions: none (`step-i1-scopes`).
 
-(def G1 (mk-bundle 'g1 [] "g1-" {'inv-scope-upd ['(fn [s :- ScopeRow] (Eq.refl (skw s))) 4]}))
-(swap! (:renames G1) assoc 'inv-parts 'g1-parts)
+(def G1 (mk-bundle 'i1-scopes [] "i1-scopes-" {'well-formed-scope-upd ['(fn [s :- ScopeRow] (Eq.refl (root-scope-reserved-scope-key s))) 4]}))
+(swap! (:renames G1) assoc 'well-formed-parts 'i1-scopes-parts)
 (defpart G1
   :reads '[scopes]
-  :cells '{inv-scope-upd g1-scope-upd                 ; keeps the parent and the kind
-           inv-scope-ins-fresh g1-scope-ins-fresh})   ; the new scope's parent exists
+  :cells '{well-formed-scope-upd i1-scopes-scope-upd                 ; keeps the parent and the kind
+           well-formed-scope-ins-fresh i1-scopes-scope-ins-fresh})   ; the new scope's parent exists
 ;; the per-edit frame lemmas of the edge edits, now from the view
-(frames/frame-theorem! 'g1-rest-mark-edge 'g1-rest 'mark-edge-inv-sample)
-(frames/frame-theorem! 'g1-rest-unmark-edge 'g1-rest 'unmark-edge-inv-sample)
-(frames/frame-theorem! 'g1-rest-remove-edge 'g1-rest 'inv-remove-edge)
+(frames/frame-theorem! 'i1-scopes-rest-mark-edge 'i1-scopes-rest 'well-formed-mark-edge)
+(frames/frame-theorem! 'i1-scopes-rest-unmark-edge 'i1-scopes-rest 'well-formed-unmark-edge)
+(frames/frame-theorem! 'i1-scopes-rest-remove-edge 'i1-scopes-rest 'well-formed-remove-edge)
 
 ;; callers of add-run-scope: a computation run scope has parent 0 (Z#26), a task run scope its owner
 ;; scope when that exists (task-scope-parent)
 (tree/part! G1
-  :over '{inv-remove-if-empty g1-remove-if-empty     ; an emptied scope goes with its parent link kept
-          inv-add-run-scope   g1-add-run-scope       ; the run scope's parent exists (or is 0)
-          inv-spawn-rows      g1-spawn-rows          ; T4: the task scope's parent (task-scope-parent)
-          t-open-scope-inv    t-open-scope-g1        ; the opened scope's parent is the current one
-          t-detach-inv        t-detach-g1}           ; the task's run scope moves to an existing scope
-  :ctx '{inv-add-run-scope [(= (Bool.or (Nat.beq parent 0) (scope-has w parent)) true)]}
-  :pass '{inv-start-raw  {inv-add-run-scope [(Eq.refl true)]}     ; parent 0
-          inv-new-run-of {inv-add-run-scope [(Eq.refl true)]}})
-(a/theorem g1-spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat), loc :- Bool]
-  (=> (= (g1 w) true) (= (g1 (spawn-rows w owner inputs loc)) true))
+  :over '{well-formed-remove-if-empty i1-scopes-remove-if-empty     ; an emptied scope goes with its parent link kept
+          well-formed-add-run-scope   i1-scopes-add-run-scope       ; the run scope's parent exists (or is 0)
+          well-formed-spawn-rows      i1-scopes-spawn-rows          ; T4: the task scope's parent (task-scope-parent)
+          well-formed-t-open-scope    i1-scopes-t-open-scope        ; the opened scope's parent is the current one
+          well-formed-t-detach        i1-scopes-t-detach}           ; the task's run scope moves to an existing scope
+  :ctx '{well-formed-add-run-scope [(= (Bool.or (Nat.beq parent 0) (scope-has w parent)) true)]}
+  :pass '{well-formed-start-raw  {well-formed-add-run-scope [(Eq.refl true)]}     ; parent 0
+          well-formed-new-run-of {well-formed-add-run-scope [(Eq.refl true)]}})
+(a/theorem i1-scopes-spawn-rows [w :- World, owner :- Nat, inputs :- (List Nat), loc :- Bool]
+  (=> (= (i1-scopes w) true) (= (i1-scopes (spawn-rows w owner inputs loc)) true))
   (intro h)
   (simp only [spawn-rows])
-  (have h1 (= (g1 (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc)))) true))
-  (exact (g1-task-ins-fresh w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc) (rfl) h))
-  (exact (g1-add-run-scope (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc)))
+  (have h1 (= (i1-scopes (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc)))) true))
+  (exact (i1-scopes-task-ins-fresh w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc) (rfl) h))
+  (exact (i1-scopes-add-run-scope (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc)))
            (:next-id w) 0 (task-scope-parent w owner) 0 (tsp-has w owner) h1)))
-(a/theorem t-open-scope-g1 [w :- World, st :- Nat, s :- Nat]
-  (=> (= (g1 w) true) (= (g1 (:world (t-open-scope w st s))) true))
+(a/theorem i1-scopes-t-open-scope [w :- World, st :- Nat, s :- Nat]
+  (=> (= (i1-scopes w) true) (= (i1-scopes (:world (t-open-scope w st s))) true))
   (intro h)
   (cases ht (tok-run w st)) (case' [some r]) (case' [none])
   (simp only [t-open-scope ht refuse]) (exact h)
@@ -520,9 +520,9 @@
   (have hc (= (Bool.or (Nat.beq (cur-scope w r) 0) (scope-has w (cur-scope w r))) true))
   (simp only [open-ok Bool.and_eq_true] at hg) (simp only [(And.right (And.right hg)) Bool.or_true])
   (simp only [t-open-scope ht hg accept])
-  (exact (g1-scope-ins-fresh w (ScopeRow.mk s (cur-scope w r) scope-explicit true) hs hc h)))
-(a/theorem t-detach-g1 [w :- World, k :- Nat, s :- Nat]
-  (=> (= (g1 w) true) (= (g1 (:world (t-detach w k s))) true))
+  (exact (i1-scopes-scope-ins-fresh w (ScopeRow.mk s (cur-scope w r) scope-explicit true) hs hc h)))
+(a/theorem i1-scopes-t-detach [w :- World, k :- Nat, s :- Nat]
+  (=> (= (i1-scopes w) true) (= (i1-scopes (:world (t-detach w k s))) true))
   (intro h)
   (cases hf (task-find w k))
   (case [none] (simp only [t-detach hf refuse]) (exact h))
@@ -533,57 +533,57 @@
       (have hs2 (= (scope-has w s) true))
       (simp only [detach-ok Bool.and_eq_true] at hg) (exact (open-at-has w s (And.left (And.right (And.right hg)))))
       (simp only [t-detach hf hg accept remove-empty-at detach-move])
-      (have h1 := (g1-task-upd w k (task-set-owner s) (task-set-owner-id s) h))
-      (exact (g1-remove-if-empty _ _ (g1-set-parent (task-upd w k (task-set-owner s)) (task-run-scope w t) s hs2 h1))))))
+      (have h1 := (i1-scopes-task-upd w k (task-set-owner s) (task-set-owner-id s) h))
+      (exact (i1-scopes-remove-if-empty _ _ (i1-scopes-set-parent (task-upd w k (task-set-owner s)) (task-run-scope w t) s hs2 h1))))))
 
-(tree/restate! G1 '[raw-inv])
-(tree/restate! G1 '[inv-normalize])
+(tree/restate! G1 '[well-formed-raw])
+(tree/restate! G1 '[well-formed-normalize])
 
 ;; ===========================================================================
 ;; Part F. Rule R and the step
 ;; ===========================================================================
 
-(a/theorem g1-rule-r-round [w :- World]
-  (=> (= (g1 w) true) (= (filter-safe (normalize w)) true) (= (g1 (rule-r-round w)) true))
+(a/theorem i1-scopes-rule-r-round [w :- World]
+  (=> (= (i1-scopes w) true) (= (filter-safe (normalize w)) true) (= (i1-scopes (rule-r-round w)) true))
   (intros h hf)
-  (have hn := (g1-normalize w h))
+  (have hn := (i1-scopes-normalize w h))
   (simp only [rule-r-round])
-  (exact (g1-intro _ (inv-rule-r-filter (normalize w) (g1-sample _ hn) hf)
-           (filter-lit-i1-scope (normalize w) (g1-sample _ hn) (g1-rest-of _ hn)))))
-(a/theorem g1-rr-loop [fuel :- (List Nat)]
-  (forall [w0 :- World] (=> (= (g1 w0) true) (= (rr-safe fuel w0) true) (= (g1 (rr-loop fuel (rule-r-round w0))) true)))
+  (exact (i1-scopes-intro _ (well-formed-rule-r-filter (normalize w) (i1-scopes-well-formed _ hn) hf)
+           (filter-lit-i1-scope (normalize w) (i1-scopes-well-formed _ hn) (i1-scopes-rest-of _ hn)))))
+(a/theorem i1-scopes-rule-r-loop [fuel :- (List Nat)]
+  (forall [w0 :- World] (=> (= (i1-scopes w0) true) (= (rounds-safe-loop fuel w0) true) (= (i1-scopes (rule-r-loop fuel (rule-r-round w0))) true)))
   (induction fuel)
-  (case [nil] (intros w0 h hs) (simp only [rr-safe] at hs) (simp only [rr-loop]) (exact (g1-rule-r-round w0 h hs)))
+  (case [nil] (intros w0 h hs) (simp only [rounds-safe-loop] at hs) (simp only [rule-r-loop]) (exact (i1-scopes-rule-r-round w0 h hs)))
   (case [cons x f ih]
     (intros w0 h hs)
-    (simp only [rr-safe Bool.and_eq_true] at hs)
-    (have h1 := (g1-rule-r-round w0 h (And.left hs)))
+    (simp only [rounds-safe-loop Bool.and_eq_true] at hs)
+    (have h1 := (i1-scopes-rule-r-round w0 h (And.left hs)))
     (cases ho (no-orphans (rule-r-round w0)))
-    (case [false] (simp only [ho] at hs) (simp only [rr-loop ho]) (exact (ih (rule-r-round w0) h1 (And.right hs))))
-    (case [true] (simp only [rr-loop ho]) (exact h1))))
-(a/theorem g1-rule-r [w :- World] (=> (= (g1 w) true) (= (rule-r-safe w) true) (= (g1 (rule-r w)) true))
-  (intros h hs) (simp only [rule-r-safe] at hs) (simp only [rule-r]) (exact (g1-rr-loop (rr-fuel w) w h hs)))
-(a/theorem step-g1 [w :- World, it :- Item]
-  (=> (= (g1 w) true) (= (rule-r-safe (:world (raw w it))) true) (= (g1 (:world (world-step w it))) true))
+    (case [false] (simp only [ho] at hs) (simp only [rule-r-loop ho]) (exact (ih (rule-r-round w0) h1 (And.right hs))))
+    (case [true] (simp only [rule-r-loop ho]) (exact h1))))
+(a/theorem i1-scopes-rule-r [w :- World] (=> (= (i1-scopes w) true) (= (rule-r-safe w) true) (= (i1-scopes (rule-r w)) true))
+  (intros h hs) (simp only [rule-r-safe] at hs) (simp only [rule-r]) (exact (i1-scopes-rule-r-loop (rule-r-fuel w) w h hs)))
+(a/theorem step-i1-scopes [w :- World, it :- Item]
+  (=> (= (i1-scopes w) true) (= (rule-r-safe (:world (raw w it))) true) (= (i1-scopes (:world (world-step w it))) true))
   (intros h hs)
   (cases ha (:accepted (raw w it)))
   (case [false] (have e1 := (step-refuse w it ha)) (simp only [e1 refuse]) (exact h))
-  (case [true] (have e2 := (step-accepted w it ha)) (rw [e2]) (exact (g1-rule-r (:world (raw w it)) (raw-g1 w it h) hs))))
-(a/theorem g1-empty [] (= (g1 empty-world) true) (rfl))
+  (case [true] (have e2 := (step-accepted w it ha)) (rw [e2]) (exact (i1-scopes-rule-r (:world (raw w it)) (i1-scopes-raw w it h) hs))))
+(a/theorem i1-scopes-empty [] (= (i1-scopes empty-world) true) (rfl))
 
-;; the combined bundle: p3e = p3d && g1 (no honest hypothesis)
-(a/defn p3e [w :- World] Bool (Bool.and (p3d w) (g1 w)))
-(a/theorem p3e-parts [w :- World] (=> (= (p3e w) true) (And (= (p3d w) true) (= (g1 w) true)))
-  (intro h) (simp only [p3e Bool.and_eq_true] at h) (exact h))
-(a/theorem p3e-empty [] (= (p3e empty-world) true) (rfl))
-(a/theorem step-p3e [w :- World, it :- Item] (=> (= (p3e w) true) (= (p3e (:world (world-step w it))) true))
+;; the combined bundle: chain-to-i1-scopes = chain-to-i11a && i1-scopes (no honest hypothesis)
+(a/defn chain-to-i1-scopes [w :- World] Bool (Bool.and (chain-to-i11a w) (i1-scopes w)))
+(a/theorem chain-to-i1-scopes-parts [w :- World] (=> (= (chain-to-i1-scopes w) true) (And (= (chain-to-i11a w) true) (= (i1-scopes w) true)))
+  (intro h) (simp only [chain-to-i1-scopes Bool.and_eq_true] at h) (exact h))
+(a/theorem chain-to-i1-scopes-empty [] (= (chain-to-i1-scopes empty-world) true) (rfl))
+(a/theorem step-chain-to-i1-scopes [w :- World, it :- Item] (=> (= (chain-to-i1-scopes w) true) (= (chain-to-i1-scopes (:world (world-step w it))) true))
   (intro h)
-  (have p := (p3e-parts w h))
-  (have pd := (p3d-parts w (And.left p)))
-  (have pc := (p3c-parts w (And.left pd)))
-  (have a1 := (step-p3d w it (And.left p)))
-  (have a2 := (step-g1 w it (And.right p) (step-rule-r-safe w it (And.left pc))))
-  (simp only [p3e a1 a2 Bool.and_self]))
+  (have p := (chain-to-i1-scopes-parts w h))
+  (have pd := (chain-to-i11a-parts w (And.left p)))
+  (have pc := (chain-to-i10-current-parts w (And.left pd)))
+  (have a1 := (step-chain-to-i11a w it (And.left p)))
+  (have a2 := (step-i1-scopes w it (And.right p) (step-rule-r-safe w it (And.left pc))))
+  (simp only [chain-to-i1-scopes a1 a2 Bool.and_self]))
 (a/theorem step-lit-i1-scope-total [w :- World, it :- Item]
-  (=> (= (p3e w) true) (= (lit-i1-scope (:world (world-step w it))) true))
-  (intro h) (exact (g1-rest-of _ (And.right (p3e-parts _ (step-p3e w it h))))))
+  (=> (= (chain-to-i1-scopes w) true) (= (lit-i1-scope (:world (world-step w it))) true))
+  (intro h) (exact (i1-scopes-rest-of _ (And.right (chain-to-i1-scopes-parts _ (step-chain-to-i1-scopes w it h))))))

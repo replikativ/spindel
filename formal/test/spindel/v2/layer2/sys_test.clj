@@ -12,12 +12,12 @@
             [spindel.v2.layer2.top]))
 
 (def theorems
-  '[sinv-put step-frame sinv-step fork-refused fork-effect-refused fork-frame fork-copy sinv-fork p3l-fork-effect-world
+  '[sinv-put step-frame sinv-step fork-refused fork-effect-refused fork-frame fork-copy sinv-fork chain-to-marks-waiting-fork-effect-world
     fork-effect-frame sinv-fork-effect
-    p3l-fire-ack p3l-wake-one p3l-wake-all sinv-wake
+    chain-to-marks-waiting-fire-ack chain-to-marks-waiting-wake-one chain-to-marks-waiting-wake-all sinv-wake
     sinv-drop sinv-init pinv-publish sinv-resume instantiate-frame instantiate-copy instantiate-indep
     sinv-instantiate sinv-activate activate-born activate-once pinv-abandon
-    p3l-items-run p3l-merge-world merge-refused diff-ids-self merge-unchanged merge-frame sinv-merge
+    chain-to-marks-waiting-items-run chain-to-marks-waiting-merge-world merge-refused diff-ids-self merge-unchanged merge-frame sinv-merge
     sinv-idle-release drop-step-comm
     cinv-step-q cinv-wake-q cinv-resume-q cinv-merge-q cinv-publish-q cinv-abandon-q
     qsinv-init qpinv-none qsinv-step qsinv-wake qsinv-resume qsinv-merge qsinv-publish qsinv-abandon qsinv-accept
@@ -31,12 +31,12 @@
     complete-born-ledger born-complete-delivered born-abandon-none
     ;; C1c stage B, proof stage (HB discharged: the three are layer-1 items)
     owned-done-none drain-none own-released internal-refused hb-step hb-own hb-owned-done hb-drain own-is-step owned-done-is-step
-    drain-clean sys-drain-clean fold-del-out gnf-rule-r
-    t-own-inv t-owned-done-inv t-drain-inv t-own-gw t-own-esb inv-fork-del inv-fork-ins-fresh fork-del-ids-ok
+    drain-clean sys-drain-clean fold-del-out markers-gone-rule-r
+    well-formed-t-own well-formed-t-owned-done well-formed-t-drain root-scope-reserved-t-own refs-not-edges-t-own well-formed-fork-del well-formed-fork-ins-fresh fork-del-ids-ok
     sinv-own sinv-owned-done sinv-drain qsinv-own qsinv-owned-done qsinv-drain cinv-own cinv-owned-done cinv-drain
     jinv-own jinv-owned-done jinv-drain complete-no-markers
     ;; C2: seal, resolver, transfer (R6), descendant (R2)
-    p3l-cstep rel-cstep qid-cstep qinv-cstep sealed-write sinv-seal cinv-seal qsinv-seal jinv-seal
+    chain-to-marks-waiting-cstep rel-cstep qid-cstep quiet-world-inv-cstep sealed-write sinv-seal cinv-seal qsinv-seal jinv-seal
     merge-out-world merge-unsealed writes-refused writes-default-ok writes-default-no run-wr merge-default
     merge-release-refused sinv-merge-release cinv-merge-release-q qsinv-merge-release jinv-merge-release
     descendant-refl descendant-fork descendant-par par-xfer-reserve par-xfer-move descendant-xfer-reserve

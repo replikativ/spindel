@@ -1,5 +1,5 @@
 (ns spindel.v2.inv.members.raw-lifts
-  "h-mem2 bundle h3 through raw (P11): the lifts from raw0 to raw0g and raw, T22 host await, T8 observe."
+  "h-mem2 bundle current-members through raw (P11): the lifts from transition to host-guarded-transition and raw, T22 host await, T8 observe."
   (:require [ansatz.core :as a]
             [spindel.v2.state :refer :all]
             [spindel.v2.edits :refer :all]
@@ -40,61 +40,61 @@
             [spindel.v2.inv.members.dispatch :refer :all]))
 
 
-;; ---- from raw0 to raw0g (a released world refuses the host's admissions) and to raw (post: the any-losers)
+;; ---- from transition to host-guarded-transition (a released world refuses the host's admissions) and to raw (post: the any-losers)
 
-(a/theorem h15-raw0g-lift [xm :- (List Nat), w :- World, it :- Item]
-  (=> (= (h3 xm w) true) (= (h3 xm (:world (raw0 w it))) true) (= (h3 xm (:world (raw0g w it))) true))
+(a/theorem current-members-host-guarded-transition-lift [xm :- (List Nat), w :- World, it :- Item]
+  (=> (= (current-members xm w) true) (= (current-members xm (:world (transition w it))) true) (= (current-members xm (:world (host-guarded-transition w it))) true))
   (intros h h0)
-  (cases hs (host-shut w it))
-  (case [true] (simp only [raw0g hs refuse]) (exact h))
-  (case [false] (simp only [raw0g hs]) (exact h0)))
+  (cases hs (host-item-refused w it))
+  (case [true] (simp only [host-guarded-transition hs refuse]) (exact h))
+  (case [false] (simp only [host-guarded-transition hs]) (exact h0)))
 
-(a/theorem h15-raw-lift [xm :- (List Nat), w :- World, it :- Item]
-  (=> (= (p3la w) true) (= (h3 xm (:world (raw0g w it))) true) (= (h3 xm (:world (raw w it))) true))
+(a/theorem current-members-raw-lift [xm :- (List Nat), w :- World, it :- Item]
+  (=> (= (chain-to-edge-kinds w) true) (= (current-members xm (:world (host-guarded-transition w it))) true) (= (current-members xm (:world (raw w it))) true))
   (intros hp before)
-  (have support := (h13-raw0g-support w it hp))
+  (have support := (current-members-host-guarded-transition-support w it hp))
   (simp only [raw])
-  (exact (h13-post-h3 xm w (raw0g w it) (And.left support) (And.left (And.right support)) (And.right (And.right support)) before)))
+  (exact (current-members-then-cancel-losers xm w (host-guarded-transition w it) (And.left support) (And.left (And.right support)) (And.right (And.right support)) before)))
 
 ;; ---- T22 host await: a fresh host wait edge (no activation's member), the demand, the fast fire
 
-(a/theorem h15-host-await-raw-h3 [xm :- (List Nat), w :- World, d :- Nat]
-  (=> (= (p3la w) true) (= (h3 xm w) true) (= (h3 xm (host-await-raw w d)) true))
+(a/theorem current-members-host-await-raw [xm :- (List Nat), w :- World, d :- Nat]
+  (=> (= (chain-to-edge-kinds w) true) (= (current-members xm w) true) (= (current-members xm (host-await-raw w d)) true))
   (intros hp h)
-  (have h1 (= (h3 xm (host-await-dem w d)) true))
-  (exact (h3-demand-reactive xm _ d
-           (g7-insert-edge-checked w (host-wait-edge d) (Eq.refl true) (p3la-g7 w hp))
-           (aha-insert-edge-checked w (host-wait-edge d) (p3la-aha w hp))
-           (hm3-insert-edge-checked xm w (host-wait-edge d) h)))
+  (have h1 (= (current-members xm (host-await-dem w d)) true))
+  (exact (current-members-demand-reactive xm _ d
+           (i7-idle-insert-edge-checked w (host-wait-edge d) (Eq.refl true) (chain-to-edge-kinds-i7-idle w hp))
+           (act-runs-alive-insert-edge-checked w (host-wait-edge d) (chain-to-edge-kinds-act-runs-alive w hp))
+           (current-members-insert-edge-checked xm w (host-wait-edge d) h)))
   (cases hr (fast-ready (host-await-dem w d) d))
   (case [false] (simp only [host-await-raw hr]) (exact h1))
-  (case [true] (simp only [host-await-raw hr]) (exact (h3-fire-edge xm _ _ (:next-id w) h1))))
+  (case [true] (simp only [host-await-raw hr]) (exact (current-members-fire-edge xm _ _ (:next-id w) h1))))
 
-(a/theorem h15-raw0-host-await-h3 [xm :- (List Nat), w :- World, d :- Nat, fresh :- Nat]
-  (=> (= (p3la w) true) (= (h3 xm w) true) (= (h3 xm (:world (raw0 w (Item.host-await d fresh)))) true))
+(a/theorem current-members-transition-host-await [xm :- (List Nat), w :- World, d :- Nat, fresh :- Nat]
+  (=> (= (chain-to-edge-kinds w) true) (= (current-members xm w) true) (= (current-members xm (:world (transition w (Item.host-await d fresh)))) true))
   (intros hp h)
-  (cases hc (host-await-bad w d))
-  (case [true] (simp only [raw0 hc refuse]) (exact h))
+  (cases hc (host-await-refused w d))
+  (case [true] (simp only [transition hc refuse]) (exact h))
   (case [false]
     (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (deb-exists w d)))
-    (case [false] (simp only [raw0 hc t22-host-await hg refuse]) (exact h))
-    (case [true] (simp only [raw0 hc t22-host-await hg accept]) (exact (h15-host-await-raw-h3 xm w d hp h)))))
+    (case [false] (simp only [transition hc t22-host-await hg refuse]) (exact h))
+    (case [true] (simp only [transition hc t22-host-await hg accept]) (exact (current-members-host-await-raw xm w d hp h)))))
 
 ;; ---- T8 observe: a fresh observe edge, the demand, the fire on a ready debtor
 
-(a/theorem h15-t8-full-h3 [xm :- (List Nat), w :- World, d :- Nat, cb :- Nat, fresh :- Nat]
-  (=> (= (p3la w) true) (= (h3 xm w) true) (= (h3 xm (:world (t8-full w d cb fresh))) true))
+(a/theorem current-members-t8-observe-any-kind [xm :- (List Nat), w :- World, d :- Nat, cb :- Nat, fresh :- Nat]
+  (=> (= (chain-to-edge-kinds w) true) (= (current-members xm w) true) (= (current-members xm (:world (t8-observe-any-kind w d cb fresh))) true))
   (intros hp h)
   (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (edge-ok-in w (observe-edge w d cb))))
-  (case [false] (simp only [t8-full hg refuse]) (exact h))
+  (case [false] (simp only [t8-observe-any-kind hg refuse]) (exact h))
   (case [true]
     (have he (= (edge-ok-in w (observe-edge w d cb)) true))
     (have hg2 := hg) (simp only [Bool.and_eq_true] at hg2) (exact (And.right hg2))
-    (have h1 := (h3-demand-reactive xm _ d
-                  (g7-insert-edge-fresh w (observe-edge w d cb) (Eq.refl true) he (p3la-g7 w hp))
-                  (insert-edge-fresh-aha w (observe-edge w d cb) he (p3la-aha w hp))
-                  (insert-edge-fresh-h3 xm w (observe-edge w d cb) he h)))
-    (simp only [t8-full hg accept observe-raw])
+    (have h1 := (current-members-demand-reactive xm _ d
+                  (i7-idle-insert-edge-fresh w (observe-edge w d cb) (Eq.refl true) he (chain-to-edge-kinds-i7-idle w hp))
+                  (act-runs-alive-insert-edge-fresh w (observe-edge w d cb) he (chain-to-edge-kinds-act-runs-alive w hp))
+                  (current-members-insert-edge-fresh xm w (observe-edge w d cb) he h)))
+    (simp only [t8-observe-any-kind hg accept observe-raw])
     (cases hr (deb-ready (demand-reactive (insert-edge-fresh w (observe-edge w d cb)) d) d))
     (case [false] (simp only [hr]) (exact h1))
-    (case [true] (simp only [hr]) (exact (h3-fire-edge xm _ _ (:next-id w) h1)))))
+    (case [true] (simp only [hr]) (exact (current-members-fire-edge xm _ _ (:next-id w) h1)))))

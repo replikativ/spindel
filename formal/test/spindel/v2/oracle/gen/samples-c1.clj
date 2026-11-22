@@ -1,7 +1,7 @@
 ;; C1 log samples for the oracle (samples 22-27): each world's own log, plus a
 ;; `log-sample-N-observations.edn` sidecar. World completion and child tokens are
 ;; derived state, never log items; the sidecar records them at host checkpoints:
-;;   [{:step kw :log-length {world-name n} :obs {world-name {...}}} ...]
+;;   [{:step i10-task-view :log-length {world-name n} :obs {world-name {...}}} ...]
 ;; :log-length is the length of that world's log at the checkpoint. Per world:
 ;; :complete? :released? :runs (unretired runs, W-RUNS) :kids (owned child
 ;; obligations, nil before the first) :token (its own kid cell: :none = not yet

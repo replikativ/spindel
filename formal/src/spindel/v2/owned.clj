@@ -53,10 +53,10 @@
 
 ;; a refused internal item leaves the world as it is
 (a/theorem internal-refused [w :- World, it :- Item]
-  (=> (= (host-item it) false) (= (:accepted (raw0 w it)) false) (= (:world (world-step w it)) w))
+  (=> (= (host-item it) false) (= (:accepted (transition w it)) false) (= (:world (world-step w it)) w))
   (intros hh ha)
   (have r (= (:accepted (raw w it)) false))
-  (simp only [raw post raw0g host-shut hh Bool.false_and Bool.and_false ha])
+  (simp only [raw then-cancel-losers host-guarded-transition host-item-refused hh Bool.false_and Bool.and_false ha])
   (rw [(step-refuse w it r)]))
 
 ;; a world without markers is left as it is by owned-done and the drain; a released one by own
@@ -66,16 +66,16 @@
   (cases e (:forks w)) (case [nil] (rfl)) (case [cons a t] (rw [e] at h) (simp [forks-nil] at h))
   (simp only [owned-done-world])
   (apply (internal-refused w (Item.owned-done s c) (rfl)))
-  (simp only [raw0 t-owned-done hf tbl-any refuse]))
+  (simp only [transition t-owned-done hf tbl-any refuse]))
 (a/theorem drain-none [w :- World, ids :- (List Nat)] (=> (= (forks-nil (:forks w)) true) (= (drain-world w ids) w))
   (intro h)
   (have hf (= (:forks w) (List.nil ForkRow)))
   (cases e (:forks w)) (case [nil] (rfl)) (case [cons a t] (rw [e] at h) (simp [forks-nil] at h))
   (simp only [drain-world])
   (apply (internal-refused w (Item.drain ids) (rfl)))
-  (simp only [raw0 t-drain hf tbl-any refuse]))
+  (simp only [transition t-drain hf tbl-any refuse]))
 (a/theorem own-released [w :- World, s :- Nat, m :- Nat] (=> (= (:released w) true) (= (own-world w s m) w))
   (intro h)
   (simp only [own-world])
   (apply (internal-refused w (Item.own s m) (rfl)))
-  (simp only [raw0 t-own own-ok h Bool.not_true Bool.false_and refuse]))
+  (simp only [transition t-own own-ok h Bool.not_true Bool.false_and refuse]))

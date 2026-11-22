@@ -1,0 +1,111 @@
+;; Naming pass: the lines that BUILD names from strings. A whole-symbol substitution cannot reach
+;; them; each needs the edit below, and the generated names of notes/renames.edn follow from them.
+;; :old is text on :line of :file (checked by renames.clj), :new replaces it. The 51 mk-bundle
+;; prefix strings are added by renames.clj from the model (one edit per bundle).
+[;; ---- pres/part.clj: the copy rule
+ {:file "src/spindel/v2/pres/part.clj" :line 109
+  :old "(bsym B \"-sample\")" :new "(bsym B \"-well-formed\")"
+  :why "<part>-sample (the part implies the base) is now <part>-well-formed"}
+ {:file "src/spindel/v2/pres/part.clj" :line 127
+  :old "(symbol (cond (str/starts-with? s \"inv-\") (str p (subs s 4))"
+  :new "(symbol (if (str/includes? s \"well-formed\") (str/replace-first s \"well-formed\" (name (:pred B)))"
+  :why "copy-name, one case: every base lemma is well-formed-<x>, its copy for a part is <part>-<x> (also step-well-formed -> step-<part>). Lines 128-129 (the -inv-sample and -inv cases) go; line 130 stays as the else branch, without its :else; `p` becomes unused"}
+ {:file "src/spindel/v2/pres/part.clj" :line 128
+  :old "(str/ends-with? s \"-inv-sample\") (str (subs s 0 (- (count s) 11)) \"-\" (name (:pred B)))" :new ""
+  :why "copy-name: case removed"}
+ {:file "src/spindel/v2/pres/part.clj" :line 129
+  :old "(str/ends-with? s \"-inv\") (str (subs s 0 (- (count s) 4)) \"-\" (name (:pred B)))" :new ""
+  :why "copy-name: case removed"}
+ {:file "src/spindel/v2/pres/part.clj" :line 130
+  :old ":else (str s \"-\" (name (:pred B)))))))" :new "(str s \"-\" (name (:pred B)))))))"
+  :why "copy-name: the else branch of the `if`"}
+
+ ;; ---- pres/tree.clj
+ {:file "src/spindel/v2/pres/tree.clj" :line 145
+  :old "(symbol (str \"raw0-\" (name ctor) \"-inv\"))" :new "(symbol (str \"well-formed-transition-\" (name ctor)))"
+  :why "the 49 derived per-item base lemmas raw0-<item>-inv -> well-formed-transition-<item>; the defn's own name is in rules.edn :clj-vars"}
+ {:file "src/spindel/v2/pres/tree.clj" :line 437
+  :old "base (str \"pres-\" (cond (str/starts-with? s \"inv-\") (subs s 4)"
+  :new "base (str \"pres-\" (-> s (str/replace-first \"well-formed-\" \"\") (str/replace-first \"-well-formed\" \"\")))]"
+  :why "pres-name: pres-<x> for base lemma well-formed-<x> (and pres-step for step-well-formed). Lines 438-440 (the other cond cases) go"}
+ {:file "src/spindel/v2/pres/tree.clj" :line 438
+  :old "(str/ends-with? s \"-inv-sample\") (subs s 0 (- (count s) 11))" :new "" :why "pres-name: case removed"}
+ {:file "src/spindel/v2/pres/tree.clj" :line 439
+  :old "(str/ends-with? s \"-inv\") (subs s 0 (- (count s) 4))" :new "" :why "pres-name: case removed"}
+ {:file "src/spindel/v2/pres/tree.clj" :line 440
+  :old ":else s))]" :new "" :why "pres-name: case removed"}
+
+ ;; ---- the two private copiers
+ {:file "src/spindel/v2/inv/rank_step.clj" :line 644
+  :old "(symbol (cond (str/ends-with? s \"-inv-sample\") (str (subs s 0 (- (count s) 11)) \"-rk\")"
+  :new "(symbol (if (str/includes? s \"well-formed\") (str/replace-first s \"well-formed\" \"i12-ranks\")"
+  :why "rank-name: rk-<x> / <x>-rk -> i12-ranks-<x>. Lines 645-646 go; line 647 becomes the else branch"}
+ {:file "src/spindel/v2/inv/rank_step.clj" :line 645
+  :old "(str/starts-with? s \"inv-\") (str \"rk-\" (subs s 4))" :new "" :why "rank-name: case removed"}
+ {:file "src/spindel/v2/inv/rank_step.clj" :line 646
+  :old "(str/ends-with? s \"-inv\") (str (subs s 0 (- (count s) 4)) \"-rk\")" :new "" :why "rank-name: case removed"}
+ {:file "src/spindel/v2/inv/rank_step.clj" :line 647
+  :old ":else (str s \"-rk\")))))" :new "(str s \"-i12-ranks\")))))" :why "rank-name: the else branch"}
+ {:file "src/spindel/v2/progress/casc.clj" :line 481
+  :old "(symbol (cond (str/starts-with? s \"inv-\") (str \"bc-\" (subs s 4))"
+  :new "(symbol (if (str/includes? s \"well-formed\") (str/replace-first s \"well-formed\" \"cascade-bound\")"
+  :why "bc-name: bc-<x> / <x>-bc -> cascade-bound-<x>. Line 482 goes; line 483 becomes the else branch"}
+ {:file "src/spindel/v2/progress/casc.clj" :line 482
+  :old "(str/ends-with? s \"-inv\") (str (subs s 0 (- (count s) 4)) \"-bc\")" :new "" :why "bc-name: case removed"}
+ {:file "src/spindel/v2/progress/casc.clj" :line 483
+  :old ":else (str s \"-bc\")))))" :new "(str s \"-cascade-bound\")))))" :why "bc-name: the else branch"}
+
+ ;; ---- macros that name a base lemma after a definition
+ {:file "src/spindel/v2/edits.clj" :line 1229
+  :old "(str \"inv-\" prefix \"-upd\")" :new "(str \"well-formed-\" prefix \"-upd\")" :why "inv-<row>-upd -> well-formed-<row>-upd"}
+ {:file "src/spindel/v2/edits.clj" :line 1248
+  :old "(str \"inv-\" prefix \"-upd\")" :new "(str \"well-formed-\" prefix \"-upd\")" :why "as line 1229"}
+ {:file "src/spindel/v2/engine.clj" :line 302
+  :old "(str \"inv-\" prefix \"-ins-fresh\")" :new "(str \"well-formed-\" prefix \"-ins-fresh\")" :why "inv-<row>-ins-fresh -> well-formed-<row>-ins-fresh"}
+ {:file "src/spindel/v2/engine.clj" :line 1774
+  :old "(symbol (str f \"-inv\"))" :new "(symbol (str \"well-formed-\" f))" :why "defnew-lemmas: <f>-inv -> well-formed-<f>"}
+ {:file "src/spindel/v2/engine.clj" :line 1775
+  :old "(symbol (str next-f \"-inv\"))" :new "(symbol (str \"well-formed-\" next-f))" :why "defnew-lemmas: the next level's lemma"}
+ {:file "src/spindel/v2/step.clj" :line 1251
+  :old "(symbol (str f \"-inv\"))" :new "(symbol (str \"well-formed-\" f))" :why "defdrop-lemmas: <f>-inv -> well-formed-<f>"}
+
+ ;; ---- lines that cut "inv-" (4 characters) off a base lemma's name to get the edit's name
+ {:file "src/spindel/v2/completion/stable.clj" :line 249 :old "(subs (name o) 4)" :new "(subs (name o) 12)" :why "\"well-formed-\" is 12 characters"}
+ {:file "src/spindel/v2/inv/acts.clj" :line 408 :old "(subs (name o) 4)" :new "(subs (name o) 12)" :why "as above"}
+ {:file "src/spindel/v2/inv/acyclic.clj" :line 532 :old "(subs (name o) 4)" :new "(subs (name o) 12)" :why "as above"}
+ {:file "src/spindel/v2/inv/copier.clj" :line 181 :old "(subs (name o) 4)" :new "(subs (name o) 12)" :why "as above"}
+ {:file "src/spindel/v2/inv/copier.clj" :line 2216 :old "(subs (name o) 4)" :new "(subs (name o) 12)" :why "as above"}
+ {:file "src/spindel/v2/inv/i10.clj" :line 840 :old "(subs (name o) 4)" :new "(subs (name o) 12)" :why "as above"}
+ {:file "src/spindel/v2/inv/i11.clj" :line 188 :old "(subs (name o) 4)" :new "(subs (name o) 12)" :why "as above"}
+ {:file "src/spindel/v2/progress/measures.clj" :line 550 :old "(subs (name o) 4)" :new "(subs (name o) 12)" :why "as above"}
+
+ ;; ---- a template name ($x is the bundle prefix + x, pres.part/inst)
+ {:file "src/spindel/v2/inv/acts.clj" :line 572 :old "($resume-o w a hs h)" :new "($resume-hand w a hs h)"
+  :why "ga-resume-o / gx-resume-o -> <part>-resume-hand"}
+
+ ;; ---- the exemption API: <part>-exempt-<role>[-<site>] is built from defexempt's first argument
+ {:file "src/spindel/v2/inv/i10.clj" :line 826
+  :old "(exempt/defexempt 'g10" :new "(exempt/defexempt 'i10-current"
+  :why "the substitution would write 'i10-current-exempt and the API would build i10-current-exempt-exempt-<role>; the argument is the part, not its exempt form"}
+ {:file "src/spindel/v2/inv/i1_runs.clj" :line 716
+  :old "(exempt/defexempt 'grx" :new "(exempt/defexempt 'i1-runs"
+  :why "as above: grx-exempt-<role> -> i1-runs-exempt-<role>"}
+ {:file "src/spindel/v2/inv/copier.clj" :line 1157
+  :old ":transport '{kw glx-kw}" :new ":transport '{view i10-task-exempt-frame}"
+  :why "the site name is a quoted symbol; the substitution would write i10-task-view. gl-exempt-transport-kw -> i10-task-exempt-transport-view"}
+
+ ;; ---- tests that match names by a regex
+ {:file "test/spindel/v2/pres/tree_test.clj" :line 54 :old "(deftest raw0-is-cut-by-item" :new "(deftest transition-is-cut-by-item"
+  :why "the test's own name"}
+ {:file "test/spindel/v2/pres/tree_test.clj" :line 58 :old "#\"raw0-.+-inv\"" :new "#\"well-formed-transition-.+\""
+  :why "the 49 per-item lemmas raw0-<item>-inv -> well-formed-transition-<item>"}
+ {:file "test/spindel/v2/pres/tree_test.clj" :line 201 :old "'[raw0-dispatch-comp-inv raw0-inv raw0-start-inv]"
+  :new "'[well-formed-transition well-formed-transition-dispatch-comp well-formed-transition-start]"
+  :why "the expected list is sorted by name; the new names sort differently"}
+ {:file "test/spindel/v2/pres/tree_test.clj" :line 202 :old "#\"^raw0-\"" :new "#\"^well-formed-transition\""
+  :why "as line 58"}
+
+ ;; ---- a test that selects names by a string prefix
+ {:file "test/spindel/v2/inv/members/dispatch_test.clj" :line 12
+  :old "(.startsWith (str (:name %)) \"h14-\")" :new "(#{$H14-NAMES} (str (:name %)))"
+  :why "selects the 19 h14- contracts of notes/hm14-contracts.edn by prefix; under current-members- the prefix also matches the manifest's 29 h3-/hm3-/h3r-/h9-/h13- names. $H14-NAMES is filled by renames.clj with the 19 names as they are after the substitution"}]

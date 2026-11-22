@@ -2,89 +2,89 @@
  :plan-sha256 "f3ff3ff82dea0ba4c71f06f94eec4d46e2e1721c831f6ee58d2b6daf0e1aafb6"
  :confirmation-sha256 "47d68ee802428e2dd6e712873001bc5202d46cd56cb57588fa104e71537011b5"
  :accepted-base "348619d63f739397ea6cf7a941c14e1603f6b188"
- :source-inventory [h13-raw0g-support h13-post-h3 h13-raw0g-await-outcome h13-raw-await-accepted h13-raw-await-outcome]
+ :source-inventory [current-members-host-guarded-transition-support current-members-then-cancel-losers current-members-host-guarded-transition-await-outcome current-members-raw-await-accepted current-members-raw-await-outcome]
  :new-definitions []
  :helpers []
  :stop-boundary :raw-await-after-post-cancel-losers-before-finish-rule-r
  :excluded-claims [:arbitrary-item-h3 :normalized-world-step-h3 :full-t6 :p11 :runtime-refinement :release]
  :public-contracts
- [{:name h13-raw0g-support
+ [{:name current-members-host-guarded-transition-support
    :type (forall [w :- World it :- Item]
-           (=> (= (p3la w) true)
-               (And (= (hmk (List.nil Nat) (:world (raw0g w it))) true)
-                    (And (= (g10 (List.nil Nat) (List.nil Nat) (:world (raw0g w it))) true)
-                         (= (ekb (:world (raw0g w it))) true)))))}
-  {:name h13-post-h3
+           (=> (= (chain-to-edge-kinds w) true)
+               (And (= (marks-waiting (List.nil Nat) (:world (host-guarded-transition w it))) true)
+                    (And (= (i10-current-exempt (List.nil Nat) (List.nil Nat) (:world (host-guarded-transition w it))) true)
+                         (= (edge-kinds (:world (host-guarded-transition w it))) true)))))}
+  {:name current-members-then-cancel-losers
    :type (forall [xm :- (List Nat) w :- World o :- Outcome]
-           (=> (= (hmk (List.nil Nat) (:world o)) true)
-               (= (g10 (List.nil Nat) (List.nil Nat) (:world o)) true)
-               (= (ekb (:world o)) true)
-               (= (h3 xm (:world o)) true)
-               (= (h3 xm (:world (post w o))) true)))}
-  {:name h13-raw0g-await-outcome
+           (=> (= (marks-waiting (List.nil Nat) (:world o)) true)
+               (= (i10-current-exempt (List.nil Nat) (List.nil Nat) (:world o)) true)
+               (= (edge-kinds (:world o)) true)
+               (= (current-members xm (:world o)) true)
+               (= (current-members xm (:world (then-cancel-losers w o))) true)))}
+  {:name current-members-host-guarded-transition-await-outcome
    :type (forall [xm :- (List Nat) w :- World st :- Nat ds :- (List Nat) mode :- Nat k :- Nat fresh :- Nat mine :- (List Nat)]
-           (=> (= (p3la w) true) (= (h3 xm w) true)
-               (And (= (h3 xm (:world (raw0g w (Item.await st ds mode k fresh mine)))) true)
-                    (=> (= (:accepted (raw0g w (Item.await st ds mode k fresh mine))) false)
-                        (= (:world (raw0g w (Item.await st ds mode k fresh mine))) w)))))}
-  {:name h13-raw-await-accepted
+           (=> (= (chain-to-edge-kinds w) true) (= (current-members xm w) true)
+               (And (= (current-members xm (:world (host-guarded-transition w (Item.await st ds mode k fresh mine)))) true)
+                    (=> (= (:accepted (host-guarded-transition w (Item.await st ds mode k fresh mine))) false)
+                        (= (:world (host-guarded-transition w (Item.await st ds mode k fresh mine))) w)))))}
+  {:name current-members-raw-await-accepted
    :type (forall [w :- World st :- Nat ds :- (List Nat) mode :- Nat k :- Nat fresh :- Nat mine :- (List Nat)]
            (And (= (:accepted (raw w (Item.await st ds mode k fresh mine)))
-                   (:accepted (raw0 w (Item.await st ds mode k fresh mine))))
-                (=> (= (:accepted (raw0 w (Item.await st ds mode k fresh mine))) true)
+                   (:accepted (transition w (Item.await st ds mode k fresh mine))))
+                (=> (= (:accepted (transition w (Item.await st ds mode k fresh mine))) true)
                     (= (raw w (Item.await st ds mode k fresh mine))
-                       (accept (cancel-losers w (:world (raw0 w (Item.await st ds mode k fresh mine)))))))))}
-  {:name h13-raw-await-outcome
+                       (accept (cancel-losers w (:world (transition w (Item.await st ds mode k fresh mine)))))))))}
+  {:name current-members-raw-await-outcome
    :type (forall [xm :- (List Nat) w :- World st :- Nat ds :- (List Nat) mode :- Nat k :- Nat fresh :- Nat mine :- (List Nat)]
-           (=> (= (p3la w) true) (= (h3 xm w) true)
-               (And (= (h3 xm (:world (raw w (Item.await st ds mode k fresh mine)))) true)
+           (=> (= (chain-to-edge-kinds w) true) (= (current-members xm w) true)
+               (And (= (current-members xm (:world (raw w (Item.await st ds mode k fresh mine)))) true)
                     (=> (= (:accepted (raw w (Item.await st ds mode k fresh mine))) false)
                         (= (:world (raw w (Item.await st ds mode k fresh mine))) w)))))}]
  :dependency-contracts
- {raw0g-hmk
+ {marks-waiting-host-guarded-transition
   (forall [hxm :- (List Nat) w :- World it :- Item]
-    (=> (= (gd w) true) (= (g7 w) true) (= (ga w) true) (= (g10r w) true)
-        (= (hmk hxm w) true) (= (hmk hxm (:world (raw0g w it))) true)))
-  raw0g-g10r
+    (=> (= (comp-facts w) true) (= (i7-idle w) true) (= (acts-parked w) true) (= (i10-current w) true)
+        (= (marks-waiting hxm w) true) (= (marks-waiting hxm (:world (host-guarded-transition w it))) true)))
+  i10-current-host-guarded-transition
   (forall [w :- World it :- Item]
-    (=> (= (g10r w) true) (= (g10r (:world (raw0g w it))) true)))
-  raw0g-ekb
+    (=> (= (i10-current w) true) (= (i10-current (:world (host-guarded-transition w it))) true)))
+  edge-kinds-host-guarded-transition
   (forall [w :- World it :- Item]
-    (=> (= (ekb w) true) (= (ekb (:world (raw0g w it))) true)))
-  h3-cancel-losers
+    (=> (= (edge-kinds w) true) (= (edge-kinds (:world (host-guarded-transition w it))) true)))
+  current-members-cancel-losers
   (forall [xm :- (List Nat) hxm :- (List Nat) gxz :- (List Nat) gkz :- (List Nat) w0 :- World w1 :- World]
-    (=> (= (hmk hxm w1) true) (= (g10 gxz gkz w1) true) (= (ekb w1) true) (= (h3 xm w1) true)
-        (= (h3 xm (cancel-losers w0 w1)) true)))
-  raw0g-of
+    (=> (= (marks-waiting hxm w1) true) (= (i10-current-exempt gxz gkz w1) true) (= (edge-kinds w1) true) (= (current-members xm w1) true)
+        (= (current-members xm (cancel-losers w0 w1)) true)))
+  host-guarded-transition-non-host
   (forall [w :- World it :- Item]
-    (=> (= (host-item it) false) (= (raw0g w it) (raw0 w it))))
-  raw0g-refuse
+    (=> (= (host-item it) false) (= (host-guarded-transition w it) (transition w it))))
+  host-guarded-transition-refuse
   (forall [w :- World it :- Item]
-    (=> (= (:accepted (raw0g w it)) false) (= (:world (raw0g w it)) w)))
+    (=> (= (:accepted (host-guarded-transition w it)) false) (= (:world (host-guarded-transition w it)) w)))
   raw-refuse
   (forall [w :- World it :- Item]
     (=> (= (:accepted (raw w it)) false) (= (:world (raw w it)) w)))
-  h12-raw0-await-outcome
+  current-members-transition-await-outcome
   (forall [xm :- (List Nat) w :- World st :- Nat ds :- (List Nat) mode :- Nat k :- Nat fresh :- Nat mine :- (List Nat)]
-    (=> (= (p3la w) true) (= (h3 xm w) true)
-        (And (= (h3 xm (:world (raw0 w (Item.await st ds mode k fresh mine)))) true)
-             (=> (= (:accepted (raw0 w (Item.await st ds mode k fresh mine))) false)
-                 (= (:world (raw0 w (Item.await st ds mode k fresh mine))) w)))))
-  p3la-gd (forall [w :- World] (=> (= (p3la w) true) (= (gd w) true)))
-  p3la-g7 (forall [w :- World] (=> (= (p3la w) true) (= (g7 w) true)))
-  p3la-ga (forall [w :- World] (=> (= (p3la w) true) (= (ga w) true)))
-  p3la-g10r (forall [w :- World] (=> (= (p3la w) true) (= (g10r w) true)))
-  p3la-hmk (forall [w :- World] (=> (= (p3la w) true) (= (hmk (List.nil Nat) w) true)))
-  p3la-ekb (forall [w :- World] (=> (= (p3la w) true) (= (ekb w) true)))}
+    (=> (= (chain-to-edge-kinds w) true) (= (current-members xm w) true)
+        (And (= (current-members xm (:world (transition w (Item.await st ds mode k fresh mine)))) true)
+             (=> (= (:accepted (transition w (Item.await st ds mode k fresh mine))) false)
+                 (= (:world (transition w (Item.await st ds mode k fresh mine))) w)))))
+  chain-to-edge-kinds-comp-facts (forall [w :- World] (=> (= (chain-to-edge-kinds w) true) (= (comp-facts w) true)))
+  chain-to-edge-kinds-i7-idle (forall [w :- World] (=> (= (chain-to-edge-kinds w) true) (= (i7-idle w) true)))
+  chain-to-edge-kinds-acts-parked (forall [w :- World] (=> (= (chain-to-edge-kinds w) true) (= (acts-parked w) true)))
+  chain-to-edge-kinds-i10-current (forall [w :- World] (=> (= (chain-to-edge-kinds w) true) (= (i10-current w) true)))
+  chain-to-edge-kinds-marks-waiting (forall [w :- World] (=> (= (chain-to-edge-kinds w) true) (= (marks-waiting (List.nil Nat) w) true)))
+  chain-to-edge-kinds-edge-kinds (forall [w :- World] (=> (= (chain-to-edge-kinds w) true) (= (edge-kinds w) true)))}
  :dependency-first-load-gate
- {:name raw0g-g10r :after :normal-hm12-require :before :any-hm13-proof-load-or-application
+ {:name i10-current-host-guarded-transition :after :normal-hm12-require :before :any-hm13-proof-load-or-application
   :required-tag :thm :required-safety 0 :required-type :independently-elaborated-dependency-contract
   :unexpected-type-action :stop-preserve-report-no-rematerialization}
  :definition-pins
- {g10r (a/defn g10r [w :- World] Bool (g10 (List.nil Nat) (List.nil Nat) w))}
+ {i10-current (a/defn i10-current [w :- World] Bool (i10-current-exempt (List.nil Nat) (List.nil Nat) w))}
  :intended-dependencies
- {h13-raw0g-support [raw0g-hmk raw0g-g10r raw0g-ekb p3la-gd p3la-g7 p3la-ga p3la-g10r p3la-hmk p3la-ekb]
-  h13-post-h3 [h3-cancel-losers post accept]
-  h13-raw0g-await-outcome [raw0g-of h12-raw0-await-outcome raw0g-refuse host-item]
-  h13-raw-await-accepted [raw0g-of raw post accept host-item]
-  h13-raw-await-outcome [h13-raw0g-support h13-post-h3 h13-raw0g-await-outcome raw raw-refuse]}}
+ {current-members-host-guarded-transition-support [marks-waiting-host-guarded-transition i10-current-host-guarded-transition edge-kinds-host-guarded-transition chain-to-edge-kinds-comp-facts chain-to-edge-kinds-i7-idle chain-to-edge-kinds-acts-parked chain-to-edge-kinds-i10-current chain-to-edge-kinds-marks-waiting chain-to-edge-kinds-edge-kinds]
+  current-members-then-cancel-losers [current-members-cancel-losers then-cancel-losers accept]
+  current-members-host-guarded-transition-await-outcome [host-guarded-transition-non-host current-members-transition-await-outcome host-guarded-transition-refuse host-item]
+  current-members-raw-await-accepted [host-guarded-transition-non-host raw then-cancel-losers accept host-item]
+  current-members-raw-await-outcome [current-members-host-guarded-transition-support current-members-then-cancel-losers current-members-host-guarded-transition-await-outcome raw raw-refuse]}}

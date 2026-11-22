@@ -240,10 +240,10 @@
         (intro a ha b hb)
         (have h := (hi a ha b hb))
         (simp [reach-mem-cons] at h)
-        (rcases h (or h1 (or h2 h3)))
+        (rcases h (or h1 (or h2 current-members)))
         (simp [h1])
         (rw [h2]) (simp [hm])
-        (simp [h3]))
+        (simp [current-members]))
       (case [false]
         (simp [reach-closure hm] at hc)
         (simp [reach-closure hm])
@@ -254,8 +254,8 @@
         (rw [h1] at hb) (simp [reach-mem-app hb])
         (have h := (hi a h2 b hb))
         (simp [reach-mem-cons] at h)
-        (rcases h (or g1 (or g2 g3)))
-        (simp [reach-mem-cons g1])
+        (rcases h (or i1-scopes (or g2 g3)))
+        (simp [reach-mem-cons i1-scopes])
         (simp [reach-mem-cons g2])
         (simp [reach-mem-app g3])))))
 

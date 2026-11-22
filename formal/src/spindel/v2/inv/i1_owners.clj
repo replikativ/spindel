@@ -6,19 +6,19 @@
   The existence half is Rule R's: its loop runs rounds until no row has a missing owner
   (`no-orphans`), so the step's world has none once the loop stops for that reason, not for its fuel.
   Termination (`rule-r-no-orphans`): the owner count (`own-count`, rows with a non-zero owner)
-  never grows through normalization (bundle NZ, every inv-sample lemma of `normalize` restated by
+  never grows through normalization (bundle NZ, every well-formed lemma of `normalize` restated by
   the generic step tree) or the filter, and drops at each round whose input has an orphan (`detach-lt`:
   detach sets the first orphan's owner to 0; the owner view `ow` of sources, tasks and computation
   keys is kept by the fires inside detach-source); the fuel 1 + #ids exceeds the count.
-  The closed half: bundle `gso` (a source with owner 0 is closed, and every run's scope is not 0, so
+  The closed half: bundle `i1-detached-closed` (a source with owner 0 is closed, and every run's scope is not 0, so
   a source created in a run gets a non-zero owner: its computation or its current scope).
 
   Theorems:
-    rule-r-no-orphans          inv-sample w, rule-r-safe w -> no-orphans (rule-r w)
-    step-gso                   gso w, rule-r-safe raw -> gso (world-step w it)
-    p3g = p3f && gso && i1-own  step-p3g, p3g-empty
-    step-lit-i1-owners-total   p3g w -> i1-own (world-step w it)
-  I1's resource owners and run entities/scopes: spindel.v2.inv.i1-runs (p3h)."
+    rule-r-no-orphans          well-formed w, rule-r-safe w -> no-orphans (rule-r w)
+    step-i1-detached-closed                   i1-detached-closed w, rule-r-safe raw -> i1-detached-closed (world-step w it)
+    chain-to-i1-detached-closed = chain-to-i5-dep-final && i1-detached-closed && lit-i1-own  step-chain-to-i1-detached-closed, chain-to-i1-detached-closed-empty
+    step-lit-i1-owners-total   chain-to-i1-detached-closed w -> lit-i1-own (world-step w it)
+  I1's resource owners and run entities/scopes: spindel.v2.inv.i1-runs (chain-to-i1-runs)."
   (:require [ansatz.core :as a]
             [spindel.v2.pres.frames :as frames]
             [spindel.v2.state :refer :all]
@@ -53,18 +53,18 @@
 (a/defn nzc [c :- CompRow] Bool (Bool.not (Nat.beq (:owner c) 0)))
 (a/defn own-count [w :- World] Nat
   (+ (tbl-count nzs (:sources w)) (+ (tbl-count nzt (:tasks w)) (tbl-count nzc (:comps w)))))
-(a/defn nzb [n :- Nat, w :- World] Bool (Bool.and (inv-sample w) (Nat.ble (own-count w) n)))
-(a/defn nzb-rest [n :- Nat, w :- World] Bool (Nat.ble (own-count w) n))
+(a/defn owner-count-at-most [n :- Nat, w :- World] Bool (Bool.and (well-formed w) (Nat.ble (own-count w) n)))
+(a/defn owner-count-at-most-rest [n :- Nat, w :- World] Bool (Nat.ble (own-count w) n))
 
-(a/theorem nzb-sample [n :- Nat, w :- World] (=> (= (nzb n w) true) (= (inv-sample w) true))
-  (intro h) (simp only [nzb Bool.and_eq_true] at h) (exact (And.left h)))
-(a/theorem nzb-rest-of [n :- Nat, w :- World] (=> (= (nzb n w) true) (= (nzb-rest n w) true))
-  (intro h) (simp only [nzb Bool.and_eq_true] at h) (simp only [nzb-rest]) (exact (And.right h)))
-(a/theorem nzb-intro [n :- Nat, w :- World] (=> (= (inv-sample w) true) (= (nzb-rest n w) true) (= (nzb n w) true))
-  (intros h1 h2) (simp only [nzb-rest] at h2) (simp only [nzb h1 h2 Bool.and_self]))
-(a/theorem nzb-parts [n :- Nat, w :- World]
-  (=> (= (nzb n w) true) (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
-  (intro h) (exact (inv-parts w (nzb-sample n w h))))
+(a/theorem owner-count-at-most-well-formed [n :- Nat, w :- World] (=> (= (owner-count-at-most n w) true) (= (well-formed w) true))
+  (intro h) (simp only [owner-count-at-most Bool.and_eq_true] at h) (exact (And.left h)))
+(a/theorem owner-count-at-most-rest-of [n :- Nat, w :- World] (=> (= (owner-count-at-most n w) true) (= (owner-count-at-most-rest n w) true))
+  (intro h) (simp only [owner-count-at-most Bool.and_eq_true] at h) (simp only [owner-count-at-most-rest]) (exact (And.right h)))
+(a/theorem owner-count-at-most-intro [n :- Nat, w :- World] (=> (= (well-formed w) true) (= (owner-count-at-most-rest n w) true) (= (owner-count-at-most n w) true))
+  (intros h1 h2) (simp only [owner-count-at-most-rest] at h2) (simp only [owner-count-at-most h1 h2 Bool.and_self]))
+(a/theorem owner-count-at-most-parts [n :- Nat, w :- World]
+  (=> (= (owner-count-at-most n w) true) (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
+  (intro h) (exact (well-formed-parts w (owner-count-at-most-well-formed n w h))))
 
 (a/theorem tbl-count-upd-le [A :- Type, idf :- (=> A Nat), x :- Nat, f :- (=> A A), p :- (=> A Bool),
                              hf :- (forall [r :- A] (=> (= (p (f r)) true) (= (p r) true))), xs :- (List A)]
@@ -89,9 +89,9 @@
     (case [true] (simp only [tbl-keep hk tbl-count-cons]) (omega))))
 
 ;; the rest from a count bound: edits that do not raise the count
-(a/theorem nzb-rest-le [n :- Nat, w :- World, w2 :- World]
-  (=> (<= (own-count w2) (own-count w)) (= (nzb-rest n w) true) (= (nzb-rest n w2) true))
-  (intros hl h) (simp only [nzb-rest Nat.ble_eq] at h) (simp only [nzb-rest Nat.ble_eq]) (omega))
+(a/theorem owner-count-at-most-rest-le [n :- Nat, w :- World, w2 :- World]
+  (=> (<= (own-count w2) (own-count w)) (= (owner-count-at-most-rest n w) true) (= (owner-count-at-most-rest n w2) true))
+  (intros hl h) (simp only [owner-count-at-most-rest Nat.ble_eq] at h) (simp only [owner-count-at-most-rest Nat.ble_eq]) (omega))
 
 (a/theorem oc-source-upd [w :- World, x :- Nat, f :- (=> SourceRow SourceRow),
                           hk :- (forall [s :- SourceRow] (=> (= (nzs (f s)) true) (= (nzs s) true)))]
@@ -122,28 +122,28 @@
   (have l3 := (tbl-count-keep-le CompRow K comp-id nzc (:comps w)))
   (omega))
 
-(a/theorem nzb-source-upd [nzn :- Nat, w :- World, x :- Nat, f :- (=> SourceRow SourceRow),
+(a/theorem owner-count-at-most-source-upd [nzn :- Nat, w :- World, x :- Nat, f :- (=> SourceRow SourceRow),
                            hid :- (forall [s :- SourceRow] (= (source-id (f s)) (source-id s))),
                            hk :- (forall [s :- SourceRow] (= (nzs (f s)) (nzs s)))]
-  (=> (= (nzb nzn w) true) (= (nzb nzn (source-upd w x f)) true))
+  (=> (= (owner-count-at-most nzn w) true) (= (owner-count-at-most nzn (source-upd w x f)) true))
   (intro h)
-  (exact (nzb-intro nzn _ (inv-source-upd w x f hid (nzb-sample nzn w h))
-           (nzb-rest-le nzn w _ (oc-source-upd w x f (fn [s :- SourceRow, q :- (= (nzs (f s)) true)] (Eq.trans (Eq.symm (hk s)) q))) (nzb-rest-of nzn w h)))))
-(a/theorem nzb-task-upd [nzn :- Nat, w :- World, x :- Nat, f :- (=> TaskRow TaskRow),
+  (exact (owner-count-at-most-intro nzn _ (well-formed-source-upd w x f hid (owner-count-at-most-well-formed nzn w h))
+           (owner-count-at-most-rest-le nzn w _ (oc-source-upd w x f (fn [s :- SourceRow, q :- (= (nzs (f s)) true)] (Eq.trans (Eq.symm (hk s)) q))) (owner-count-at-most-rest-of nzn w h)))))
+(a/theorem owner-count-at-most-task-upd [nzn :- Nat, w :- World, x :- Nat, f :- (=> TaskRow TaskRow),
                          hid :- (forall [s :- TaskRow] (= (task-id (f s)) (task-id s))),
                          hk :- (forall [s :- TaskRow] (= (nzt (f s)) (nzt s)))]
-  (=> (= (nzb nzn w) true) (= (nzb nzn (task-upd w x f)) true))
+  (=> (= (owner-count-at-most nzn w) true) (= (owner-count-at-most nzn (task-upd w x f)) true))
   (intro h)
-  (exact (nzb-intro nzn _ (inv-task-upd w x f hid (nzb-sample nzn w h))
-           (nzb-rest-le nzn w _ (oc-task-upd w x f (fn [s :- TaskRow, q :- (= (nzt (f s)) true)] (Eq.trans (Eq.symm (hk s)) q))) (nzb-rest-of nzn w h)))))
-(a/theorem nzb-comp-upd [nzn :- Nat, w :- World, x :- Nat, f :- (=> CompRow CompRow),
+  (exact (owner-count-at-most-intro nzn _ (well-formed-task-upd w x f hid (owner-count-at-most-well-formed nzn w h))
+           (owner-count-at-most-rest-le nzn w _ (oc-task-upd w x f (fn [s :- TaskRow, q :- (= (nzt (f s)) true)] (Eq.trans (Eq.symm (hk s)) q))) (owner-count-at-most-rest-of nzn w h)))))
+(a/theorem owner-count-at-most-comp-upd [nzn :- Nat, w :- World, x :- Nat, f :- (=> CompRow CompRow),
                          hid :- (forall [c :- CompRow] (= (comp-id (f c)) (comp-id c))),
                          hp :- (forall [c :- CompRow] (= (:pending (f c)) (:pending c))),
                          hk :- (forall [s :- CompRow] (= (nzc (f s)) (nzc s)))]
-  (=> (= (nzb nzn w) true) (= (nzb nzn (comp-upd w x f)) true))
+  (=> (= (owner-count-at-most nzn w) true) (= (owner-count-at-most nzn (comp-upd w x f)) true))
   (intro h)
-  (exact (nzb-intro nzn _ (inv-comp-upd w x f hid hp (nzb-sample nzn w h))
-           (nzb-rest-le nzn w _ (oc-comp-upd w x f (fn [s :- CompRow, q :- (= (nzc (f s)) true)] (Eq.trans (Eq.symm (hk s)) q))) (nzb-rest-of nzn w h)))))
+  (exact (owner-count-at-most-intro nzn _ (well-formed-comp-upd w x f hid hp (owner-count-at-most-well-formed nzn w h))
+           (owner-count-at-most-rest-le nzn w _ (oc-comp-upd w x f (fn [s :- CompRow, q :- (= (nzc (f s)) true)] (Eq.trans (Eq.symm (hk s)) q))) (owner-count-at-most-rest-of nzn w h)))))
 
 (a/theorem nzs-detach [s :- SourceRow] (=> (= (nzs (source-detach-row s)) true) (= (nzs s) true))
   (intro h) (simp [nzs source-detach-row] at h))
@@ -151,32 +151,32 @@
   (intro h) (simp [nzt task-detach-row] at h))
 (a/theorem nzc-detach [s :- CompRow] (=> (= (nzc (comp-detach-row s)) true) (= (nzc s) true))
   (intro h) (simp [nzc comp-detach-row] at h))
-(a/theorem nzb-source-detach [nzn :- Nat, w :- World, x :- Nat]
-  (=> (= (nzb nzn w) true) (= (nzb nzn (source-upd w x source-detach-row)) true))
+(a/theorem owner-count-at-most-source-detach [nzn :- Nat, w :- World, x :- Nat]
+  (=> (= (owner-count-at-most nzn w) true) (= (owner-count-at-most nzn (source-upd w x source-detach-row)) true))
   (intro h)
-  (exact (nzb-intro nzn _ (inv-source-upd w x source-detach-row source-detach-row-id (nzb-sample nzn w h))
-           (nzb-rest-le nzn w _ (oc-source-upd w x source-detach-row nzs-detach) (nzb-rest-of nzn w h)))))
-(a/theorem nzb-task-detach [nzn :- Nat, w :- World, x :- Nat]
-  (=> (= (nzb nzn w) true) (= (nzb nzn (task-upd w x task-detach-row)) true))
+  (exact (owner-count-at-most-intro nzn _ (well-formed-source-upd w x source-detach-row source-detach-row-id (owner-count-at-most-well-formed nzn w h))
+           (owner-count-at-most-rest-le nzn w _ (oc-source-upd w x source-detach-row nzs-detach) (owner-count-at-most-rest-of nzn w h)))))
+(a/theorem owner-count-at-most-task-detach [nzn :- Nat, w :- World, x :- Nat]
+  (=> (= (owner-count-at-most nzn w) true) (= (owner-count-at-most nzn (task-upd w x task-detach-row)) true))
   (intro h)
-  (exact (nzb-intro nzn _ (inv-task-upd w x task-detach-row task-detach-row-id (nzb-sample nzn w h))
-           (nzb-rest-le nzn w _ (oc-task-upd w x task-detach-row nzt-detach) (nzb-rest-of nzn w h)))))
-(a/theorem nzb-comp-detach [nzn :- Nat, w :- World, x :- Nat]
-  (=> (= (nzb nzn w) true) (= (nzb nzn (comp-upd w x comp-detach-row)) true))
+  (exact (owner-count-at-most-intro nzn _ (well-formed-task-upd w x task-detach-row task-detach-row-id (owner-count-at-most-well-formed nzn w h))
+           (owner-count-at-most-rest-le nzn w _ (oc-task-upd w x task-detach-row nzt-detach) (owner-count-at-most-rest-of nzn w h)))))
+(a/theorem owner-count-at-most-comp-detach [nzn :- Nat, w :- World, x :- Nat]
+  (=> (= (owner-count-at-most nzn w) true) (= (owner-count-at-most nzn (comp-upd w x comp-detach-row)) true))
   (intro h)
-  (exact (nzb-intro nzn _ (inv-comp-upd w x comp-detach-row comp-detach-row-id comp-detach-row-pending (nzb-sample nzn w h))
-           (nzb-rest-le nzn w _ (oc-comp-upd w x comp-detach-row nzc-detach) (nzb-rest-of nzn w h)))))
+  (exact (owner-count-at-most-intro nzn _ (well-formed-comp-upd w x comp-detach-row comp-detach-row-id comp-detach-row-pending (owner-count-at-most-well-formed nzn w h))
+           (owner-count-at-most-rest-le nzn w _ (oc-comp-upd w x comp-detach-row nzc-detach) (owner-count-at-most-rest-of nzn w h)))))
 
-(def NZ (mk-bundle 'nzb '[nzn :- Nat] "nzb-"
-          {'inv-source-upd ['(fn [s :- SourceRow] (Eq.refl (nzs s))) 4]
-           'inv-task-upd ['(fn [t :- TaskRow] (Eq.refl (nzt t))) 4]
-           'inv-comp-upd ['(fn [c :- CompRow] (Eq.refl (nzc c))) 5]}))
-(swap! (:renames NZ) assoc 'inv-parts 'nzb-parts 'inv-source-upd 'nzb-source-upd 'inv-task-upd 'nzb-task-upd
-       'inv-comp-upd 'nzb-comp-upd)
-(doseq [o '[inv-scope-upd inv-pub-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del inv-cleanup-ins inv-set-pins
-            inv-resource-del inv-scope-del inv-act-upd inv-run-upd inv-run-del inv-bump inv-edge-upd inv-fork-del]]
+(def NZ (mk-bundle 'owner-count-at-most '[nzn :- Nat] "owner-count-at-most-"
+          {'well-formed-source-upd ['(fn [s :- SourceRow] (Eq.refl (nzs s))) 4]
+           'well-formed-task-upd ['(fn [t :- TaskRow] (Eq.refl (nzt t))) 4]
+           'well-formed-comp-upd ['(fn [c :- CompRow] (Eq.refl (nzc c))) 5]}))
+(swap! (:renames NZ) assoc 'well-formed-parts 'owner-count-at-most-parts 'well-formed-source-upd 'owner-count-at-most-source-upd 'well-formed-task-upd 'owner-count-at-most-task-upd
+       'well-formed-comp-upd 'owner-count-at-most-comp-upd)
+(doseq [o '[well-formed-scope-upd well-formed-pub-upd well-formed-resource-upd well-formed-cleanup-upd well-formed-cleanup-del well-formed-cleanup-ins well-formed-set-pins
+            well-formed-resource-del well-formed-scope-del well-formed-act-upd well-formed-run-upd well-formed-run-del well-formed-bump well-formed-edge-upd well-formed-fork-del]]
   (prim! NZ o nil))
-(prim! NZ 'inv-comp-del-unref '(nzb-rest-le nzn w (comp-del w x) (oc-comp-del w x) R))
+(prim! NZ 'well-formed-comp-del-unref '(owner-count-at-most-rest-le nzn w (comp-del w x) (oc-comp-del w x) R))
 
 (a/theorem oc-comps-pend [w :- World, w2 :- World, x :- Nat, f :- (=> CompRow CompRow),
                            hk :- (forall [c :- CompRow] (= (nzc (f c)) (nzc c)))]
@@ -217,26 +217,26 @@
   (case [cons h t ih] (simp only [comps-resync tbl-count-cons ih comp-resync comp-set-pending nzc])))
 (a/theorem oc-drop-edges [w :- World, p :- (=> EdgeRow Bool)] (<= (own-count (drop-edges w p)) (own-count w))
   (simp only [own-count drop-edges set-comps set-edges count-resync]) (exact (Nat.le_refl _)))
-(prim! NZ 'inv-remove-edge '(nzb-rest-le nzn w (remove-edge w x) (oc-remove-edge w x) R))
-(prim! NZ 'mark-edge-inv-sample '(nzb-rest-le nzn w (mark-edge w x) (oc-mark-edge w x) R))
-(prim! NZ 'unmark-edge-inv-sample '(nzb-rest-le nzn w (unmark-edge w x) (oc-unmark-edge w x) R))
-(prim! NZ 'inv-drop-cred '(nzb-rest-le nzn w (drop-cred-edges w a) (oc-drop-cred w a) R))
-(prim! NZ 'inv-drop-act '(nzb-rest-le nzn w (drop-act w a) (oc-drop-cred w a) R))
-(prim! NZ 'inv-drop-edges '(nzb-rest-le nzn w (drop-edges w p) (oc-drop-edges w p) R))
+(prim! NZ 'well-formed-remove-edge '(owner-count-at-most-rest-le nzn w (remove-edge w x) (oc-remove-edge w x) R))
+(prim! NZ 'well-formed-mark-edge '(owner-count-at-most-rest-le nzn w (mark-edge w x) (oc-mark-edge w x) R))
+(prim! NZ 'well-formed-unmark-edge '(owner-count-at-most-rest-le nzn w (unmark-edge w x) (oc-unmark-edge w x) R))
+(prim! NZ 'well-formed-drop-cred-edges '(owner-count-at-most-rest-le nzn w (drop-cred-edges w a) (oc-drop-cred w a) R))
+(prim! NZ 'well-formed-drop-act '(owner-count-at-most-rest-le nzn w (drop-act w a) (oc-drop-cred w a) R))
+(prim! NZ 'well-formed-drop-edges '(owner-count-at-most-rest-le nzn w (drop-edges w p) (oc-drop-edges w p) R))
 
 (a/theorem nzt-cancel-result [t :- TaskRow] (= (nzt (task-cancel-result t)) (nzt t))
   (cases h (Nat.beq (:tag (:result t)) res-none)) (all_goals (simp only [task-cancel-result h nzt])))
-(a/theorem nzb-task-cancel [nzn :- Nat, w :- World, x :- Nat]
-  (=> (= (nzb nzn w) true) (= (nzb nzn (task-upd w x task-cancel-result)) true))
-  (intro h) (exact (nzb-task-upd nzn w x task-cancel-result task-cancel-result-id nzt-cancel-result h)))
-;; nzb on the generic tree: a detached or cancelled row keeps its owner (the four row lemmas above)
+(a/theorem owner-count-at-most-task-cancel [nzn :- Nat, w :- World, x :- Nat]
+  (=> (= (owner-count-at-most nzn w) true) (= (owner-count-at-most nzn (task-upd w x task-cancel-result)) true))
+  (intro h) (exact (owner-count-at-most-task-upd nzn w x task-cancel-result task-cancel-result-id nzt-cancel-result h)))
+;; owner-count-at-most on the generic tree: a detached or cancelled row keeps its owner (the four row lemmas above)
 (tree/part! NZ
-  :sites '{[inv-source-upd source-detach-row] (nzb-source-detach nzn w x h0)
-           [inv-task-upd task-detach-row]     (nzb-task-detach nzn w x h0)
-           [inv-comp-upd comp-detach-row]     (nzb-comp-detach nzn w x h0)
-           [inv-task-upd task-cancel-result]  (nzb-task-cancel nzn w x h0)})
+  :sites '{[well-formed-source-upd source-detach-row] (owner-count-at-most-source-detach nzn w x h0)
+           [well-formed-task-upd task-detach-row]     (owner-count-at-most-task-detach nzn w x h0)
+           [well-formed-comp-upd comp-detach-row]     (owner-count-at-most-comp-detach nzn w x h0)
+           [well-formed-task-upd task-cancel-result]  (owner-count-at-most-task-cancel nzn w x h0)})
 
-(tree/restate! NZ '[inv-normalize])
+(tree/restate! NZ '[well-formed-normalize])
 
 ;; ===========================================================================
 ;; Part B. Detach lowers it when there is an orphan; Rule R terminates with no orphan
@@ -395,38 +395,38 @@
   (induction xs)
   (case [nil] (intro w) (simp only [nat-fold]))
   (case [cons h t ih] (intro w) (simp only [nat-fold]) (exact (Eq.trans (ih (f w h)) (hf w h)))))
-(a/theorem ow-fin-loop [fuel :- (List Nat)]
-  (forall [w :- World, ds :- (List Nat)] (= (ow (:world (fin-loop fuel w ds))) (ow w)))
+(a/theorem ow-finalize-loop [fuel :- (List Nat)]
+  (forall [w :- World, ds :- (List Nat)] (= (ow (:world (finalize-loop fuel w ds))) (ow w)))
   (induction fuel)
-  (case [nil] (intros w ds) (simp only [fin-loop]))
+  (case [nil] (intros w ds) (simp only [finalize-loop]))
   (case [cons h f ih]
     (intros w ds)
     (cases ds)
-    (simp only [fin-loop])
+    (simp only [finalize-loop])
     (rename_i d t)
-    (simp only [fin-loop])
+    (simp only [finalize-loop])
     (have e1 (= (ow (finalize-one w d)) (ow w)))
     (simp only [ow finalize-one drop-edges set-comps set-edges ck1s-resync])
     (exact (Eq.trans (ih (finalize-one w d) _) e1))))
 (a/theorem ow-detach-source [w :- World, x :- Nat]
   (= (ow (detach-source w x)) (OW.mk (tbl-upd source-id x source-detach-row (:sources w)) (:tasks w) (ck1s (:comps w))))
-  (simp only [detach-source finalize-debtor wake-closed])
-  (exact (Eq.trans (ow-fin-loop _ _ _) (ow-fold (fire-edge _) (ow-fire-edge _) _ (source-upd w x source-detach-row)))))
+  (simp only [detach-source t10-finalize-debtor wake-closed])
+  (exact (Eq.trans (ow-finalize-loop _ _ _) (ow-fold (fire-edge _) (ow-fire-edge _) _ (source-upd w x source-detach-row)))))
 
 ;; ---- the count through a fold is bounded by the start (the NZ copies)
 (a/theorem oc-le-of [f :- (=> World Nat World),
-                     hf :- (forall [nzn :- Nat, w :- World, x :- Nat] (=> (= (nzb nzn w) true) (= (nzb nzn (f w x)) true))),
+                     hf :- (forall [nzn :- Nat, w :- World, x :- Nat] (=> (= (owner-count-at-most nzn w) true) (= (owner-count-at-most nzn (f w x)) true))),
                      xs :- (List Nat), w :- World]
-  (=> (= (inv-sample w) true) (<= (own-count (nat-fold f w xs)) (own-count w)))
+  (=> (= (well-formed w) true) (<= (own-count (nat-fold f w xs)) (own-count w)))
   (intro hs)
-  (have b (= (nzb (own-count w) w) true)) (simp only [nzb hs Nat.ble_eq Nat.le_refl Bool.and_self]) (simp)
-  (have b2 := (nat-fold-nzb (own-count w) f (hf (own-count w)) xs w b))
-  (simp only [nzb Bool.and_eq_true Nat.ble_eq] at b2)
+  (have b (= (owner-count-at-most (own-count w) w) true)) (simp only [owner-count-at-most hs Nat.ble_eq Nat.le_refl Bool.and_self]) (simp)
+  (have b2 := (owner-count-at-most-nat-fold (own-count w) f (hf (own-count w)) xs w b))
+  (simp only [owner-count-at-most Bool.and_eq_true Nat.ble_eq] at b2)
   (exact (And.right b2)))
 (a/theorem oc-le-one [f :- (=> World Nat World),
-                      hf :- (forall [nzn :- Nat, w :- World, x :- Nat] (=> (= (nzb nzn w) true) (= (nzb nzn (f w x)) true))),
+                      hf :- (forall [nzn :- Nat, w :- World, x :- Nat] (=> (= (owner-count-at-most nzn w) true) (= (owner-count-at-most nzn (f w x)) true))),
                       x :- Nat, w :- World]
-  (=> (= (inv-sample w) true) (<= (own-count (f w x)) (own-count w)))
+  (=> (= (well-formed w) true) (<= (own-count (f w x)) (own-count w)))
   (intro hs) (exact (oc-le-of f hf (List.cons Nat x (List.nil Nat)) w hs)))
 
 (a/theorem any-nil-false [A :- Type, idf :- (=> A Nat), q :- (=> A Bool), xs :- (List A)]
@@ -444,7 +444,7 @@
   (have e3 (= (ck1s (:comps w2)) (ck1s (:comps w)))) (exact (congrArg (fn [q :- OW] (:cks q)) e))
   (simp only [own-count e1 e2 (count-ck1 (:comps w2)) (count-ck1 (:comps w)) e3]))
 
-(a/theorem oc-src-step [W :- World, x :- Nat]
+(a/theorem oc-source-step [W :- World, x :- Nat]
   (=> (= (tbl-any (id-nz source-id nzs (List.cons Nat x (List.nil Nat))) (:sources W)) true)
       (< (own-count (detach-source W x)) (own-count W)))
   (intro h)
@@ -469,13 +469,13 @@
   (omega))
 
 (a/theorem oc-fold-lt [A :- Type, f :- (=> World Nat World), tab :- (=> World (List A)), idf :- (=> A Nat), q :- (=> A Bool), g :- (=> A A),
-                       hf :- (forall [nzn :- Nat, w :- World, x :- Nat] (=> (= (nzb nzn w) true) (= (nzb nzn (f w x)) true))),
-                       hs :- (forall [w :- World, x :- Nat] (=> (= (inv-sample w) true) (= (inv-sample (f w x)) true))),
+                       hf :- (forall [nzn :- Nat, w :- World, x :- Nat] (=> (= (owner-count-at-most nzn w) true) (= (owner-count-at-most nzn (f w x)) true))),
+                       hs :- (forall [w :- World, x :- Nat] (=> (= (well-formed w) true) (= (well-formed (f w x)) true))),
                        ht :- (forall [w :- World, x :- Nat] (= (tab (f w x)) (tbl-upd idf x g (tab w)))),
                        hstep :- (forall [w :- World, x :- Nat] (=> (= (tbl-any (id-nz idf q (List.cons Nat x (List.nil Nat))) (tab w)) true)
                                                                     (< (own-count (f w x)) (own-count w)))),
                        L :- (List Nat)]
-  (forall [W :- World] (=> (= (inv-sample W) true) (= (tbl-any (id-nz idf q L) (tab W)) true)
+  (forall [W :- World] (=> (= (well-formed W) true) (= (tbl-any (id-nz idf q L) (tab W)) true)
                            (< (own-count (nat-fold f W L)) (own-count W))))
   (induction L)
   (case [nil] (intros W h0 h) (rw [any-nil-false] at h) (cases h))
@@ -495,7 +495,7 @@
       (have l := (ih (f W x) (hs W x h0) h2))
       (omega))))
 
-(a/theorem tasks-src-fold [L :- (List Nat)]
+(a/theorem tasks-source-fold [L :- (List Nat)]
   (forall [W :- World] (And (= (:tasks (nat-fold detach-source W L)) (:tasks W)) (= (ck1s (:comps (nat-fold detach-source W L))) (ck1s (:comps W)))))
   (induction L)
   (case [nil] (intro W) (exact (And.intro (rfl) (rfl))))
@@ -528,8 +528,8 @@
       (have r := (ih (fn [r :- A, m :- (List.Mem r t), pr :- (= (p r) true)] (hm r (List.Mem.tail hd m) pr)) b))
       (simp only [tbl-any r Bool.or_true]))))
 
-(a/theorem orphan-nz-s [w :- World, r :- SourceRow] (=> (= (src-orphan w r) true) (= (nzs r) true))
-  (intro h) (simp only [src-orphan owner-gone Bool.and_eq_true] at h) (simp only [nzs]) (exact (And.left h)))
+(a/theorem orphan-nz-s [w :- World, r :- SourceRow] (=> (= (source-orphan w r) true) (= (nzs r) true))
+  (intro h) (simp only [source-orphan owner-gone Bool.and_eq_true] at h) (simp only [nzs]) (exact (And.left h)))
 (a/theorem orphan-nz-t [w :- World, r :- TaskRow] (=> (= (task-orphan w r) true) (= (nzt r) true))
   (intro h) (simp only [task-orphan owner-gone Bool.and_eq_true] at h) (simp only [nzt]) (exact (And.left h)))
 (a/theorem orphan-nz-c [w :- World, r :- CompRow] (=> (= (comp-orphan w r) true) (= (nzc r) true))
@@ -544,30 +544,30 @@
   (simp only [id-nz (scan-mem A idf p r xs m pr) (hq r pr) Bool.and_self]))
 
 (a/theorem detach-lt [w :- World]
-  (=> (= (inv-sample w) true) (= (no-orphans w) false) (< (own-count (detach w)) (own-count w)))
+  (=> (= (well-formed w) true) (= (no-orphans w) false) (< (own-count (detach w)) (own-count w)))
   (intros hs hn)
-  (have hs1 := (nat-fold-inv detach-source inv-detach-source (tbl-scan source-id (src-orphan w) (:sources w)) w hs))
-  (have hs2 := (nat-fold-inv detach-task inv-detach-task (tbl-scan task-id (task-orphan w) (:tasks w)) _ hs1))
-  (have le1 := (oc-le-of detach-source nzb-detach-source (tbl-scan source-id (src-orphan w) (:sources w)) w hs))
-  (have le2 := (oc-le-of detach-task nzb-detach-task (tbl-scan task-id (task-orphan w) (:tasks w)) _ hs1))
-  (have le3 := (oc-le-of detach-comp nzb-detach-comp (tbl-scan comp-id (comp-orphan w) (:comps w)) _ hs2))
-  (have tf := (tasks-src-fold (tbl-scan source-id (src-orphan w) (:sources w)) w))
-  (have cf := (comps-task-fold (tbl-scan task-id (task-orphan w) (:tasks w)) (nat-fold detach-source w (tbl-scan source-id (src-orphan w) (:sources w)))))
+  (have hs1 := (well-formed-nat-fold detach-source well-formed-detach-source (tbl-scan source-id (source-orphan w) (:sources w)) w hs))
+  (have hs2 := (well-formed-nat-fold detach-task well-formed-detach-task (tbl-scan task-id (task-orphan w) (:tasks w)) _ hs1))
+  (have le1 := (oc-le-of detach-source owner-count-at-most-detach-source (tbl-scan source-id (source-orphan w) (:sources w)) w hs))
+  (have le2 := (oc-le-of detach-task owner-count-at-most-detach-task (tbl-scan task-id (task-orphan w) (:tasks w)) _ hs1))
+  (have le3 := (oc-le-of detach-comp owner-count-at-most-detach-comp (tbl-scan comp-id (comp-orphan w) (:comps w)) _ hs2))
+  (have tf := (tasks-source-fold (tbl-scan source-id (source-orphan w) (:sources w)) w))
+  (have cf := (comps-task-fold (tbl-scan task-id (task-orphan w) (:tasks w)) (nat-fold detach-source w (tbl-scan source-id (source-orphan w) (:sources w)))))
   (simp only [detach])
-  (cases a1 (tbl-any (src-orphan w) (:sources w)))
+  (cases a1 (tbl-any (source-orphan w) (:sources w)))
   (case [true]
-    (have l := (oc-fold-lt SourceRow detach-source (fn [q :- World] (:sources q)) source-id nzs source-detach-row nzb-detach-source inv-detach-source
+    (have l := (oc-fold-lt SourceRow detach-source (fn [q :- World] (:sources q)) source-id nzs source-detach-row owner-count-at-most-detach-source well-formed-detach-source
                  (fn [q :- World, x :- Nat] (congrArg (fn [o :- OW] (:srcs o)) (ow-detach-source q x)))
-                 oc-src-step (tbl-scan source-id (src-orphan w) (:sources w)) w hs
-                 (idnz-of SourceRow source-id (src-orphan w) nzs (orphan-nz-s w) (:sources w) a1)))
+                 oc-source-step (tbl-scan source-id (source-orphan w) (:sources w)) w hs
+                 (idnz-of SourceRow source-id (source-orphan w) nzs (orphan-nz-s w) (:sources w) a1)))
     (omega))
   (case [false]
     (cases a2 (tbl-any (task-orphan w) (:tasks w)))
     (case [true]
       (have wt (= (tbl-any (id-nz task-id nzt (tbl-scan task-id (task-orphan w) (:tasks w)))
-                           (:tasks (nat-fold detach-source w (tbl-scan source-id (src-orphan w) (:sources w))))) true))
+                           (:tasks (nat-fold detach-source w (tbl-scan source-id (source-orphan w) (:sources w))))) true))
       (rw [(And.left tf)]) (exact (idnz-of TaskRow task-id (task-orphan w) nzt (orphan-nz-t w) (:tasks w) a2))
-      (have l := (oc-fold-lt TaskRow detach-task (fn [q :- World] (:tasks q)) task-id nzt task-detach-row nzb-detach-task inv-detach-task
+      (have l := (oc-fold-lt TaskRow detach-task (fn [q :- World] (:tasks q)) task-id nzt task-detach-row owner-count-at-most-detach-task well-formed-detach-task
                    (fn [q :- World, x :- Nat] (Eq.refl (tbl-upd task-id x task-detach-row (:tasks q))))
                    oc-task-step (tbl-scan task-id (task-orphan w) (:tasks w)) _ hs1 wt))
       (omega))
@@ -575,41 +575,41 @@
       (have a3 (= (tbl-any (comp-orphan w) (:comps w)) true))
       (simp only [no-orphans a1 a2 Bool.not_false Bool.true_and] at hn) (exact (bnot-false _ hn))
       (have w0 := (idnz-of CompRow comp-id (comp-orphan w) nzc (orphan-nz-c w) (:comps w) a3))
-      (have ck (= (ck1s (:comps (nat-fold detach-task (nat-fold detach-source w (tbl-scan source-id (src-orphan w) (:sources w))) (tbl-scan task-id (task-orphan w) (:tasks w)))))
+      (have ck (= (ck1s (:comps (nat-fold detach-task (nat-fold detach-source w (tbl-scan source-id (source-orphan w) (:sources w))) (tbl-scan task-id (task-orphan w) (:tasks w)))))
                   (ck1s (:comps w))))
       (rw [cf]) (exact (And.right tf))
       (have wc (= (tbl-any (id-nz comp-id nzc (tbl-scan comp-id (comp-orphan w) (:comps w)))
-                           (:comps (nat-fold detach-task (nat-fold detach-source w (tbl-scan source-id (src-orphan w) (:sources w))) (tbl-scan task-id (task-orphan w) (:tasks w))))) true))
+                           (:comps (nat-fold detach-task (nat-fold detach-source w (tbl-scan source-id (source-orphan w) (:sources w))) (tbl-scan task-id (task-orphan w) (:tasks w))))) true))
       (rw [any-ck1 ck]) (rw [any-ck1] at w0) (exact w0)
-      (have l := (oc-fold-lt CompRow detach-comp (fn [q :- World] (:comps q)) comp-id nzc comp-detach-row nzb-detach-comp inv-detach-comp
+      (have l := (oc-fold-lt CompRow detach-comp (fn [q :- World] (:comps q)) comp-id nzc comp-detach-row owner-count-at-most-detach-comp well-formed-detach-comp
                    (fn [q :- World, x :- Nat] (Eq.refl (tbl-upd comp-id x comp-detach-row (:comps q))))
                    oc-comp-step (tbl-scan comp-id (comp-orphan w) (:comps w)) _ hs2 wc))
       (omega))))
 
 ;; ---- Rule R ends with no orphan (the loop terminates within its fuel)
-(a/theorem oc-normalize [w :- World] (=> (= (inv-sample w) true) (<= (own-count (normalize w)) (own-count w)))
+(a/theorem oc-normalize [w :- World] (=> (= (well-formed w) true) (<= (own-count (normalize w)) (own-count w)))
   (intro hs)
-  (have b (= (nzb (own-count w) w) true)) (simp only [nzb hs Nat.ble_eq Nat.le_refl Bool.and_self]) (simp)
-  (have b2 := (nzb-normalize (own-count w) w b))
-  (simp only [nzb Bool.and_eq_true Nat.ble_eq] at b2) (exact (And.right b2)))
+  (have b (= (owner-count-at-most (own-count w) w) true)) (simp only [owner-count-at-most hs Nat.ble_eq Nat.le_refl Bool.and_self]) (simp)
+  (have b2 := (owner-count-at-most-normalize (own-count w) w b))
+  (simp only [owner-count-at-most Bool.and_eq_true Nat.ble_eq] at b2) (exact (And.right b2)))
 (a/theorem oc-normalize-lt [w :- World]
-  (=> (= (inv-sample w) true) (= (no-orphans w) false) (< (own-count (normalize w)) (own-count w)))
+  (=> (= (well-formed w) true) (= (no-orphans w) false) (< (own-count (normalize w)) (own-count w)))
   (intros hs hn)
   (have l := (detach-lt w hs hn))
-  (have hs1 := (inv-detach w hs))
-  (have b (= (nzb (own-count (detach w)) (detach w)) true)) (simp only [nzb hs1 Nat.ble_eq Nat.le_refl Bool.and_self]) (simp)
-  (have b2 := (nzb-norm-loop (own-count (detach w)) (norm-fuel (detach w)) (detach w) b))
-  (simp only [nzb Bool.and_eq_true Nat.ble_eq] at b2)
+  (have hs1 := (well-formed-detach w hs))
+  (have b (= (owner-count-at-most (own-count (detach w)) (detach w)) true)) (simp only [owner-count-at-most hs1 Nat.ble_eq Nat.le_refl Bool.and_self]) (simp)
+  (have b2 := (owner-count-at-most-normalize-loop (own-count (detach w)) (normalize-fuel (detach w)) (detach w) b))
+  (simp only [owner-count-at-most Bool.and_eq_true Nat.ble_eq] at b2)
   (simp only [normalize])
   (have l2 := (And.right b2))
   (omega))
-(a/theorem oc-round-le [w :- World] (=> (= (inv-sample w) true) (<= (own-count (rule-r-round w)) (own-count w)))
+(a/theorem oc-round-le [w :- World] (=> (= (well-formed w) true) (<= (own-count (rule-r-round w)) (own-count w)))
   (intro hs)
   (have l := (oc-normalize w hs))
   (simp only [rule-r-round rule-r-filter-eq])
   (have l2 := (oc-filter (normalize w) (keep-fn (normalize w))))
   (omega))
-(a/theorem oc-round-lt [w :- World] (=> (= (inv-sample w) true) (= (no-orphans w) false) (< (own-count (rule-r-round w)) (own-count w)))
+(a/theorem oc-round-lt [w :- World] (=> (= (well-formed w) true) (= (no-orphans w) false) (< (own-count (rule-r-round w)) (own-count w)))
   (intros hs hn)
   (have l := (oc-normalize-lt w hs hn))
   (simp only [rule-r-round rule-r-filter-eq])
@@ -633,153 +633,153 @@
   (omega))
 
 
-(a/theorem rr-loop-t [x :- Nat, f :- (List Nat), w1 :- World]
-  (=> (= (no-orphans w1) true) (= (rr-loop (List.cons Nat x f) w1) w1))
-  (intro h) (simp only [rr-loop h]))
-(a/theorem rr-loop-f [x :- Nat, f :- (List Nat), w1 :- World]
-  (=> (= (no-orphans w1) false) (= (rr-loop (List.cons Nat x f) w1) (rr-loop f (rule-r-round w1))))
-  (intro h) (simp only [rr-loop h]))
-(a/theorem rr-safe-f [x :- Nat, f :- (List Nat), w0 :- World]
-  (=> (= (rr-safe (List.cons Nat x f) w0) true) (= (no-orphans (rule-r-round w0)) false)
-      (And (= (filter-safe (normalize w0)) true) (= (rr-safe f (rule-r-round w0)) true)))
-  (intros h hn) (simp only [rr-safe hn Bool.and_eq_true] at h) (exact h))
-(a/theorem rr-safe-head [x :- Nat, f :- (List Nat), w0 :- World]
-  (=> (= (rr-safe (List.cons Nat x f) w0) true) (= (filter-safe (normalize w0)) true))
-  (intro h) (simp only [rr-safe Bool.and_eq_true] at h) (exact (And.left h)))
+(a/theorem rule-r-loop-t [x :- Nat, f :- (List Nat), w1 :- World]
+  (=> (= (no-orphans w1) true) (= (rule-r-loop (List.cons Nat x f) w1) w1))
+  (intro h) (simp only [rule-r-loop h]))
+(a/theorem rule-r-loop-f [x :- Nat, f :- (List Nat), w1 :- World]
+  (=> (= (no-orphans w1) false) (= (rule-r-loop (List.cons Nat x f) w1) (rule-r-loop f (rule-r-round w1))))
+  (intro h) (simp only [rule-r-loop h]))
+(a/theorem rounds-safe-loop-f [x :- Nat, f :- (List Nat), w0 :- World]
+  (=> (= (rounds-safe-loop (List.cons Nat x f) w0) true) (= (no-orphans (rule-r-round w0)) false)
+      (And (= (filter-safe (normalize w0)) true) (= (rounds-safe-loop f (rule-r-round w0)) true)))
+  (intros h hn) (simp only [rounds-safe-loop hn Bool.and_eq_true] at h) (exact h))
+(a/theorem rounds-safe-loop-head [x :- Nat, f :- (List Nat), w0 :- World]
+  (=> (= (rounds-safe-loop (List.cons Nat x f) w0) true) (= (filter-safe (normalize w0)) true))
+  (intro h) (simp only [rounds-safe-loop Bool.and_eq_true] at h) (exact (And.left h)))
 
 
-(a/theorem rr-no-orphans [f :- (List Nat)]
+(a/theorem rule-r-loop-no-orphans [f :- (List Nat)]
   (forall [x :- Nat, w1 :- World]
-    (=> (= (inv-sample w1) true) (< (own-count w1) (+ (nat-len f) 1))
-        (=> (= (no-orphans w1) false) (= (rr-safe f w1) true))
-        (= (no-orphans (rr-loop (List.cons Nat x f) w1)) true)))
+    (=> (= (well-formed w1) true) (< (own-count w1) (+ (nat-len f) 1))
+        (=> (= (no-orphans w1) false) (= (rounds-safe-loop f w1) true))
+        (= (no-orphans (rule-r-loop (List.cons Nat x f) w1)) true)))
   (induction f)
   (case [nil]
     (intros x w1 hs hl hr)
     (cases ho (no-orphans w1))
-    (case [true] (rw [(rr-loop-t x (List.nil Nat) w1 ho)]) (exact ho))
+    (case [true] (rw [(rule-r-loop-t x (List.nil Nat) w1 ho)]) (exact ho))
     (case [false]
       (have hr1 := (hr ho))
-      (have hs2 := (inv-rule-r-round w1 hs hr1))
+      (have hs2 := (well-formed-rule-r-round w1 hs hr1))
       (have l := (oc-round-lt w1 hs ho))
       (have l0 (< (own-count w1) 1)) (exact hl)
       (omega)))
   (case [cons y g ih]
     (intros x w1 hs hl hr)
     (cases ho (no-orphans w1))
-    (case [true] (rw [(rr-loop-t x (List.cons Nat y g) w1 ho)]) (exact ho))
+    (case [true] (rw [(rule-r-loop-t x (List.cons Nat y g) w1 ho)]) (exact ho))
     (case [false]
-      (rw [(rr-loop-f x (List.cons Nat y g) w1 ho)])
+      (rw [(rule-r-loop-f x (List.cons Nat y g) w1 ho)])
       (have hr1 := (hr ho))
-      (have hs2 := (inv-rule-r-round w1 hs (rr-safe-head y g w1 hr1)))
+      (have hs2 := (well-formed-rule-r-round w1 hs (rounds-safe-loop-head y g w1 hr1)))
       (have l := (oc-round-lt w1 hs ho))
       (have l0 (< (own-count w1) (+ (+ (nat-len g) 1) 1))) (exact hl)
       (have l2 (< (own-count (rule-r-round w1)) (+ (nat-len g) 1))) (omega)
       (exact (ih y (rule-r-round w1) hs2 l2
-               (fn [h2 :- (= (no-orphans (rule-r-round w1)) false)] (And.right (rr-safe-f y g w1 hr1 h2))))))))
+               (fn [h2 :- (= (no-orphans (rule-r-round w1)) false)] (And.right (rounds-safe-loop-f y g w1 hr1 h2))))))))
 
-(a/theorem rule-r-eq5 [w :- World] (= (rule-r w) (rr-loop (List.cons Nat 0 (all-ids w)) (rule-r-round w))) (rfl))
-(a/theorem rule-r-no-orphans [w :- World] (=> (= (inv-sample w) true) (= (rule-r-safe w) true) (= (no-orphans (rule-r w)) true))
+(a/theorem rule-r-eq5 [w :- World] (= (rule-r w) (rule-r-loop (List.cons Nat 0 (all-ids w)) (rule-r-round w))) (rfl))
+(a/theorem rule-r-no-orphans [w :- World] (=> (= (well-formed w) true) (= (rule-r-safe w) true) (= (no-orphans (rule-r w)) true))
   (intros hs hr)
-  (have hr2 (= (rr-safe (List.cons Nat 0 (all-ids w)) w) true)) (exact hr)
-  (have hs1 := (inv-rule-r-round w hs (rr-safe-head 0 (all-ids w) w hr2)))
+  (have hr2 (= (rounds-safe-loop (List.cons Nat 0 (all-ids w)) w) true)) (exact hr)
+  (have hs1 := (well-formed-rule-r-round w hs (rounds-safe-loop-head 0 (all-ids w) w hr2)))
   (have l1 := (oc-round-le w hs))
   (have l2 := (oc-ids w))
   (have l3 (< (own-count (rule-r-round w)) (+ (nat-len (all-ids w)) 1))) (omega)
   (rw [rule-r-eq5])
-  (exact (rr-no-orphans (all-ids w) 0 (rule-r-round w) hs1 l3
-           (fn [h2 :- (= (no-orphans (rule-r-round w)) false)] (And.right (rr-safe-f 0 (all-ids w) w hr2 h2))))))
+  (exact (rule-r-loop-no-orphans (all-ids w) 0 (rule-r-round w) hs1 l3
+           (fn [h2 :- (= (no-orphans (rule-r-round w)) false)] (And.right (rounds-safe-loop-f 0 (all-ids w) w hr2 h2))))))
 
 ;; ===========================================================================
-;; Part C. Sources with owner 0 are closed (bundle gso) and the owner clauses
+;; Part C. Sources with owner 0 are closed (bundle i1-detached-closed) and the owner clauses
 ;; ===========================================================================
 
 ;; ===========================================================================
 ;; A source with owner 0 is closed (it was detached); run scopes are not 0
 ;; ===========================================================================
 
-(a/theorem id-pos [w :- World, y :- Nat] (=> (= (inv-sample w) true) (= (nat-mem y (all-ids w)) true) (= (Nat.beq y 0) false))
+(a/theorem id-pos [w :- World, y :- Nat] (=> (= (well-formed w) true) (= (nat-mem y (all-ids w)) true) (= (Nat.beq y 0) false))
   (intros h m)
   (have r := (all-nat-mem (id-in-range (:next-id w)) y (all-ids w) (ids-below-of w h) m))
   (simp only [id-in-range Bool.and_eq_true Nat.blt_eq] at r)
   (cases hb (Nat.beq y 0)) (case [false] (rfl)) (case [true] (have e (= y 0)) (exact (Nat.eq_of_beq_eq_true hb)) (have l := (And.left r)) (omega)))
-(a/theorem scope-pos [w :- World, y :- Nat] (=> (= (inv-sample w) true) (= (scope-has w y) true) (= (Nat.beq y 0) false))
+(a/theorem scope-pos [w :- World, y :- Nat] (=> (= (well-formed w) true) (= (scope-has w y) true) (= (Nat.beq y 0) false))
   (intros h hh)
   (have hm (= (nat-mem y (tbl-ids scope-id (:scopes w))) true)) (rw [nat-mem-ids]) (exact hh)
   (exact (id-pos w y h (mem-app-l _ _ _ hm))))
-(a/theorem comp-pos [w :- World, y :- Nat] (=> (= (inv-sample w) true) (= (comp-has w y) true) (= (Nat.beq y 0) false))
+(a/theorem comp-pos [w :- World, y :- Nat] (=> (= (well-formed w) true) (= (comp-has w y) true) (= (Nat.beq y 0) false))
   (intros h hh)
   (have hm (= (nat-mem y (tbl-ids comp-id (:comps w))) true)) (rw [nat-mem-ids]) (exact hh)
   (exact (id-pos w y h (mem-app-r _ _ _ (mem-app-l _ _ _ hm)))))
 
 (a/defn src0-ok [s :- SourceRow] Bool (Bool.or (nzs s) (Bool.not (:open s))))
 (a/defn rscope-nz [r :- RunRow] Bool (Bool.not (Nat.beq (:scope r) 0)))
-(a/defn gso-rest [w :- World] Bool (Bool.and (tbl-all src0-ok (:sources w)) (tbl-all rscope-nz (:runs w))))
-(a/defn gso [w :- World] Bool (Bool.and (inv-sample w) (gso-rest w)))
-(a/theorem gso-sample [w :- World] (=> (= (gso w) true) (= (inv-sample w) true))
-  (intro h) (simp only [gso Bool.and_eq_true] at h) (exact (And.left h)))
-(a/theorem gso-rest-of [w :- World] (=> (= (gso w) true) (= (gso-rest w) true))
-  (intro h) (simp only [gso Bool.and_eq_true] at h) (exact (And.right h)))
-(a/theorem gso-intro [w :- World] (=> (= (inv-sample w) true) (= (gso-rest w) true) (= (gso w) true))
-  (intros h1 h2) (simp only [gso h1 h2 Bool.and_self]))
-(a/theorem gso-parts [w :- World]
-  (=> (= (gso w) true) (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
-  (intro h) (exact (inv-parts w (gso-sample w h))))
+(a/defn i1-detached-closed-rest [w :- World] Bool (Bool.and (tbl-all src0-ok (:sources w)) (tbl-all rscope-nz (:runs w))))
+(a/defn i1-detached-closed [w :- World] Bool (Bool.and (well-formed w) (i1-detached-closed-rest w)))
+(a/theorem i1-detached-closed-well-formed [w :- World] (=> (= (i1-detached-closed w) true) (= (well-formed w) true))
+  (intro h) (simp only [i1-detached-closed Bool.and_eq_true] at h) (exact (And.left h)))
+(a/theorem i1-detached-closed-rest-of [w :- World] (=> (= (i1-detached-closed w) true) (= (i1-detached-closed-rest w) true))
+  (intro h) (simp only [i1-detached-closed Bool.and_eq_true] at h) (exact (And.right h)))
+(a/theorem i1-detached-closed-intro [w :- World] (=> (= (well-formed w) true) (= (i1-detached-closed-rest w) true) (= (i1-detached-closed w) true))
+  (intros h1 h2) (simp only [i1-detached-closed h1 h2 Bool.and_self]))
+(a/theorem i1-detached-closed-parts [w :- World]
+  (=> (= (i1-detached-closed w) true) (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
+  (intro h) (exact (well-formed-parts w (i1-detached-closed-well-formed w h))))
 
-(a/theorem gso-mk [w :- World, w2 :- World]
-  (=> (= (inv-sample w2) true) (= (tbl-all src0-ok (:sources w2)) true) (= (tbl-all rscope-nz (:runs w2)) true) (= (gso w2) true))
-  (intros h1 h2 h3) (simp only [gso gso-rest h1 h2 h3 Bool.and_self]))
-(a/theorem gso-src [w :- World] (=> (= (gso w) true) (= (tbl-all src0-ok (:sources w)) true))
-  (intro h) (have r := (gso-rest-of w h)) (simp only [gso-rest Bool.and_eq_true] at r) (exact (And.left r)))
-(a/theorem gso-runs [w :- World] (=> (= (gso w) true) (= (tbl-all rscope-nz (:runs w)) true))
-  (intro h) (have r := (gso-rest-of w h)) (simp only [gso-rest Bool.and_eq_true] at r) (exact (And.right r)))
+(a/theorem i1-detached-closed-mk [w :- World, w2 :- World]
+  (=> (= (well-formed w2) true) (= (tbl-all src0-ok (:sources w2)) true) (= (tbl-all rscope-nz (:runs w2)) true) (= (i1-detached-closed w2) true))
+  (intros h1 h2 h3) (simp only [i1-detached-closed i1-detached-closed-rest h1 h2 h3 Bool.and_self]))
+(a/theorem i1-detached-closed-source [w :- World] (=> (= (i1-detached-closed w) true) (= (tbl-all src0-ok (:sources w)) true))
+  (intro h) (have r := (i1-detached-closed-rest-of w h)) (simp only [i1-detached-closed-rest Bool.and_eq_true] at r) (exact (And.left r)))
+(a/theorem i1-detached-closed-runs [w :- World] (=> (= (i1-detached-closed w) true) (= (tbl-all rscope-nz (:runs w)) true))
+  (intro h) (have r := (i1-detached-closed-rest-of w h)) (simp only [i1-detached-closed-rest Bool.and_eq_true] at r) (exact (And.right r)))
 
-(a/theorem gso-source-upd [w :- World, x :- Nat, f :- (=> SourceRow SourceRow),
+(a/theorem i1-detached-closed-source-upd [w :- World, x :- Nat, f :- (=> SourceRow SourceRow),
                            hid :- (forall [s :- SourceRow] (= (source-id (f s)) (source-id s))),
                            hk :- (forall [s :- SourceRow] (=> (= (src0-ok s) true) (= (src0-ok (f s)) true)))]
-  (=> (= (gso w) true) (= (gso (source-upd w x f)) true))
+  (=> (= (i1-detached-closed w) true) (= (i1-detached-closed (source-upd w x f)) true))
   (intro h)
-  (exact (gso-mk w _ (inv-source-upd w x f hid (gso-sample w h))
+  (exact (i1-detached-closed-mk w _ (well-formed-source-upd w x f hid (i1-detached-closed-well-formed w h))
            (tbl-all-upd SourceRow source-id x f src0-ok src0-ok (fn [s :- SourceRow, h1 :- (= (src0-ok s) true), hx :- (= (Nat.beq (source-id s) x) true)] (hk s h1))
-             (fn [s :- SourceRow, h1 :- (= (src0-ok s) true), hx :- (= (Nat.beq (source-id s) x) false)] h1) (:sources w) (gso-src w h))
-           (gso-runs w h))))
+             (fn [s :- SourceRow, h1 :- (= (src0-ok s) true), hx :- (= (Nat.beq (source-id s) x) false)] h1) (:sources w) (i1-detached-closed-source w h))
+           (i1-detached-closed-runs w h))))
 
-(a/theorem gso-run-upd [w :- World, x :- Nat, f :- (=> RunRow RunRow),
+(a/theorem i1-detached-closed-run-upd [w :- World, x :- Nat, f :- (=> RunRow RunRow),
                         hid :- (forall [r :- RunRow] (= (run-id (f r)) (run-id r))),
                         hk :- (forall [r :- RunRow] (= (:scope (f r)) (:scope r)))]
-  (=> (= (gso w) true) (= (gso (run-upd w x f)) true))
+  (=> (= (i1-detached-closed w) true) (= (i1-detached-closed (run-upd w x f)) true))
   (intro h)
-  (exact (gso-mk w _ (inv-run-upd w x f hid (gso-sample w h)) (gso-src w h)
+  (exact (i1-detached-closed-mk w _ (well-formed-run-upd w x f hid (i1-detached-closed-well-formed w h)) (i1-detached-closed-source w h)
            (tbl-all-upd RunRow run-id x f rscope-nz rscope-nz
              (fn [r :- RunRow, h1 :- (= (rscope-nz r) true), hx :- (= (Nat.beq (run-id r) x) true)]
                (Eq.trans (congrArg (fn [z :- Nat] (Bool.not (Nat.beq z 0))) (hk r)) h1))
-             (fn [r :- RunRow, h1 :- (= (rscope-nz r) true), hx :- (= (Nat.beq (run-id r) x) false)] h1) (:runs w) (gso-runs w h)))))
+             (fn [r :- RunRow, h1 :- (= (rscope-nz r) true), hx :- (= (Nat.beq (run-id r) x) false)] h1) (:runs w) (i1-detached-closed-runs w h)))))
 
 (a/theorem src0-close [s :- SourceRow] (=> (= (src0-ok s) true) (= (src0-ok (source-close-row s)) true))
   (intro h) (simp only [src0-ok source-close-row Bool.not_false Bool.or_true]))
 (a/theorem src0-detach [s :- SourceRow] (=> (= (src0-ok s) true) (= (src0-ok (source-detach-row s)) true))
   (intro h) (simp only [src0-ok source-detach-row Bool.not_false Bool.or_true]))
-(a/theorem gso-source-close [w :- World, x :- Nat] (=> (= (gso w) true) (= (gso (source-upd w x source-close-row)) true))
-  (intro h) (exact (gso-source-upd w x source-close-row source-close-row-id src0-close h)))
-(a/theorem gso-source-detach [w :- World, x :- Nat] (=> (= (gso w) true) (= (gso (source-upd w x source-detach-row)) true))
-  (intro h) (exact (gso-source-upd w x source-detach-row source-detach-row-id src0-detach h)))
+(a/theorem i1-detached-closed-source-close [w :- World, x :- Nat] (=> (= (i1-detached-closed w) true) (= (i1-detached-closed (source-upd w x source-close-row)) true))
+  (intro h) (exact (i1-detached-closed-source-upd w x source-close-row source-close-row-id src0-close h)))
+(a/theorem i1-detached-closed-source-detach [w :- World, x :- Nat] (=> (= (i1-detached-closed w) true) (= (i1-detached-closed (source-upd w x source-detach-row)) true))
+  (intro h) (exact (i1-detached-closed-source-upd w x source-detach-row source-detach-row-id src0-detach h)))
 
-(a/theorem gso-add-run-scope [w :- World, of :- Nat, epoch :- Nat, parent :- Nat, ei :- Nat]
-  (=> (= (gso w) true) (= (gso (add-run-scope w of epoch parent ei)) true))
+(a/theorem i1-detached-closed-add-run-scope [w :- World, of :- Nat, epoch :- Nat, parent :- Nat, ei :- Nat]
+  (=> (= (i1-detached-closed w) true) (= (i1-detached-closed (add-run-scope w of epoch parent ei)) true))
   (intro h)
   (have r1 (= (tbl-all rscope-nz (:runs (add-run-scope w of epoch parent ei))) true))
-  (simp only [add-run-scope bump set-next-id scope-ins set-scopes run-ins set-runs tbl-ins tbl-all (gso-runs w h) Bool.and_true])
+  (simp only [add-run-scope bump set-next-id scope-ins set-scopes run-ins set-runs tbl-ins tbl-all (i1-detached-closed-runs w h) Bool.and_true])
   (simp only [rscope-nz new-run-row])
   (have z (= (Nat.beq (+ (:next-id w) 1) 0) false)) (cases q (Nat.beq (+ (:next-id w) 1) 0)) (case [false] (rfl)) (case [true] (have e := (Nat.eq_of_beq_eq_true q)) (omega))
   (simp only [z Bool.not_false])
-  (exact (gso-mk w _ (inv-add-run-scope w of epoch parent ei (gso-sample w h)) (gso-src w h) r1)))
+  (exact (i1-detached-closed-mk w _ (well-formed-add-run-scope w of epoch parent ei (i1-detached-closed-well-formed w h)) (i1-detached-closed-source w h) r1)))
 
-(a/theorem gso-source-ins [w :- World, r :- SourceRow]
-  (=> (= (source-id r) (:next-id w)) (= (src0-ok r) true) (= (gso w) true) (= (gso (bump (source-ins w r))) true))
+(a/theorem i1-detached-closed-source-ins [w :- World, r :- SourceRow]
+  (=> (= (source-id r) (:next-id w)) (= (src0-ok r) true) (= (i1-detached-closed w) true) (= (i1-detached-closed (bump (source-ins w r))) true))
   (intros hi hz h)
-  (exact (gso-mk w _ (inv-source-ins-fresh w r hi (gso-sample w h))
-           (Eq.trans (congrArg (fn [b :- Bool] (Bool.and b (tbl-all src0-ok (:sources w)))) hz) (Eq.trans (Bool.true_and _) (gso-src w h)))
-           (gso-runs w h))))
+  (exact (i1-detached-closed-mk w _ (well-formed-source-ins-fresh w r hi (i1-detached-closed-well-formed w h))
+           (Eq.trans (congrArg (fn [b :- Bool] (Bool.and b (tbl-all src0-ok (:sources w)))) hz) (Eq.trans (Bool.true_and _) (i1-detached-closed-source w h)))
+           (i1-detached-closed-runs w h))))
 
 ;; a new source's owner is a computation or a run scope (both exist, hence not 0)
 (a/theorem src0-new [id :- Nat, o :- Nat, k :- Nat, v :- Nat] (=> (= (Nat.beq o 0) false) (= (src0-ok (new-source id o k v)) true))
@@ -803,151 +803,151 @@
   (simp only [cur-scope])
   (exact (nat-max-nz _ (:scope r) (bnot-true _ h))))
 
-(def GSO (mk-bundle 'gso [] "gso-"
-           {'inv-source-upd ['(fn [s :- SourceRow, q :- (= (src0-ok s) true)] q) 4]
-            'inv-run-upd ['(fn [r :- RunRow] (Eq.refl (:scope r))) 4]
-            'inv-serve-or ['(fn [s :- SourceRow, q :- (= (src0-ok s) true)] q) 5]
+(def GSO (mk-bundle 'i1-detached-closed [] "i1-detached-closed-"
+           {'well-formed-source-upd ['(fn [s :- SourceRow, q :- (= (src0-ok s) true)] q) 4]
+            'well-formed-run-upd ['(fn [r :- RunRow] (Eq.refl (:scope r))) 4]
+            'well-formed-serve-or ['(fn [s :- SourceRow, q :- (= (src0-ok s) true)] q) 5]
             ;; C0: the other fresh rows (links owned by the root scope) are owned
-            'inv-source-ins-fresh ['(Eq.refl true) 3]}))
-(swap! (:renames GSO) assoc 'inv-parts 'gso-parts 'inv-source-upd 'gso-source-upd 'inv-run-upd 'gso-run-upd
-       'inv-source-ins-fresh 'gso-source-ins
-       'inv-add-run-scope 'gso-add-run-scope)
-(a/theorem gso-rest-run-del [w :- World, x :- Nat] (=> (= (gso-rest w) true) (= (gso-rest (run-del w x)) true))
-  (intro h) (simp only [gso-rest Bool.and_eq_true] at h)
-  (simp only [gso-rest run-del set-runs (And.left h) (all-sub-del RunRow rscope-nz run-id x (:runs w) (And.right h)) Bool.and_self]))
-(prim! GSO 'inv-run-del '(gso-rest-run-del w x R))
+            'well-formed-source-ins-fresh ['(Eq.refl true) 3]}))
+(swap! (:renames GSO) assoc 'well-formed-parts 'i1-detached-closed-parts 'well-formed-source-upd 'i1-detached-closed-source-upd 'well-formed-run-upd 'i1-detached-closed-run-upd
+       'well-formed-source-ins-fresh 'i1-detached-closed-source-ins
+       'well-formed-add-run-scope 'i1-detached-closed-add-run-scope)
+(a/theorem i1-detached-closed-rest-run-del [w :- World, x :- Nat] (=> (= (i1-detached-closed-rest w) true) (= (i1-detached-closed-rest (run-del w x)) true))
+  (intro h) (simp only [i1-detached-closed-rest Bool.and_eq_true] at h)
+  (simp only [i1-detached-closed-rest run-del set-runs (And.left h) (all-sub-del RunRow rscope-nz run-id x (:runs w) (And.right h)) Bool.and_self]))
+(prim! GSO 'well-formed-run-del '(i1-detached-closed-rest-run-del w x R))
 (defpart GSO :reads '[runs sources])
-(frames/frame-theorem! 'gso-rest-mark-edge 'gso-rest 'mark-edge-inv-sample)
-(frames/frame-theorem! 'gso-rest-unmark-edge 'gso-rest 'unmark-edge-inv-sample)
-(frames/frame-theorem! 'gso-rest-remove-edge 'gso-rest 'inv-remove-edge)
+(frames/frame-theorem! 'i1-detached-closed-rest-mark-edge 'i1-detached-closed-rest 'well-formed-mark-edge)
+(frames/frame-theorem! 'i1-detached-closed-rest-unmark-edge 'i1-detached-closed-rest 'well-formed-unmark-edge)
+(frames/frame-theorem! 'i1-detached-closed-rest-remove-edge 'i1-detached-closed-rest 'well-formed-remove-edge)
 
 (a/theorem src0-consume [s :- SourceRow] (=> (= (src0-ok s) true) (= (src0-ok (source-consume s)) true))
-  (intro h) (cases ha (src-available s)) (simp only [source-consume ha]) (exact h)
+  (intro h) (cases ha (source-available s)) (simp only [source-consume ha]) (exact h)
   (cases hm (Nat.beq (:kind s) sk-mailbox)) (all_goals (simp only [src0-ok nzs source-consume ha hm] at h)) (all_goals (simp only [src0-ok nzs source-consume ha hm])) (all_goals (exact h)))
-(a/theorem gso-source-consume [w :- World, x :- Nat] (=> (= (gso w) true) (= (gso (source-upd w x source-consume)) true))
-  (intro h) (exact (gso-source-upd w x source-consume source-consume-id src0-consume h)))
-;; gso on the generic tree: its table. Its own proofs follow: a new source, stream or link is owned
+(a/theorem i1-detached-closed-source-consume [w :- World, x :- Nat] (=> (= (i1-detached-closed w) true) (= (i1-detached-closed (source-upd w x source-consume)) true))
+  (intro h) (exact (i1-detached-closed-source-upd w x source-consume source-consume-id src0-consume h)))
+;; i1-detached-closed on the generic tree: its table. Its own proofs follow: a new source, stream or link is owned
 ;; (by a scope that exists, or by the run's computation or scope).
 (tree/part! GSO
-  :over '{inv-serve-or          gso-serve-or
-          t1-top-inv            t1-top-gso
-          inv-create-source-cur gso-create-source-cur
-          inv-stream-rows       gso-stream-rows
-          inv-create-stream-cur gso-create-stream-cur
-          t1-top-full-inv       t1-top-full-gso
-          t-create-link-top-inv t-create-link-top-gso}
+  :over '{well-formed-serve-or          i1-detached-closed-serve-or
+          well-formed-t1-create-nonstream-top            i1-detached-closed-t1-create-nonstream-top
+          well-formed-create-source-in-run i1-detached-closed-create-source-in-run
+          well-formed-stream-rows       i1-detached-closed-stream-rows
+          well-formed-create-stream-in-run i1-detached-closed-create-stream-in-run
+          well-formed-t1-create-source-top       i1-detached-closed-t1-create-source-top
+          well-formed-t-create-link-top i1-detached-closed-t-create-link-top}
   ;; ---- sites: a closed, detached or consumed source row keeps its owner
-  :sites '{[inv-source-upd source-close-row]  (gso-source-close w x h0)
-           [inv-source-upd source-detach-row] (gso-source-detach w x h0)
-           [inv-source-upd source-consume]    (gso-source-consume w x h0)}
+  :sites '{[well-formed-source-upd source-close-row]  (i1-detached-closed-source-close w x h0)
+           [well-formed-source-upd source-detach-row] (i1-detached-closed-source-detach w x h0)
+           [well-formed-source-upd source-consume]    (i1-detached-closed-source-consume w x h0)}
   ;; ---- facts from the path: the creating run is the world's (the token's run); a stream's owner exists
-  :ctx '{inv-create-source-cur [(List.Mem r (:runs w))]
-         inv-create-stream-cur [(List.Mem r (:runs w))]
-         inv-stream-rows       [(= (Nat.beq owner 0) false)]}
-  :pass '{t1-full-inv   {inv-create-source-cur [(tok-run-mem w st r ht)]}
-          t1-stream-inv {inv-create-stream-cur [(tok-run-mem w st r ht)]}})
-(tree/restate! GSO '[inv-fire-edge])
-(a/theorem gso-serve-or [w :- World, x :- Nat, res :- RunResult, keep :- (=> SourceRow SourceRow),
+  :ctx '{well-formed-create-source-in-run [(List.Mem r (:runs w))]
+         well-formed-create-stream-in-run [(List.Mem r (:runs w))]
+         well-formed-stream-rows       [(= (Nat.beq owner 0) false)]}
+  :pass '{well-formed-t1-create-nonstream   {well-formed-create-source-in-run [(tok-run-mem w st r ht)]}
+          well-formed-t1-create-stream {well-formed-create-stream-in-run [(tok-run-mem w st r ht)]}})
+(tree/restate! GSO '[well-formed-fire-edge])
+(a/theorem i1-detached-closed-serve-or [w :- World, x :- Nat, res :- RunResult, keep :- (=> SourceRow SourceRow),
                          hk :- (forall [s :- SourceRow] (= (source-id (keep s)) (source-id s))),
                          hg :- (forall [s :- SourceRow] (=> (= (src0-ok s) true) (= (src0-ok (keep s)) true)))]
-  (=> (= (gso w) true) (= (gso (serve-or w x res keep)) true))
+  (=> (= (i1-detached-closed w) true) (= (i1-detached-closed (serve-or w x res keep)) true))
   (intro h)
   (cases hz (Nat.beq (oldest-waiter w x) 0))
-  (simp only [serve-or hz]) (exact (gso-fire-edge res w _ h))
-  (simp only [serve-or hz]) (exact (gso-source-upd w x keep hk hg h)))
-(a/theorem t1-top-gso [w :- World, scope :- Nat, kind :- Nat, v :- Nat, fresh :- Nat]
-  (=> (= (gso w) true) (= (gso (:world (t1-create-source-top w scope kind v fresh))) true))
+  (simp only [serve-or hz]) (exact (i1-detached-closed-fire-edge res w _ h))
+  (simp only [serve-or hz]) (exact (i1-detached-closed-source-upd w x keep hk hg h)))
+(a/theorem i1-detached-closed-t1-create-nonstream-top [w :- World, scope :- Nat, kind :- Nat, v :- Nat, fresh :- Nat]
+  (=> (= (i1-detached-closed w) true) (= (i1-detached-closed (:world (t1-create-nonstream-top w scope kind v fresh))) true))
   (intro h)
-  (cases hg (Bool.and (Bool.and (Nat.beq fresh (:next-id w)) (src-kind-ok kind)) (scope-open-at w scope)))
-  (simp only [t1-create-source-top hg refuse]) (exact h)
+  (cases hg (Bool.and (Bool.and (Nat.beq fresh (:next-id w)) (source-kind-ok kind)) (scope-open-at w scope)))
+  (simp only [t1-create-nonstream-top hg refuse]) (exact h)
   (have hso (= (scope-open-at w scope) true)) (simp only [Bool.and_eq_true] at hg) (exact (And.right hg))
-  (simp only [t1-create-source-top hg accept])
-  (exact (gso-source-ins w (new-source (:next-id w) scope kind v) (rfl)
-           (src0-new (:next-id w) scope kind v (scope-pos w scope (gso-sample w h) (open-at-has w scope hso))) h)))
-(tree/restate! GSO '[inv-record-basis inv-run-upd])
-(a/theorem gso-create-source-cur [w :- World, r :- RunRow, kind :- Nat, v :- Nat]
-  (=> (List.Mem r (:runs w)) (= (gso w) true) (= (gso (create-source-cur w r kind v)) true))
+  (simp only [t1-create-nonstream-top hg accept])
+  (exact (i1-detached-closed-source-ins w (new-source (:next-id w) scope kind v) (rfl)
+           (src0-new (:next-id w) scope kind v (scope-pos w scope (i1-detached-closed-well-formed w h) (open-at-has w scope hso))) h)))
+(tree/restate! GSO '[well-formed-record-basis well-formed-run-upd])
+(a/theorem i1-detached-closed-create-source-in-run [w :- World, r :- RunRow, kind :- Nat, v :- Nat]
+  (=> (List.Mem r (:runs w)) (= (i1-detached-closed w) true) (= (i1-detached-closed (create-source-in-run w r kind v)) true))
   (intros hm h)
-  (have nz (= (Nat.beq (src-owner-cur w r) 0) false))
+  (have nz (= (Nat.beq (source-owner-in-run w r) 0) false))
   (cases hc (in-comp w r))
-  (case [true] (simp only [src-owner-cur hc]) (exact (comp-pos w (:of r) (gso-sample w h) hc)))
-  (case [false] (simp only [src-owner-cur hc]) (exact (cur-scope-nz w r (tbl-all-mem RunRow rscope-nz r (:runs w) (gso-runs w h) hm))))
-  (simp only [create-source-cur])
-  (exact (gso-run-upd _ (:id r) run-tick run-tick-run-id (fn [q :- RunRow] (Eq.refl (:scope q)))
-           (gso-record-basis _ r (:next-id w)
-             (gso-source-ins w (new-source (:next-id w) (src-owner-cur w r) kind v) (rfl) (src0-new (:next-id w) _ kind v nz) h)))))
+  (case [true] (simp only [source-owner-in-run hc]) (exact (comp-pos w (:of r) (i1-detached-closed-well-formed w h) hc)))
+  (case [false] (simp only [source-owner-in-run hc]) (exact (cur-scope-nz w r (tbl-all-mem RunRow rscope-nz r (:runs w) (i1-detached-closed-runs w h) hm))))
+  (simp only [create-source-in-run])
+  (exact (i1-detached-closed-run-upd _ (:id r) run-tick run-tick-run-id (fn [q :- RunRow] (Eq.refl (:scope q)))
+           (i1-detached-closed-record-basis _ r (:next-id w)
+             (i1-detached-closed-source-ins w (new-source (:next-id w) (source-owner-in-run w r) kind v) (rfl) (src0-new (:next-id w) _ kind v nz) h)))))
 
 ;; C0: a stream (owned like a source) and its first tail link (the root scope's); a top-level link
 (a/theorem src0-stream [id :- Nat, o :- Nat, v :- Nat] (=> (= (Nat.beq o 0) false) (= (src0-ok (new-stream id o v)) true))
   (intro h) (simp only [src0-ok nzs new-stream h Bool.not_false Bool.true_or]))
 (a/theorem src0-link [id :- Nat, o :- Nat, t :- Nat] (=> (= (Nat.beq o 0) false) (= (src0-ok (new-link id o t)) true))
   (intro h) (simp only [src0-ok nzs new-link h Bool.not_false Bool.true_or]))
-(a/theorem gso-stream-rows [w :- World, owner :- Nat, v :- Nat]
-  (=> (= (Nat.beq owner 0) false) (= (gso w) true) (= (gso (stream-rows w owner v)) true))
+(a/theorem i1-detached-closed-stream-rows [w :- World, owner :- Nat, v :- Nat]
+  (=> (= (Nat.beq owner 0) false) (= (i1-detached-closed w) true) (= (i1-detached-closed (stream-rows w owner v)) true))
   (intros nz h)
   (simp only [stream-rows])
-  (exact (gso-source-ins (bump (source-ins w (new-stream (:next-id w) owner v))) (new-link (+ (:next-id w) 1) root-scope-id (:next-id w))
-           (rfl) (Eq.refl true) (gso-source-ins w (new-stream (:next-id w) owner v) (rfl) (src0-stream (:next-id w) owner v nz) h))))
-(tree/restate! GSO '[inv-record-basis inv-run-upd])
-(a/theorem gso-create-stream-cur [w :- World, r :- RunRow, v :- Nat]
-  (=> (List.Mem r (:runs w)) (= (gso w) true) (= (gso (create-stream-cur w r v)) true))
+  (exact (i1-detached-closed-source-ins (bump (source-ins w (new-stream (:next-id w) owner v))) (new-link (+ (:next-id w) 1) root-scope-id (:next-id w))
+           (rfl) (Eq.refl true) (i1-detached-closed-source-ins w (new-stream (:next-id w) owner v) (rfl) (src0-stream (:next-id w) owner v nz) h))))
+(tree/restate! GSO '[well-formed-record-basis well-formed-run-upd])
+(a/theorem i1-detached-closed-create-stream-in-run [w :- World, r :- RunRow, v :- Nat]
+  (=> (List.Mem r (:runs w)) (= (i1-detached-closed w) true) (= (i1-detached-closed (create-stream-in-run w r v)) true))
   (intros hm h)
-  (have nz (= (Nat.beq (src-owner-cur w r) 0) false))
+  (have nz (= (Nat.beq (source-owner-in-run w r) 0) false))
   (cases hc (in-comp w r))
-  (case [true] (simp only [src-owner-cur hc]) (exact (comp-pos w (:of r) (gso-sample w h) hc)))
-  (case [false] (simp only [src-owner-cur hc]) (exact (cur-scope-nz w r (tbl-all-mem RunRow rscope-nz r (:runs w) (gso-runs w h) hm))))
-  (simp only [create-stream-cur])
-  (exact (gso-run-upd _ (:id r) run-tick run-tick-run-id (fn [q :- RunRow] (Eq.refl (:scope q)))
-           (gso-record-basis _ r (:next-id w) (gso-stream-rows w (src-owner-cur w r) v nz h)))))
-(a/theorem t1-top-full-gso [w :- World, scope :- Nat, kind :- Nat, v :- Nat, fresh :- Nat]
-  (=> (= (gso w) true) (= (gso (:world (t1-top-full w scope kind v fresh))) true))
+  (case [true] (simp only [source-owner-in-run hc]) (exact (comp-pos w (:of r) (i1-detached-closed-well-formed w h) hc)))
+  (case [false] (simp only [source-owner-in-run hc]) (exact (cur-scope-nz w r (tbl-all-mem RunRow rscope-nz r (:runs w) (i1-detached-closed-runs w h) hm))))
+  (simp only [create-stream-in-run])
+  (exact (i1-detached-closed-run-upd _ (:id r) run-tick run-tick-run-id (fn [q :- RunRow] (Eq.refl (:scope q)))
+           (i1-detached-closed-record-basis _ r (:next-id w) (i1-detached-closed-stream-rows w (source-owner-in-run w r) v nz h)))))
+(a/theorem i1-detached-closed-t1-create-source-top [w :- World, scope :- Nat, kind :- Nat, v :- Nat, fresh :- Nat]
+  (=> (= (i1-detached-closed w) true) (= (i1-detached-closed (:world (t1-create-source-top w scope kind v fresh))) true))
   (intro h)
   (cases hk (Nat.beq kind sk-stream))
-  (simp only [t1-top-full hk]) (exact (t1-top-gso w scope kind v fresh h))
+  (simp only [t1-create-source-top hk]) (exact (i1-detached-closed-t1-create-nonstream-top w scope kind v fresh h))
   (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (scope-open-at w scope)))
-  (simp only [t1-top-full hk hg refuse]) (exact h)
+  (simp only [t1-create-source-top hk hg refuse]) (exact h)
   (have hso (= (scope-open-at w scope) true)) (simp only [Bool.and_eq_true] at hg) (exact (And.right hg))
-  (simp only [t1-top-full hk hg accept])
-  (exact (gso-stream-rows w scope v (scope-pos w scope (gso-sample w h) (open-at-has w scope hso)) h)))
-(a/theorem t-create-link-top-gso [w :- World, scope :- Nat, l :- Nat]
-  (=> (= (gso w) true) (= (gso (:world (t-create-link-top w scope l))) true))
+  (simp only [t1-create-source-top hk hg accept])
+  (exact (i1-detached-closed-stream-rows w scope v (scope-pos w scope (i1-detached-closed-well-formed w h) (open-at-has w scope hso)) h)))
+(a/theorem i1-detached-closed-t-create-link-top [w :- World, scope :- Nat, l :- Nat]
+  (=> (= (i1-detached-closed w) true) (= (i1-detached-closed (:world (t-create-link-top w scope l))) true))
   (intro h)
   (cases hg (Bool.and (Nat.beq l (:next-id w)) (scope-open-at w scope)))
   (simp only [t-create-link-top hg refuse]) (exact h)
   (have hso (= (scope-open-at w scope) true)) (simp only [Bool.and_eq_true] at hg) (exact (And.right hg))
   (simp only [t-create-link-top hg accept])
-  (exact (gso-source-ins w (new-link (:next-id w) scope 0) (rfl)
-           (src0-link (:next-id w) scope 0 (scope-pos w scope (gso-sample w h) (open-at-has w scope hso))) h)))
+  (exact (i1-detached-closed-source-ins w (new-link (:next-id w) scope 0) (rfl)
+           (src0-link (:next-id w) scope 0 (scope-pos w scope (i1-detached-closed-well-formed w h) (open-at-has w scope hso))) h)))
 
-(tree/restate! GSO '[raw-inv inv-normalize])
+(tree/restate! GSO '[well-formed-raw well-formed-normalize])
 
-(a/theorem gso-filter-world [w :- World, K :- (=> Nat Bool)]
-  (=> (= (gso w) true) (= (filter-safe-k K w) true) (= (gso (filter-world K w)) true))
+(a/theorem i1-detached-closed-filter-world [w :- World, K :- (=> Nat Bool)]
+  (=> (= (i1-detached-closed w) true) (= (filter-safe-for K w) true) (= (i1-detached-closed (filter-world K w)) true))
   (intros h hf)
-  (exact (gso-mk w _ (inv-filter-world w K (gso-sample w h) hf)
-           (tbl-all-keep SourceRow K source-id src0-ok src0-ok (fn [s :- SourceRow, h1 :- (= (src0-ok s) true), h2 :- (= (K (source-id s)) true)] h1) (:sources w) (gso-src w h))
-           (tbl-all-keep RunRow K run-id rscope-nz rscope-nz (fn [s :- RunRow, h1 :- (= (rscope-nz s) true), h2 :- (= (K (run-id s)) true)] h1) (:runs w) (gso-runs w h)))))
-(a/theorem gso-rule-r-round [w :- World]
-  (=> (= (gso w) true) (= (filter-safe (normalize w)) true) (= (gso (rule-r-round w)) true))
+  (exact (i1-detached-closed-mk w _ (well-formed-filter-world w K (i1-detached-closed-well-formed w h) hf)
+           (tbl-all-keep SourceRow K source-id src0-ok src0-ok (fn [s :- SourceRow, h1 :- (= (src0-ok s) true), h2 :- (= (K (source-id s)) true)] h1) (:sources w) (i1-detached-closed-source w h))
+           (tbl-all-keep RunRow K run-id rscope-nz rscope-nz (fn [s :- RunRow, h1 :- (= (rscope-nz s) true), h2 :- (= (K (run-id s)) true)] h1) (:runs w) (i1-detached-closed-runs w h)))))
+(a/theorem i1-detached-closed-rule-r-round [w :- World]
+  (=> (= (i1-detached-closed w) true) (= (filter-safe (normalize w)) true) (= (i1-detached-closed (rule-r-round w)) true))
   (intros h hf) (simp only [rule-r-round]) (rw [rule-r-filter-eq])
-  (exact (gso-filter-world _ (keep-fn (normalize w)) (gso-normalize w h) hf)))
-(a/theorem gso-rr-loop [fuel :- (List Nat)]
-  (forall [w0 :- World] (=> (= (gso w0) true) (= (rr-safe fuel w0) true) (= (gso (rr-loop fuel (rule-r-round w0))) true)))
+  (exact (i1-detached-closed-filter-world _ (keep-fn (normalize w)) (i1-detached-closed-normalize w h) hf)))
+(a/theorem i1-detached-closed-rule-r-loop [fuel :- (List Nat)]
+  (forall [w0 :- World] (=> (= (i1-detached-closed w0) true) (= (rounds-safe-loop fuel w0) true) (= (i1-detached-closed (rule-r-loop fuel (rule-r-round w0))) true)))
   (induction fuel)
-  (case [nil] (intros w0 h hs) (simp only [rr-safe] at hs) (simp only [rr-loop]) (exact (gso-rule-r-round w0 h hs)))
+  (case [nil] (intros w0 h hs) (simp only [rounds-safe-loop] at hs) (simp only [rule-r-loop]) (exact (i1-detached-closed-rule-r-round w0 h hs)))
   (case [cons x f ih]
     (intros w0 h hs)
-    (simp only [rr-safe Bool.and_eq_true] at hs)
-    (have h1 := (gso-rule-r-round w0 h (And.left hs)))
+    (simp only [rounds-safe-loop Bool.and_eq_true] at hs)
+    (have h1 := (i1-detached-closed-rule-r-round w0 h (And.left hs)))
     (cases ho (no-orphans (rule-r-round w0)))
-    (case [false] (simp only [ho] at hs) (simp only [rr-loop ho]) (exact (ih (rule-r-round w0) h1 (And.right hs))))
-    (case [true] (simp only [rr-loop ho]) (exact h1))))
-(a/theorem gso-rule-r [w :- World] (=> (= (gso w) true) (= (rule-r-safe w) true) (= (gso (rule-r w)) true))
-  (intros h hs) (simp only [rule-r-safe] at hs) (simp only [rule-r]) (exact (gso-rr-loop (rr-fuel w) w h hs)))
-(a/theorem gso-empty [] (= (gso empty-world) true) (rfl))
+    (case [false] (simp only [ho] at hs) (simp only [rule-r-loop ho]) (exact (ih (rule-r-round w0) h1 (And.right hs))))
+    (case [true] (simp only [rule-r-loop ho]) (exact h1))))
+(a/theorem i1-detached-closed-rule-r [w :- World] (=> (= (i1-detached-closed w) true) (= (rule-r-safe w) true) (= (i1-detached-closed (rule-r w)) true))
+  (intros h hs) (simp only [rule-r-safe] at hs) (simp only [rule-r]) (exact (i1-detached-closed-rule-r-loop (rule-r-fuel w) w h hs)))
+(a/theorem i1-detached-closed-empty [] (= (i1-detached-closed empty-world) true) (rfl))
 
 ;; ---- literal I1: the owners of tasks, computations and sources
-(a/defn i1-own [w :- World] Bool
+(a/defn lit-i1-own [w :- World] Bool
   (Bool.and (tbl-all (task-owner-ok w) (:tasks w))
    (Bool.and (tbl-all (comp-owner-ok w) (:comps w)) (tbl-all (source-owner-ok w) (:sources w)))))
 
@@ -969,7 +969,7 @@
     (cases hs (scope-has w o))
     (case [true] (simp only [Bool.true_or]))
     (case [false] (simp only [hs Bool.not_false Bool.true_and] at h) (simp only [Bool.false_or]) (exact (bnot-false _ h)))))
-(a/theorem i1-own-of [w :- World] (=> (= (no-orphans w) true) (= (gso w) true) (= (i1-own w) true))
+(a/theorem lit-i1-own-of [w :- World] (=> (= (no-orphans w) true) (= (i1-detached-closed w) true) (= (lit-i1-own w) true))
   (intros hn hg)
   (simp only [no-orphans Bool.and_eq_true] at hn)
   (have n1 := (bnot-true _ (And.left hn)))
@@ -980,50 +980,50 @@
   (have a2 := (all-not-any CompRow (comp-orphan w) (comp-owner-ok w)
                 (fn [t :- CompRow, q :- (= (comp-orphan w t) false)] (gone-owner w (:owner t) q)) (:comps w) n3))
   (have a3 (= (tbl-all (source-owner-ok w) (:sources w)) true))
-  (apply (tbl-all-mono2 SourceRow (bnot-of (src-orphan w)) src0-ok (source-owner-ok w) _ (:sources w) (any-false-all SourceRow (src-orphan w) (:sources w) n1) (gso-src w hg)))
+  (apply (tbl-all-mono2 SourceRow (bnot-of (source-orphan w)) src0-ok (source-owner-ok w) _ (:sources w) (any-false-all SourceRow (source-orphan w) (:sources w) n1) (i1-detached-closed-source w hg)))
   (intros s h1 h2)
   (simp only [bnot-of] at h1)
   (have g := (gone-owner w (:owner s) (bnot-true _ h1)))
   (cases hz (Nat.beq (:owner s) 0))
   (case [true] (simp only [src0-ok nzs hz Bool.not_true Bool.false_or] at h2) (simp only [source-owner-ok hz]) (exact h2))
   (case [false] (simp only [hz Bool.false_or] at g) (simp only [source-owner-ok hz]) (exact g))
-  (simp only [i1-own a1 a2 a3 Bool.and_self]))
+  (simp only [lit-i1-own a1 a2 a3 Bool.and_self]))
 
-(a/theorem step-gso [w :- World, it :- Item]
-  (=> (= (gso w) true) (= (rule-r-safe (:world (raw w it))) true) (= (gso (:world (world-step w it))) true))
+(a/theorem step-i1-detached-closed [w :- World, it :- Item]
+  (=> (= (i1-detached-closed w) true) (= (rule-r-safe (:world (raw w it))) true) (= (i1-detached-closed (:world (world-step w it))) true))
   (intros h hs)
   (cases ha (:accepted (raw w it)))
   (case [false] (have e1 := (step-refuse w it ha)) (simp only [e1 refuse]) (exact h))
-  (case [true] (have e2 := (step-accepted w it ha)) (rw [e2]) (exact (gso-rule-r (:world (raw w it)) (raw-gso w it h) hs))))
+  (case [true] (have e2 := (step-accepted w it ha)) (rw [e2]) (exact (i1-detached-closed-rule-r (:world (raw w it)) (i1-detached-closed-raw w it h) hs))))
 
-;; the combined bundle: p3g = p3f && gso && the owner clauses
-(a/defn p3g [w :- World] Bool (Bool.and (p3f w) (Bool.and (gso w) (i1-own w))))
-(a/theorem p3g-parts [w :- World] (=> (= (p3g w) true) (And (= (p3f w) true) (And (= (gso w) true) (= (i1-own w) true))))
-  (intro h) (simp only [p3g Bool.and_eq_true] at h) (exact h))
-(a/theorem p3g-empty [] (= (p3g empty-world) true) (rfl))
-(a/theorem step-p3g [w :- World, it :- Item] (=> (= (p3g w) true) (= (p3g (:world (world-step w it))) true))
+;; the combined bundle: chain-to-i1-detached-closed = chain-to-i5-dep-final && i1-detached-closed && the owner clauses
+(a/defn chain-to-i1-detached-closed [w :- World] Bool (Bool.and (chain-to-i5-dep-final w) (Bool.and (i1-detached-closed w) (lit-i1-own w))))
+(a/theorem chain-to-i1-detached-closed-parts [w :- World] (=> (= (chain-to-i1-detached-closed w) true) (And (= (chain-to-i5-dep-final w) true) (And (= (i1-detached-closed w) true) (= (lit-i1-own w) true))))
+  (intro h) (simp only [chain-to-i1-detached-closed Bool.and_eq_true] at h) (exact h))
+(a/theorem chain-to-i1-detached-closed-empty [] (= (chain-to-i1-detached-closed empty-world) true) (rfl))
+(a/theorem step-chain-to-i1-detached-closed [w :- World, it :- Item] (=> (= (chain-to-i1-detached-closed w) true) (= (chain-to-i1-detached-closed (:world (world-step w it))) true))
   (intro h)
-  (have p := (p3g-parts w h))
-  (have pf := (p3f-parts w (And.left p)))
-  (have pe := (p3e-parts w (And.left pf)))
-  (have pd := (p3d-parts w (And.left pe)))
-  (have pc := (p3c-parts w (And.left pd)))
+  (have p := (chain-to-i1-detached-closed-parts w h))
+  (have pf := (chain-to-i5-dep-final-parts w (And.left p)))
+  (have pe := (chain-to-i1-scopes-parts w (And.left pf)))
+  (have pd := (chain-to-i11a-parts w (And.left pe)))
+  (have pc := (chain-to-i10-current-parts w (And.left pd)))
   (have rs := (step-rule-r-safe w it (And.left pc)))
-  (have a1 := (step-p3f w it (And.left p)))
-  (have a2 := (step-gso w it (And.left (And.right p)) rs))
-  (have a3 (= (i1-own (:world (world-step w it))) true))
+  (have a1 := (step-chain-to-i5-dep-final w it (And.left p)))
+  (have a2 := (step-i1-detached-closed w it (And.left (And.right p)) rs))
+  (have a3 (= (lit-i1-own (:world (world-step w it))) true))
   (cases ha (:accepted (raw w it)))
   (case [false] (have e1 := (step-refuse w it ha)) (simp only [e1 refuse]) (exact (And.right (And.right p))))
   (case [true]
     (have e2 := (step-accepted w it ha))
-    (have hs := (raw-inv w it (gso-sample w (And.left (And.right p)))))
+    (have hs := (well-formed-raw w it (i1-detached-closed-well-formed w (And.left (And.right p)))))
     (have no := (rule-r-no-orphans (:world (raw w it)) hs rs))
     (rw [← e2] at no)
-    (exact (i1-own-of _ no a2)))
-  (simp only [p3g a1 a2 a3 Bool.and_self]))
+    (exact (lit-i1-own-of _ no a2)))
+  (simp only [chain-to-i1-detached-closed a1 a2 a3 Bool.and_self]))
 ;; Theorem: literal I1 for the owners of tasks, computations and sources (0 or an existing scope or
 ;; computation; a source with owner 0 is closed), through every step
 (a/theorem step-lit-i1-owners-total [w :- World, it :- Item]
-  (=> (= (p3g w) true) (= (i1-own (:world (world-step w it))) true))
-  (intro h) (exact (And.right (And.right (p3g-parts _ (step-p3g w it h))))))
+  (=> (= (chain-to-i1-detached-closed w) true) (= (lit-i1-own (:world (world-step w it))) true))
+  (intro h) (exact (And.right (And.right (chain-to-i1-detached-closed-parts _ (step-chain-to-i1-detached-closed w it h))))))
 

@@ -33,39 +33,39 @@
 
 (def helper-definitions
   '[
-(a/defn h9-entry [xm :- (List Nat), w :- World, r :- RunRow,
+(a/defn current-members-entry [xm :- (List Nat), w :- World, r :- RunRow,
                   ds :- (List Nat), mode :- Nat, st :- Nat, fresh :- Nat] Prop
-  (And (= (p3la w) true)
-   (And (= (h3 xm w) true)
+  (And (= (chain-to-edge-kinds w) true)
+   (And (= (current-members xm w) true)
     (And (= (tok-run w st) (Option.some RunRow r))
          (= (await-ok w r ds mode fresh) true)))))
 
-(a/defn h9-act [w :- World, r :- RunRow, ds :- (List Nat),
+(a/defn current-members-act [w :- World, r :- RunRow, ds :- (List Nat),
                 mode :- Nat, k :- Nat, mine :- (List Nat)] ActRow
   (ActRow.mk (:next-id w) (:id r) mode (List.nil Member)
              (none-slots ds) (nat-len ds) k mine))
 
-(a/defn h9-prefix [w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat,
+(a/defn current-members-prefix [w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat,
                    k :- Nat, mine :- (List Nat), pre :- (List Nat)] AwAcc
   (await-wire r (:next-id w) mode k
     (AwAcc.mk (await-pre w r ds mode k mine) (List.nil DE) true) pre))
 
-(a/defn h9-debtors [ps :- (List DE)] (List Nat)
+(a/defn current-members-debtors [ps :- (List DE)] (List Nat)
   (match ps [nil (List.nil Nat)]
-    [(cons p t) (List.cons Nat (:deb p) (h9-debtors t))]))
+    [(cons p t) (List.cons Nat (:deb p) (current-members-debtors t))]))
 
-(a/defn h9-pairs [pre :- (List Nat), tail :- (List Nat), ps :- (List DE)] Prop
+(a/defn current-members-pairs [pre :- (List Nat), tail :- (List Nat), ps :- (List DE)] Prop
   (And (forall [d :- Nat]
          (Iff (= (de-has d ps) true) (= (nat-mem d pre) true)))
-   (And (= (nat-len (h9-debtors ps)) (nat-len pre))
-    (And (= (nat-nodup (h9-debtors ps)) true)
+   (And (= (nat-len (current-members-debtors ps)) (nat-len pre))
+    (And (= (nat-nodup (current-members-debtors ps)) true)
      (And (forall [d :- Nat]
             (=> (= (nat-mem d tail) true) (= (de-has d ps) false)))
           (forall [p :- DE, q :- DE]
             (=> (List.Mem p ps) (List.Mem q ps) (= (:edge p) (:edge q))
                 (= (:deb p) (:deb q)))))))))
 
-(a/defn h9-edge-fields [P :- World, r :- RunRow, a :- Nat, mode :- Nat,
+(a/defn current-members-edge-fields [P :- World, r :- RunRow, a :- Nat, mode :- Nat,
                        k :- Nat, d :- Nat, e :- EdgeRow] Prop
   (And (= (:debtor e) d)
    (And (= (:at e) (:effect-index r))
@@ -74,22 +74,22 @@
       (And (= (:creditor e) (if (as-dep P r d) (:of r) a))
            (= (:cont e) (if (as-dep P r d) (await-cont r mode k) cont-restart))))))))
 
-(a/defn h9-support [xm :- (List Nat), W :- World, r :- RunRow, a :- Nat] Prop
-  (And (= (h3 xm W) true)
-   (And (= (g7 W) true)
-    (And (= (aha W) true)
-     (And (= (gd W) true)
-      (And (= (ar W) true)
-       (And (= (hmk (List.nil Nat) W) true)
-        (And (= (ekb W) true)
-         (And (= (gl W) true)
-          (And (= (ka (:id r) W) true)
-           (And (= (awo (:of r) (:id r) W) true)
-                (= (gx (Ex.mk (:id r) a) W) true))))))))))))
+(a/defn current-members-support [xm :- (List Nat), W :- World, r :- RunRow, a :- Nat] Prop
+  (And (= (current-members xm W) true)
+   (And (= (i7-idle W) true)
+    (And (= (act-runs-alive W) true)
+     (And (= (comp-facts W) true)
+      (And (= (alive-run-latest W) true)
+       (And (= (marks-waiting (List.nil Nat) W) true)
+        (And (= (edge-kinds W) true)
+         (And (= (i10-task W) true)
+          (And (= (awaiting-run-alive (:id r) W) true)
+           (And (= (comp-awake-owns-run (:of r) (:id r) W) true)
+                (= (acts-parked-exempt (Ex.mk (:id r) a) W) true))))))))))))
 
-(a/defn h9-shape [w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat,
+(a/defn current-members-shape [w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat,
                   k :- Nat, mine :- (List Nat), W :- World] Prop
-  (And (= (:acts W) (List.cons ActRow (h9-act w r ds mode k mine) (:acts w)))
+  (And (= (:acts W) (List.cons ActRow (current-members-act w r ds mode k mine) (:acts w)))
    (And (= (:runs W) (:runs (run-upd w (:id r) run-tick)))
     (And (= (:tasks W) (:tasks w))
      (And (= (:sources W) (:sources w))
@@ -100,95 +100,95 @@
 (def public-contracts
   '
 [
-{:name h3-await-step
+{:name current-members-await-step-hand
  :type (forall [xm :- (List Nat), r :- RunRow, a :- Nat, mode :- Nat, k :- Nat, acc :- AwAcc, d :- Nat]
-  (=> (= (h3 xm (:world acc)) true)
-      (= (h3 xm (:world (await-step r a mode k acc d))) true)))}
+  (=> (= (current-members xm (:world acc)) true)
+      (= (current-members xm (:world (await-step r a mode k acc d))) true)))}
 
-{:name h3-await-wire
+{:name current-members-await-wire-hand
  :type (forall [xm :- (List Nat), r :- RunRow, a :- Nat, mode :- Nat, k :- Nat, ds :- (List Nat), acc :- AwAcc]
-  (=> (= (h3 xm (:world acc)) true)
-      (= (h3 xm (:world (await-wire r a mode k acc ds))) true)))}
+  (=> (= (current-members xm (:world acc)) true)
+      (= (current-members xm (:world (await-wire r a mode k acc ds))) true)))}
 
-{:name h3-await-acc-p3la
+{:name current-members-await-acc-chain-to-edge-kinds
  :type (forall [xm :- (List Nat), w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
-  (=> (= (p3la w) true) (= (h3 xm w) true) (List.Mem r (:runs w)) (= (run-alive r) true)
-      (= (h3 xm (:world (await-acc w r ds mode k mine))) true)))}
+  (=> (= (chain-to-edge-kinds w) true) (= (current-members xm w) true) (List.Mem r (:runs w)) (= (run-alive r) true)
+      (= (current-members xm (:world (await-acc w r ds mode k mine))) true)))}
 
-{:name h9-awo-of-run
+{:name current-members-comp-awake-owns-run-of-run
  :type (forall [w :- World, r :- RunRow]
-  (=> (= (g7 w) true) (List.Mem r (:runs w)) (= (run-alive r) true)
-      (= (awo (:of r) (:id r) w) true)))}
+  (=> (= (i7-idle w) true) (List.Mem r (:runs w)) (= (run-alive r) true)
+      (= (comp-awake-owns-run (:of r) (:id r) w) true)))}
 
-{:name h9-prefix-support
+{:name current-members-prefix-support
  :type (forall [xm :- (List Nat), w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat), st :- Nat, fresh :- Nat, pre :- (List Nat), tail :- (List Nat)]
-  (=> (h9-entry xm w r ds mode st fresh) (= (List.append Nat pre tail) (nat-distinct ds))
-      (h9-support xm (:world (h9-prefix w r ds mode k mine pre)) r (:next-id w))))}
+  (=> (current-members-entry xm w r ds mode st fresh) (= (List.append Nat pre tail) (nat-distinct ds))
+      (current-members-support xm (:world (current-members-prefix w r ds mode k mine pre)) r (:next-id w))))}
 
-{:name h9-prefix-shape
+{:name current-members-prefix-shape
  :type (forall [xm :- (List Nat), w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat), st :- Nat, fresh :- Nat, pre :- (List Nat), tail :- (List Nat)]
-  (=> (h9-entry xm w r ds mode st fresh) (= (List.append Nat pre tail) (nat-distinct ds))
-      (h9-shape w r ds mode k mine (:world (h9-prefix w r ds mode k mine pre)))))}
+  (=> (current-members-entry xm w r ds mode st fresh) (= (List.append Nat pre tail) (nat-distinct ds))
+      (current-members-shape w r ds mode k mine (:world (current-members-prefix w r ds mode k mine pre)))))}
 
-{:name h9-prefix-pairs
+{:name current-members-prefix-pairs
  :type (forall [xm :- (List Nat), w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat), st :- Nat, fresh :- Nat, pre :- (List Nat), tail :- (List Nat)]
-  (=> (h9-entry xm w r ds mode st fresh) (= (List.append Nat pre tail) (nat-distinct ds))
-      (h9-pairs pre tail (:pairs (h9-prefix w r ds mode k mine pre)))))}
+  (=> (current-members-entry xm w r ds mode st fresh) (= (List.append Nat pre tail) (nat-distinct ds))
+      (current-members-pairs pre tail (:pairs (current-members-prefix w r ds mode k mine pre)))))}
 
-{:name h9-prefix-pair-edge
+{:name current-members-prefix-pair-edge
  :type (forall [xm :- (List Nat), w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat), st :- Nat, fresh :- Nat, pre :- (List Nat), tail :- (List Nat), d :- Nat]
-  (=> (h9-entry xm w r ds mode st fresh) (= (List.append Nat pre tail) (nat-distinct ds)) (= (nat-mem d pre) true)
-      (let [C (h9-prefix w r ds mode k mine pre), W (:world C), x (pair-edge d (:pairs C))]
+  (=> (current-members-entry xm w r ds mode st fresh) (= (List.append Nat pre tail) (nat-distinct ds)) (= (nat-mem d pre) true)
+      (let [C (current-members-prefix w r ds mode k mine pre), W (:world C), x (pair-edge d (:pairs C))]
         (Exists (fn [e :- EdgeRow]
           (And (= (edge-find W x) (Option.some EdgeRow e))
            (And (= (:id e) x)
-            (And (h9-edge-fields (await-pre w r ds mode k mine) r (:next-id w) mode k d e)
+            (And (current-members-edge-fields (await-pre w r ds mode k mine) r (:next-id w) mode k d e)
                  (forall [q :- EdgeRow]
                    (=> (List.Mem q (:edges W)) (= (:id q) x) (= q e)))))))))))}
 
-{:name h9-next-edge-ok
+{:name current-members-next-edge-ok
  :type (forall [xm :- (List Nat), w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat), st :- Nat, fresh :- Nat, pre :- (List Nat), tail :- (List Nat), d :- Nat]
-  (=> (h9-entry xm w r ds mode st fresh) (= (List.append Nat pre (List.cons Nat d tail)) (nat-distinct ds))
-      (let [W (:world (h9-prefix w r ds mode k mine pre))]
+  (=> (current-members-entry xm w r ds mode st fresh) (= (List.append Nat pre (List.cons Nat d tail)) (nat-distinct ds))
+      (let [W (:world (current-members-prefix w r ds mode k mine pre))]
         (= (edge-ok-in W (await-edge W r (:next-id w) mode k d)) true))))}
 
-{:name h9-prefix-reuse-free
+{:name current-members-prefix-reuse-free
  :type (forall [xm :- (List Nat), w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat), st :- Nat, fresh :- Nat, pre :- (List Nat), tail :- (List Nat), d :- Nat, e :- EdgeRow]
-  (=> (h9-entry xm w r ds mode st fresh) (= (List.append Nat pre (List.cons Nat d tail)) (nat-distinct ds))
-      (= (as-dep (:world (h9-prefix w r ds mode k mine pre)) r d) true)
-      (= (site-edge (:edges (:world (h9-prefix w r ds mode k mine pre))) (:of r) (:effect-index r) d)
+  (=> (current-members-entry xm w r ds mode st fresh) (= (List.append Nat pre (List.cons Nat d tail)) (nat-distinct ds))
+      (= (as-dep (:world (current-members-prefix w r ds mode k mine pre)) r d) true)
+      (= (site-edge (:edges (:world (current-members-prefix w r ds mode k mine pre))) (:of r) (:effect-index r) d)
          (Option.some EdgeRow e))
-      (= (h3-free xm (:world (h9-prefix w r ds mode k mine pre)) (:id e)) true)))}
+      (= (current-members-free xm (:world (current-members-prefix w r ds mode k mine pre)) (:id e)) true)))}
 
-{:name h9-prefix-pair-free
+{:name current-members-prefix-pair-free
  :type (forall [xm :- (List Nat), w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat), st :- Nat, fresh :- Nat, pre :- (List Nat), tail :- (List Nat), p :- DE]
-  (=> (h9-entry xm w r ds mode st fresh) (= (List.append Nat pre tail) (nat-distinct ds)) (List.Mem p (:pairs (h9-prefix w r ds mode k mine pre)))
-      (= (h3-free xm (:world (h9-prefix w r ds mode k mine pre)) (:edge p)) true)))}
+  (=> (current-members-entry xm w r ds mode st fresh) (= (List.append Nat pre tail) (nat-distinct ds)) (List.Mem p (:pairs (current-members-prefix w r ds mode k mine pre)))
+      (= (current-members-free xm (:world (current-members-prefix w r ds mode k mine pre)) (:edge p)) true)))}
 
-{:name h9-installed-first-holder
+{:name current-members-installed-first-holder
  :type (forall [xm :- (List Nat), w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat), st :- Nat, fresh :- Nat, d :- Nat]
-  (=> (h9-entry xm w r ds mode st fresh) (= (nat-mem d ds) true)
+  (=> (current-members-entry xm w r ds mode st fresh) (= (nat-mem d ds) true)
       (let [C (await-acc w r ds mode k mine), W (:world C), ps (:pairs C),
-            M (mk-members ps 0 ds), b2 (act-set-members M (h9-act w r ds mode k mine)),
+            M (mk-members ps 0 ds), b2 (act-set-members M (current-members-act w r ds mode k mine)),
             I (act-upd W (:next-id w) (act-set-members M)), x (pair-edge d ps)]
         (Exists (fn [e :- EdgeRow]
           (And (= (edge-find W x) (Option.some EdgeRow e))
            (And (= (edge-find I x) (Option.some EdgeRow e))
             (And (= (act-with-member x (:acts I)) (Option.some ActRow b2))
-                 (= (h3-s (:acts I) b2 (rk3 r) e) true)))))))))}
+                 (= (current-members-s (:acts I) b2 (current-members-run-key r) e) true)))))))))}
 
-{:name h9-members-split
+{:name current-members-members-split
  :type (forall [ps :- (List DE), i :- Nat, left :- (List Nat), d :- Nat, right :- (List Nat)]
   (= (mk-members ps i (List.append Nat left (List.cons Nat d right)))
      (List.append Member (mk-members ps i left)
        (List.cons Member (Member.mk (pair-edge d ps) (+ i (nat-len left)))
          (mk-members ps (+ (+ i (nat-len left)) 1) right)))))}
 
-{:name h9-member-count
+{:name current-members-member-count
  :type (forall [ps :- (List DE), i :- Nat, ds :- (List Nat)]
   (= (nat-len (member-edges (mk-members ps i ds))) (nat-len ds)))}
 
-{:name h9-duplicate-slots
+{:name current-members-duplicate-slots
  :type (forall [ps :- (List DE), i :- Nat, left :- (List Nat), d :- Nat, middle :- (List Nat), right :- (List Nat)]
   (let [ds (List.append Nat left (List.cons Nat d (List.append Nat middle (List.cons Nat d right)))),
         j (+ i (nat-len left)), l (+ (+ j 1) (nat-len middle)),
@@ -197,22 +197,22 @@
      (And (List.Mem m2 (mk-members ps i ds))
       (And (= (:edge m1) (:edge m2)) (= (Nat.blt (:idx m1) (:idx m2)) true))))))}
 
-{:name h9-step-ok-false
+{:name current-members-step-ok-false
  :type (forall [r :- RunRow, a :- Nat, mode :- Nat, k :- Nat, acc :- AwAcc, d :- Nat]
   (=> (= (:ok acc) false) (= (:ok (await-step r a mode k acc d)) false)))}
 
-{:name h9-wire-ok-false
+{:name current-members-wire-ok-false
  :type (forall [r :- RunRow, a :- Nat, mode :- Nat, k :- Nat, acc :- AwAcc, ds :- (List Nat)]
   (=> (= (:ok acc) false) (= (:ok (await-wire r a mode k acc ds)) false)))}
 
-{:name h9-acc-rank
+{:name current-members-acc-rank
  :type (forall [xm :- (List Nat), w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat), st :- Nat, fresh :- Nat]
-  (=> (h9-entry xm w r ds mode st fresh) (= (:ok (await-acc w r ds mode k mine)) true)
-      (= (inv-rank (:world (await-acc w r ds mode k mine))) true)))}
+  (=> (current-members-entry xm w r ds mode st fresh) (= (:ok (await-acc w r ds mode k mine)) true)
+      (= (i12-ranks (:world (await-acc w r ds mode k mine))) true)))}
 
-{:name h9-step-reuse-frame
+{:name current-members-step-reuse-frame
  :type (forall [r :- RunRow, a :- Nat, mode :- Nat, k :- Nat, acc :- AwAcc, d :- Nat, e :- EdgeRow]
-  (=> (= (inv-sample (:world acc)) true) (= (as-dep (:world acc) r d) true)
+  (=> (= (well-formed (:world acc)) true) (= (as-dep (:world acc) r d) true)
       (= (site-edge (:edges (:world acc)) (:of r) (:effect-index r) d) (Option.some EdgeRow e))
       (let [B (await-step r a mode k acc d)]
         (And (= (:next-id (:world B)) (:next-id (:world acc)))
@@ -221,9 +221,9 @@
                (= (edge-find (:world B) (:id e))
                   (Option.some EdgeRow (edge-reawait (await-cont r mode k) e)))))))))}
 
-{:name h9-step-fresh-frame
+{:name current-members-step-fresh-frame
  :type (forall [r :- RunRow, a :- Nat, mode :- Nat, k :- Nat, acc :- AwAcc, d :- Nat]
-  (=> (= (inv-sample (:world acc)) true)
+  (=> (= (well-formed (:world acc)) true)
       (= (edge-ok-in (:world acc) (await-edge (:world acc) r a mode k d)) true)
       (Or (= (as-dep (:world acc) r d) false)
           (= (site-edge (:edges (:world acc)) (:of r) (:effect-index r) d) (Option.none EdgeRow)))
@@ -237,9 +237,9 @@
                     (Bool.and (:ok acc) (:ok (await-new-dep (:world acc) r a mode k d)))
                     (:ok acc)))))))))}
 
-{:name h9-step-adoption
+{:name current-members-step-adoption
  :type (forall [r :- RunRow, a :- Nat, mode :- Nat, k :- Nat, acc :- AwAcc, d :- Nat, c :- CompRow]
-  (=> (= (inv-sample (:world acc)) true) (= (as-dep (:world acc) r d) true)
+  (=> (= (well-formed (:world acc)) true) (= (as-dep (:world acc) r d) true)
       (= (comp-find (:world acc) (:of r)) (Option.some CompRow c))
       (Exists (fn [c2 :- CompRow]
         (And (= (comp-find (:world (await-step r a mode k acc d)) (:of r)) (Option.some CompRow c2))
@@ -267,10 +267,10 @@
 
 (defn expanded-independent-contract [contract]
   ;; Nonrecursive aliases are independently bound to the frozen meanings.
-  ;; Kernel beta/delta/zeta equality performs expansion; recursive h9-debtors
+  ;; Kernel beta/delta/zeta equality performs expansion; recursive current-members-debtors
   ;; is retained and its exact source recursion is separately pinned below.
   (let [bindings (mapcat (fn [[_ name parameters _ body]]
-                          (when-not (= name 'h9-debtors)
+                          (when-not (= name 'current-members-debtors)
                             [name (list 'fn parameters body)])) helper-definitions)]
     (list 'let (vec bindings) contract)))
 
@@ -305,8 +305,8 @@
           (is (seq (closed/type-form (.value d))))
           (is (= (closed/type-form (elab/elaborate @a/ansatz-env (list 'forall parameters result)))
                  (closed/type-form (.-type d))) (str name " exact safe definition signature"))
-          (if (= name 'h9-debtors)
-            (is (= '(match ps [nil (List.nil Nat)] [(cons p t) (List.cons Nat (:deb p) (h9-debtors t))]) body)
+          (if (= name 'current-members-debtors)
+            (is (= '(match ps [nil (List.nil Nat)] [(cons p t) (List.cons Nat (:deb p) (current-members-debtors t))]) body)
                 "recursive body pinned without claiming evaluation of a symbolic list")
             (let [expected (elab/elaborate @a/ansatz-env (list 'fn parameters body) (.-type d))]
               (is (tc/is-def-eq (tc/mk-tc-state @a/ansatz-env) (.value d) expected)
@@ -319,19 +319,19 @@
     (fixture/check-input f)
     (is (= [r] (step/tok-run w (:stamp r))))
     (is (true? (engine/await-ok w r ds mode (:next-id w))))
-    (is (true? (idle/awo (:of r) (:id r) w)))
-    (is (true? (i8/ka (:id r) w)))
+    (is (true? (idle/comp-awake-owns-run (:of r) (:id r) w)))
+    (is (true? (i8/awaiting-run-alive (:id r) w)))
     r))
 
 (defn check-local-support [w r aid]
   (fixture/check-h3-fields w)
   (fixture/check-supports w)
-  (is (true? (lit/gl w)))
-  (is (true? (i8/ka (:id r) w)))
-  (is (true? (idle/awo (:of r) (:id r) w)))
-  (is (true? (acts/gx (acts/->Ex (:id r) aid) w)))
+  (is (true? (lit/i10-task w)))
+  (is (true? (i8/awaiting-run-alive (:id r) w)))
+  (is (true? (idle/comp-awake-owns-run (:of r) (:id r) w)))
+  (is (true? (acts/acts-parked-exempt (acts/->Ex (:id r) aid) w)))
   ;; The distinguished activation still belongs to a live slice. GA is not
-  ;; asserted at this boundary, and p3la is not an internal wiring premise.
+  ;; asserted at this boundary, and chain-to-edge-kinds is not an internal wiring premise.
   (doseq [a (:acts w), :when (not= aid (:id a))]
     (let [run (row w :runs (:run a))]
       (is (some? run))
@@ -400,7 +400,7 @@
             (recur (inc i) out (assoc expected d eid)))
           (do (is (= acc (engine/await-acc w r ds mode k mine)))
               (is (true? (:ok acc)))
-              (is (true? (rank/inv-rank (:world acc))))
+              (is (true? (rank/i12-ranks (:world acc))))
               {:r r :P P :acc acc :pairs expected}))))))
 
 (defn installed-slots [f ds mode k mine {:keys [r acc pairs]}]
@@ -419,7 +419,7 @@
             holders (filter #(some (fn [m] (= (:id e) (:edge m))) (:members %)) (:acts installed))]
         (is (= d (:debtor e)))
         (is (= aid (:id (first holders))))
-        (is (true? (hm3/h3-s (:acts installed) a (hm3/rk3 r) e)))))
+        (is (true? (hm3/current-members-s (:acts installed) a (hm3/current-members-run-key r) e)))))
     (doseq [i (range (count ds)), j (range (count ds))]
       (is (= (= (nth ds i) (nth ds j)) (= (:edge (nth expected i)) (:edge (nth expected j))))))
     installed))
@@ -473,7 +473,7 @@
               (is (some? e))
               (is (= [true (:version v) true (:version v)]
                      ((juxt :has-seen :seen :has-base :base-version) e))))))
-        (is (true? (hm3/h3 [] after)))))))
+        (is (true? (hm3/current-members [] after)))))))
 
 (deftest accepted-task-and-resource-wait-branches
   (let [{:keys [deferred leaf top] :as f} (fixture/fixture :task)
@@ -507,9 +507,9 @@
         e (row installed :edges (get (:pairs result) d))]
     (is (true? (step/comp-live (row w :comps d))))
     (is (true? (engine/fast-ready (:world acc) d)))
-    (is (false? (hm3/h3-m (:comps installed) (:tasks installed) (:runs installed) e)))
-    (is (false? (hm3/h3 [] installed)))
-    (is (true? (hm3/h3 [] (:world acc))))))
+    (is (false? (hm3/current-members-m (:comps installed) (:tasks installed) (:runs installed) e)))
+    (is (false? (hm3/current-members [] installed)))
+    (is (true? (hm3/current-members [] (:world acc))))))
 
 (deftest conditional-local-rank-failure-continues-wiring-and-consumes-adoption
   ;; Explicit conditional field instance: a self dependency violates Entry's
@@ -542,7 +542,7 @@
       (doseq [field [:basis :adopt-basis]] (is (= (field before) (field (row out :comps owner))))))
     (doseq [[d eid] [[owner (:next-id P)] [leaf (inc (:next-id P))]]]
       (is (= d (:debtor (row (:world second-step) :edges eid)))))
-    (is (false? (rank/inv-rank (:world second-step))) "rank output requires final ok")))
+    (is (false? (rank/i12-ranks (:world second-step))) "rank output requires final ok")))
 
 (deftest arbitrary-local-checked-insertion-refusal-and-sticky-false
   (let [{:keys [w rid deferred] :as f} (fixture/fixture :task), r (row w :runs rid)
@@ -565,13 +565,13 @@
   (let [{:keys [w rid old-run deferred consuming] :as f} (fixture/fixture :task)
         r (row w :runs rid), st (:stamp r), fresh (:next-id w)
         parked (row w :runs old-run), parked-acc (engine/await-acc w parked [deferred] s/am-one 994 [])
-        accepted (engine/raw0 w [18 st [deferred] s/am-one 994 fresh []])]
+        accepted (engine/transition w [18 st [deferred] s/am-one 994 fresh []])]
     (fixture/check-input f)
     (is (some #{parked} (:runs w)))
     (is (closed/alive? parked))
     (is (false? (:slice parked)))
     (is (nil? (step/tok-run w (:stamp parked))))
-    (is (true? (hm3/h3 [] (:world parked-acc))) "broad alive-member H3 transport has no slice premise")
+    (is (true? (hm3/current-members [] (:world parked-acc))) "broad alive-member H3 transport has no slice premise")
     (is (true? (:accepted accepted)) "finite full T6 positive regression observation")
     (is (= s/act-parked (:act (row (:world accepted) :runs rid))))
     (is (seq (:members (row (:world accepted) :acts fresh))))
@@ -583,7 +583,7 @@
                                    [w st [999999] s/am-one]]]
       (fixture/refused-raw world [18 token ds mode 994 (:next-id world) []]))
     (is (true? (engine/await-ok w r [consuming] s/am-one fresh)))
-    (is (true? (engine/await-kind-bad w [consuming])))
+    (is (true? (engine/await-kind-refused w [consuming])))
     (fixture/refused-raw w [18 st [consuming] s/am-one 994 fresh []])
     (let [w1 (fixture/accepted-step w [35 st])
           w2 (fixture/accepted-step w1 [18 st [deferred] s/am-one 995 (:next-id w1) []])
@@ -598,9 +598,9 @@
 (def generated-contracts
   ;; Independent invariant schemas specify the exported copier dependencies.
   ;; No copied source or registered kernel type is used to construct them.
-  (let [families [['g7 [] []] ['aha [] []] ['gd [] []] ['ar [] []]
-                  ['hmk '[hxm :- (List Nat)] '[hxm]] ['ekb [] []] ['gl [] []]
-                  ['awo '[awc :- Nat awr :- Nat] '[awc awr]] ['ka '[k8a :- Nat] '[k8a]]]
+  (let [families [['i7-idle [] []] ['act-runs-alive [] []] ['comp-facts [] []] ['alive-run-latest [] []]
+                  ['marks-waiting '[hxm :- (List Nat)] '[hxm]] ['edge-kinds [] []] ['i10-task [] []]
+                  ['comp-awake-owns-run '[awc :- Nat awr :- Nat] '[awc awr]] ['awaiting-run-alive '[k8a :- Nat] '[k8a]]]
         predicate (fn [p args w] (apply list p (concat args [w])))
         truth (fn [p args w] (list '= (predicate p args w) true))
         preparation
@@ -609,33 +609,33 @@
                     (list 'forall (into (vec params) '[w :- World r :- RunRow ds :- (List Nat) mode :- Nat k :- Nat mine :- (List Nat)])
                           (apply list '=>
                                  (concat (case p
-                                           aha '[(List.Mem r (:runs w)) (= (run-alive r) true)]
-                                           gd '[(= (g7 w) true)] [])
+                                           act-runs-alive '[(List.Mem r (:runs w)) (= (run-alive r) true)]
+                                           comp-facts '[(= (i7-idle w) true)] [])
                                          [(truth p args 'w) (truth p args '(await-pre w r ds mode k mine))])))]))
         wiring
         (into {} (for [[p params args] families]
                    [(symbol (str p "-await-wire"))
                     (list 'forall (into (vec params) '[r :- RunRow a :- Nat mode :- Nat k :- Nat ds :- (List Nat) acc :- AwAcc])
                           (apply list '=>
-                                 (concat (when (= p 'g7) '[(= (awo (:of r) (:id r) (:world acc)) true)])
+                                 (concat (when (= p 'i7-idle) '[(= (comp-awake-owns-run (:of r) (:id r) (:world acc)) true)])
                                          [(truth p args '(:world acc))
                                           (truth p args '(:world (await-wire r a mode k acc ds)))])))]))]
     (merge preparation wiring
-           {'hm3-await-step (:type (first public-contracts))
-            'hm3-await-wire (:type (second public-contracts))
-            'nat-fold-gx
+           {'current-members-await-step (:type (first public-contracts))
+            'current-members-await-wire (:type (second public-contracts))
+            'acts-parked-exempt-nat-fold
             '(forall [ex :- Ex f :- (=> World Nat World)
                       hf :- (forall [w :- World x :- Nat]
-                              (=> (= (gx ex w) true) (= (gx ex (f w x)) true)))
+                              (=> (= (acts-parked-exempt ex w) true) (= (acts-parked-exempt ex (f w x)) true)))
                       xs :- (List Nat) w :- World]
-               (=> (= (gx ex w) true) (= (gx ex (nat-fold f w xs)) true)))
-            'gx-demand-reactive
+               (=> (= (acts-parked-exempt ex w) true) (= (acts-parked-exempt ex (nat-fold f w xs)) true)))
+            'acts-parked-exempt-demand-reactive
             '(forall [ex :- Ex w :- World d :- Nat]
-               (=> (= (gx ex w) true) (= (gx ex (demand-reactive w d)) true)))
-            'gx-await-wire
+               (=> (= (acts-parked-exempt ex w) true) (= (acts-parked-exempt ex (demand-reactive w d)) true)))
+            'acts-parked-exempt-await-wire
             '(forall [ex :- Ex r :- RunRow a :- Nat mode :- Nat k :- Nat ds :- (List Nat) acc :- AwAcc]
-               (=> (= (gx ex (:world acc)) true)
-                   (= (gx ex (:world (await-wire r a mode k acc ds))) true)))})))
+               (=> (= (acts-parked-exempt ex (:world acc)) true)
+                   (= (acts-parked-exempt ex (:world (await-wire r a mode k acc ds))) true)))})))
 
 (deftest exact-safe-exported-generated-dependencies
   (is (= 23 (count generated-contracts)))

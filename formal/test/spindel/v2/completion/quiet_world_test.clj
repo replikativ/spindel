@@ -8,7 +8,7 @@
             [spindel.v2.completion.open-scopes]
             [spindel.v2.engine-test :as et]))
 
-(def theorems '[step-gc step-gc-rest gc-empty step-qinv qinv-empty quiet-rows raw0-quiet quiet-refused quiet-step quiet-stays
+(def theorems '[step-cleanup-runs-exist step-cleanup-runs-exist-rest cleanup-runs-exist-empty step-quiet-world-inv quiet-world-inv-empty quiet-rows transition-quiet quiet-refused quiet-step quiet-stays
                 quiet-no-open live-root quiet-root-only quiet-task-complete quiet-scope-complete qh-forks])
 
 (deftest theorems-kernel-checked
@@ -16,7 +16,7 @@
     (is (some? (.lookup ^ansatz.kernel.Env @a/ansatz-env (ansatz.kernel.Name/fromString (str t)))) (str t))))
 
 ;; the Q5 trace (engine_test c1-no-roots-after-release): after the cleanup slice exits the world is
-;; quiet, K, gc and I3 hold, it holds only scopes, and items of every kind are refused
+;; quiet, K, cleanup-runs-exist and I3 hold, it holds only scopes, and items of every kind are refused
 (deftest quiet-world-runtime
   (let [w0 s/empty-world
         c (:next-id w0)
@@ -28,10 +28,10 @@
         w (:world (en/world-step w (et/release-world)))
         w (:world (en/world-step w (et/slice-exit r)))]
     (is (true? (en/world-quiet w)))
-    (is (true? (q/gk-rest w)) "K")
-    (is (true? (qw/gc-rest w)) "every cleanup entry has its run")
+    (is (true? (q/host-roots-revoked-rest w)) "K")
+    (is (true? (qw/cleanup-runs-exist-rest w)) "every cleanup entry has its run")
     (is (true? (qw/i3 w)) "I3")
-    (is (true? (spindel.v2.completion.open-scopes/gos-rest w)) "C1c: every open non-root scope has a run (none open: no run)")
+    (is (true? (spindel.v2.completion.open-scopes/open-scopes-have-runs-rest w)) "C1c: every open non-root scope has a run (none open: no run)")
     (is (= [s/root-scope-id] (map :id (:scopes w))) "C1c: the root scope only")
     (is (every? empty? ((juxt :comps :tasks :runs :sources :edges :acts :res :cleanup :pubs :forks) w)) "only scopes")
     (doseq [it [(et/start c (:next-id w)) (et/handle-new c) (et/close-scope et/root) (et/append* 3 1 0)

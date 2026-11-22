@@ -1,7 +1,7 @@
 (ns spindel.v2.inv.comp-facts-test
-  "Loading spindel.v2.inv.comp-facts kernel-checks the auxiliary bundle `gd` of the h-mark plan through
-  `world-step` (step-gd, step-p3j: p3j = p3i && gd, no honest hypothesis) and its watch bundle
-  `hkw` (T11). Tripwire: `gd` (the bundle as executable Bool) after every step of the random
+  "Loading spindel.v2.inv.comp-facts kernel-checks the auxiliary bundle `comp-facts` of the h-mark plan through
+  `world-step` (step-comp-facts, step-chain-to-comp-facts: chain-to-comp-facts = chain-to-i8-closed && comp-facts, no honest hypothesis) and its watch bundle
+  `dispatch-epoch-kept` (T11). Tripwire: `comp-facts` (the bundle as executable Bool) after every step of the random
   drivers and every commit of the oracle samples 7-13."
   (:require [clojure.test :refer [deftest is]]
             [ansatz.core :as a]
@@ -13,10 +13,10 @@
             [spindel.v2.inv-test :as it]))
 
 (def theorems
-  '[gd-c-mono gdk-comp-m gdk-run-m gdk-run-ins gd-comp-ins gd-park-if gd-take-park gd-add-run-scope gd-spawn-rows
-    gd-start-raw t5-gd hkw-cancel-pred gd-new-run-of gd-dispatch-raw t11-gd gd-complete-body gd-complete-raw t12-gd
-    gd-react-one gd-react-loop gd-demand-reactive gd-await-raw t6-gd t22-gd t8-full-gd raw-gd gd-normalize
-    gd-rule-r step-gd gd-empty step-p3j p3j-empty gd-facts step-gd-facts-total
+  '[comp-facts-c-mono gdk-comp-m gdk-run-m gdk-run-ins comp-facts-comp-ins comp-facts-park-if comp-facts-take-park comp-facts-add-run-scope comp-facts-spawn-rows
+    comp-facts-start-raw comp-facts-t5-start dispatch-epoch-kept-cancel-pred comp-facts-new-run-of comp-facts-dispatch-raw comp-facts-t11-dispatch comp-facts-complete-body comp-facts-complete-raw comp-facts-t12-complete
+    comp-facts-react-one comp-facts-react-loop comp-facts-demand-reactive comp-facts-await-raw comp-facts-t6-await comp-facts-t22-host-await comp-facts-t8-observe-any-kind comp-facts-raw comp-facts-normalize
+    comp-facts-rule-r step-comp-facts comp-facts-empty step-chain-to-comp-facts chain-to-comp-facts-empty comp-facts-facts step-comp-facts-facts-total
     reach-closure-inv reach-run-inv hm-dirty-back hm-cone-back])
 
 (deftest theorems-kernel-checked
@@ -32,7 +32,7 @@
                        (let [x (et/random-item rng w)]
                          (if (or (not d0?) (it/d0-ok? w x) (> k 50)) x (recur (inc k)))))
                 w2 (:world (en/world-step w item))]
-            (is (true? (hm/gd w2)) (str "gd seed " seed " run " run " step " i " " (pr-str item)))
+            (is (true? (hm/comp-facts w2)) (str "comp-facts seed " seed " run " run " step " i " " (pr-str item)))
             (recur (inc i) w2)))))))
 
 (deftest gd-random
@@ -44,6 +44,6 @@
     (let [log (o/read-log (str "test/spindel/v2/oracle/log-sample-" n ".edn"))]
       (reduce (fn [w [i c]]
                 (let [w2 (:world (en/world-step w (:item (o/adapt :table {:post (:proj c) :w w} (:item c)))))]
-                  (is (true? (hm/gd w2)) (str "gd sample " n " commit " i))
+                  (is (true? (hm/comp-facts w2)) (str "comp-facts sample " n " commit " i))
                   w2))
               s/empty-world (map-indexed vector log)))))

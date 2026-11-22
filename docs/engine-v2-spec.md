@@ -319,7 +319,7 @@ prototypes are not acceptance evidence for this smaller operation API.
     caller, or is a refused item when only the item sees it. Readoption by
     ordinal needs the same kind. `await-any` of no input is an error.
     `world-id` is public (unique within a family).
-  - Z#76 (C1 Q5/Q8, T1/T3/T4; user decision 2026-11-18, model root-shut on
+  - Z#76 (C1 Q5/Q8, T1/T3/T4; user decision 2026-11-18, model `world-released` on
     body paths): a released world takes no new work from bodies either: a
     body's spawn, computation, source or sequence creation in a released
     world throws `::released` before any item or state change. (Releasing
@@ -1659,22 +1659,26 @@ Shaped by the ansatz feasibility read (`ansatz/.internal/design/spindel-v2-feasi
      is a parameter and convergence is checked by flags.
    - `step : World × item → Outcome` is sequential (D0). Items are slice
      effects with opaque continuation ids, completions, scheduling choices and
-     ingress items. The step is `world-step w it = finish(raw w it)`: the raw
-     transition, then Rule R to normalization.
-   - Preservation is proved once per primitive table edit for each invariant
-     bundle. A lemma copier carries the per-primitive lemmas from one bundle
-     to the next. Each transition then discharges its preconditions, with
-     per-transition overrides where a primitive's frame lemma does not apply.
-     The invariant is a conjunction of 13 nested bundles (p3b ⊂ … ⊂ p3m), one
-     per proof campaign.
+     ingress items. The step is `world-step w it = then-rule-r (raw w it)`: `raw`
+     (host guard, `transition`, `any` losers cancelled), then Rule R.
+   - Preservation is proved once, for the base invariant `well-formed`, as a
+     tree of lemmas that follows the step: primitive table edits, the
+     composites built from them, the transitions, Rule R. The tree is restated
+     over an arbitrary part `Q` of the invariant (`pres.tree`). A part
+     supplies only what is its own: one lemma per primitive edit it must be
+     checked against, the facts it needs at particular points of a step, and
+     hand proofs for the few composites where it breaks and is restored
+     inside the composite. The core of the invariant is a chain of 13 nested
+     links (`chain-start` … `chain`), each adding one campaign's parts.
    - No Mathlib: Init's `List` lemmas suffice.
 
-   Size: about 77.5k lines in 64 namespaces grouped by topic
-   (`formal/README.md` has the map, including the old names); about 10,000 of
-   the 16,119 kernel theorems are bundle copies (kernel-checked like the rest).
+   Size: about 77k lines in 70 namespaces grouped by topic
+   (`formal/README.md` has the map, the name legend and the old names); about
+   6,000 theorems are written by hand and about 10,200 are generated from the
+   tree for the parts (kernel-checked like the rest).
 
 2. **Safety.** The model's top invariant is
-   `inv w := p3m w ∧ svb w ∧ inv-i9 w ∧ inv-i10-slice w ∧ i3 w`
+   `inv w := chain w ∧ i5-seen w ∧ inv-i9 w ∧ inv-i10-slice w ∧ i3 w`
    (`spindel.v2.top`). Proved: `inv-empty`; `inv-step` (every item, accepted
    or refused, keeps `inv`); and `reach-inv` (every world reachable from the
    empty world by steps satisfies `inv`).

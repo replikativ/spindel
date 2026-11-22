@@ -1,10 +1,10 @@
 (ns spindel.v2.inv.members.raw-lifts-test
-  "Loading spindel.v2.inv.members.raw-lifts kernel-checks the raw lifts of the h-mem2 bundle h3 and its T22 host
+  "Loading spindel.v2.inv.members.raw-lifts kernel-checks the raw lifts of the h-mem2 bundle current-members and its T22 host
   await and T8 observe cases."
   (:require [clojure.test :refer [deftest is]]
             [spindel.v2.inv.members.raw-lifts]))
 
-(def theorems '[h15-raw0g-lift h15-raw-lift h15-host-await-raw-h3 h15-raw0-host-await-h3 h15-t8-full-h3])
+(def theorems '[current-members-host-guarded-transition-lift current-members-raw-lift current-members-host-await-raw current-members-transition-host-await current-members-t8-observe-any-kind])
 
 (deftest proved-without-sorry
   (let [src (slurp "src/spindel/v2/inv/members/raw_lifts.clj")]

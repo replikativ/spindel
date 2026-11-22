@@ -1,26 +1,26 @@
 (ns spindel.v2.inv.acts
   "The activation invariant behind P2/P4, preserved by every step, kernel-checked (Init only).
 
-  `ga w` = inv-sample w and, for every activation A: every run row with id A.run is parked and
+  `acts-parked w` = well-formed w and, for every activation A: every run row with id A.run is parked and
   holds no slice (`act-rows-good`), A.run < next-id (`act-below`), and A is its run's only
-  activation (`act-sole`). It implies spindel.v2.progress.casc's `acts-alive` (`ga-acts-alive`).
+  activation (`act-sole`). It implies spindel.v2.progress.casc's `acts-alive` (`acts-parked-acts-alive`).
 
-    step-acts            ga w, rule-r-safe raw -> ga (world-step w it)   (hypotheses of step-inv)
-    ga-empty             ga empty-world
-    raw-acts-alive       ga w -> acts-alive (raw world)
-    step-normalized-ga   accepted, ga w, rule-r-safe raw -> normalized (world-step w it)   (P2)
-    step-i4-ga           ... every non-done run of the step's world is live (I4)
-    casc-done-ga         ga w -> casc-done w js                                            (P4)
+    step-acts            acts-parked w, rule-r-safe raw -> acts-parked (world-step w it)   (hypotheses of step-well-formed)
+    acts-parked-empty             acts-parked empty-world
+    raw-acts-alive       acts-parked w -> acts-alive (raw world)
+    step-normalized-acts-parked   accepted, acts-parked w, rule-r-safe raw -> normalized (world-step w it)   (P2)
+    step-i4-acts-parked           ... every non-done run of the step's world is live (I4)
+    cascade-done-acts-parked         acts-parked w -> cascade-done w js                                            (P4)
 
-  How: `gr P w` is the invariant generic in the per-activation run predicate; `ga` uses
-  `act-rows-good`, `gx ex` (inside T6/take, between the new activation and the park) exempts
+  How: `acts-ok-with P w` is the invariant generic in the per-activation run predicate; `acts-parked` uses
+  `act-rows-good`, `acts-parked-exempt ex` (inside T6/take, between the new activation and the park) exempts
   the activations of run (:x ex), which all have id (:a ex). Primitive edits (Part B, `prims!`);
-  every composite inv-sample lemma of `step-inv` is restated for the bundle from the generic step
-  tree (spindel.v2.pres.tree; for gx the 21 that T6 and take use). Own proofs (Part D, the tables'
+  every composite well-formed lemma of `step-well-formed` is restated for the bundle from the generic step
+  tree (spindel.v2.pres.tree; for acts-parked-exempt the 21 that T6 and take use). Own proofs (Part D, the tables'
   `:over`): resume and its callers (the resumed activation is its run's only one), T14's local
   part (the run's activations go with it), T12, the scheduling choice, finalize and finally regions
   (the run is not parked or holds the slice, so no activation names it: `no-act-bad`), T6 and take
-  (`gx-act-ins` ... `gx-park`/`gx-restore`)."
+  (`acts-parked-exempt-act-ins` ... `acts-parked-exempt-park`/`acts-parked-exempt-restore`)."
   (:require [ansatz.core :as a]
             [clojure.java.io :as io]
             [clojure.string :as str]
@@ -51,39 +51,39 @@
   (Bool.or (Bool.not (Nat.beq (:run b) (:run a))) (Nat.beq (:id b) (:id a))))
 (a/defn act-sole [as :- (List ActRow), a :- ActRow] Bool (tbl-all (same-run-id a) as))
 
-(a/defn gr [P :- (=> (List RunRow) ActRow Bool), w :- World] Bool
+(a/defn acts-ok-with [P :- (=> (List RunRow) ActRow Bool), w :- World] Bool
   (Bool.and (tbl-all (act-below (:next-id w)) (:acts w))
    (Bool.and (tbl-all (P (:runs w)) (:acts w)) (tbl-all (act-sole (:acts w)) (:acts w)))))
-(a/defn ga-rest [w :- World] Bool (gr act-rows-good w))
-(a/defn ga [w :- World] Bool (Bool.and (inv-sample w) (ga-rest w)))
+(a/defn acts-parked-rest [w :- World] Bool (acts-ok-with act-rows-good w))
+(a/defn acts-parked [w :- World] Bool (Bool.and (well-formed w) (acts-parked-rest w)))
 
 ;; inside T6: the activations of run x (all with id a) are exempt from good rows
 (a/structure Ex [] (x Nat) (a Nat))
 (a/defn act-rows-good-x [e :- Ex, rs :- (List RunRow), c :- ActRow] Bool
   (if (Nat.beq (:run c) (:x e)) (Nat.beq (:id c) (:a e)) (act-rows-good rs c)))
-(a/defn gx-rest [e :- Ex, w :- World] Bool (gr (act-rows-good-x e) w))
-(a/defn gx [e :- Ex, w :- World] Bool (Bool.and (inv-sample w) (gx-rest e w)))
+(a/defn acts-parked-exempt-rest [e :- Ex, w :- World] Bool (acts-ok-with (act-rows-good-x e) w))
+(a/defn acts-parked-exempt [e :- Ex, w :- World] Bool (Bool.and (well-formed w) (acts-parked-exempt-rest e w)))
 
-(a/theorem ga-sample [w :- World] (=> (= (ga w) true) (= (inv-sample w) true))
-  (intro h) (simp only [ga Bool.and_eq_true] at h) (exact (And.left h)))
-(a/theorem ga-rest-of [w :- World] (=> (= (ga w) true) (= (ga-rest w) true))
-  (intro h) (simp only [ga Bool.and_eq_true] at h) (exact (And.right h)))
-(a/theorem ga-intro [w :- World] (=> (= (inv-sample w) true) (= (ga-rest w) true) (= (ga w) true))
-  (intros h1 h2) (simp only [ga h1 h2 Bool.and_self]))
-(a/theorem ga-parts [w :- World]
-  (=> (= (ga w) true)
+(a/theorem acts-parked-well-formed [w :- World] (=> (= (acts-parked w) true) (= (well-formed w) true))
+  (intro h) (simp only [acts-parked Bool.and_eq_true] at h) (exact (And.left h)))
+(a/theorem acts-parked-rest-of [w :- World] (=> (= (acts-parked w) true) (= (acts-parked-rest w) true))
+  (intro h) (simp only [acts-parked Bool.and_eq_true] at h) (exact (And.right h)))
+(a/theorem acts-parked-intro [w :- World] (=> (= (well-formed w) true) (= (acts-parked-rest w) true) (= (acts-parked w) true))
+  (intros h1 h2) (simp only [acts-parked h1 h2 Bool.and_self]))
+(a/theorem acts-parked-parts [w :- World]
+  (=> (= (acts-parked w) true)
       (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
-  (intro h) (exact (inv-parts w (ga-sample w h))))
-(a/theorem gx-sample [e :- Ex, w :- World] (=> (= (gx e w) true) (= (inv-sample w) true))
-  (intro h) (simp only [gx Bool.and_eq_true] at h) (exact (And.left h)))
-(a/theorem gx-rest-of [e :- Ex, w :- World] (=> (= (gx e w) true) (= (gx-rest e w) true))
-  (intro h) (simp only [gx Bool.and_eq_true] at h) (exact (And.right h)))
-(a/theorem gx-intro [e :- Ex, w :- World] (=> (= (inv-sample w) true) (= (gx-rest e w) true) (= (gx e w) true))
-  (intros h1 h2) (simp only [gx h1 h2 Bool.and_self]))
-(a/theorem gx-parts [e :- Ex, w :- World]
-  (=> (= (gx e w) true)
+  (intro h) (exact (well-formed-parts w (acts-parked-well-formed w h))))
+(a/theorem acts-parked-exempt-well-formed [e :- Ex, w :- World] (=> (= (acts-parked-exempt e w) true) (= (well-formed w) true))
+  (intro h) (simp only [acts-parked-exempt Bool.and_eq_true] at h) (exact (And.left h)))
+(a/theorem acts-parked-exempt-rest-of [e :- Ex, w :- World] (=> (= (acts-parked-exempt e w) true) (= (acts-parked-exempt-rest e w) true))
+  (intro h) (simp only [acts-parked-exempt Bool.and_eq_true] at h) (exact (And.right h)))
+(a/theorem acts-parked-exempt-intro [e :- Ex, w :- World] (=> (= (well-formed w) true) (= (acts-parked-exempt-rest e w) true) (= (acts-parked-exempt e w) true))
+  (intros h1 h2) (simp only [acts-parked-exempt h1 h2 Bool.and_self]))
+(a/theorem acts-parked-exempt-parts [e :- Ex, w :- World]
+  (=> (= (acts-parked-exempt e w) true)
       (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
-  (intro h) (exact (inv-parts w (gx-sample e w h))))
+  (intro h) (exact (well-formed-parts w (acts-parked-exempt-well-formed e w h))))
 
 ;; the invariant gives acts-alive (P2, P4)
 (a/theorem good-for-alive [x :- Nat, r :- RunRow] (=> (= (good-for x r) true) (= (run-ok-for x r) true))
@@ -95,9 +95,9 @@
     (have e (= (:act r) act-parked)) (exact (Nat.eq_of_beq_eq_true (And.left h)))
     (simp [run-ok-for run-alive e hx act-parked act-done])))
 
-(a/theorem ga-acts-alive [w :- World] (=> (= (ga w) true) (= (acts-alive w) true))
+(a/theorem acts-parked-acts-alive [w :- World] (=> (= (acts-parked w) true) (= (acts-alive w) true))
   (intro h)
-  (simp only [ga ga-rest gr Bool.and_eq_true] at h)
+  (simp only [acts-parked acts-parked-rest acts-ok-with Bool.and_eq_true] at h)
   (simp only [acts-alive])
   (exact (tbl-all-mono ActRow (act-rows-good (:runs w)) (act-run-ok (:runs w))
            (fn [c :- ActRow, hc :- (= (act-rows-good (:runs w) c) true)]
@@ -204,51 +204,51 @@
 
 ;; ---- the parts, generic in the per-activation run predicate P
 
-(a/theorem gr-parts [P :- (=> (List RunRow) ActRow Bool), w :- World]
-  (=> (= (gr P w) true)
+(a/theorem acts-ok-with-parts [P :- (=> (List RunRow) ActRow Bool), w :- World]
+  (=> (= (acts-ok-with P w) true)
       (And (= (tbl-all (act-below (:next-id w)) (:acts w)) true)
            (And (= (tbl-all (P (:runs w)) (:acts w)) true) (= (tbl-all (act-sole (:acts w)) (:acts w)) true))))
-  (intro h) (simp only [gr Bool.and_eq_true] at h) (exact h))
+  (intro h) (simp only [acts-ok-with Bool.and_eq_true] at h) (exact h))
 
-(a/theorem gr-mk [P :- (=> (List RunRow) ActRow Bool), w :- World]
+(a/theorem acts-ok-with-mk [P :- (=> (List RunRow) ActRow Bool), w :- World]
   (=> (= (tbl-all (act-below (:next-id w)) (:acts w)) true) (= (tbl-all (P (:runs w)) (:acts w)) true)
-      (= (tbl-all (act-sole (:acts w)) (:acts w)) true) (= (gr P w) true))
-  (intros h1 h2 h3) (simp only [gr h1 h2 h3 Bool.and_self]))
+      (= (tbl-all (act-sole (:acts w)) (:acts w)) true) (= (acts-ok-with P w) true))
+  (intros h1 h2 h3) (simp only [acts-ok-with h1 h2 h3 Bool.and_self]))
 
-(a/theorem gr-bump [P :- (=> (List RunRow) ActRow Bool), w :- World]
-  (=> (= (gr P w) true) (= (gr P (bump w)) true))
+(a/theorem acts-ok-with-bump [P :- (=> (List RunRow) ActRow Bool), w :- World]
+  (=> (= (acts-ok-with P w) true) (= (acts-ok-with P (bump w)) true))
   (intro h)
-  (have p := (gr-parts P w h))
+  (have p := (acts-ok-with-parts P w h))
   (have hb (<= (:next-id w) (:next-id (bump w)))) (simp only [bump set-next-id]) (omega)
-  (exact (gr-mk P (bump w) (below-mono _ _ (:acts w) hb (And.left p)) (And.left (And.right p)) (And.right (And.right p)))))
+  (exact (acts-ok-with-mk P (bump w) (below-mono _ _ (:acts w) hb (And.left p)) (And.left (And.right p)) (And.right (And.right p)))))
 
-(a/theorem gr-run-upd [P :- (=> (List RunRow) ActRow Bool), w :- World, x :- Nat, f :- (=> RunRow RunRow),
+(a/theorem acts-ok-with-run-upd [P :- (=> (List RunRow) ActRow Bool), w :- World, x :- Nat, f :- (=> RunRow RunRow),
                        hP :- (forall [rs :- (List RunRow), c :- ActRow] (= (P (tbl-upd run-id x f rs) c) (P rs c)))]
-  (=> (= (gr P w) true) (= (gr P (run-upd w x f)) true))
+  (=> (= (acts-ok-with P w) true) (= (acts-ok-with P (run-upd w x f)) true))
   (intro h)
-  (have p := (gr-parts P w h))
+  (have p := (acts-ok-with-parts P w h))
   (have h2 (= (tbl-all (P (:runs (run-upd w x f))) (:acts (run-upd w x f))) true))
   (simp only [run-upd set-runs])
   (rw [(tbl-all-congr ActRow (P (tbl-upd run-id x f (:runs w))) (P (:runs w)) (hP (:runs w)) (:acts w))])
   (exact (And.left (And.right p)))
-  (exact (gr-mk P (run-upd w x f) (And.left p) h2 (And.right (And.right p)))))
+  (exact (acts-ok-with-mk P (run-upd w x f) (And.left p) h2 (And.right (And.right p)))))
 
-(a/theorem gr-run-del [P :- (=> (List RunRow) ActRow Bool), w :- World, x :- Nat,
+(a/theorem acts-ok-with-run-del [P :- (=> (List RunRow) ActRow Bool), w :- World, x :- Nat,
                        hP :- (forall [rs :- (List RunRow), c :- ActRow] (=> (= (P rs c) true) (= (P (tbl-del run-id x rs) c) true)))]
-  (=> (= (gr P w) true) (= (gr P (run-del w x)) true))
+  (=> (= (acts-ok-with P w) true) (= (acts-ok-with P (run-del w x)) true))
   (intro h)
-  (have p := (gr-parts P w h))
+  (have p := (acts-ok-with-parts P w h))
   (have h2 (= (tbl-all (P (:runs (run-del w x))) (:acts (run-del w x))) true))
   (simp only [run-del set-runs])
   (exact (tbl-all-mono ActRow (P (:runs w)) (P (tbl-del run-id x (:runs w))) (hP (:runs w)) (:acts w) (And.left (And.right p))))
-  (exact (gr-mk P (run-del w x) (And.left p) h2 (And.right (And.right p)))))
+  (exact (acts-ok-with-mk P (run-del w x) (And.left p) h2 (And.right (And.right p)))))
 
-(a/theorem gr-run-ins [P :- (=> (List RunRow) ActRow Bool), w :- World, r :- RunRow,
+(a/theorem acts-ok-with-run-ins [P :- (=> (List RunRow) ActRow Bool), w :- World, r :- RunRow,
                        hP :- (forall [rs :- (List RunRow), c :- ActRow]
                                (=> (= (Nat.beq (:id r) (:run c)) false) (= (P rs c) true) (= (P (tbl-ins r rs) c) true)))]
-  (=> (= (run-id r) (:next-id w)) (= (gr P w) true) (= (gr P (bump (run-ins w r))) true))
+  (=> (= (run-id r) (:next-id w)) (= (acts-ok-with P w) true) (= (acts-ok-with P (bump (run-ins w r))) true))
   (intros he h)
-  (have p := (gr-parts P w h))
+  (have p := (acts-ok-with-parts P w h))
   (have hin (forall [c :- ActRow] (=> (= (act-below (:next-id w) c) true) (= (P (:runs w) c) true)
                                       (= (P (tbl-ins r (:runs w)) c) true))))
   (intros c hc1 hc2)
@@ -261,15 +261,15 @@
   (simp only [run-ins set-runs])
   (exact (tbl-all-mono2 ActRow (act-below (:next-id w)) (P (:runs w)) (P (tbl-ins r (:runs w)))
            hin (:acts w) (And.left p) (And.left (And.right p))))
-  (exact (gr-bump P (run-ins w r) (gr-mk P (run-ins w r) (And.left p) h2 (And.right (And.right p))))))
+  (exact (acts-ok-with-bump P (run-ins w r) (acts-ok-with-mk P (run-ins w r) (And.left p) h2 (And.right (And.right p))))))
 
-(a/theorem gr-act-upd [P :- (=> (List RunRow) ActRow Bool), w :- World, x :- Nat, f :- (=> ActRow ActRow),
+(a/theorem acts-ok-with-act-upd [P :- (=> (List RunRow) ActRow Bool), w :- World, x :- Nat, f :- (=> ActRow ActRow),
                        hid :- (forall [c :- ActRow] (= (:id (f c)) (:id c))),
                        hr :- (forall [c :- ActRow] (= (:run (f c)) (:run c))),
                        hP :- (forall [rs :- (List RunRow), c :- ActRow] (= (P rs (f c)) (P rs c)))]
-  (=> (= (gr P w) true) (= (gr P (act-upd w x f)) true))
+  (=> (= (acts-ok-with P w) true) (= (acts-ok-with P (act-upd w x f)) true))
   (intro h)
-  (have p := (gr-parts P w h))
+  (have p := (acts-ok-with-parts P w h))
   (have hb (forall [c :- ActRow] (= (act-below (:next-id w) (f c)) (act-below (:next-id w) c))))
   (intro c) (simp only [act-below (hr c)])
   (have h1 (= (tbl-all (act-below (:next-id (act-upd w x f))) (:acts (act-upd w x f))) true))
@@ -281,12 +281,12 @@
   (have h3 (= (tbl-all (act-sole (:acts (act-upd w x f))) (:acts (act-upd w x f))) true))
   (simp only [act-upd set-acts (sole-upd x f hid hr (:acts w))])
   (exact (And.right (And.right p)))
-  (exact (gr-mk P (act-upd w x f) h1 h2 h3)))
+  (exact (acts-ok-with-mk P (act-upd w x f) h1 h2 h3)))
 
-(a/theorem gr-act-del [P :- (=> (List RunRow) ActRow Bool), w :- World, x :- Nat]
-  (=> (= (gr P w) true) (= (gr P (act-del w x)) true))
+(a/theorem acts-ok-with-act-del [P :- (=> (List RunRow) ActRow Bool), w :- World, x :- Nat]
+  (=> (= (acts-ok-with P w) true) (= (acts-ok-with P (act-del w x)) true))
   (intro h)
-  (have p := (gr-parts P w h))
+  (have p := (acts-ok-with-parts P w h))
   (have h1 (= (tbl-all (act-below (:next-id (act-del w x))) (:acts (act-del w x))) true))
   (simp only [act-del set-acts])
   (exact (tbl-all-del ActRow act-id x (act-below (:next-id w)) (act-below (:next-id w))
@@ -299,13 +299,13 @@
            (:acts w) (And.left (And.right p))))
   (have h3 (= (tbl-all (act-sole (:acts (act-del w x))) (:acts (act-del w x))) true))
   (simp only [act-del set-acts]) (exact (sole-del x (:acts w) (And.right (And.right p))))
-  (exact (gr-mk P (act-del w x) h1 h2 h3)))
+  (exact (acts-ok-with-mk P (act-del w x) h1 h2 h3)))
 
-(a/theorem gr-filter [P :- (=> (List RunRow) ActRow Bool), w :- World, K :- (=> Nat Bool),
+(a/theorem acts-ok-with-filter [P :- (=> (List RunRow) ActRow Bool), w :- World, K :- (=> Nat Bool),
                       hP :- (forall [rs :- (List RunRow), c :- ActRow] (=> (= (P rs c) true) (= (P (tbl-keep K run-id rs) c) true)))]
-  (=> (= (gr P w) true) (= (gr P (filter-world K w)) true))
+  (=> (= (acts-ok-with P w) true) (= (acts-ok-with P (filter-world K w)) true))
   (intro h)
-  (have p := (gr-parts P w h))
+  (have p := (acts-ok-with-parts P w h))
   (have h1 (= (tbl-all (act-below (:next-id (filter-world K w))) (:acts (filter-world K w))) true))
   (simp only [filter-world]) (exact (tbl-all-keep-same ActRow K act-id (act-below (:next-id w)) (:acts w) (And.left p)))
   (have h2 (= (tbl-all (P (:runs (filter-world K w))) (:acts (filter-world K w))) true))
@@ -314,9 +314,9 @@
            (tbl-all-mono ActRow (P (:runs w)) (P (tbl-keep K run-id (:runs w))) (hP (:runs w)) (:acts w) (And.left (And.right p)))))
   (have h3 (= (tbl-all (act-sole (:acts (filter-world K w))) (:acts (filter-world K w))) true))
   (simp only [filter-world]) (exact (sole-keep K (:acts w) (And.right (And.right p))))
-  (exact (gr-mk P (filter-world K w) h1 h2 h3)))
+  (exact (acts-ok-with-mk P (filter-world K w) h1 h2 h3)))
 
-;; ---- instances: ga-rest (P = act-rows-good) and gx-rest (P = act-rows-good-x e)
+;; ---- instances: acts-parked-rest (P = act-rows-good) and acts-parked-exempt-rest (P = act-rows-good-x e)
 
 (a/theorem argx-del [e :- Ex, x :- Nat, rs :- (List RunRow), c :- ActRow]
   (=> (= (act-rows-good-x e rs c) true) (= (act-rows-good-x e (tbl-del run-id x rs) c) true))
@@ -337,118 +337,118 @@
   (simp only [act-rows-good-x act-rows-good (hr c) (hid c)]))
 
 ;; ===========================================================================
-;; Part C. The two parts (`ga` = the invariant, `gx e` = the invariant inside T6 with run (:x e)
+;; Part C. The two parts (`acts-parked` = the invariant, `acts-parked-exempt e` = the invariant inside T6 with run (:x e)
 ;; exempt), their cells and their tables in the generic tree
 ;; ===========================================================================
 
 (defn- bsym [B suffix] (symbol (str (name (:pred B)) suffix)))
 
-(def GA (mk-bundle 'ga [] "ga-"
-          {'inv-run-upd ['(fn [r :- RunRow] (Eq.refl (good-row r))) 4]
-           'inv-act-upd ['(fn [c :- ActRow] (Eq.refl (:run c))) 4]}))
-(def GX (mk-bundle 'gx '[ex :- Ex] "gx-"
-          {'inv-run-upd ['(fn [r :- RunRow] (Eq.refl (good-row r))) 4]
-           'inv-act-upd ['(fn [c :- ActRow] (Eq.refl (:run c))) 4]}))
+(def GA (mk-bundle 'acts-parked [] "acts-parked-"
+          {'well-formed-run-upd ['(fn [r :- RunRow] (Eq.refl (good-row r))) 4]
+           'well-formed-act-upd ['(fn [c :- ActRow] (Eq.refl (:run c))) 4]}))
+(def GX (mk-bundle 'acts-parked-exempt '[ex :- Ex] "acts-parked-exempt-"
+          {'well-formed-run-upd ['(fn [r :- RunRow] (Eq.refl (good-row r))) 4]
+           'well-formed-act-upd ['(fn [c :- ActRow] (Eq.refl (:run c))) 4]}))
 
 ;; ---- the primitives
 
-(a/theorem gr-mark-edge [P :- (=> (List RunRow) ActRow Bool), w :- World, x :- Nat] (= (gr P (mark-edge w x)) (gr P w))
+(a/theorem acts-ok-with-mark-edge [P :- (=> (List RunRow) ActRow Bool), w :- World, x :- Nat] (= (acts-ok-with P (mark-edge w x)) (acts-ok-with P w))
   (cases hf (edge-find w x))
   (case [none] (simp only [mark-edge hf]))
   (case [some e] (cases hm (:marked e)) (all_goals (simp only [mark-edge hf hm]))))
-(a/theorem gr-unmark-edge [P :- (=> (List RunRow) ActRow Bool), w :- World, x :- Nat] (= (gr P (unmark-edge w x)) (gr P w))
+(a/theorem acts-ok-with-unmark-edge [P :- (=> (List RunRow) ActRow Bool), w :- World, x :- Nat] (= (acts-ok-with P (unmark-edge w x)) (acts-ok-with P w))
   (cases hf (edge-find w x))
   (case [none] (simp only [unmark-edge hf]))
   (case [some e] (cases hm (:marked e)) (all_goals (simp only [unmark-edge hf hm]))))
-(a/theorem gr-remove-edge [P :- (=> (List RunRow) ActRow Bool), w :- World, x :- Nat] (= (gr P (remove-edge w x)) (gr P w))
+(a/theorem acts-ok-with-remove-edge [P :- (=> (List RunRow) ActRow Bool), w :- World, x :- Nat] (= (acts-ok-with P (remove-edge w x)) (acts-ok-with P w))
   (cases hf (edge-find w x))
   (case [none] (simp only [remove-edge hf]))
   (case [some e] (cases hm (:marked e)) (all_goals (simp only [remove-edge hf hm]))))
 
-(a/theorem ga-run-upd [w :- World, x :- Nat, f :- (=> RunRow RunRow),
+(a/theorem acts-parked-run-upd [w :- World, x :- Nat, f :- (=> RunRow RunRow),
                        hf :- (forall [r :- RunRow] (= (run-id (f r)) (run-id r))),
                        hg :- (forall [r :- RunRow] (= (good-row (f r)) (good-row r)))]
-  (=> (= (ga w) true) (= (ga (run-upd w x f)) true))
+  (=> (= (acts-parked w) true) (= (acts-parked (run-upd w x f)) true))
   (intro h)
-  (exact (ga-intro _ (inv-run-upd w x f hf (ga-sample w h))
-           (gr-run-upd act-rows-good w x f (arg-upd x f hf hg) (ga-rest-of w h)))))
-(a/theorem gx-run-upd [e :- Ex, w :- World, x :- Nat, f :- (=> RunRow RunRow),
+  (exact (acts-parked-intro _ (well-formed-run-upd w x f hf (acts-parked-well-formed w h))
+           (acts-ok-with-run-upd act-rows-good w x f (arg-upd x f hf hg) (acts-parked-rest-of w h)))))
+(a/theorem acts-parked-exempt-run-upd [e :- Ex, w :- World, x :- Nat, f :- (=> RunRow RunRow),
                        hf :- (forall [r :- RunRow] (= (run-id (f r)) (run-id r))),
                        hg :- (forall [r :- RunRow] (= (good-row (f r)) (good-row r)))]
-  (=> (= (gx e w) true) (= (gx e (run-upd w x f)) true))
+  (=> (= (acts-parked-exempt e w) true) (= (acts-parked-exempt e (run-upd w x f)) true))
   (intro h)
-  (exact (gx-intro e _ (inv-run-upd w x f hf (gx-sample e w h))
-           (gr-run-upd (act-rows-good-x e) w x f (argx-upd e x f hf hg) (gx-rest-of e w h)))))
+  (exact (acts-parked-exempt-intro e _ (well-formed-run-upd w x f hf (acts-parked-exempt-well-formed e w h))
+           (acts-ok-with-run-upd (act-rows-good-x e) w x f (argx-upd e x f hf hg) (acts-parked-exempt-rest-of e w h)))))
 
-(a/theorem ga-act-upd [w :- World, x :- Nat, f :- (=> ActRow ActRow),
+(a/theorem acts-parked-act-upd [w :- World, x :- Nat, f :- (=> ActRow ActRow),
                        hf :- (forall [r :- ActRow] (= (act-id (f r)) (act-id r))),
                        hr :- (forall [c :- ActRow] (= (:run (f c)) (:run c)))]
-  (=> (= (ga w) true) (= (ga (act-upd w x f)) true))
+  (=> (= (acts-parked w) true) (= (acts-parked (act-upd w x f)) true))
   (intro h)
-  (exact (ga-intro _ (inv-act-upd w x f hf (ga-sample w h))
-           (gr-act-upd act-rows-good w x f hf hr (fn [rs :- (List RunRow), c :- ActRow] (arg-act rs f hr c)) (ga-rest-of w h)))))
-(a/theorem gx-act-upd [e :- Ex, w :- World, x :- Nat, f :- (=> ActRow ActRow),
+  (exact (acts-parked-intro _ (well-formed-act-upd w x f hf (acts-parked-well-formed w h))
+           (acts-ok-with-act-upd act-rows-good w x f hf hr (fn [rs :- (List RunRow), c :- ActRow] (arg-act rs f hr c)) (acts-parked-rest-of w h)))))
+(a/theorem acts-parked-exempt-act-upd [e :- Ex, w :- World, x :- Nat, f :- (=> ActRow ActRow),
                        hf :- (forall [r :- ActRow] (= (act-id (f r)) (act-id r))),
                        hr :- (forall [c :- ActRow] (= (:run (f c)) (:run c)))]
-  (=> (= (gx e w) true) (= (gx e (act-upd w x f)) true))
+  (=> (= (acts-parked-exempt e w) true) (= (acts-parked-exempt e (act-upd w x f)) true))
   (intro h)
-  (exact (gx-intro e _ (inv-act-upd w x f hf (gx-sample e w h))
-           (gr-act-upd (act-rows-good-x e) w x f hf hr (fn [rs :- (List RunRow), c :- ActRow] (argx-act e rs f hf hr c))
-             (gx-rest-of e w h)))))
+  (exact (acts-parked-exempt-intro e _ (well-formed-act-upd w x f hf (acts-parked-exempt-well-formed e w h))
+           (acts-ok-with-act-upd (act-rows-good-x e) w x f hf hr (fn [rs :- (List RunRow), c :- ActRow] (argx-act e rs f hf hr c))
+             (acts-parked-exempt-rest-of e w h)))))
 
 (doseq [B [GA GX]]
-  (swap! (:renames B) assoc 'inv-run-upd (bsym B "-run-upd") 'inv-act-upd (bsym B "-act-upd") 'inv-parts (bsym B "-parts")))
+  (swap! (:renames B) assoc 'well-formed-run-upd (bsym B "-run-upd") 'well-formed-act-upd (bsym B "-act-upd") 'well-formed-parts (bsym B "-parts")))
 
 (defn- prims! [B P del-f keep-f ins-f]
-  (doseq [o '[inv-scope-upd inv-pub-upd inv-source-upd inv-task-upd inv-resource-upd inv-cleanup-upd inv-cleanup-del
-              inv-set-pins inv-resource-del inv-scope-del inv-cleanup-ins
-              inv-edge-upd inv-drop-cred inv-drop-edges inv-comp-del-unref inv-comp-upd inv-fork-del]]
+  (doseq [o '[well-formed-scope-upd well-formed-pub-upd well-formed-source-upd well-formed-task-upd well-formed-resource-upd well-formed-cleanup-upd well-formed-cleanup-del
+              well-formed-set-pins well-formed-resource-del well-formed-scope-del well-formed-cleanup-ins
+              well-formed-edge-upd well-formed-drop-cred-edges well-formed-drop-edges well-formed-comp-del-unref well-formed-comp-upd well-formed-fork-del]]
     (prim! B o nil))
-  (doseq [o '[inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-task-ins-fresh inv-comp-ins-fresh]]
-    (prim! B o (list 'gr-bump P (list (symbol (str/replace (subs (name o) 4) "-fresh" "")) 'w 'r)
+  (doseq [o '[well-formed-source-ins-fresh well-formed-fork-ins-fresh well-formed-resource-ins-fresh well-formed-scope-ins-fresh well-formed-task-ins-fresh well-formed-comp-ins-fresh]]
+    (prim! B o (list 'acts-ok-with-bump P (list (symbol (str/replace (subs (name o) 12) "-fresh" "")) 'w 'r)
                                      (list 'Eq.trans '(rfl) 'R))))
-  (prim! B 'inv-bump (list 'gr-bump P 'w 'R))
-  (prim! B 'mark-edge-inv-sample (list 'Eq.trans (list 'gr-mark-edge P 'w 'x) 'R))
-  (prim! B 'unmark-edge-inv-sample (list 'Eq.trans (list 'gr-unmark-edge P 'w 'x) 'R))
-  (prim! B 'inv-remove-edge (list 'Eq.trans (list 'gr-remove-edge P 'w 'x) 'R))
-  (prim! B 'insert-edge-fresh-inv-sample
-         (list 'gr-bump P '(insert-edge w (edge-set-id (:next-id w) e)) (list 'Eq.trans '(rfl) 'R)))
-  (prim! B 'inv-run-del (list 'gr-run-del P 'w 'x del-f 'R))
-  (prim! B 'inv-run-ins-fresh (list 'gr-run-ins P 'w 'r ins-f 'h0 'R))
-  (prim! B 'inv-drop-act (list 'gr-act-del P '(drop-cred-edges w a) 'a (list 'Eq.trans '(rfl) 'R)))
-  (prim! B 'inv-filter-world (list 'gr-filter P 'w 'K keep-f 'R)))
+  (prim! B 'well-formed-bump (list 'acts-ok-with-bump P 'w 'R))
+  (prim! B 'well-formed-mark-edge (list 'Eq.trans (list 'acts-ok-with-mark-edge P 'w 'x) 'R))
+  (prim! B 'well-formed-unmark-edge (list 'Eq.trans (list 'acts-ok-with-unmark-edge P 'w 'x) 'R))
+  (prim! B 'well-formed-remove-edge (list 'Eq.trans (list 'acts-ok-with-remove-edge P 'w 'x) 'R))
+  (prim! B 'well-formed-insert-edge-fresh
+         (list 'acts-ok-with-bump P '(insert-edge w (edge-set-id (:next-id w) e)) (list 'Eq.trans '(rfl) 'R)))
+  (prim! B 'well-formed-run-del (list 'acts-ok-with-run-del P 'w 'x del-f 'R))
+  (prim! B 'well-formed-run-ins-fresh (list 'acts-ok-with-run-ins P 'w 'r ins-f 'h0 'R))
+  (prim! B 'well-formed-drop-act (list 'acts-ok-with-act-del P '(drop-cred-edges w a) 'a (list 'Eq.trans '(rfl) 'R)))
+  (prim! B 'well-formed-filter-world (list 'acts-ok-with-filter P 'w 'K keep-f 'R)))
 
 (prims! GA 'act-rows-good '(arg-del x) '(arg-keep K) '(arg-ins r))
 (prims! GX '(act-rows-good-x ex) '(argx-del ex x) '(argx-keep ex K) '(argx-ins ex r))
 
-;; ga and gx on the generic tree (spindel.v2.pres.tree): their own proofs are Part D
+;; acts-parked and acts-parked-exempt on the generic tree (spindel.v2.pres.tree): their own proofs are Part D
 (tree/part! GA
-  :over '{inv-resume ga-resume
-          inv-fill-slot ga-fill-slot
-          inv-fire-dep ga-fire-dep
-          inv-fire-wait-act ga-fire-wait-act
-          inv-cancel-run-local ga-cancel-run-local
-          inv-complete-raw ga-complete-raw
-          t12-inv t12-ga
-          inv-retire-pre ga-retire-pre
-          inv-retire-one ga-retire-one
-          sched-inv sched-ga
-          t-finalize-inv t-finalize-ga
-          t-finally-enter-inv t-finally-enter-ga
-          t-finally-exit-inv t-finally-exit-ga
-          t-finally-leave-inv t-finally-leave-ga
-          t-slice-exit-inv t-slice-exit-ga
-          inv-await-raw ga-await-raw
-          t6-inv t6-ga
-          inv-take-park ga-take-park
-          t-take-inv t-take-ga
-          inv-arm-park ga-arm-park
-          t17-inv t17-ga})
+  :over '{well-formed-resume acts-parked-resume
+          well-formed-fill-slot acts-parked-fill-slot
+          well-formed-fire-dep acts-parked-fire-dep
+          well-formed-fire-wait-act acts-parked-fire-wait-act
+          well-formed-cancel-run-local acts-parked-cancel-run-local
+          well-formed-complete-raw acts-parked-complete-raw
+          well-formed-t12-complete acts-parked-t12-complete
+          well-formed-retire-pre acts-parked-retire-pre
+          well-formed-retire-one acts-parked-retire-one
+          well-formed-t-schedule acts-parked-t-schedule
+          well-formed-t-finalize acts-parked-t-finalize
+          well-formed-t-finally-enter acts-parked-t-finally-enter
+          well-formed-t-finally-exit acts-parked-t-finally-exit
+          well-formed-t-finally-leave acts-parked-t-finally-leave
+          well-formed-t-slice-exit acts-parked-t-slice-exit
+          well-formed-await-raw acts-parked-await-raw
+          well-formed-t6-await acts-parked-t6-await
+          well-formed-take-park acts-parked-take-park
+          well-formed-t-take acts-parked-t-take
+          well-formed-arm-park acts-parked-arm-park
+          well-formed-t17-arm acts-parked-t17-arm})
 (tree/part! GX
-  :over '{inv-resume gx-resume
-          inv-fill-slot gx-fill-slot
-          inv-fire-dep gx-fire-dep
-          inv-fire-wait-act gx-fire-wait-act})
+  :over '{well-formed-resume acts-parked-exempt-resume
+          well-formed-fill-slot acts-parked-exempt-fill-slot
+          well-formed-fire-dep acts-parked-exempt-fire-dep
+          well-formed-fire-wait-act acts-parked-exempt-fire-wait-act})
 
 ;; ===========================================================================
 ;; Part D. The own proofs: where an edit changes a run row that has an activation
@@ -496,12 +496,12 @@
     (simp only [tbl-all bnot-of (And.left hn) Bool.not_false Bool.true_and])
     (exact (ih (And.right hn)))))
 
-(a/theorem gr-run-upd-free [P :- (=> (List RunRow) ActRow Bool), w :- World, x :- Nat, f :- (=> RunRow RunRow),
+(a/theorem acts-ok-with-run-upd-free [P :- (=> (List RunRow) ActRow Bool), w :- World, x :- Nat, f :- (=> RunRow RunRow),
                             hP :- (forall [rs :- (List RunRow), c :- ActRow]
                                     (=> (= (act-of-run x c) false) (= (P (tbl-upd run-id x f rs) c) (P rs c))))]
-  (=> (= (tbl-any (act-of-run x) (:acts w)) false) (= (gr P w) true) (= (gr P (run-upd w x f)) true))
+  (=> (= (tbl-any (act-of-run x) (:acts w)) false) (= (acts-ok-with P w) true) (= (acts-ok-with P (run-upd w x f)) true))
   (intros hn h)
-  (have p := (gr-parts P w h))
+  (have p := (acts-ok-with-parts P w h))
   (have hin (forall [c :- ActRow] (=> (= (bnot-of (act-of-run x) c) true) (= (P (:runs w) c) true)
                                       (= (P (tbl-upd run-id x f (:runs w)) c) true))))
   (intros c h1 h2) (simp only [bnot-of] at h1) (rw [(hP (:runs w) c (bnot-true _ h1))]) (exact h2)
@@ -509,7 +509,7 @@
   (simp only [run-upd set-runs])
   (exact (tbl-all-mono2 ActRow (bnot-of (act-of-run x)) (P (:runs w)) (P (tbl-upd run-id x f (:runs w)))
            hin (:acts w) (any-false-all ActRow (act-of-run x) (:acts w) hn) (And.left (And.right p))))
-  (exact (gr-mk P (run-upd w x f) (And.left p) h2 (And.right (And.right p)))))
+  (exact (acts-ok-with-mk P (run-upd w x f) (And.left p) h2 (And.right (And.right p)))))
 
 ;; ---- resume: the activation is its run's only one, so after it goes no activation names the run
 
@@ -531,47 +531,47 @@
       (simp only [tbl-del hx tbl-any act-of-run h2 Bool.false_or])
       (exact ih2))))
 
-(a/theorem ga-sole [w :- World, a :- ActRow] (=> (= (ga w) true) (List.Mem a (:acts w)) (= (act-sole (:acts w) a) true))
-  (intros h hm) (exact (tbl-all-mem ActRow (act-sole (:acts w)) a (:acts w) (And.right (And.right (gr-parts _ w (ga-rest-of w h)))) hm)))
-(a/theorem gx-sole [e :- Ex, w :- World, a :- ActRow] (=> (= (gx e w) true) (List.Mem a (:acts w)) (= (act-sole (:acts w) a) true))
-  (intros h hm) (exact (tbl-all-mem ActRow (act-sole (:acts w)) a (:acts w) (And.right (And.right (gr-parts _ w (gx-rest-of e w h)))) hm)))
+(a/theorem acts-parked-sole [w :- World, a :- ActRow] (=> (= (acts-parked w) true) (List.Mem a (:acts w)) (= (act-sole (:acts w) a) true))
+  (intros h hm) (exact (tbl-all-mem ActRow (act-sole (:acts w)) a (:acts w) (And.right (And.right (acts-ok-with-parts _ w (acts-parked-rest-of w h)))) hm)))
+(a/theorem acts-parked-exempt-sole [e :- Ex, w :- World, a :- ActRow] (=> (= (acts-parked-exempt e w) true) (List.Mem a (:acts w)) (= (act-sole (:acts w) a) true))
+  (intros h hm) (exact (tbl-all-mem ActRow (act-sole (:acts w)) a (:acts w) (And.right (And.right (acts-ok-with-parts _ w (acts-parked-exempt-rest-of e w h)))) hm)))
 
-(a/theorem ga-resume-o [w :- World, a :- ActRow]
-  (=> (= (act-sole (:acts w) a) true) (= (ga w) true) (= (ga (resume w a)) true))
+(a/theorem acts-parked-resume-hand [w :- World, a :- ActRow]
+  (=> (= (act-sole (:acts w) a) true) (= (acts-parked w) true) (= (acts-parked (resume w a)) true))
   (intros hs h)
-  (have h1 := (ga-drop-act w (:id a) h))
+  (have h1 := (acts-parked-drop-act w (:id a) h))
   (have hn (= (tbl-any (act-of-run (:run a)) (:acts (drop-act w (:id a)))) false))
   (exact (sole-drop-free a (:acts w) hs))
-  (exact (ga-intro _ (inv-resume w a (ga-sample w h))
-           (gr-run-upd-free act-rows-good _ (:run a) run-wake
+  (exact (acts-parked-intro _ (well-formed-resume w a (acts-parked-well-formed w h))
+           (acts-ok-with-run-upd-free act-rows-good _ (:run a) run-wake
              (fn [rs :- (List RunRow), c :- ActRow, hc :- (= (act-of-run (:run a) c) false)]
                (arg-upd-free (:run a) run-wake run-wake-run-id rs c hc))
-             hn (ga-rest-of _ h1)))))
+             hn (acts-parked-rest-of _ h1)))))
 
-(a/theorem gx-resume-o [e :- Ex, w :- World, a :- ActRow]
-  (=> (= (act-sole (:acts w) a) true) (= (gx e w) true) (= (gx e (resume w a)) true))
+(a/theorem acts-parked-exempt-resume-hand [e :- Ex, w :- World, a :- ActRow]
+  (=> (= (act-sole (:acts w) a) true) (= (acts-parked-exempt e w) true) (= (acts-parked-exempt e (resume w a)) true))
   (intros hs h)
-  (have h1 := (gx-drop-act e w (:id a) h))
+  (have h1 := (acts-parked-exempt-drop-act e w (:id a) h))
   (have hn (= (tbl-any (act-of-run (:run a)) (:acts (drop-act w (:id a)))) false))
   (exact (sole-drop-free a (:acts w) hs))
-  (exact (gx-intro e _ (inv-resume w a (gx-sample e w h))
-           (gr-run-upd-free (act-rows-good-x e) _ (:run a) run-wake
+  (exact (acts-parked-exempt-intro e _ (well-formed-resume w a (acts-parked-exempt-well-formed e w h))
+           (acts-ok-with-run-upd-free (act-rows-good-x e) _ (:run a) run-wake
              (fn [rs :- (List RunRow), c :- ActRow, hc :- (= (act-of-run (:run a) c) false)]
                (argx-upd-free e (:run a) run-wake run-wake-run-id rs c hc))
-             hn (gx-rest-of e _ h1)))))
+             hn (acts-parked-exempt-rest-of e _ h1)))))
 
 ;; a hand-written proof generic in the bundle (spindel.v2.pres.part/inst: `$name` is the bundle's
 ;; lemma <prefix>name applied to the bundle's parameters, `(%G w)` the bundle predicate of w),
-;; checked for ga and for gx
+;; checked for acts-parked and for acts-parked-exempt
 (defn- both! [form] (doseq [B [GA GX]] (eval (inst B form))))
 
-(doseq [B [GA GX]] (tree/restate! B '[inv-drop-act]))
+(doseq [B [GA GX]] (tree/restate! B '[well-formed-drop-act]))
 (both!
   '(a/theorem $resume [w :- World, a :- ActRow]
      (=> (= (act-sole (:acts w) a) true) (= (%G w) true) (= (%G (resume w a)) true))
-     (intros hs h) (exact ($resume-o w a hs h))))
+     (intros hs h) (exact ($resume-hand w a hs h))))
 
-(doseq [B [GA GX]] (tree/restate! B '[inv-resume]))
+(doseq [B [GA GX]] (tree/restate! B '[well-formed-resume]))
 (both!
   '(a/theorem $fill-slot [w :- World, a :- ActRow, x :- Nat, v :- RunResult]
      (=> (= (act-sole (:acts w) a) true) (= (%G w) true) (= (%G (fill-slot w a x v)) true))
@@ -581,7 +581,7 @@
      (exact ($act-upd w (:id a) (act-fill x v) (act-fill-act-id x v) (fn [c :- ActRow] (Eq.refl (:run c))) h))
      (simp only [fill-slot hm]) (exact ($resume w a hs h))))
 
-(doseq [B [GA GX]] (tree/restate! B '[inv-invalidate inv-fill-slot inv-dep-consumed]))
+(doseq [B [GA GX]] (tree/restate! B '[well-formed-invalidate well-formed-fill-slot well-formed-dep-consumed]))
 (both!
   '(a/theorem $fire-dep [w :- World, e :- EdgeRow]
      (=> (= (%G w) true) (= (%G (fire-dep w e)) true))
@@ -596,7 +596,7 @@
      (exact (Eq.trans (congrArg (fn [as :- (List ActRow)] (act-sole as a)) (dep-consumed-acts w e)) hs))
      (exact ($fill-slot _ a _ _ hs2 ($dep-consumed w e h)))))
 
-(doseq [B [GA GX]] (tree/restate! B '[inv-edge-set-phase inv-fill-slot]))
+(doseq [B [GA GX]] (tree/restate! B '[well-formed-edge-set-phase well-formed-fill-slot]))
 (both!
   '(a/theorem $fire-wait-act [res :- RunResult, w :- World, e :- EdgeRow]
      (=> (= (%G w) true) (= (%G (fire-wait-act res w e)) true))
@@ -609,19 +609,19 @@
      (have hs2 (= (act-sole (:acts (edge-upd w (:id e) (edge-set-phase ph-fired))) a) true)) (exact hs)
      (simp only [fire-wait-act ha hc]) (exact ($fill-slot _ a _ _ hs2 ($edge-set-phase w (:id e) ph-fired h)))))
 
-(tree/restate! GX '[inv-fire-edge])
+(tree/restate! GX '[well-formed-fire-edge])
 
 ;; ---- T14's local part: the run is done and every activation of it is gone
 
 (a/defn arg-or [x :- Nat, rs :- (List RunRow), c :- ActRow] Bool (Bool.or (act-of-run x c) (act-rows-good rs c)))
 
-(a/theorem gr-fold-drop [P :- (=> (List RunRow) ActRow Bool), ids :- (List Nat)]
-  (forall [w :- World] (=> (= (gr P w) true) (= (gr P (nat-fold drop-act w ids)) true)))
+(a/theorem acts-ok-with-fold-drop [P :- (=> (List RunRow) ActRow Bool), ids :- (List Nat)]
+  (forall [w :- World] (=> (= (acts-ok-with P w) true) (= (acts-ok-with P (nat-fold drop-act w ids)) true)))
   (induction ids)
   (case [nil] (intros w h) (simp only [nat-fold]) (exact h))
   (case [cons h t ih]
     (intros w hw) (simp only [nat-fold])
-    (exact (ih (drop-act w h) (gr-act-del P (drop-cred-edges w h) h hw)))))
+    (exact (ih (drop-act w h) (acts-ok-with-act-del P (drop-cred-edges w h) h hw)))))
 
 (a/theorem fold-covers [x :- Nat, ids :- (List Nat)]
   (forall [w :- World]
@@ -655,39 +655,39 @@
   (simp only [covers-ids reach-mem Bool.or_false] at h1)
   (simp only [arg-or (bnot-true _ h1) Bool.false_or] at h2) (exact h2))
 
-(a/theorem ga-cancel-acts-o [w :- World, x :- Nat]
-  (=> (= (ga w) true) (= (ga (cancel-acts (run-upd w x run-cancel-row) x)) true))
+(a/theorem acts-parked-cancel-acts-hand [w :- World, x :- Nat]
+  (=> (= (acts-parked w) true) (= (acts-parked (cancel-acts (run-upd w x run-cancel-row) x)) true))
   (intro h)
-  (have p := (gr-parts act-rows-good w (ga-rest-of w h)))
-  (have g1 (= (gr (arg-or x) (run-upd w x run-cancel-row)) true))
-  (exact (gr-mk (arg-or x) (run-upd w x run-cancel-row) (And.left p)
+  (have p := (acts-ok-with-parts act-rows-good w (acts-parked-rest-of w h)))
+  (have g1 (= (acts-ok-with (arg-or x) (run-upd w x run-cancel-row)) true))
+  (exact (acts-ok-with-mk (arg-or x) (run-upd w x run-cancel-row) (And.left p)
            (tbl-all-mono ActRow (act-rows-good (:runs w)) (arg-or x (tbl-upd run-id x run-cancel-row (:runs w)))
              (arg-or-cancel w x) (:acts w) (And.left (And.right p)))
            (And.right (And.right p))))
-  (have g2 (= (gr (arg-or x) (cancel-acts (run-upd w x run-cancel-row) x)) true))
+  (have g2 (= (acts-ok-with (arg-or x) (cancel-acts (run-upd w x run-cancel-row) x)) true))
   (simp only [cancel-acts])
-  (exact (gr-fold-drop (arg-or x) (tbl-scan act-id (act-of-run x) (:acts w)) (run-upd w x run-cancel-row) g1))
+  (exact (acts-ok-with-fold-drop (arg-or x) (tbl-scan act-id (act-of-run x) (:acts w)) (run-upd w x run-cancel-row) g1))
   (have hc (= (tbl-all (covers-ids act-id (act-of-run x) (List.nil Nat)) (:acts (cancel-acts (run-upd w x run-cancel-row) x))) true))
   (simp only [cancel-acts])
   (exact (fold-covers x (tbl-scan act-id (act-of-run x) (:acts w)) (run-upd w x run-cancel-row)
            (scan-covers-ids ActRow act-id (act-of-run x) (:acts w))))
-  (have p2 := (gr-parts (arg-or x) (cancel-acts (run-upd w x run-cancel-row) x) g2))
+  (have p2 := (acts-ok-with-parts (arg-or x) (cancel-acts (run-upd w x run-cancel-row) x) g2))
   (have h2 (= (tbl-all (act-rows-good (:runs (cancel-acts (run-upd w x run-cancel-row) x))) (:acts (cancel-acts (run-upd w x run-cancel-row) x))) true))
   (exact (tbl-all-mono2 ActRow (covers-ids act-id (act-of-run x) (List.nil Nat))
            (arg-or x (:runs (cancel-acts (run-upd w x run-cancel-row) x)))
            (act-rows-good (:runs (cancel-acts (run-upd w x run-cancel-row) x)))
            (arg-or-clean x (:runs (cancel-acts (run-upd w x run-cancel-row) x)))
            (:acts (cancel-acts (run-upd w x run-cancel-row) x)) hc (And.left (And.right p2))))
-  (exact (ga-intro (cancel-acts (run-upd w x run-cancel-row) x)
-           (inv-cancel-acts (run-upd w x run-cancel-row) x (inv-run-upd w x run-cancel-row run-cancel-row-id (ga-sample w h)))
-           (gr-mk act-rows-good (cancel-acts (run-upd w x run-cancel-row) x) (And.left p2) h2 (And.right (And.right p2))))))
+  (exact (acts-parked-intro (cancel-acts (run-upd w x run-cancel-row) x)
+           (well-formed-cancel-acts (run-upd w x run-cancel-row) x (well-formed-run-upd w x run-cancel-row run-cancel-row-id (acts-parked-well-formed w h)))
+           (acts-ok-with-mk act-rows-good (cancel-acts (run-upd w x run-cancel-row) x) (And.left p2) h2 (And.right (And.right p2))))))
 
-(tree/restate! GA '[inv-cancel-debtor inv-cleanup-set inv-cancel-res])
-(a/theorem ga-cancel-run-local [w :- World, r :- RunRow, rep :- Bool]
-  (=> (= (ga w) true) (= (ga (cancel-run-local w r rep)) true))
+(tree/restate! GA '[well-formed-cancel-debtor well-formed-cleanup-set well-formed-cancel-res])
+(a/theorem acts-parked-cancel-run-local [w :- World, r :- RunRow, rep :- Bool]
+  (=> (= (acts-parked w) true) (= (acts-parked (cancel-run-local w r rep)) true))
   (intro h)
   (simp only [cancel-run-local])
-  (exact (ga-cancel-debtor rep _ r (ga-cleanup-set _ (:id r) _ (ga-cancel-res _ r (ga-cancel-acts-o w (:id r) h))))))
+  (exact (acts-parked-cancel-debtor rep _ r (acts-parked-cleanup-set _ (:id r) _ (acts-parked-cancel-res _ r (acts-parked-cancel-acts-hand w (:id r) h))))))
 
 ;; ---- a run that is not parked, or holds the slice, has no activation
 
@@ -731,50 +731,50 @@
     (exact (ih (And.right ha)))))
 
 (a/theorem no-act-bad [w :- World, r :- RunRow]
-  (=> (= (ga w) true) (List.Mem r (:runs w)) (= (good-row r) false) (= (tbl-any (act-of-run (:id r)) (:acts w)) false))
+  (=> (= (acts-parked w) true) (List.Mem r (:runs w)) (= (good-row r) false) (= (tbl-any (act-of-run (:id r)) (:acts w)) false))
   (intros h hm hg)
-  (have p := (gr-parts act-rows-good w (ga-rest-of w h)))
+  (have p := (acts-ok-with-parts act-rows-good w (acts-parked-rest-of w h)))
   (exact (all-bnot-any ActRow (act-of-run (:id r)) (:acts w)
            (tbl-all-mono ActRow (act-rows-good (:runs w)) (bnot-of (act-of-run (:id r)))
              (fn [c :- ActRow, hc :- (= (act-rows-good (:runs w) c) true)] (no-act-one r (:runs w) c hm hg hc))
              (:acts w) (And.left (And.right p))))))
 
-(a/theorem ga-run-upd-free [w :- World, x :- Nat, f :- (=> RunRow RunRow),
+(a/theorem acts-parked-run-upd-free [w :- World, x :- Nat, f :- (=> RunRow RunRow),
                             hid :- (forall [r :- RunRow] (= (run-id (f r)) (run-id r)))]
-  (=> (= (tbl-any (act-of-run x) (:acts w)) false) (= (ga w) true) (= (ga (run-upd w x f)) true))
+  (=> (= (tbl-any (act-of-run x) (:acts w)) false) (= (acts-parked w) true) (= (acts-parked (run-upd w x f)) true))
   (intros hn h)
-  (exact (ga-intro (run-upd w x f) (inv-run-upd w x f hid (ga-sample w h))
-           (gr-run-upd-free act-rows-good w x f (arg-upd-free x f hid) hn (ga-rest-of w h)))))
+  (exact (acts-parked-intro (run-upd w x f) (well-formed-run-upd w x f hid (acts-parked-well-formed w h))
+           (acts-ok-with-run-upd-free act-rows-good w x f (arg-upd-free x f hid) hn (acts-parked-rest-of w h)))))
 
 (a/theorem find-facts [w :- World, rid :- Nat, r :- RunRow]
   (=> (= (run-find w rid) (Option.some RunRow r)) (And (List.Mem r (:runs w)) (= (:id r) rid)))
   (intro h) (exact (And.intro (tbl-find-mem RunRow run-id rid r (:runs w) h) (tbl-find-id RunRow run-id rid r (:runs w) h))))
 
-(a/theorem ga-free-of-tok [w :- World, st :- Nat, r :- RunRow]
-  (=> (= (ga w) true) (= (tok-run w st) (Option.some RunRow r)) (= (tbl-any (act-of-run (:id r)) (:acts w)) false))
+(a/theorem acts-parked-free-of-tok [w :- World, st :- Nat, r :- RunRow]
+  (=> (= (acts-parked w) true) (= (tok-run w st) (Option.some RunRow r)) (= (tbl-any (act-of-run (:id r)) (:acts w)) false))
   (intros h ht)
   (have p := (tok-facts w st r ht))
   (exact (no-act-bad w r h (And.left p) (slice-not-good r (And.right p)))))
 
 ;; ---- T12, the scheduling choice, finalize, finally regions: the token or chosen run has no activation
 
-(tree/restate! GA '[inv-fin-if-final inv-run-cascade inv-retire-after inv-complete-body])
-(a/theorem ga-complete-raw [w :- World, r :- RunRow, res :- RunResult]
-  (=> (= (tbl-any (act-of-run (:id r)) (:acts w)) false) (= (ga w) true) (= (ga (complete-raw w r res)) true))
+(tree/restate! GA '[well-formed-finalize-if-final well-formed-run-cascade well-formed-retire-after well-formed-complete-body])
+(a/theorem acts-parked-complete-raw [w :- World, r :- RunRow, res :- RunResult]
+  (=> (= (tbl-any (act-of-run (:id r)) (:acts w)) false) (= (acts-parked w) true) (= (acts-parked (complete-raw w r res)) true))
   (intros hn h)
-  (have h0 := (ga-run-upd-free w (:id r) run-complete-row run-complete-row-id hn h))
+  (have h0 := (acts-parked-run-upd-free w (:id r) run-complete-row run-complete-row-id hn h))
   (simp only [complete-raw])
-  (exact (ga-fin-if-final _ (:of r) (ga-run-cascade _ _ (ga-retire-after _ (:id r) (ga-complete-body _ r res h0))))))
+  (exact (acts-parked-finalize-if-final _ (:of r) (acts-parked-run-cascade _ _ (acts-parked-retire-after _ (:id r) (acts-parked-complete-body _ r res h0))))))
 
-(tree/restate! GA '[inv-complete-raw])
-(a/theorem t12-ga [w :- World, st :- Nat, tag :- Nat, v :- Nat]
-  (=> (= (ga w) true) (= (ga (:world (t12-complete w st tag v))) true))
+(tree/restate! GA '[well-formed-complete-raw])
+(a/theorem acts-parked-t12-complete [w :- World, st :- Nat, tag :- Nat, v :- Nat]
+  (=> (= (acts-parked w) true) (= (acts-parked (:world (t12-complete w st tag v))) true))
   (intro h)
   (cases ht (tok-run w st)) (case' [some r]) (case' [none])
   (simp only [t12-complete ht refuse]) (exact h)
   (cases hn (run-normal r))
   (simp only [t12-complete ht hn refuse]) (exact h)
-  (simp only [t12-complete ht hn accept]) (exact (ga-complete-raw w r _ (ga-free-of-tok w st r h ht) h)))
+  (simp only [t12-complete ht hn accept]) (exact (acts-parked-complete-raw w r _ (acts-parked-free-of-tok w st r h ht) h)))
 
 ;; ---- Z#77 T28: the retired run has no activation from `cancel-acts` on (the resource deletions and the
 ;; finalizer drop change no activation), so T12's override applies to its completion
@@ -834,27 +834,27 @@
   (=> (= (run-find (retire-pre w r) rid) (Option.some RunRow r1)) (List.Mem r1 (:runs (retire-pre w r))))
   (intro h1) (exact (tbl-find-mem RunRow run-id rid r1 (:runs (retire-pre w r)) h1)))
 
-(tree/restate! GA '[inv-ack-if inv-cancel-acts])
-(a/theorem ga-retire-pre [w :- World, r :- RunRow]
-  (=> (= (ga w) true) (= (ga (retire-pre w r)) true))
+(tree/restate! GA '[well-formed-ack-if well-formed-cancel-acts])
+(a/theorem acts-parked-retire-pre [w :- World, r :- RunRow]
+  (=> (= (acts-parked w) true) (= (acts-parked (retire-pre w r)) true))
   (intro h)
   (simp only [retire-pre])
-  (exact (ga-run-upd-free _ (:id r) run-drop-fins run-drop-fins-id (retire-mid-noact w r)
-           (nat-fold-ga (ack-if (:id r)) (ga-ack-if (:id r)) (:resources r) _ (ga-cancel-acts w (:id r) h)))))
-(tree/restate! GA '[inv-retire-pre inv-complete-raw inv-run-cascade])
-(a/theorem ga-retire-one [v :- Nat, w :- World, rid :- Nat]
-  (=> (= (ga w) true) (= (ga (retire-one v w rid)) true))
+  (exact (acts-parked-run-upd-free _ (:id r) run-drop-fins run-drop-fins-id (retire-mid-noact w r)
+           (acts-parked-nat-fold (ack-if (:id r)) (acts-parked-ack-if (:id r)) (:resources r) _ (acts-parked-cancel-acts w (:id r) h)))))
+(tree/restate! GA '[well-formed-retire-pre well-formed-complete-raw well-formed-run-cascade])
+(a/theorem acts-parked-retire-one [v :- Nat, w :- World, rid :- Nat]
+  (=> (= (acts-parked w) true) (= (acts-parked (retire-one v w rid)) true))
   (intro h)
   (cases hf (run-find w rid))
   (case [none] (simp only [retire-one hf]) (exact h))
   (case [some r]
-    (have hp := (ga-retire-pre w r h))
+    (have hp := (acts-parked-retire-pre w r h))
     (cases hf1 (run-find (retire-pre w r) rid))
     (case [none] (simp only [retire-one hf hf1]) (exact hp))
     (case [some r1]
       (cases ha (Bool.and (run-alive r1) (run-of-local (retire-pre w r) r1)))
-      (case [true] (simp only [retire-one hf hf1 ha]) (exact (ga-complete-raw _ r1 _ (retire-r1-noact w r r1 rid hf hf1) hp)))
-      (case [false] (simp only [retire-one hf hf1 ha retire-full]) (exact (ga-run-cascade _ _ hp))))))
+      (case [true] (simp only [retire-one hf hf1 ha]) (exact (acts-parked-complete-raw _ r1 _ (retire-r1-noact w r r1 rid hf hf1) hp)))
+      (case [false] (simp only [retire-one hf hf1 ha t13-retire]) (exact (acts-parked-run-cascade _ _ hp))))))
 
 (a/theorem active-not-good [r :- RunRow] (=> (= (Nat.beq (:act r) act-active) true) (= (good-row r) false))
   (intro h)
@@ -865,22 +865,22 @@
   (have e (= (:act r) act-done)) (exact (Nat.eq_of_beq_eq_true h))
   (simp [good-row e act-done act-parked]))
 
-(a/theorem sched-ga [w :- World, rid :- Nat]
-  (=> (= (ga w) true) (= (ga (:world (t-schedule w rid))) true))
+(a/theorem acts-parked-t-schedule [w :- World, rid :- Nat]
+  (=> (= (acts-parked w) true) (= (acts-parked (:world (t-schedule w rid))) true))
   (intro h)
   (cases hf (run-find w rid)) (case' [some r]) (case' [none])
   (simp only [t-schedule hf refuse]) (exact h)
-  (cases hg (sched-ok w r))
+  (cases hg (schedule-ok w r))
   (simp only [t-schedule hf hg refuse]) (exact h)
   (have p := (find-facts w rid r hf))
   (have hg2 := hg)
-  (simp only [sched-ok Bool.and_eq_true] at hg2)
+  (simp only [schedule-ok Bool.and_eq_true] at hg2)
   (have hn := (no-act-bad w r h (And.left p) (active-not-good r (And.left hg2))))
   (rw [(And.right p)] at hn)
-  (simp only [t-schedule hf hg accept]) (exact (ga-run-upd-free w rid run-enter-row run-enter-row-id hn h)))
+  (simp only [t-schedule hf hg accept]) (exact (acts-parked-run-upd-free w rid run-enter-row run-enter-row-id hn h)))
 
-(a/theorem t-finalize-ga [w :- World, rid :- Nat]
-  (=> (= (ga w) true) (= (ga (:world (t-finalize w rid))) true))
+(a/theorem acts-parked-t-finalize [w :- World, rid :- Nat]
+  (=> (= (acts-parked w) true) (= (acts-parked (:world (t-finalize w rid))) true))
   (intro h)
   (cases hf (run-find w rid)) (case' [some r]) (case' [none])
   (simp only [t-finalize hf refuse]) (exact h)
@@ -891,42 +891,42 @@
   (simp only [cleanup-ready Bool.and_eq_true] at hg2)
   (have hn := (no-act-bad w r h (And.left p) (done-not-good r (And.left hg2))))
   (rw [(And.right p)] at hn)
-  (simp only [t-finalize hf hg accept]) (exact (ga-run-upd-free w rid run-enter-row run-enter-row-id hn h)))
+  (simp only [t-finalize hf hg accept]) (exact (acts-parked-run-upd-free w rid run-enter-row run-enter-row-id hn h)))
 
-(a/theorem t-finally-enter-ga [w :- World, st :- Nat]
-  (=> (= (ga w) true) (= (ga (:world (t-finally-enter w st))) true))
+(a/theorem acts-parked-t-finally-enter [w :- World, st :- Nat]
+  (=> (= (acts-parked w) true) (= (acts-parked (:world (t-finally-enter w st))) true))
   (intro h)
   (cases ht (tok-run w st)) (case' [some r]) (case' [none])
   (simp only [t-finally-enter ht refuse]) (exact h)
   (cases hg (run-normal r))
   (simp only [t-finally-enter ht hg refuse]) (exact h)
   (simp only [t-finally-enter ht hg accept])
-  (exact (ga-run-upd-free w (:id r) (run-fin-push (Finalizer.mk 0 (:effect-index r) (List.nil Nat)))
-           (run-fin-push-id _) (ga-free-of-tok w st r h ht) h)))
+  (exact (acts-parked-run-upd-free w (:id r) (run-fin-push (Finalizer.mk 0 (:effect-index r) (List.nil Nat)))
+           (run-fin-push-id _) (acts-parked-free-of-tok w st r h ht) h)))
 
-(a/theorem t-finally-exit-ga [w :- World, st :- Nat]
-  (=> (= (ga w) true) (= (ga (:world (t-finally-exit w st))) true))
+(a/theorem acts-parked-t-finally-exit [w :- World, st :- Nat]
+  (=> (= (acts-parked w) true) (= (acts-parked (:world (t-finally-exit w st))) true))
   (intro h)
   (cases ht (tok-run w st)) (case' [some r]) (case' [none])
   (simp only [t-finally-exit ht refuse]) (exact h)
-  (have hn := (ga-free-of-tok w st r h ht))
-  (cases he (fin-exit-bad (:finalizers r)))
+  (have hn := (acts-parked-free-of-tok w st r h ht))
+  (cases he (finally-exit-refused (:finalizers r)))
   (case [true] (simp only [t-finally-exit ht he refuse]) (exact h))
-  (case [false] (simp only [t-finally-exit ht he accept]) (exact (ga-run-upd-free w (:id r) run-fin-exit run-fin-exit-id hn h))))
+  (case [false] (simp only [t-finally-exit ht he accept]) (exact (acts-parked-run-upd-free w (:id r) run-fin-exit run-fin-exit-id hn h))))
 
-(a/theorem t-finally-leave-ga [w :- World, st :- Nat]
-  (=> (= (ga w) true) (= (ga (:world (t-finally-leave w st))) true))
+(a/theorem acts-parked-t-finally-leave [w :- World, st :- Nat]
+  (=> (= (acts-parked w) true) (= (acts-parked (:world (t-finally-leave w st))) true))
   (intro h)
   (cases ht (tok-run w st)) (case' [some r]) (case' [none])
   (simp only [t-finally-leave ht refuse]) (exact h)
-  (have hn := (ga-free-of-tok w st r h ht))
-  (cases he (fin-leave-bad (:finalizers r)))
+  (have hn := (acts-parked-free-of-tok w st r h ht))
+  (cases he (finally-leave-refused (:finalizers r)))
   (case [true] (simp only [t-finally-leave ht he refuse]) (exact h))
-  (case [false] (simp only [t-finally-leave ht he accept]) (exact (ga-run-upd-free w (:id r) run-fin-pop run-fin-pop-id hn h))))
+  (case [false] (simp only [t-finally-leave ht he accept]) (exact (acts-parked-run-upd-free w (:id r) run-fin-pop run-fin-pop-id hn h))))
 
-(tree/restate! GA '[inv-run-cascade])
-(a/theorem t-slice-exit-ga [w :- World, rid :- Nat]
-  (=> (= (ga w) true) (= (ga (:world (t-slice-exit w rid))) true))
+(tree/restate! GA '[well-formed-run-cascade])
+(a/theorem acts-parked-t-slice-exit [w :- World, rid :- Nat]
+  (=> (= (acts-parked w) true) (= (acts-parked (:world (t-slice-exit w rid))) true))
   (intro h)
   (cases hf (run-find w rid)) (case' [some r]) (case' [none])
   (simp only [t-slice-exit hf refuse]) (exact h)
@@ -937,8 +937,8 @@
   (simp only [exit-ready Bool.and_eq_true] at hg2)
   (have hn := (no-act-bad w r h (And.left p) (done-not-good r (And.left hg2))))
   (rw [(And.right p)] at hn)
-  (simp only [t-slice-exit hf hg accept retire-full])
-  (exact (ga-run-cascade _ _ (ga-run-upd-free w rid run-fin-pop-end run-fin-pop-end-id hn h))))
+  (simp only [t-slice-exit hf hg accept t13-retire])
+  (exact (acts-parked-run-cascade _ _ (acts-parked-run-upd-free w rid run-fin-pop-end run-fin-pop-end-id hn h))))
 
 ;; ---- T6 and take: the new activation's run is exempt until it parks
 
@@ -955,9 +955,9 @@
     (exact (ih (And.right hp) hm2))))
 
 (a/theorem run-below [w :- World, r :- RunRow]
-  (=> (= (inv-sample w) true) (List.Mem r (:runs w)) (< (:id r) (:next-id w)))
+  (=> (= (well-formed w) true) (List.Mem r (:runs w)) (< (:id r) (:next-id w)))
   (intros h hm)
-  (have hi := (And.right (And.right (inv-parts w h))))
+  (have hi := (And.right (And.right (well-formed-parts w h))))
   (simp only [ids-ok ids-below all-ids tbl-all-nat-app Bool.and_eq_true] at hi)
   (have hr := (all-ids-mem RunRow run-id (id-in-range (:next-id w)) r (:runs w)
                 (And.left (And.right (And.right (And.right (And.right (And.right hi)))))) hm))
@@ -990,11 +990,11 @@
   (simp only [bnot-of act-of-run] at hc)
   (simp only [act-rows-good-x (bnot-true _ hc)]) (exact h))
 
-(a/theorem gx-act-ins [w :- World, a :- ActRow]
+(a/theorem acts-parked-exempt-act-ins [w :- World, a :- ActRow]
   (=> (= (act-id a) (:next-id w)) (< (:run a) (:next-id w)) (= (tbl-any (act-of-run (:run a)) (:acts w)) false)
-      (= (ga w) true) (= (gx (Ex.mk (:run a) (:next-id w)) (bump (act-ins w a))) true))
+      (= (acts-parked w) true) (= (acts-parked-exempt (Ex.mk (:run a) (:next-id w)) (bump (act-ins w a))) true))
   (intros hid hlt hn h)
-  (have p := (gr-parts act-rows-good w (ga-rest-of w h)))
+  (have p := (acts-ok-with-parts act-rows-good w (acts-parked-rest-of w h)))
   (have hb := (any-false-all ActRow (act-of-run (:run a)) (:acts w) hn))
   (have ha1 (= (act-below (:next-id w) a) true)) (simp only [act-below Nat.blt_eq]) (exact hlt)
   (have g1 (= (tbl-all (act-below (:next-id (act-ins w a))) (:acts (act-ins w a))) true))
@@ -1010,9 +1010,9 @@
   (have g3 (= (tbl-all (act-sole (:acts (act-ins w a))) (:acts (act-ins w a))) true))
   (simp only [act-ins set-acts tbl-ins])
   (exact (sole-ins 0 a (:acts w) hn (And.right (And.right p))))
-  (exact (gx-intro (Ex.mk (:run a) (:next-id w)) (bump (act-ins w a)) (inv-act-ins-fresh w a hid (ga-sample w h))
-           (gr-bump (act-rows-good-x (Ex.mk (:run a) (:next-id w))) (act-ins w a)
-             (gr-mk (act-rows-good-x (Ex.mk (:run a) (:next-id w))) (act-ins w a) g1 g2 g3)))))
+  (exact (acts-parked-exempt-intro (Ex.mk (:run a) (:next-id w)) (bump (act-ins w a)) (well-formed-act-ins-fresh w a hid (acts-parked-well-formed w h))
+           (acts-ok-with-bump (act-rows-good-x (Ex.mk (:run a) (:next-id w))) (act-ins w a)
+             (acts-ok-with-mk (act-rows-good-x (Ex.mk (:run a) (:next-id w))) (act-ins w a) g1 g2 g3)))))
 
 (a/theorem all-good-upd [x :- Nat, f :- (=> RunRow RunRow),
                          hid :- (forall [r :- RunRow] (= (run-id (f r)) (run-id r))),
@@ -1040,18 +1040,18 @@
     (simp only [act-rows-good-x hx] at h)
     (rw [(arg-upd-free (:x ex) f hid rs c hx)]) (exact h)))
 
-(a/theorem gx-restore [ex :- Ex, w :- World, f :- (=> RunRow RunRow),
+(a/theorem acts-parked-exempt-restore [ex :- Ex, w :- World, f :- (=> RunRow RunRow),
                        hid :- (forall [r :- RunRow] (= (run-id (f r)) (run-id r))),
                        hg :- (forall [r :- RunRow] (= (good-row (f r)) true))]
-  (=> (= (gx ex w) true) (= (ga (run-upd w (:x ex) f)) true))
+  (=> (= (acts-parked-exempt ex w) true) (= (acts-parked (run-upd w (:x ex) f)) true))
   (intro h)
-  (have p := (gr-parts (act-rows-good-x ex) w (gx-rest-of ex w h)))
+  (have p := (acts-ok-with-parts (act-rows-good-x ex) w (acts-parked-exempt-rest-of ex w h)))
   (have g2 (= (tbl-all (act-rows-good (:runs (run-upd w (:x ex) f))) (:acts (run-upd w (:x ex) f))) true))
   (simp only [run-upd set-runs])
   (exact (tbl-all-mono ActRow (act-rows-good-x ex (:runs w)) (act-rows-good (tbl-upd run-id (:x ex) f (:runs w)))
            (arg-restore ex f hid hg (:runs w)) (:acts w) (And.left (And.right p))))
-  (exact (ga-intro (run-upd w (:x ex) f) (inv-run-upd w (:x ex) f hid (gx-sample ex w h))
-           (gr-mk act-rows-good (run-upd w (:x ex) f) (And.left p) g2 (And.right (And.right p))))))
+  (exact (acts-parked-intro (run-upd w (:x ex) f) (well-formed-run-upd w (:x ex) f hid (acts-parked-exempt-well-formed ex w h))
+           (acts-ok-with-mk act-rows-good (run-upd w (:x ex) f) (And.left p) g2 (And.right (And.right p))))))
 
 (a/defn act-id-is [x :- Nat, c :- ActRow] Bool (Nat.beq (act-id c) x))
 (a/theorem has-false-all [x :- Nat, as :- (List ActRow)]
@@ -1081,71 +1081,71 @@
 (a/theorem run-park-row-good [r :- RunRow] (= (good-row (run-park-row r)) true) (simp [good-row run-park-row act-parked]))
 (a/theorem run-tick-park-good [r :- RunRow] (= (good-row (run-tick-park r)) true) (simp [good-row run-tick-park act-parked]))
 
-(a/theorem gx-park [ex :- Ex, w :- World]
-  (=> (= (gx ex w) true) (= (ga (park-if w (:a ex) (:x ex))) true))
+(a/theorem acts-parked-exempt-park [ex :- Ex, w :- World]
+  (=> (= (acts-parked-exempt ex w) true) (= (acts-parked (park-if w (:a ex) (:x ex))) true))
   (intro h)
   (cases ha (act-has w (:a ex)))
-  (case [true] (simp only [park-if ha]) (exact (gx-restore ex w run-park-row run-park-row-id run-park-row-good h)))
+  (case [true] (simp only [park-if ha]) (exact (acts-parked-exempt-restore ex w run-park-row run-park-row-id run-park-row-good h)))
   (case [false]
     (simp only [park-if ha])
-    (have p := (gr-parts (act-rows-good-x ex) w (gx-rest-of ex w h)))
+    (have p := (acts-ok-with-parts (act-rows-good-x ex) w (acts-parked-exempt-rest-of ex w h)))
     (have hb := (has-false-all (:a ex) (:acts w) ha))
-    (exact (ga-intro w (gx-sample ex w h)
-             (gr-mk act-rows-good w (And.left p)
+    (exact (acts-parked-intro w (acts-parked-exempt-well-formed ex w h)
+             (acts-ok-with-mk act-rows-good w (And.left p)
                (tbl-all-mono2 ActRow (bnot-of (act-id-is (:a ex))) (act-rows-good-x ex (:runs w)) (act-rows-good (:runs w))
                  (arg-gone ex (:runs w)) (:acts w) hb (And.left (And.right p)))
                (And.right (And.right p)))))))
 
-(tree/restate! GX '[nat-fold-inv])
-(tree/restate! GX '[inv-demand-reactive])
-(tree/restate! GX '[inv-await-wire])
-(tree/restate! GX '[inv-fast-fill])
-(tree/restate! GX '[inv-insert-edge-checked])
+(tree/restate! GX '[well-formed-nat-fold])
+(tree/restate! GX '[well-formed-demand-reactive])
+(tree/restate! GX '[well-formed-await-wire])
+(tree/restate! GX '[well-formed-fast-fill])
+(tree/restate! GX '[well-formed-insert-edge-checked])
 
-(tree/restate! GA '[inv-fin-if-final])
-(tree/restate! GA '[nat-fold-inv])
+(tree/restate! GA '[well-formed-finalize-if-final])
+(tree/restate! GA '[well-formed-nat-fold])
 
-(a/theorem ga-await-raw-o [w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
-  (=> (List.Mem r (:runs w)) (= (:slice r) true) (= (ga w) true) (= (ga (await-raw w r ds mode k mine)) true))
+(a/theorem acts-parked-await-raw-hand [w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
+  (=> (List.Mem r (:runs w)) (= (:slice r) true) (= (acts-parked w) true) (= (acts-parked (await-raw w r ds mode k mine)) true))
   (intros hm hs h)
   (have hn := (no-act-bad w r h hm (slice-not-good r hs)))
-  (have hlt := (run-below w r (ga-sample w h) hm))
-  (have h1 := (ga-run-upd w (:id r) run-tick run-tick-run-id (fn [q :- RunRow] (Eq.refl (good-row q))) h))
-  (have h2 := (gx-act-ins (run-upd w (:id r) run-tick)
+  (have hlt := (run-below w r (acts-parked-well-formed w h) hm))
+  (have h1 := (acts-parked-run-upd w (:id r) run-tick run-tick-run-id (fn [q :- RunRow] (Eq.refl (good-row q))) h))
+  (have h2 := (acts-parked-exempt-act-ins (run-upd w (:id r) run-tick)
                 (ActRow.mk (:next-id w) (:id r) mode (List.nil Member) (none-slots ds) (nat-len ds) k mine)
                 (rfl) hlt hn h1))
-  (have h3 := (nat-fold-gx (Ex.mk (:id r) (:next-id w)) demand-reactive (gx-demand-reactive (Ex.mk (:id r) (:next-id w)))
+  (have h3 := (acts-parked-exempt-nat-fold (Ex.mk (:id r) (:next-id w)) demand-reactive (acts-parked-exempt-demand-reactive (Ex.mk (:id r) (:next-id w)))
                 (nat-distinct ds) _ h2))
-  (have h4 (= (gx (Ex.mk (:id r) (:next-id w)) (:world (await-acc w r ds mode k mine))) true))
-  (exact (gx-await-wire (Ex.mk (:id r) (:next-id w)) r (:next-id w) mode k (nat-distinct ds)
+  (have h4 (= (acts-parked-exempt (Ex.mk (:id r) (:next-id w)) (:world (await-acc w r ds mode k mine))) true))
+  (exact (acts-parked-exempt-await-wire (Ex.mk (:id r) (:next-id w)) r (:next-id w) mode k (nat-distinct ds)
            (AwAcc.mk (await-pre w r ds mode k mine) (List.nil DE) true) h3))
-  (have h5 := (gx-act-upd (Ex.mk (:id r) (:next-id w)) (:world (await-acc w r ds mode k mine)) (:next-id w)
+  (have h5 := (acts-parked-exempt-act-upd (Ex.mk (:id r) (:next-id w)) (:world (await-acc w r ds mode k mine)) (:next-id w)
                 (act-set-members (mk-members (:pairs (await-acc w r ds mode k mine)) 0 ds))
                 (act-set-members-id (mk-members (:pairs (await-acc w r ds mode k mine)) 0 ds))
                 (fn [c :- ActRow] (Eq.refl (:run c))) h4))
-  (have h6 := (nat-fold-gx (Ex.mk (:id r) (:next-id w)) (fast-fill (:pairs (await-acc w r ds mode k mine)))
-                (gx-fast-fill (Ex.mk (:id r) (:next-id w)) (:pairs (await-acc w r ds mode k mine))) (nat-distinct ds) _ h5))
-  (have h7 := (gx-park (Ex.mk (:id r) (:next-id w)) _ h6))
+  (have h6 := (acts-parked-exempt-nat-fold (Ex.mk (:id r) (:next-id w)) (fast-fill (:pairs (await-acc w r ds mode k mine)))
+                (acts-parked-exempt-fast-fill (Ex.mk (:id r) (:next-id w)) (:pairs (await-acc w r ds mode k mine))) (nat-distinct ds) _ h5))
+  (have h7 := (acts-parked-exempt-park (Ex.mk (:id r) (:next-id w)) _ h6))
   (simp only [await-raw await-post])
-  (exact (nat-fold-ga fin-if-final ga-fin-if-final (nat-distinct ds) _ h7)))
+  (exact (acts-parked-nat-fold finalize-if-final acts-parked-finalize-if-final (nat-distinct ds) _ h7)))
 
-(a/theorem ga-take-park-o [w :- World, r :- RunRow, x :- Nat, k :- Nat]
-  (=> (List.Mem r (:runs w)) (= (:slice r) true) (= (ga w) true) (= (ga (take-park w r x k)) true))
+(a/theorem acts-parked-take-park-hand [w :- World, r :- RunRow, x :- Nat, k :- Nat]
+  (=> (List.Mem r (:runs w)) (= (:slice r) true) (= (acts-parked w) true) (= (acts-parked (take-park w r x k)) true))
   (intros hm hs h)
   (have hn := (no-act-bad w r h hm (slice-not-good r hs)))
-  (have hlt := (run-below w r (ga-sample w h) hm))
-  (have h2 := (gx-act-ins w (take-act w r k) (rfl) hlt hn h))
-  (have h3 := (gx-insert-edge-checked (Ex.mk (:id r) (:next-id w)) _ (take-edge r (:next-id w) x) h2))
+  (have hlt := (run-below w r (acts-parked-well-formed w h) hm))
+  (have h2 := (acts-parked-exempt-act-ins w (take-act w r k) (rfl) hlt hn h))
+  (have h3 := (acts-parked-exempt-insert-edge-checked (Ex.mk (:id r) (:next-id w)) _ (take-edge r (:next-id w) x) h2))
   (simp only [take-park])
-  (exact (gx-restore (Ex.mk (:id r) (:next-id w)) _ run-tick-park run-tick-park-id run-tick-park-good h3)))
+  (exact (acts-parked-exempt-restore (Ex.mk (:id r) (:next-id w)) _ run-tick-park run-tick-park-id run-tick-park-good h3)))
 
-(a/theorem ga-await-raw [w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
-  (=> (List.Mem r (:runs w)) (= (:slice r) true) (= (ga w) true) (= (ga (await-raw w r ds mode k mine)) true))
-  (intros hm hs h) (exact (ga-await-raw-o w r ds mode k mine hm hs h)))
+(a/theorem acts-parked-await-raw [w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
+  (=> (List.Mem r (:runs w)) (= (:slice r) true) (= (acts-parked w) true) (= (acts-parked (await-raw w r ds mode k mine)) true))
+  (intros hm hs h) (exact (acts-parked-await-raw-hand w r ds mode k mine hm hs h)))
 
-(tree/restate! GA '[inv-await-raw])
-(a/theorem t6-ga [w :- World, st :- Nat, ds :- (List Nat), mode :- Nat, k :- Nat, fresh :- Nat, mine :- (List Nat)]
-  (=> (= (ga w) true) (= (ga (:world (t6-await w st ds mode k fresh mine))) true))
+(tree/restate! GA '[well-formed-await-raw])
+(a/theorem acts-parked-t6-await [w :- World, st :- Nat, ds :- (List Nat), mode :- Nat, k :- Nat, fresh :- Nat, mine :- (List Nat)]
+  (=> (= (acts-parked w) true) (= (acts-parked (:world (t6-await w st ds mode k fresh mine))) true))
   (intro h)
   (cases ht (tok-run w st)) (case' [some r]) (case' [none])
   (simp only [t6-await ht refuse]) (exact h)
@@ -1153,15 +1153,15 @@
   (cases hg (Bool.and (await-ok w r ds mode fresh) (:ok (await-acc w r ds mode k mine))))
   (simp only [t6-await ht hg refuse]) (exact h)
   (simp only [t6-await ht hg accept])
-  (exact (ga-await-raw w r ds mode k mine (And.left p) (And.right p) h)))
+  (exact (acts-parked-await-raw w r ds mode k mine (And.left p) (And.right p) h)))
 
-(a/theorem ga-take-park [w :- World, r :- RunRow, x :- Nat, k :- Nat]
-  (=> (List.Mem r (:runs w)) (= (:slice r) true) (= (ga w) true) (= (ga (take-park w r x k)) true))
-  (intros hm hs h) (exact (ga-take-park-o w r x k hm hs h)))
+(a/theorem acts-parked-take-park [w :- World, r :- RunRow, x :- Nat, k :- Nat]
+  (=> (List.Mem r (:runs w)) (= (:slice r) true) (= (acts-parked w) true) (= (acts-parked (take-park w r x k)) true))
+  (intros hm hs h) (exact (acts-parked-take-park-hand w r x k hm hs h)))
 
-(tree/restate! GA '[inv-take-park inv-take-now])
-(a/theorem t-take-ga [w :- World, st :- Nat, x :- Nat, k :- Nat, fresh :- Nat]
-  (=> (= (ga w) true) (= (ga (:world (t-take w st x k fresh))) true))
+(tree/restate! GA '[well-formed-take-park well-formed-take-now])
+(a/theorem acts-parked-t-take [w :- World, st :- Nat, x :- Nat, k :- Nat, fresh :- Nat]
+  (=> (= (acts-parked w) true) (= (acts-parked (:world (t-take w st x k fresh))) true))
   (intro h)
   (cases ht (tok-run w st)) (case' [some r]) (case' [none])
   (simp only [t-take ht refuse]) (exact h)
@@ -1171,63 +1171,63 @@
   (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (Bool.and (run-normal r) (takeable s))))
   (simp only [t-take ht hs hg refuse]) (exact h)
   (cases hv (take-ready s))
-  (simp only [t-take ht hs hg hv accept]) (exact (ga-take-park w r x k (And.left p) (And.right p) h))
-  (simp only [t-take ht hs hg hv accept]) (exact (ga-take-now w r x h)))
+  (simp only [t-take ht hs hg hv accept]) (exact (acts-parked-take-park w r x k (And.left p) (And.right p) h))
+  (simp only [t-take ht hs hg hv accept]) (exact (acts-parked-take-now w r x h)))
 
-;; Z#55: arm = arm-raw (frame for ga) then take-park on the armed row (still the slice holder)
-(tree/restate! GA '[inv-take-park inv-arm-raw])
-(a/theorem ga-arm-park [w :- World, r :- RunRow, kind :- Nat, k :- Nat]
-  (=> (List.Mem r (:runs w)) (= (:slice r) true) (= (ga w) true) (= (ga (arm-park w r kind k)) true))
+;; Z#55: arm = arm-raw (frame for acts-parked) then take-park on the armed row (still the slice holder)
+(tree/restate! GA '[well-formed-take-park well-formed-arm-raw])
+(a/theorem acts-parked-arm-park [w :- World, r :- RunRow, kind :- Nat, k :- Nat]
+  (=> (List.Mem r (:runs w)) (= (:slice r) true) (= (acts-parked w) true) (= (acts-parked (arm-park w r kind k)) true))
   (intros hm hs h)
   (simp only [arm-park])
-  (exact (ga-take-park _ (run-arm (:next-id w) r) (:next-id w) k (arm-raw-mem w r kind hm) hs (ga-arm-raw w r kind h))))
+  (exact (acts-parked-take-park _ (run-arm (:next-id w) r) (:next-id w) k (arm-raw-mem w r kind hm) hs (acts-parked-arm-raw w r kind h))))
 
-(tree/restate! GA '[inv-arm-park])
-(a/theorem t17-ga [w :- World, st :- Nat, kind :- Nat, k :- Nat, fresh :- Nat]
-  (=> (= (ga w) true) (= (ga (:world (t17-arm w st kind k fresh))) true))
+(tree/restate! GA '[well-formed-arm-park])
+(a/theorem acts-parked-t17-arm [w :- World, st :- Nat, kind :- Nat, k :- Nat, fresh :- Nat]
+  (=> (= (acts-parked w) true) (= (acts-parked (:world (t17-arm w st kind k fresh))) true))
   (intro h)
   (cases ht (tok-run w st)) (case' [some r]) (case' [none])
   (simp only [t17-arm ht refuse]) (exact h)
   (have p := (tok-facts w st r ht))
   (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (Bool.and (run-normal r) (arm-kind-ok kind))))
   (simp only [t17-arm ht hg refuse]) (exact h)
-  (simp only [t17-arm ht hg accept]) (exact (ga-arm-park w r kind k (And.left p) (And.right p) h)))
+  (simp only [t17-arm ht hg accept]) (exact (acts-parked-arm-park w r kind k (And.left p) (And.right p) h)))
 
-(tree/restate! GA '[step-inv])
+(tree/restate! GA '[step-well-formed])
 
 ;; ===========================================================================
 ;; Part E. The step
 ;; ===========================================================================
 
-(a/theorem ga-empty [] (= (ga empty-world) true) (rfl))
+(a/theorem acts-parked-empty [] (= (acts-parked empty-world) true) (rfl))
 
-;; every step keeps the activation invariant (the hypotheses of step-inv)
+;; every step keeps the activation invariant (the hypotheses of step-well-formed)
 (a/theorem step-acts [w :- World, it :- Item]
-  (=> (= (ga w) true) (= (rule-r-safe (:world (raw w it))) true) (= (ga (:world (world-step w it))) true))
-  (intros h hs) (exact (step-ga w it h hs)))
+  (=> (= (acts-parked w) true) (= (rule-r-safe (:world (raw w it))) true) (= (acts-parked (:world (world-step w it))) true))
+  (intros h hs) (exact (step-acts-parked w it h hs)))
 
 ;; P2 and P4 hold in every world of the model: the raw world of a step has no activation of a
 ;; done run
 (a/theorem raw-acts-alive [w :- World, it :- Item]
-  (=> (= (ga w) true) (= (acts-alive (:world (raw w it))) true))
-  (intro h) (exact (ga-acts-alive _ (raw-ga w it h))))
+  (=> (= (acts-parked w) true) (= (acts-alive (:world (raw w it))) true))
+  (intro h) (exact (acts-parked-acts-alive _ (acts-parked-raw w it h))))
 
-;; Theorem: the step's world is normalized, with no normalized flag (hypotheses of step-inv)
-(a/theorem step-normalized-ga [w :- World, it :- Item]
-  (=> (= (:accepted (raw w it)) true) (= (ga w) true) (= (rule-r-safe (:world (raw w it))) true)
+;; Theorem: the step's world is normalized, with no normalized flag (hypotheses of step-well-formed)
+(a/theorem step-normalized-acts-parked [w :- World, it :- Item]
+  (=> (= (:accepted (raw w it)) true) (= (acts-parked w) true) (= (rule-r-safe (:world (raw w it))) true)
       (= (normalized (:world (world-step w it))) true))
   (intros ha h hs)
-  (exact (step-normalized-ok w it ha (ga-sample w h) (raw-acts-alive w it h) hs)))
+  (exact (step-normalized-ok w it ha (acts-parked-well-formed w h) (raw-acts-alive w it h) hs)))
 
 ;; I4 after every accepted step
-(a/theorem step-i4-ga [w :- World, it :- Item, r :- RunRow]
-  (=> (= (:accepted (raw w it)) true) (= (ga w) true) (= (rule-r-safe (:world (raw w it))) true)
+(a/theorem step-i4-acts-parked [w :- World, it :- Item, r :- RunRow]
+  (=> (= (:accepted (raw w it)) true) (= (acts-parked w) true) (= (rule-r-safe (:world (raw w it))) true)
       (List.Mem r (:runs (:world (world-step w it)))) (= (run-alive r) true)
       (= (in-live (:world (world-step w it)) (:id r)) true))
   (intros ha h hs hm hr)
-  (exact (normalized-runs _ r (step-normalized-ga w it ha h hs) hm hr)))
+  (exact (normalized-runs _ r (step-normalized-acts-parked w it ha h hs) hm hr)))
 
 ;; P4 in every world the step reaches: a cascade started there empties its worklist
-(a/theorem casc-done-ga [w :- World, js :- (List Job)]
-  (=> (= (ga w) true) (= (casc-done w js) true))
-  (intro h) (exact (casc-done-ok w js (ga-sample w h) (ga-acts-alive w h))))
+(a/theorem cascade-done-acts-parked [w :- World, js :- (List Job)]
+  (=> (= (acts-parked w) true) (= (cascade-done w js) true))
+  (intro h) (exact (cascade-done-ok w js (acts-parked-well-formed w h) (acts-parked-acts-alive w h))))

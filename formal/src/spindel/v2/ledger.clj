@@ -6,7 +6,7 @@
   (set once) and the pairing K-SROW / S-TASK; the model derives all of them:
     - the run scope of task k is the scope k + 2 (T4's allocation order: task K, run K + 1, run scope K + 2;
       `spawn-rows`), created eagerly. The engine materializes it on first use; one never materialized owns
-      nothing, and T13 (`retire-with`'s `remove-if-empty`) removes the model's row in the retiring step, which is
+      nothing, and T13 (`t13-retire-with-subtree`'s `remove-if-empty`) removes the model's row in the retiring step, which is
       exactly when the engine completes a task with no K-SROW. So no separate clause is needed;
     - held = the task row's result is none or its run is unretired (rule.clj `task-held-in` without the scope
       test). A task id with no row is not held: the model keeps no kind for a removed id, so the caller knows k is a

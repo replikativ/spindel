@@ -4,7 +4,7 @@
 
     source-theorems   the base proof as data: every theorem of the step's namespaces
                       (`lit-source-nss`), read from the source files (`theorem-source`).
-    mk-bundle         a part's record: its predicate (inv-sample and a rest part), parameters, name
+    mk-bundle         a part's record: its predicate (well-formed and a rest part), parameters, name
                       prefix, the extra arguments of its cells, and its lemma per base lemma
                       (`:renames`).
     prim!             a cell: the part's lemma for a primitive edit, from the base lemma and a proof
@@ -69,7 +69,7 @@
       (throw (ex-info (str "no source for theorem " nm) {:name nm}))))
 
 (defn- binder-names [binders] (vec (take-nth 3 binders)))
-(defn- inv-premise? [p] (and (seq? p) (= '= (first p)) (seq? (second p)) (= 'inv-sample (first (second p)))))
+(defn- inv-premise? [p] (and (seq? p) (= '= (first p)) (seq? (second p)) (= 'well-formed (first (second p)))))
 
 ;; REPL iteration only: skip a generated theorem whose name is already in the env
 (defonce ^:dynamic *lit-dev-skip* false)
@@ -91,9 +91,9 @@
 (defn- bsym [B suffix] (symbol (str (name (:pred B)) suffix)))
 
 (defn- pred-subst [B x]
-  (walk/postwalk (fn [y] (if (and (seq? y) (= 'inv-sample (first y))) (papp B (:pred B) (second y)) y)) x))
+  (walk/postwalk (fn [y] (if (and (seq? y) (= 'well-formed (first y))) (papp B (:pred B) (second y)) y)) x))
 
-;; a primitive: the inv-sample lemma plus a proof of the bundle's rest part; `rest-f` is a form
+;; a primitive: the well-formed lemma plus a proof of the bundle's rest part; `rest-f` is a form
 ;; over the binder names, premise names h0..hn and R = the rest part of the input world; nil = frame
 ;; by `rfl`; :frame = frame from the primitive's footprint and the part's declared view
 ;; (spindel.v2.pres.frames/frame-term)
@@ -106,7 +106,7 @@
         w (second (second (nth prems i)))
         w2 (second (second concl))
         hi (nth hs i)
-        args (concat (binder-names binders) (assoc hs i (papp B (bsym B "-sample") w hi)))
+        args (concat (binder-names binders) (assoc hs i (papp B (bsym B "-well-formed") w hi)))
         R (papp B (bsym B "-rest-of") w hi)
         rest-term (cond
                     (= rest-f :frame)
@@ -124,10 +124,8 @@
 
 (defn- copy-name [B sym]
   (let [s (name sym) p (:prefix B)]
-    (symbol (cond (str/starts-with? s "inv-") (str p (subs s 4))
-                  (str/ends-with? s "-inv-sample") (str (subs s 0 (- (count s) 11)) "-" (name (:pred B)))
-                  (str/ends-with? s "-inv") (str (subs s 0 (- (count s) 4)) "-" (name (:pred B)))
-                  :else (str s "-" (name (:pred B)))))))
+    (symbol (if (str/includes? s "well-formed") (str/replace-first s "well-formed" (name (:pred B)))
+                  (str s "-" (name (:pred B)))))))
 
 (defn prim! [B orig rest-f]
   (eval-theorem! (apply list (prim-form B orig (copy-name B orig) rest-f)))
@@ -135,7 +133,7 @@
 
 (defn- copy-subst [B x rn]
   (cond
-    (and (seq? x) (= 'inv-sample (first x))) (papp B (:pred B) (copy-subst B (second x) rn))
+    (and (seq? x) (= 'well-formed (first x))) (papp B (:pred B) (copy-subst B (second x) rn))
     (and (seq? x) (symbol? (first x)) (contains? rn (first x)))
     (let [h (first x)
           args (map #(copy-subst B % rn) (rest x))
@@ -157,7 +155,7 @@
            (map #(copy-subst B % rn) proof))))
 
 (defn- statement-mentions-inv? [form]
-  (let [[_ _ binders stmt] form] (boolean (some #{'inv-sample} (flatten (list (seq binders) stmt))))))
+  (let [[_ _ binders stmt] form] (boolean (some #{'well-formed} (flatten (list (seq binders) stmt))))))
 
 ;; a hand-written bundle proof: `$name` is the bundle's lemma <prefix>name applied to the
 ;; bundle's parameters, `(%G w)` the bundle predicate of w

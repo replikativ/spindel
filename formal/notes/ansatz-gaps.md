@@ -186,7 +186,7 @@ goal instead of failing:
 Lean 4.33 (checked with `lean_run_code`): `rw [h]` rewrites `(gapF n).wv` to
 `{ wv := 0, ok := false }.wv` and closes the goal by `rfl`; `kabstract` visits the structure
 argument of `Expr.proj`. With no occurrence Lean fails: "Tactic `rewrite` failed: Did not find
-an occurrence of the pattern". In `spindel.v2.rule` this hid itself in `step-inv`
+an occurrence of the pattern". In `spindel.v2.rule` this hid itself in `step-well-formed`
 (`rw [(step-refuse w it ha)]` on `(:world (world-step w it))` made no change). Workaround:
 `(have e := ...)` then `(simp only [e ...])`, or state the lemma about the projection
 (`step-accepted` is stated as `(:world (world-step w it)) = ...` and `rw` with it works).
@@ -262,7 +262,7 @@ Ansatz 0.2.604:
 Lean 4.33 (checked with `lean_run_code`): `example (n : Nat) (h : n < 0) : 1 = 2 := by simp at h`
 succeeds: `Nat.not_lt_zero` is a simp lemma, `h` becomes `False` and the goal closes. The constant
 `Nat.not_lt_zero` is in the bundled env, so the default simp set does not use it. Workaround used in
-spindel.v2.progress.casc (`casc-empties`, `norm-loop-ok`): `(simp only [List.length] at hp) (omega)`.
+spindel.v2.progress.casc (`cascade-empties`, `normalize-loop-ok`): `(simp only [List.length] at hp) (omega)`.
 
 ## p4 (recipe): name clashes across namespaces surface as "Type mismatch" in a REPL loader
 
@@ -311,8 +311,8 @@ arrow was dropped. Workaround used: rewrite the hypothesis forward (`simp only [
 ## p3 (pitfalls, not filed as gaps)
 
 - An explicit `_` for a World argument that later arguments' types (or the expected result type) determine only up to
-  definitional unfolding is often not inferred: `(awo-rest-comps awc awr w _ (fn [a1 :- ...] (awake-upd ...)) (rfl) R)`
-  and `(esb-scope-reparent _ _ s p1 h1)` fail with "Type mismatch in application"; the same term with the world
+  definitional unfolding is often not inferred: `(comp-awake-owns-run-rest-comps awc awr w _ (fn [a1 :- ...] (awake-upd ...)) (rfl) R)`
+  and `(refs-not-edges-scope-reparent _ _ s p1 h1)` fail with "Type mismatch in application"; the same term with the world
   written out (or the argument first bound by `have`) is accepted. Lean's app elaborator postpones such arguments
   until the expected type is unified; ansatz elaborates them in order. Not reduced to a minimal repro yet.
 - `simp only [nat-fold]` (or any unfolding) closes a reflexive conjunct `x = x` to `True`, so a following `(rfl)` /
@@ -320,7 +320,7 @@ arrow was dropped. Workaround used: rewrite the hypothesis forward (`simp only [
 - `rw [h] at z` where `z` mentions `(:id hd)` and `h` mentions `(edge-id hd)` silently does nothing (tracker #9's
   no-op; the terms are only definitionally equal): use `(Eq.trans (Eq.symm z) h)`.
 - Bundle parameter names must not clash with the binder names of the copied source theorems (`rid` as a bundle
-  parameter shadowed `inv-cancel-acts`'s `rid` and broke every copy that used it); use unusual names (`awc`, `awr`,
+  parameter shadowed `well-formed-cancel-acts`'s `rid` and broke every copy that used it); use unusual names (`awc`, `awr`,
   `kc0`, `kd0`, `mkm`, `nax`).
 - Name clashes across namespaces with the skip-loader: `has-false-all` (inv/acts.clj), `of-at` (inv/copier.clj). A clash check
   over the file's declared names against the pre-namespace env (scratch `clashes`) catches them.
@@ -352,8 +352,8 @@ scratch script cut the theorem and balanced the parentheses.
 
 ## progress (pitfalls, not gaps)
 
-- A bundle copy reserves `<prefix><x>` for every copied `inv-<x>` lemma: a hand-written `mb-ack-raw` (a different statement)
-  clashed with the copy of `inv-ack-raw`; the skip-loader skipped mine and the first use failed with "Type mismatch in
+- A bundle copy reserves `<prefix><x>` for every copied `inv-<x>` lemma: a hand-written `l2-measure-ack-raw` (a different statement)
+  clashed with the copy of `well-formed-ack-raw`; the skip-loader skipped mine and the first use failed with "Type mismatch in
   application". Check new names against `(:copied B)` as well as other namespaces.
 - `simp only [... h ...]` where `h` mentions `run-unwinding r` does not rewrite `run-unwinding (run-enter-row r)`; the goal
   stays open and the following `have` becomes part of the unfinished proof ("Unknown constant: so" later). State the fact on
@@ -410,7 +410,7 @@ followed by the tactics at top level and end the proof there: the error is then 
 ## z52 (pitfalls, not gaps)
 
 - An `_` world argument followed by a hypothesis argument about the world is solved from the FIRST argument that mentions it:
-  `(g1-set-parent _ x p hs2 h1)` with `hs2 : scope-has w p` fixes `_ := w`, and `h1 : g1 (task-upd w ...)` then mismatches;
+  `(i1-scopes-set-parent _ x p hs2 h1)` with `hs2 : scope-has w p` fixes `_ := w`, and `h1 : i1-scopes (task-upd w ...)` then mismatches;
   pass the world explicitly (cf. the p3 pitfall on `_` world arguments).
 - New names clashed again (`sd-fold`, `tsp-ok` existed elsewhere): check against the pre-namespace snapshot.
 - `case` blocks nested three deep (`cases k2` on a 4-way `Or`) failed with "case body did not close its goals" while the same
@@ -421,9 +421,9 @@ followed by the tactics at top level and end the proof there: the error is then 
 - After `(cases hm (b))` a `(simp only [f hm])` that reduces one branch to `x = x` closes that goal (as Lean's simp does
   with `rfl`); a following `(rfl)` then runs on the NEXT goal and reports "rfl: sides are not definitionally equal".
   Drop the `(rfl)` (casc `ri-*`, lit `kw-*`). Same behaviour in Lean, not a gap.
-- `simp only [(rkeys-upd x f hk)]` (a partially applied equation, the list argument still universally quantified) made
-  no progress on `(KW.mk (rkeys (tbl-upd run-id x f rs)) ..)`, while `rw [(rkeys-upd x f hk rs)]` rewrote it (lit
-  `kw-resume`). A minimal attempt (`simp only [(zg-eq 3)]` with the list still quantified, under a structure
+- `simp only [(run-keys-upd x f hk)]` (a partially applied equation, the list argument still universally quantified) made
+  no progress on `(I10TaskView.mk (run-keys (tbl-upd run-id x f rs)) ..)`, while `rw [(run-keys-upd x f hk rs)]` rewrote it (lit
+  `i10-task-view-resume`). A minimal attempt (`simp only [(zg-eq 3)]` with the list still quantified, under a structure
   constructor) works, so the trigger is something else in that goal (a proof argument `hk` before the quantified list,
   or the implicit `RunRow` of `tbl-upd`); not filed, no tracker row until it reproduces.
 - The REPL reload recipe used throughout: one env snapshot per namespace (`@a/ansatz-env` after each `require`), then
@@ -443,17 +443,17 @@ Lean 4.33 (checked with lean_run_code): `cases h.2 with | inl a => exact Or.inr 
 ## rest (pitfalls and observations, no tracker row)
 
 - Java heap exhaustion (-Xmx1g) while elaborating an induction over Rule R's loop whose goal mentioned
-  `(rr-loop (cons x f) (rule-r-round w0))` and a `cases` on `(no-orphans (rule-r-round w0))`: the proof never finished.
-  Stating the lemma over the round's OUTPUT as a variable (`rr-no-orphans` over `w1`, i1o) and rewriting `rr-loop` by
-  small equations (`rr-loop-t`/`rr-loop-f`) avoided it. Not reduced to a minimal repro (suspect: whnf of the `if` in
-  `rr-loop` unfolding `rule-r-round` symbolically).
+  `(rule-r-loop (cons x f) (rule-r-round w0))` and a `cases` on `(no-orphans (rule-r-round w0))`: the proof never finished.
+  Stating the lemma over the round's OUTPUT as a variable (`rule-r-loop-no-orphans` over `w1`, i1o) and rewriting `rule-r-loop` by
+  small equations (`rule-r-loop-t`/`rule-r-loop-f`) avoided it. Not reduced to a minimal repro (suspect: whnf of the `if` in
+  `rule-r-loop` unfolding `rule-r-round` symbolically).
 - Copier (model tooling, not ansatz): a bundle whose `:extra-args` names a lemma that the source passes as a VALUE
-  (`(nat-fold-inv mark-edge mark-edge-inv-sample ...)`) throws "used as a value"; i1r's GR0 reuses GRX lemmas at `[]`
+  (`(well-formed-nat-fold mark-edge well-formed-mark-edge ...)`) throws "used as a value"; i1r's GR0 reuses GRX lemmas at `[]`
   through extra-args and generates wrappers for the value-used ones (`gr0-wrap-form`).
 - `(fn [c :- CompRow] (rfl))` as an argument failed again (tracker #17); `(Eq.refl (comp-id c))` works.
 - `(all_goals ...)` inside a `have` proof reaches the outer goals as well (a `cases` there then fails with "Unknown
   constant"); use `case` blocks.
-- `_` world arguments again had to be written out (`gr0-comp-del-free`, `grk-mk`); new names clashed with existing
+- `_` world arguments again had to be written out (`i1-runs-comp-del-free`, `grk-mk`); new names clashed with existing
   lemmas of the same statement (`scan-mem`, `all-true-of`, `any-upd-mono`, `runs-*-edge`, `runs-demote-epoch`: reused)
   or a different one (`listed-arm`, `has-false-ne`, `nz-mem`: renamed with suffix 5).
 
@@ -465,21 +465,21 @@ Lean 4.33 (checked with lean_run_code): `cases h.2 with | inl a => exact Or.inr 
   `inferType` of the application instantiates the binder with `instantiateBetaRevRange`, so the statement is
   `(nat-fold ..).tasks = w.tasks` and the rewrite succeeds. Workaround: a lemma stated on the projection
   (`tasks-sdel-fold`).
-- An `_` predicate argument solved by unification can come back eta-expanded: `(tbl-all-mono X8K _ _ (x8-mono _ _ hs) _ h)`
-  had type `tbl-all (fun x => x8 sks2 x) xs = true`, and a later `simp only [.. a2 ..]` did not rewrite the goal's
-  `tbl-all (x8 sks2) xs` (the "case body did not close its goals" / unknown-constant symptom of an unfinished `have`).
+- An `_` predicate argument solved by unification can come back eta-expanded: `(tbl-all-mono I8ClosedSourceKey _ _ (i8-closed-source-ok-mono _ _ hs) _ h)`
+  had type `tbl-all (fun x => i8-closed-source-ok sks2 x) xs = true`, and a later `simp only [.. a2 ..]` did not rewrite the goal's
+  `tbl-all (i8-closed-source-ok sks2) xs` (the "case body did not close its goals" / unknown-constant symptom of an unfinished `have`).
   Lean's simp matches up to eta (discrimination trees eta-reduce), so this is likely another gap; not reduced to a minimal
-  repro. Workaround: wrapper lemmas that state the predicate explicitly (`x8-all-mono`, `r8-esc-all`).
+  repro. Workaround: wrapper lemmas that state the predicate explicitly (`i8-closed-source-ok-all-mono`, `i8-closed-run-ok-esc-all`).
 - `(cases (And.right hx))` again (tracker #24): `(have hz := (And.right hx)) (cases hz)`.
 - Not gaps (same in Lean): `rw` closes a goal by `rfl`, so a following `simp` errs with "No goals"; `simp only [..] at h`
   leaves `h : false = true` open (close with `(cases h)`); `have e := (lemma _ x y)` whose `_` occurs only under a
-  projection of the result cannot be synthesized (pass the fuel explicitly: `(fin-fuel X)`).
-- Name clashes again with the skip-free loader: `sok` (progress' slice-ok), `rkeys-keep`, `runs-iec` (identical
-  statements: reused). New key structures prefixed `T8K`/`S8K`/`X8K`.
+  projection of the result cannot be synthesized (pass the fuel explicitly: `(finalize-fuel X)`).
+- Name clashes again with the skip-free loader: `slice-holder-ok` (progress' slice-ok), `run-keys-keep`, `runs-iec` (identical
+  statements: reused). New key structures prefixed `I8ClosedTaskKey`/`I8ClosedScopeKey`/`I8ClosedSourceKey`.
 - Model tooling: a bundle patch that rewrites a call to a lemma with the bundle parameter must name the parameter in
-  the replacement (`(g8-run-upd x8s w x f hid run-wake-rkey h)`), since `copy-subst` only inserts parameters for heads
+  the replacement (`(i8-closed-run-upd x8s w x f hid run-wake-run-key h)`), since `copy-subst` only inserts parameters for heads
   it renames; `override!` dependency lists must name every lemma the override's proof uses that the closure would not
-  otherwise reach (`inv-add-run-scope` for `g8-start-raw`).
+  otherwise reach (`well-formed-add-run-scope` for `i8-closed-start-raw`).
 
 ## z59 (pitfalls, no new gap)
 
@@ -493,15 +493,15 @@ Lean 4.33 (checked with lean_run_code): `cases h.2 with | inl a => exact Or.inr 
 
 ## l5b (pitfalls, no new gap filed)
 
-- `_` world arguments had to be written out again (`gd-rest-same w _ ...` in the edge primitives, `gd-add-run-scope _`
-  in `gd-spawn-rows`): "Type mismatch in application" until the world was explicit.
-- A name clash hidden by the skip-loader: `kw` (lit's world key) vs the watch bundle's predicate; renamed `hkw`.
+- `_` world arguments had to be written out again (`comp-facts-rest-same w _ ...` in the edge primitives, `comp-facts-add-run-scope _`
+  in `comp-facts-spawn-rows`): "Type mismatch in application" until the world was explicit.
+- A name clash hidden by the skip-loader: `i10-task-view` (lit's world key) vs the watch bundle's predicate; renamed `dispatch-epoch-kept`.
 - `simp only [gdk Bool.and_eq_true]` evaluated the conjunct `Nat.blt 0 (n + 1 + 1)` to `True`, so a following
   `And.intro (And.left p) ..` mismatched; simp with the fact itself instead (`simp only [gdk (And.left p) Bool.true_and]`).
 - Not in the bundled Init (not checked against Lean): `Nat.lt_of_blt_eq_true`, `Nat.ble_refl`, `Nat.beq_eq_true_of_eq`
-  (local helpers `gd-lt-of`, `gd-ble-refl`, `simp only [Nat.beq_eq]`).
+  (local helpers `comp-facts-lt-of`, `comp-facts-ble-refl`, `simp only [Nat.beq_eq]`).
 - Copier: an `override!` form is only checked inside `lcopy!`, and a hand-written theorem that uses a COPIED lemma
-  (`gd-df` uses `gd-demand-reactive`) must follow an `lcopy!` of that lemma's closure in the file; a REPL session that
+  (`comp-facts-df` uses `comp-facts-demand-reactive`) must follow an `lcopy!` of that lemma's closure in the file; a REPL session that
   ran `lcopy-try!` first hides this (fresh-load before committing).
 - Recipe (with #16/#21): bisect a failing proof by evaluating its tactic prefixes as fresh theorems and reporting the
   first prefix whose error is not "Proof incomplete" (`bisect!`, scratch); nested `case` blocks count as one step, so
@@ -509,14 +509,14 @@ Lean 4.33 (checked with lean_run_code): `cases h.2 with | inl a => exact Or.inr 
 
 ## hm (pitfalls; one observation without a minimal repro)
 
-- A theorem that FAILED to elaborate under a name (here a copier attempt of `hmk-fire-wait-act`) made a later, correct proof
+- A theorem that FAILED to elaborate under a name (here a copier attempt of `marks-waiting-fire-wait-act`) made a later, correct proof
   under the SAME name fail with "Type mismatch in application", while the identical form under a fresh name proved
   (`hmk-fire-wait-act-x`). A trivial repro (fail then succeed under one name, `(exact (Nat.add_zero ..))`) does not
   reproduce, so the trigger is something the failed proof created (suspect: `cases` on an Option/`match` auxiliaries keyed by
   the theorem name). Not filed. Recipe: test overrides under fresh names (`ov-bisect!`, scratch), then reset the env to the
   pre-namespace snapshot and reload before trusting a failure list.
 - The skip-loader (`ld!`, skips declared names) silently keeps a theorem's OLD statement when the statement is edited: a
-  premise change of `hmk-remove-edge` surfaced only as "Type mismatch in application" at its users. Reset after any
+  premise change of `marks-waiting-remove-edge` surfaced only as "Type mismatch in application" at its users. Reset after any
   statement change.
 - `Exists.intro w proof` failed with "Type mismatch in application" where the expected type is `(fun r => ..) w` (beta,
   tracker #22 family); restated with Bool `tbl-any` + `any-elim`/`any-elim-of` instead (`hk-cone-edge`).
@@ -543,30 +543,30 @@ succeeds (α and p are implicit and unified with the goal). Workaround used in s
 
 ## i14 (pitfalls, no new tracker row)
 
-- Bundle parameter names clashed again with source binder names (`xs` of `nat-fold-inv` against a bundle
+- Bundle parameter names clashed again with source binder names (`xs` of `well-formed-nat-fold` against a bundle
   parameter `xs`: "Type mismatch in application" in the copy); the bundles use `zq9 zw9 zs9` / `zd9 zr9`.
-- An extra-args hypothesis inserted BEFORE the inv-sample premise cannot be checked when the call site
-  passes `_` for the world and the edge (`(inv-insert-edge-checked _ _ h)`: `(Eq.refl true)` is checked against
-  `dnaq14 .. ?w ?e` before `h` fixes them); putting the extra hypothesis LAST (position after `h`) fixes it.
+- An extra-args hypothesis inserted BEFORE the well-formed premise cannot be checked when the call site
+  passes `_` for the world and the edge (`(well-formed-insert-edge-checked _ _ h)`: `(Eq.refl true)` is checked against
+  `i14-idle-dep-queued .. ?w ?e` before `h` fixes them); putting the extra hypothesis LAST (position after `h`) fixes it.
 - `(cases hf (comp-find w p))` also rewrites `comp-find w p` in an `Exists` goal (Lean's `cases h : e`): the
   witness equation is then `(Eq.refl (Option.some T c))`, not `hf`.
-- `rfl` did not close `dnaq14 xq cs (EdgeRow.mk 0 ek-wait ..) = true` after `simp only [await-edge hd]`, while
-  `(simp [dnaq14 await-edge hd ek-wait ek-dep])` did; not reduced to a minimal repro.
+- `rfl` did not close `i14-idle-dep-queued xq cs (EdgeRow.mk 0 ek-wait ..) = true` after `simp only [await-edge hd]`, while
+  `(simp [i14-idle-dep-queued await-edge hd ek-wait ek-dep])` did; not reduced to a minimal repro.
 - `rw [ly]` closed the goal by rfl and a following `(rfl)` failed on the next goal (as noted in z55/z57).
 - Debug recipe (with #16/#21): flatten a failing `case` block along a path of tactic indices and print the
   goal of a prefix (`goal-at`, scratch boot.clj), or bisect inside it (`bisect-in!`).
 
 ## hm2 (pitfalls; one candidate gap to confirm against Lean)
 
-- `simp only [..] at h` that turns `h` into `false = true` (e.g. `(simp only [gd-ncur gdkey o2 hc3 hal Bool.and_self
-  Bool.not_true] at nq)`) leaves the goal open with `nq : false = true`; a following `(cases nq)` closes it. Lean 4.33.1's
+- `simp only [..] at h` that turns `h` into `false = true` (e.g. `(simp only [comp-facts-ncur gdkey o2 hc3 hal Bool.and_self
+  Bool.not_true] at i10-current-transport)`) leaves the goal open with `i10-current-transport : false = true`; a following `(cases i10-current-transport)` closes it. Lean 4.33.1's
   `simp only` runs the default simprocs (`reduceCtorEq`), which rewrite `false = true` to `False` and close the goal. Not
   filed yet (no minimal repro run against Lean in this branch); workaround `(cases h)` after the simp. Same for
   `(simp only [run-current-of hq] at rc)`.
 - `Bool.and_eq_false_iff`, `Bool.not_eq_false'` are not in the bundled Init (tracker #10 family); case splits on the conjuncts
   instead, and `bnot-false` (edits) for `(!b) = false`.
 - "Type mismatch in application" again where several `_` stand for worlds/lists that only unification of a lambda argument
-  could determine (`(hmk-intro (List.append ..) _ (hmk-sample _ _ h1) ...)`, `(all-of-mem EdgeRow _ _ (fn ...))`, `hmk-dis`
+  could determine (`(marks-waiting-intro (List.append ..) _ (marks-waiting-well-formed _ _ h1) ...)`, `(all-of-mem EdgeRow _ _ (fn ...))`, `marks-waiting-dis`
   with a `fn` returning `Or.inr (Or.inr ..)`): spelling the worlds out, or `apply` + `intros` instead of a `fn` argument,
   fixed every instance (l5b pitfall).
 - After `(cases hf (comp-find w x))`, hypotheses that mention `comp-find w x` (here inside an `Option.rec` from a `match`) are
@@ -579,31 +579,31 @@ succeeds (α and p are implicit and unified with the goal). Workaround used in s
 ## hm3 (pitfalls, no new gap filed)
 
 - "Type mismatch in application" again when a lemma with several universally quantified hypotheses got them as inline
-  `fn` arguments (`h3r-comp-upd`); stating each as a `have` first and passing the names proved it (l5b/hm2 family).
+  `fn` arguments (`current-members-rest-comp-upd`); stating each as a `have` first and passing the names proved it (l5b/hm2 family).
 - The skip-loader (forms whose names are declared are skipped) leaves no Clojure var for an `a/defn` of a removed
   namespace; the next `a/defn` whose body calls it fails to compile ("No such var"). Recipe: intern stub vars for the
   declared defns before loading later forms (REPL only), or rebuild the env.
 - Rebuilding the env in the same JVM: `(reset! ansatz.core/ansatz-env nil)` then `(a/load-init!)` gives a fresh Init env
   (`load-init!` on an existing env with the same manifest keeps it), then `(require 'spindel.v2.inv.marks-step :reload-all)`
   (about 4 minutes) and a snapshot before the new namespace; this avoids giving up a JVM slot.
-- `rw [e1 e2]` where `e2`'s left side is a projection of a structure built by a function (`(:of (rk3 r))`) failed after
+- `rw [e1 e2]` where `e2`'s left side is a projection of a structure built by a function (`(:of (current-members-run-key r))`) failed after
   `e1` had exposed the reduced projection `(:of r)` ("Did not find an occurrence"); `(exact (Eq.trans e1 e2))` works.
 - An `induction` after `intros` of hypotheses that mention the induction variable did generalize them in a minimal test;
-  the failing `h3-cur-inc` was a simp-at-a-hypothesis issue, so no gap (checked before filing).
+  the failing `current-members-cur-inc` was a simp-at-a-hypothesis issue, so no gap (checked before filing).
 
 ## hm4 (pitfalls, no new gap filed)
 
-- `tbl-all-mono` with `_ _` for the predicates infers the target as an eta-expanded lambda (`(fun c => ar-c (f r) c)`), which a
-  later `simp only [.. t ..]` cannot use as a rewrite of `(tbl-all (ar-c (f r)) cs)`: state the `have` with its type
-  (`(have t (= (tbl-all (ar-c (f r)) cs) true)) (exact (tbl-all-mono ..))`).
-- Inline `fn` arguments again gave "Type mismatch in application" (`h3-edge-upd-m` with a `fn` for the armed side condition,
-  `h3-freeb-frame` with a `fn` for currency): a named `have` fixed both (hm3 family).
-- `(simp only [rk3] at l)` fails with "no progress" when an earlier `simp at` already reduced the projections of `(rk3 r)`;
-  `(try (simp only [rk3] at l))` keeps the proof robust.
+- `tbl-all-mono` with `_ _` for the predicates infers the target as an eta-expanded lambda (`(fun c => alive-run-latest-c (f r) c)`), which a
+  later `simp only [.. t ..]` cannot use as a rewrite of `(tbl-all (alive-run-latest-c (f r)) cs)`: state the `have` with its type
+  (`(have t (= (tbl-all (alive-run-latest-c (f r)) cs) true)) (exact (tbl-all-mono ..))`).
+- Inline `fn` arguments again gave "Type mismatch in application" (`current-members-edge-upd-m` with a `fn` for the armed side condition,
+  `current-members-freeb-frame` with a `fn` for currency): a named `have` fixed both (hm3 family).
+- `(simp only [current-members-run-key] at l)` fails with "no progress" when an earlier `simp at` already reduced the projections of `(current-members-run-key r)`;
+  `(try (simp only [current-members-run-key] at l))` keeps the proof robust.
 - Debugging recipe: `ansatz.tactic.repl/goal-at` with the a/theorem's params, statement and a FLAT tactic list (no `case`
   blocks: after `(cases h e)` use `(rename_i x)` on the goal that introduced a variable) prints the goal state; the
   `case body did not close its goals` error itself names no goal.
-- The env is append-only: a lemma whose statement changes must get a new name in the REPL (`ar-run-upd` -> `ar-run-upd-a`).
+- The env is append-only: a lemma whose statement changes must get a new name in the REPL (`ar-run-upd` -> `alive-run-latest-run-upd-a`).
 
 ## hm5: `rw [f]` with a definition name fails (tracker #27); pitfalls
 
@@ -611,23 +611,23 @@ succeeds (α and p are implicit and unified with the goal). Workaround used in s
   `(a/defn chk [b :- Bool, n :- Nat] Nat (if b (+ n 1) n))`, `(a/theorem rp2 [n :- Nat] (= (chk true n) (+ n 1)) (rw [chk]))`
   -> "rewrite: lemma is not (∀ …, _ = _ / _ ↔ _)". Lean 4 v4.33.1: `example : chk true n = n + 1 := by rw [chk]; simp`
   is accepted (`rw` unfolds by the equation lemma). Workaround: `simp only [f]`.
-- Pitfall (no gap): `(rw [e]) (rfl)` failed with "sides are not definitionally equal" on `(= (rk3 r) (rk3 (run-arm z r)))`
+- Pitfall (no gap): `(rw [e]) (rfl)` failed with "sides are not definitionally equal" on `(= (current-members-run-key r) (current-members-run-key (run-arm z r)))`
   inside a long proof, while the minimal repro (`rk r = rk (arm z r)` by `rfl`) is accepted by ansatz as by Lean; the
-  in-proof goal after `rw` was likely not the one expected. `(simp only [rk3 run-arm])` closes it.
-- `simp only [h3-fa h3-fr]` does not unfold `h3-fr` when it occurs partially applied under `tbl-all` (the predicate
-  argument); prove the pointwise equation (`(simp only [h3-fr]) (rw [e])` per row) and use `tbl-all-congr`.
-- A `have` stated over `(:runs W)` where `W` is a projection-heavy composite: `simp only [h3-rest]` already reduces
+  in-proof goal after `rw` was likely not the one expected. `(simp only [current-members-run-key run-arm])` closes it.
+- `simp only [current-members-fa current-members-fr]` does not unfold `current-members-fr` when it occurs partially applied under `tbl-all` (the predicate
+  argument); prove the pointwise equation (`(simp only [current-members-fr]) (rw [e])` per row) and use `tbl-all-congr`.
+- A `have` stated over `(:runs W)` where `W` is a projection-heavy composite: `simp only [current-members-rest]` already reduces
   `(:acts (set-acts w ...))`, so a following `rw [e2]` on the projection fails; state the target equation explicitly
   (`e3 : tbl-all P (tbl-ins a as) = Bool.and (P a) (tbl-all P as)` by `rfl`) and `rw` with it.
 - `tbl-all-upd` with `_` for P/Q and an inline-typed `hin` gave "Type mismatch in application" (higher-order
-  unification); name the predicate with an `a/defn` (`h3-ridk`) and pass it explicitly (hm3/hm4 family).
-- Passing a bundle lemma as a function argument needs its leading bundle parameter applied: `(h3-drop-act-nc xm)`.
+  unification); name the predicate with an `a/defn` (`current-members-ridk`) and pass it explicitly (hm3/hm4 family).
+- Passing a bundle lemma as a function argument needs its leading bundle parameter applied: `(current-members-drop-act-nc xm)`.
 - After `(cases hxx (reach-mem y xm))` the goal holds `false` in place of the term; in the `false` branch a fact about
   `reach-mem x xm` must be split (`cases`) rather than matched against the goal.
 - Paren counts in hand-edited nested `case` blocks: an extra `)` silently ends the theorem early and the rest is read as
   junk forms, surfacing only as "case body did not close its goals". A flattening goal probe (`case` -> `case'`) misaligns
   goals; probe by stating the sub-step as its own lemma instead.
-- REPL vs file: `lcopy-try!` in the REPL registers copies (`hm3-take-now`, `hm3-arm-raw`, ...) that a file load lacks;
+- REPL vs file: `lcopy-try!` in the REPL registers copies (`current-members-take-now`, `current-members-arm-raw`, ...) that a file load lacks;
   add the `lcopy!` calls to the file and check the namespace standalone (`clojure -M:test -n <ns>-test`).
 
 ## mvcc (2026-11-15, ansatz 0.2.634): tactic gaps met while proving spindel.v2.layer2.mvcc

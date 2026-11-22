@@ -4,8 +4,8 @@
             [spindel.v2.completion.stable]))
 
 (def theorems
-  '[th-find-upd gst-task-upd gst-task-tcr gst-task-tcl gst-rest-scope-ins gst-rest-task-ins gst-rest-filter
-    gst-complete-body gst-complete-raw t12-gst raw-gst gst-normalize gst-rule-r step-gst
+  '[th-find-upd task-unheld-scope-absent-task-upd task-unheld-scope-absent-task-tcr task-unheld-scope-absent-task-tcl task-unheld-scope-absent-rest-scope-ins task-unheld-scope-absent-rest-task-ins task-unheld-scope-absent-rest-filter
+    task-unheld-scope-absent-complete-body task-unheld-scope-absent-complete-raw task-unheld-scope-absent-t12-complete task-unheld-scope-absent-raw task-unheld-scope-absent-normalize task-unheld-scope-absent-rule-r step-task-unheld-scope-absent
     task-complete-stable scope-complete-stable])
 
 (deftest theorems-kernel-checked

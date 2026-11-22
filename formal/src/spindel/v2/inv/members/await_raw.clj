@@ -41,51 +41,51 @@
 ;; Exactly five reviewed THMs; no new kernel helpers/DEFs or copier requests.
 
 (a/theorem
- h13-raw0g-support
+ current-members-host-guarded-transition-support
  [w :- World it :- Item]
  (=>
-  (= (p3la w) true)
+  (= (chain-to-edge-kinds w) true)
   (And
-   (= (hmk (List.nil Nat) (:world (raw0g w it))) true)
+   (= (marks-waiting (List.nil Nat) (:world (host-guarded-transition w it))) true)
    (And
-    (= (g10 (List.nil Nat) (List.nil Nat) (:world (raw0g w it))) true)
-    (= (ekb (:world (raw0g w it))) true))))
+    (= (i10-current-exempt (List.nil Nat) (List.nil Nat) (:world (host-guarded-transition w it))) true)
+    (= (edge-kinds (:world (host-guarded-transition w it))) true))))
  (intro hp)
  (have
   hk
   :=
-  (raw0g-hmk
+  (marks-waiting-host-guarded-transition
    (List.nil Nat)
    w
    it
-   (p3la-gd w hp)
-   (p3la-g7 w hp)
-   (p3la-ga w hp)
-   (p3la-g10r w hp)
-   (p3la-hmk w hp)))
- (have hg := (raw0g-g10r w it (p3la-g10r w hp)))
- (simp only [g10r] at hg)
- (have he := (raw0g-ekb w it (p3la-ekb w hp)))
+   (chain-to-edge-kinds-comp-facts w hp)
+   (chain-to-edge-kinds-i7-idle w hp)
+   (chain-to-edge-kinds-acts-parked w hp)
+   (chain-to-edge-kinds-i10-current w hp)
+   (chain-to-edge-kinds-marks-waiting w hp)))
+ (have hg := (i10-current-host-guarded-transition w it (chain-to-edge-kinds-i10-current w hp)))
+ (simp only [i10-current] at hg)
+ (have he := (edge-kinds-host-guarded-transition w it (chain-to-edge-kinds-edge-kinds w hp)))
  (exact (And.intro hk (And.intro hg he))))
 
 
 (a/theorem
- h13-post-h3
+ current-members-then-cancel-losers
  [xm :- (List Nat) w :- World o :- Outcome]
  (=>
-  (= (hmk (List.nil Nat) (:world o)) true)
-  (= (g10 (List.nil Nat) (List.nil Nat) (:world o)) true)
-  (= (ekb (:world o)) true)
-  (= (h3 xm (:world o)) true)
-  (= (h3 xm (:world (post w o))) true))
+  (= (marks-waiting (List.nil Nat) (:world o)) true)
+  (= (i10-current-exempt (List.nil Nat) (List.nil Nat) (:world o)) true)
+  (= (edge-kinds (:world o)) true)
+  (= (current-members xm (:world o)) true)
+  (= (current-members xm (:world (then-cancel-losers w o))) true))
  (intros hk hg he h)
  (cases ha (:accepted o))
- (case [false] (simp only [post ha]) (exact h))
+ (case [false] (simp only [then-cancel-losers ha]) (exact h))
  (case
   [true]
-  (simp only [post ha accept])
+  (simp only [then-cancel-losers ha accept])
   (exact
-   (h3-cancel-losers
+   (current-members-cancel-losers
     xm
     (List.nil Nat)
     (List.nil Nat)
@@ -99,7 +99,7 @@
 
 
 (a/theorem
- h13-raw0g-await-outcome
+ current-members-host-guarded-transition-await-outcome
  [xm
   :-
   (List Nat)
@@ -125,17 +125,17 @@
   :-
   (List Nat)]
  (=>
-  (= (p3la w) true)
-  (= (h3 xm w) true)
+  (= (chain-to-edge-kinds w) true)
+  (= (current-members xm w) true)
   (And
    (=
-    (h3 xm (:world (raw0g w (Item.await st ds mode k fresh mine))))
+    (current-members xm (:world (host-guarded-transition w (Item.await st ds mode k fresh mine))))
     true)
    (=>
     (=
-     (:accepted (raw0g w (Item.await st ds mode k fresh mine)))
+     (:accepted (host-guarded-transition w (Item.await st ds mode k fresh mine)))
      false)
-    (= (:world (raw0g w (Item.await st ds mode k fresh mine))) w))))
+    (= (:world (host-guarded-transition w (Item.await st ds mode k fresh mine))) w))))
  (intros hp h)
  (have
   non-host
@@ -144,17 +144,17 @@
  (have
   same
   :=
-  (raw0g-of w (Item.await st ds mode k fresh mine) non-host))
+  (host-guarded-transition-non-host w (Item.await st ds mode k fresh mine) non-host))
  (apply And.intro)
  (rw [same])
  (exact
   (And.left
-   (h12-raw0-await-outcome xm w st ds mode k fresh mine hp h)))
- (exact (raw0g-refuse w (Item.await st ds mode k fresh mine))))
+   (current-members-transition-await-outcome xm w st ds mode k fresh mine hp h)))
+ (exact (host-guarded-transition-refuse w (Item.await st ds mode k fresh mine))))
 
 
 (a/theorem
- h13-raw-await-accepted
+ current-members-raw-await-accepted
  [w
   :-
   World
@@ -179,15 +179,15 @@
  (And
   (=
    (:accepted (raw w (Item.await st ds mode k fresh mine)))
-   (:accepted (raw0 w (Item.await st ds mode k fresh mine))))
+   (:accepted (transition w (Item.await st ds mode k fresh mine))))
   (=>
-   (= (:accepted (raw0 w (Item.await st ds mode k fresh mine))) true)
+   (= (:accepted (transition w (Item.await st ds mode k fresh mine))) true)
    (=
     (raw w (Item.await st ds mode k fresh mine))
     (accept
      (cancel-losers
       w
-      (:world (raw0 w (Item.await st ds mode k fresh mine))))))))
+      (:world (transition w (Item.await st ds mode k fresh mine))))))))
  (have
   non-host
   (= (host-item (Item.await st ds mode k fresh mine)) false))
@@ -195,17 +195,17 @@
  (have
   same
   :=
-  (raw0g-of w (Item.await st ds mode k fresh mine) non-host))
+  (host-guarded-transition-non-host w (Item.await st ds mode k fresh mine) non-host))
  (apply And.intro)
- (cases ha (:accepted (raw0 w (Item.await st ds mode k fresh mine))))
- (case [false] (simp only [raw same post ha]))
- (case [true] (simp only [raw same post ha accept]))
+ (cases ha (:accepted (transition w (Item.await st ds mode k fresh mine))))
+ (case [false] (simp only [raw same then-cancel-losers ha]))
+ (case [true] (simp only [raw same then-cancel-losers ha accept]))
  (intro accepted)
- (simp only [raw same post accepted]))
+ (simp only [raw same then-cancel-losers accepted]))
 
 
 (a/theorem
- h13-raw-await-outcome
+ current-members-raw-await-outcome
  [xm
   :-
   (List Nat)
@@ -231,11 +231,11 @@
   :-
   (List Nat)]
  (=>
-  (= (p3la w) true)
-  (= (h3 xm w) true)
+  (= (chain-to-edge-kinds w) true)
+  (= (current-members xm w) true)
   (And
    (=
-    (h3 xm (:world (raw w (Item.await st ds mode k fresh mine))))
+    (current-members xm (:world (raw w (Item.await st ds mode k fresh mine))))
     true)
    (=>
     (= (:accepted (raw w (Item.await st ds mode k fresh mine))) false)
@@ -244,19 +244,19 @@
  (have
   support
   :=
-  (h13-raw0g-support w (Item.await st ds mode k fresh mine) hp))
+  (current-members-host-guarded-transition-support w (Item.await st ds mode k fresh mine) hp))
  (have
   before
   :=
   (And.left
-   (h13-raw0g-await-outcome xm w st ds mode k fresh mine hp h)))
+   (current-members-host-guarded-transition-await-outcome xm w st ds mode k fresh mine hp h)))
  (apply And.intro)
  (simp only [raw])
  (exact
-  (h13-post-h3
+  (current-members-then-cancel-losers
    xm
    w
-   (raw0g w (Item.await st ds mode k fresh mine))
+   (host-guarded-transition w (Item.await st ds mode k fresh mine))
    (And.left support)
    (And.left (And.right support))
    (And.right (And.right support))

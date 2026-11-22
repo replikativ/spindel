@@ -15,10 +15,10 @@
   two phases (finalizers, then resources); both components are monotone, so the sum and the product
   order decrease as well.
 
-  Theorems (all under the safety bundle `p3b` of spindel.v2.inv.base and `sok`, which is proved
+  Theorems (all under the safety bundle `chain-start` of spindel.v2.inv.base and `slice-holder-ok`, which is proved
   invariant here):
-    sok                   every run that holds the slice is alive or unwinding (a completed run holds
-                          no slice); `step-sok`, `sok-empty`
+    slice-holder-ok                   every run that holds the slice is alive or unwinding (a completed run holds
+                          no slice); `step-slice-holder-ok`, `slice-holder-ok-empty`
     step-mu-le      (b)   a run that is done in w is, after any step, absent or done with mu-f and
                           mu-z each at most its value in w (no transition increases the measure of an
                           existing cancelled run; runs that become done in the step are new to the
@@ -54,7 +54,7 @@
   current run, transitively; generic `Reach`) an entity that is Blocked (`Derive`, the least
   fixpoint of §4.5.6), or a non-idle, needs-run, eligible computation (T11 is enabled), or a task
   whose current run is parked and that is not Blocked. Proof: induction on rank (I12, `ranks-ok`
-  in p3b) over the waiting computations of the cone; a minimal one is eligible if it needs a run
+  in chain-start) over the waiting computations of the cone; a minimal one is eligible if it needs a run
   (its dirty dep debtors have smaller ranks), has no marked in-edge if done-epoch = epoch, and
   otherwise its current run is parked and every member is a leaf, a parked task or a smaller
   waiting computation, so it is Blocked unless a task is not. Three state facts are hypotheses
@@ -62,7 +62,7 @@
   `h-cur` (a done current run has set done-epoch), `h-mark` (a marked edge is a dep edge on a
   waiting computation), `h-mem` (an unfilled member of a parked computation run is a leaf, a task
   with a parked current run, or a waiting computation it has a dep edge on). They are discharged
-  on every p3m world: h-cur from g10r (spindel.v2.progress.l5 `l5-h-cur`), h-mark (spindel.v2.inv.marks-step), and
+  on every chain world: h-cur from i10-current (spindel.v2.progress.l5 `l5-h-cur`), h-mark (spindel.v2.inv.marks-step), and
   h-mem at a quiescent point from the step invariant h-mem2 (spindel.v2.inv.members.step); the result is
   `l5-safety-total` (spindel.v2.inv.members.step).
   Paper argument for the third disjunct: a parked, non-Blocked task has a member that is neither a
@@ -71,14 +71,14 @@
   revisits an entity: a cyclic wait, i.e. a user deadlock (X#8). The liveness half (a fair
   scheduler eventually starts every eligible computation) stays a paper argument (A#8).
 
-  How: the bundle `mb mux mf mz mg w` = inv-sample w, mux < next-id, and every run row satisfies
+  How: the bundle `l2-measure mux mf mz mg w` = well-formed w, mux < next-id, and every run row satisfies
   `slice-ok` and the tracking constraint `mu-at` on the rows with id mux (mode mg: 0 = such rows are
   done with mu-f <= mf and mu-z <= mz, 1 = there is no such row, otherwise off). Every composite
-  inv-sample lemma of `raw-inv` and `inv-normalize` is restated for the bundle by the generic step tree
-  (spindel.v2.pres.tree); run edits by a row function that cannot raise the measure go through `mb-run-upd`
+  well-formed lemma of `well-formed-raw` and `well-formed-normalize` is restated for the bundle by the generic step tree
+  (spindel.v2.pres.tree); run edits by a row function that cannot raise the measure go through `l2-measure-run-upd`
   (with a per-function lemma `<f>-mb`), the ones that can (arm, finally-enter, park, take-park,
-  schedule, finalize) only touch an alive run, or a cleanup-ready one (`mb-run-upd-ne`,
-  `mb-run-upd-q`); their callers are overridden."
+  schedule, finalize) only touch an alive run, or a cleanup-ready one (`l2-measure-run-upd-ne`,
+  `l2-measure-run-upd-q`); their callers are overridden."
   (:require [ansatz.core :as a]
             [spindel.v2.pres.frames :as frames]
             [clojure.string :as str]
@@ -124,35 +124,35 @@
    (Bool.or (Nat.blt 1 mg)
     (Bool.and (Nat.beq mg 0)
      (Bool.and (run-done r) (Bool.and (Nat.ble (mu-f r) mf) (Nat.ble (mu-z r) mz)))))))
-(a/defn mb-row [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, r :- RunRow] Bool
+(a/defn l2-measure-row [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, r :- RunRow] Bool
   (Bool.and (slice-ok r) (mu-at mux mf mz mg r)))
-(a/defn mb-rest [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World] Bool
-  (Bool.and (Nat.blt mux (:next-id w)) (tbl-all (mb-row mux mf mz mg) (:runs w))))
-(a/defn mb [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World] Bool
-  (Bool.and (inv-sample w) (mb-rest mux mf mz mg w)))
+(a/defn l2-measure-rest [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World] Bool
+  (Bool.and (Nat.blt mux (:next-id w)) (tbl-all (l2-measure-row mux mf mz mg) (:runs w))))
+(a/defn l2-measure [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World] Bool
+  (Bool.and (well-formed w) (l2-measure-rest mux mf mz mg w)))
 ;; the untracked bundle: slice-ok for every run
-(a/defn sok [w :- World] Bool (mb 0 0 0 2 w))
+(a/defn slice-holder-ok [w :- World] Bool (l2-measure 0 0 0 2 w))
 
-(a/theorem mb-sample [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World]
-  (=> (= (mb mux mf mz mg w) true) (= (inv-sample w) true))
-  (intro h) (simp only [mb Bool.and_eq_true] at h) (exact (And.left h)))
-(a/theorem mb-rest-of [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World]
-  (=> (= (mb mux mf mz mg w) true) (= (mb-rest mux mf mz mg w) true))
-  (intro h) (simp only [mb Bool.and_eq_true] at h) (exact (And.right h)))
-(a/theorem mb-intro [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World]
-  (=> (= (inv-sample w) true) (= (mb-rest mux mf mz mg w) true) (= (mb mux mf mz mg w) true))
-  (intros h1 h2) (simp only [mb h1 h2 Bool.and_self]))
-(a/theorem mb-parts [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World]
-  (=> (= (mb mux mf mz mg w) true)
+(a/theorem l2-measure-well-formed [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World]
+  (=> (= (l2-measure mux mf mz mg w) true) (= (well-formed w) true))
+  (intro h) (simp only [l2-measure Bool.and_eq_true] at h) (exact (And.left h)))
+(a/theorem l2-measure-rest-of [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World]
+  (=> (= (l2-measure mux mf mz mg w) true) (= (l2-measure-rest mux mf mz mg w) true))
+  (intro h) (simp only [l2-measure Bool.and_eq_true] at h) (exact (And.right h)))
+(a/theorem l2-measure-intro [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World]
+  (=> (= (well-formed w) true) (= (l2-measure-rest mux mf mz mg w) true) (= (l2-measure mux mf mz mg w) true))
+  (intros h1 h2) (simp only [l2-measure h1 h2 Bool.and_self]))
+(a/theorem l2-measure-parts [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World]
+  (=> (= (l2-measure mux mf mz mg w) true)
       (And (= (pending-exact w) true) (And (= (edges-ref-ok w) true) (= (ids-ok w) true))))
-  (intro h) (exact (inv-parts w (mb-sample mux mf mz mg w h))))
-(a/theorem mb-rest-parts [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World]
-  (=> (= (mb-rest mux mf mz mg w) true)
-      (And (< mux (:next-id w)) (= (tbl-all (mb-row mux mf mz mg) (:runs w)) true)))
-  (intro h) (simp only [mb-rest Bool.and_eq_true Nat.blt_eq] at h) (exact h))
-(a/theorem mb-rest-mk [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World]
-  (=> (< mux (:next-id w)) (= (tbl-all (mb-row mux mf mz mg) (:runs w)) true) (= (mb-rest mux mf mz mg w) true))
-  (intros h1 h2) (simp only [mb-rest Bool.and_eq_true Nat.blt_eq]) (exact (And.intro h1 h2)))
+  (intro h) (exact (well-formed-parts w (l2-measure-well-formed mux mf mz mg w h))))
+(a/theorem l2-measure-rest-parts [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World]
+  (=> (= (l2-measure-rest mux mf mz mg w) true)
+      (And (< mux (:next-id w)) (= (tbl-all (l2-measure-row mux mf mz mg) (:runs w)) true)))
+  (intro h) (simp only [l2-measure-rest Bool.and_eq_true Nat.blt_eq] at h) (exact h))
+(a/theorem l2-measure-rest-mk [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World]
+  (=> (< mux (:next-id w)) (= (tbl-all (l2-measure-row mux mf mz mg) (:runs w)) true) (= (l2-measure-rest mux mf mz mg w) true))
+  (intros h1 h2) (simp only [l2-measure-rest Bool.and_eq_true Nat.blt_eq]) (exact (And.intro h1 h2)))
 
 ;; ===========================================================================
 ;; Part B. Rows: which run-row functions keep the bundle's row predicate
@@ -182,13 +182,13 @@
                  (And.intro (Nat.le_trans hf (And.left (And.right (And.right h))))
                             (Nat.le_trans hz (And.right (And.right (And.right h)))))))))))
 
-(a/theorem mb-row-mono [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, r :- RunRow, r2 :- RunRow]
+(a/theorem l2-measure-row-mono [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, r :- RunRow, r2 :- RunRow]
   (=> (= (:id r2) (:id r)) (=> (= (slice-ok r) true) (= (slice-ok r2) true))
       (=> (= (run-done r) true) (= (run-done r2) true)) (<= (mu-f r2) (mu-f r)) (<= (mu-z r2) (mu-z r))
-      (= (mb-row mux mf mz mg r) true) (= (mb-row mux mf mz mg r2) true))
+      (= (l2-measure-row mux mf mz mg r) true) (= (l2-measure-row mux mf mz mg r2) true))
   (intros hi hs hd hf hz h)
-  (simp only [mb-row Bool.and_eq_true] at h)
-  (simp only [mb-row Bool.and_eq_true])
+  (simp only [l2-measure-row Bool.and_eq_true] at h)
+  (simp only [l2-measure-row Bool.and_eq_true])
   (exact (And.intro (hs (And.left h)) (mu-at-mono mux mf mz mg r r2 hi hd hf hz (And.right h)))))
 
 ;; x is untracked: the mode is off, or x is not the tracked id
@@ -204,8 +204,8 @@
     (simp only [mu-at h Bool.true_or])))
 
 ;; an alive row is untracked
-(a/theorem mb-row-alive-un [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, r :- RunRow]
-  (=> (= (mb-row mux mf mz mg r) true) (= (run-done r) false) (= (untracked mux mg (:id r)) true))
+(a/theorem l2-measure-row-alive-un [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, r :- RunRow]
+  (=> (= (l2-measure-row mux mf mz mg r) true) (= (run-done r) false) (= (untracked mux mg (:id r)) true))
   (intros h hd)
   (cases hx (Nat.beq (:id r) mux))
   (case [false] (simp only [untracked hx Bool.not_false Bool.or_true]))
@@ -213,7 +213,7 @@
     (cases hb (Nat.blt 1 mg))
     (case [true] (simp only [untracked hb Bool.true_or]))
     (case [false]
-      (simp [mb-row mu-at hx hb hd] at h))))
+      (simp [l2-measure-row mu-at hx hb hd] at h))))
 
 ;; ---- the measure under row functions
 
@@ -269,45 +269,45 @@
 
 (a/theorem done-of-eq [r :- RunRow, r2 :- RunRow] (=> (= (run-done r2) (run-done r)) (= (run-done r) true) (= (run-done r2) true))
   (intros e h) (exact (Eq.trans e h)))
-(a/theorem sok-of-eq [r :- RunRow, r2 :- RunRow]
+(a/theorem slice-holder-ok-of-eq [r :- RunRow, r2 :- RunRow]
   (=> (= (:slice r2) (:slice r)) (= (run-done r2) (run-done r)) (= (run-unwinding r2) (run-unwinding r))
       (= (slice-ok r) true) (= (slice-ok r2) true))
   (intros e1 e2 e3 h) (simp only [slice-ok e1 e2 e3]) (exact h))
 
-(a/theorem run-wake-mb [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, r :- RunRow]
-  (=> (= (mb-row mux mf mz mg r) true) (= (mb-row mux mf mz mg (run-wake r)) true))
+(a/theorem run-wake-l2-measure [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, r :- RunRow]
+  (=> (= (l2-measure-row mux mf mz mg r) true) (= (l2-measure-row mux mf mz mg (run-wake r)) true))
   (intro h)
-  (exact (mb-row-mono mux mf mz mg r (run-wake r) (rfl) (sok-of-eq r (run-wake r) (rfl) (wake-done-eq r) (rfl))
+  (exact (l2-measure-row-mono mux mf mz mg r (run-wake r) (rfl) (slice-holder-ok-of-eq r (run-wake r) (rfl) (wake-done-eq r) (rfl))
            (done-of-eq r (run-wake r) (wake-done-eq r)) (Nat.le_refl _) (Nat.le_refl _) h)))
 
-(a/theorem run-complete-row-mb [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, r :- RunRow]
-  (=> (= (mb-row mux mf mz mg r) true) (= (mb-row mux mf mz mg (run-complete-row r)) true))
+(a/theorem run-complete-row-l2-measure [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, r :- RunRow]
+  (=> (= (l2-measure-row mux mf mz mg r) true) (= (l2-measure-row mux mf mz mg (run-complete-row r)) true))
   (intro h)
   (have s (forall [hs :- (= (slice-ok r) true)] (= (slice-ok (run-complete-row r)) true)))
   (intro hs) (simp only [slice-ok run-complete-row Bool.not_false Bool.true_or])
   (have d (forall [hd :- (= (run-done r) true)] (= (run-done (run-complete-row r)) true)))
   (intro hd) (simp only [run-done run-complete-row act-done Nat.beq_refl])
-  (exact (mb-row-mono mux mf mz mg r (run-complete-row r) (rfl) s d (mu-f-off r (run-complete-row r) (rfl) (rfl)) (Nat.le_refl _) h)))
+  (exact (l2-measure-row-mono mux mf mz mg r (run-complete-row r) (rfl) s d (mu-f-off r (run-complete-row r) (rfl) (rfl)) (Nat.le_refl _) h)))
 
-(a/theorem run-cancel-row-mb [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, r :- RunRow]
-  (=> (= (mb-row mux mf mz mg r) true) (= (mb-row mux mf mz mg (run-cancel-row r)) true))
+(a/theorem run-cancel-row-l2-measure [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, r :- RunRow]
+  (=> (= (l2-measure-row mux mf mz mg r) true) (= (l2-measure-row mux mf mz mg (run-cancel-row r)) true))
   (intro h)
   (have s (forall [hs :- (= (slice-ok r) true)] (= (slice-ok (run-cancel-row r)) true)))
   (intro hs) (simp only [slice-ok run-cancel-row run-unwinding mode-unwinding Nat.beq_refl Bool.or_true])
   (have d (forall [hd :- (= (run-done r) true)] (= (run-done (run-cancel-row r)) true)))
   (intro hd) (simp only [run-done run-cancel-row act-done Nat.beq_refl])
-  (exact (mb-row-mono mux mf mz mg r (run-cancel-row r) (rfl) s d (Nat.le_refl _) (Nat.le_refl _) h)))
+  (exact (l2-measure-row-mono mux mf mz mg r (run-cancel-row r) (rfl) s d (Nat.le_refl _) (Nat.le_refl _) h)))
 
-(a/theorem run-unres-mb [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, z :- Nat, r :- RunRow]
-  (=> (= (mb-row mux mf mz mg r) true) (= (mb-row mux mf mz mg (run-unres z r)) true))
+(a/theorem run-unres-l2-measure [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, z :- Nat, r :- RunRow]
+  (=> (= (l2-measure-row mux mf mz mg r) true) (= (l2-measure-row mux mf mz mg (run-unres z r)) true))
   (intro h)
-  (exact (mb-row-mono mux mf mz mg r (run-unres z r) (rfl) (fn [hs :- (= (slice-ok r) true)] hs) (fn [hd :- (= (run-done r) true)] hd)
+  (exact (l2-measure-row-mono mux mf mz mg r (run-unres z r) (rfl) (fn [hs :- (= (slice-ok r) true)] hs) (fn [hd :- (= (run-done r) true)] hd)
            (Nat.le_refl _) (nat-del-len z (:resources r)) h)))
 
-(a/theorem run-fin-pop-mb [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, r :- RunRow]
-  (=> (= (mb-row mux mf mz mg r) true) (= (mb-row mux mf mz mg (run-fin-pop r)) true))
+(a/theorem run-fin-pop-l2-measure [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, r :- RunRow]
+  (=> (= (l2-measure-row mux mf mz mg r) true) (= (l2-measure-row mux mf mz mg (run-fin-pop r)) true))
   (intro h)
-  (exact (mb-row-mono mux mf mz mg r (run-fin-pop r) (rfl) (fn [hs :- (= (slice-ok r) true)] hs) (fn [hd :- (= (run-done r) true)] hd)
+  (exact (l2-measure-row-mono mux mf mz mg r (run-fin-pop r) (rfl) (fn [hs :- (= (slice-ok r) true)] hs) (fn [hd :- (= (run-done r) true)] hd)
            (mu-f-pop r (run-fin-pop r) (rfl) (fn [q :- (= (:slice r) true)] q)) (Nat.le_refl _) h)))
 
 ;; C1: `finally-exit` replaces the head region by a running clause (weight 2 -> 1)
@@ -320,188 +320,188 @@
     (have m1 (= (fin-w (Finalizer.mk 1 ei (List.nil Nat))) 1)) (rfl)
     (simp only [mfv fins-exit fins-len fe-cons m1])
     (omega)))
-(a/theorem run-fin-exit-mb [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, r :- RunRow]
-  (=> (= (mb-row mux mf mz mg r) true) (= (mb-row mux mf mz mg (run-fin-exit r)) true))
+(a/theorem run-fin-exit-l2-measure [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, r :- RunRow]
+  (=> (= (l2-measure-row mux mf mz mg r) true) (= (l2-measure-row mux mf mz mg (run-fin-exit r)) true))
   (intro h)
   (have e1 (= (mu-f (run-fin-exit r)) (mfv (fins-exit (Finalizer.mk 1 (:effect-index r) (List.nil Nat)) (:finalizers r)) (:slice r)))) (rfl)
   (have e2 (= (mu-f r) (mfv (:finalizers r) (:slice r)))) (rfl)
   (have le (<= (mu-f (run-fin-exit r)) (mu-f r))) (rw [e1 e2]) (exact (mfv-exit (:effect-index r) (:finalizers r) (:slice r)))
-  (exact (mb-row-mono mux mf mz mg r (run-fin-exit r) (rfl) (fn [hs :- (= (slice-ok r) true)] hs) (fn [hd :- (= (run-done r) true)] hd)
+  (exact (l2-measure-row-mono mux mf mz mg r (run-fin-exit r) (rfl) (fn [hs :- (= (slice-ok r) true)] hs) (fn [hd :- (= (run-done r) true)] hd)
            le (Nat.le_refl _) h)))
 
-(a/theorem run-fin-pop-end-mb [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, r :- RunRow]
-  (=> (= (mb-row mux mf mz mg r) true) (= (mb-row mux mf mz mg (run-fin-pop-end r)) true))
+(a/theorem run-fin-pop-end-l2-measure [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, r :- RunRow]
+  (=> (= (l2-measure-row mux mf mz mg r) true) (= (l2-measure-row mux mf mz mg (run-fin-pop-end r)) true))
   (intro h)
   (have s (forall [hs :- (= (slice-ok r) true)] (= (slice-ok (run-fin-pop-end r)) true)))
   (intro hs) (simp only [slice-ok run-fin-pop-end Bool.not_false Bool.true_or])
-  (exact (mb-row-mono mux mf mz mg r (run-fin-pop-end r) (rfl) s (fn [hd :- (= (run-done r) true)] hd)
+  (exact (l2-measure-row-mono mux mf mz mg r (run-fin-pop-end r) (rfl) s (fn [hd :- (= (run-done r) true)] hd)
            (mu-f-pop r (run-fin-pop-end r) (rfl) (fn [q :- (= (:slice (run-fin-pop-end r)) true)] (Bool.noConfusion q))) (Nat.le_refl _) h)))
 
 ;; Z#77 T28: a retired run loses its finalizers and its slice (weight 0)
-(a/theorem run-drop-fins-mb [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, r :- RunRow]
-  (=> (= (mb-row mux mf mz mg r) true) (= (mb-row mux mf mz mg (run-drop-fins r)) true))
+(a/theorem run-drop-fins-l2-measure [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, r :- RunRow]
+  (=> (= (l2-measure-row mux mf mz mg r) true) (= (l2-measure-row mux mf mz mg (run-drop-fins r)) true))
   (intro h)
   (have s (forall [hs :- (= (slice-ok r) true)] (= (slice-ok (run-drop-fins r)) true)))
   (intro hs) (simp only [slice-ok run-drop-fins Bool.not_false Bool.true_or])
   (have e (= (mu-f (run-drop-fins r)) 0)) (rfl)
   (have le (<= (mu-f (run-drop-fins r)) (mu-f r))) (rw [e]) (exact (Nat.zero_le _))
-  (exact (mb-row-mono mux mf mz mg r (run-drop-fins r) (rfl) s (fn [hd :- (= (run-done r) true)] hd) le (Nat.le_refl _) h)))
+  (exact (l2-measure-row-mono mux mf mz mg r (run-drop-fins r) (rfl) s (fn [hd :- (= (run-done r) true)] hd) le (Nat.le_refl _) h)))
 
 ;; ===========================================================================
 ;; Part C. The bundle under the primitive edits
 ;; ===========================================================================
 
-(a/theorem mb-rest-next [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, v :- Nat]
-  (=> (= (mb-rest mux mf mz mg w) true) (<= (:next-id w) v) (= (mb-rest mux mf mz mg (set-next-id w v)) true))
+(a/theorem l2-measure-rest-next [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, v :- Nat]
+  (=> (= (l2-measure-rest mux mf mz mg w) true) (<= (:next-id w) v) (= (l2-measure-rest mux mf mz mg (set-next-id w v)) true))
   (intros h hv)
-  (have p := (mb-rest-parts mux mf mz mg w h))
-  (exact (mb-rest-mk mux mf mz mg (set-next-id w v) (Nat.lt_of_lt_of_le (And.left p) hv) (And.right p))))
-(a/theorem mb-rest-bump [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World]
-  (=> (= (mb-rest mux mf mz mg w) true) (= (mb-rest mux mf mz mg (bump w)) true))
-  (intro h) (simp only [bump]) (exact (mb-rest-next mux mf mz mg w (+ (:next-id w) 1) h (Nat.le_succ (:next-id w)))))
+  (have p := (l2-measure-rest-parts mux mf mz mg w h))
+  (exact (l2-measure-rest-mk mux mf mz mg (set-next-id w v) (Nat.lt_of_lt_of_le (And.left p) hv) (And.right p))))
+(a/theorem l2-measure-rest-bump [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World]
+  (=> (= (l2-measure-rest mux mf mz mg w) true) (= (l2-measure-rest mux mf mz mg (bump w)) true))
+  (intro h) (simp only [bump]) (exact (l2-measure-rest-next mux mf mz mg w (+ (:next-id w) 1) h (Nat.le_succ (:next-id w)))))
 
 
 ;; a run edit by a row function that keeps the row predicate
-(a/theorem mb-run-upd [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, x :- Nat, f :- (=> RunRow RunRow),
+(a/theorem l2-measure-run-upd [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, x :- Nat, f :- (=> RunRow RunRow),
                        hf :- (forall [r :- RunRow] (= (run-id (f r)) (run-id r))),
-                       hk :- (forall [r :- RunRow] (=> (= (mb-row mux mf mz mg r) true) (= (mb-row mux mf mz mg (f r)) true)))]
-  (=> (= (mb mux mf mz mg w) true) (= (mb mux mf mz mg (run-upd w x f)) true))
+                       hk :- (forall [r :- RunRow] (=> (= (l2-measure-row mux mf mz mg r) true) (= (l2-measure-row mux mf mz mg (f r)) true)))]
+  (=> (= (l2-measure mux mf mz mg w) true) (= (l2-measure mux mf mz mg (run-upd w x f)) true))
   (intro h)
-  (have p := (mb-rest-parts mux mf mz mg w (mb-rest-of mux mf mz mg w h)))
-  (have q (= (tbl-all (mb-row mux mf mz mg) (tbl-upd run-id x f (:runs w))) true))
-  (exact (tbl-all-upd RunRow run-id x f (mb-row mux mf mz mg) (mb-row mux mf mz mg)
-           (fn [r :- RunRow, a1 :- (= (mb-row mux mf mz mg r) true), a2 :- (= (Nat.beq (run-id r) x) true)] (hk r a1))
-           (fn [r :- RunRow, a1 :- (= (mb-row mux mf mz mg r) true), a2 :- (= (Nat.beq (run-id r) x) false)] a1)
+  (have p := (l2-measure-rest-parts mux mf mz mg w (l2-measure-rest-of mux mf mz mg w h)))
+  (have q (= (tbl-all (l2-measure-row mux mf mz mg) (tbl-upd run-id x f (:runs w))) true))
+  (exact (tbl-all-upd RunRow run-id x f (l2-measure-row mux mf mz mg) (l2-measure-row mux mf mz mg)
+           (fn [r :- RunRow, a1 :- (= (l2-measure-row mux mf mz mg r) true), a2 :- (= (Nat.beq (run-id r) x) true)] (hk r a1))
+           (fn [r :- RunRow, a1 :- (= (l2-measure-row mux mf mz mg r) true), a2 :- (= (Nat.beq (run-id r) x) false)] a1)
            (:runs w) (And.right p)))
-  (have r1 (= (mb-rest mux mf mz mg (run-upd w x f)) true))
-  (exact (mb-rest-mk mux mf mz mg (run-upd w x f) (And.left p) q))
-  (exact (mb-intro mux mf mz mg _ (inv-run-upd w x f hf (mb-sample mux mf mz mg w h)) r1)))
+  (have r1 (= (l2-measure-rest mux mf mz mg (run-upd w x f)) true))
+  (exact (l2-measure-rest-mk mux mf mz mg (run-upd w x f) (And.left p) q))
+  (exact (l2-measure-intro mux mf mz mg _ (well-formed-run-upd w x f hf (l2-measure-well-formed mux mf mz mg w h)) r1)))
 
 ;; a run edit of an untracked id by a row function that keeps slice-ok
-(a/theorem mb-run-upd-ne [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, x :- Nat, f :- (=> RunRow RunRow),
+(a/theorem l2-measure-run-upd-ne [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, x :- Nat, f :- (=> RunRow RunRow),
                           hf :- (forall [r :- RunRow] (= (run-id (f r)) (run-id r))),
                           hne :- (= (untracked mux mg x) true),
                           hs :- (forall [r :- RunRow] (=> (= (slice-ok r) true) (= (slice-ok (f r)) true)))]
-  (=> (= (mb mux mf mz mg w) true) (= (mb mux mf mz mg (run-upd w x f)) true))
+  (=> (= (l2-measure mux mf mz mg w) true) (= (l2-measure mux mf mz mg (run-upd w x f)) true))
   (intro h)
-  (have p := (mb-rest-parts mux mf mz mg w (mb-rest-of mux mf mz mg w h)))
-  (have hin (forall [r :- RunRow] (=> (= (mb-row mux mf mz mg r) true) (= (Nat.beq (run-id r) x) true) (= (mb-row mux mf mz mg (f r)) true))))
+  (have p := (l2-measure-rest-parts mux mf mz mg w (l2-measure-rest-of mux mf mz mg w h)))
+  (have hin (forall [r :- RunRow] (=> (= (l2-measure-row mux mf mz mg r) true) (= (Nat.beq (run-id r) x) true) (= (l2-measure-row mux mf mz mg (f r)) true))))
   (intros r a1 a2)
   (have ex (= (:id (f r)) x)) (exact (Eq.trans (hf r) (Nat.eq_of_beq_eq_true a2)))
   (have u (= (untracked mux mg (:id (f r))) true)) (rw [ex]) (exact hne)
-  (simp only [mb-row Bool.and_eq_true] at a1)
-  (simp only [mb-row Bool.and_eq_true])
+  (simp only [l2-measure-row Bool.and_eq_true] at a1)
+  (simp only [l2-measure-row Bool.and_eq_true])
   (exact (And.intro (hs r (And.left a1)) (mu-at-un mux mf mz mg (f r) u)))
-  (have q (= (tbl-all (mb-row mux mf mz mg) (tbl-upd run-id x f (:runs w))) true))
-  (exact (tbl-all-upd RunRow run-id x f (mb-row mux mf mz mg) (mb-row mux mf mz mg) hin
-           (fn [r :- RunRow, a1 :- (= (mb-row mux mf mz mg r) true), a2 :- (= (Nat.beq (run-id r) x) false)] a1)
+  (have q (= (tbl-all (l2-measure-row mux mf mz mg) (tbl-upd run-id x f (:runs w))) true))
+  (exact (tbl-all-upd RunRow run-id x f (l2-measure-row mux mf mz mg) (l2-measure-row mux mf mz mg) hin
+           (fn [r :- RunRow, a1 :- (= (l2-measure-row mux mf mz mg r) true), a2 :- (= (Nat.beq (run-id r) x) false)] a1)
            (:runs w) (And.right p)))
-  (have r1 (= (mb-rest mux mf mz mg (run-upd w x f)) true))
-  (exact (mb-rest-mk mux mf mz mg (run-upd w x f) (And.left p) q))
-  (exact (mb-intro mux mf mz mg _ (inv-run-upd w x f hf (mb-sample mux mf mz mg w h)) r1)))
+  (have r1 (= (l2-measure-rest mux mf mz mg (run-upd w x f)) true))
+  (exact (l2-measure-rest-mk mux mf mz mg (run-upd w x f) (And.left p) q))
+  (exact (l2-measure-intro mux mf mz mg _ (well-formed-run-upd w x f hf (l2-measure-well-formed mux mf mz mg w h)) r1)))
 
 ;; a run edit of the rows with id x, all of which satisfy Q
-(a/theorem mb-run-upd-q [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, x :- Nat, f :- (=> RunRow RunRow),
+(a/theorem l2-measure-run-upd-q [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, x :- Nat, f :- (=> RunRow RunRow),
                          hf :- (forall [r :- RunRow] (= (run-id (f r)) (run-id r))),
                          Q :- (=> RunRow Bool), hq :- (= (tbl-all (same-id-then run-id x Q) (:runs w)) true),
-                         hk :- (forall [r :- RunRow] (=> (= (Q r) true) (= (mb-row mux mf mz mg r) true) (= (mb-row mux mf mz mg (f r)) true)))]
-  (=> (= (mb mux mf mz mg w) true) (= (mb mux mf mz mg (run-upd w x f)) true))
+                         hk :- (forall [r :- RunRow] (=> (= (Q r) true) (= (l2-measure-row mux mf mz mg r) true) (= (l2-measure-row mux mf mz mg (f r)) true)))]
+  (=> (= (l2-measure mux mf mz mg w) true) (= (l2-measure mux mf mz mg (run-upd w x f)) true))
   (intro h)
-  (have p := (mb-rest-parts mux mf mz mg w (mb-rest-of mux mf mz mg w h)))
-  (have hin (forall [r :- RunRow] (=> (= (mb-row mux mf mz mg r) true) (= (same-id-then run-id x Q r) true) (= (Nat.beq (run-id r) x) true)
-                                      (= (mb-row mux mf mz mg (f r)) true))))
+  (have p := (l2-measure-rest-parts mux mf mz mg w (l2-measure-rest-of mux mf mz mg w h)))
+  (have hin (forall [r :- RunRow] (=> (= (l2-measure-row mux mf mz mg r) true) (= (same-id-then run-id x Q r) true) (= (Nat.beq (run-id r) x) true)
+                                      (= (l2-measure-row mux mf mz mg (f r)) true))))
   (intros r a1 a2 a3)
   (simp only [same-id-then a3 Bool.not_true Bool.false_or] at a2)
   (exact (hk r a2 a1))
-  (have q (= (tbl-all (mb-row mux mf mz mg) (tbl-upd run-id x f (:runs w))) true))
-  (exact (all-upd2 RunRow run-id x f (mb-row mux mf mz mg) (same-id-then run-id x Q) (mb-row mux mf mz mg) hin
-           (fn [r :- RunRow, a1 :- (= (mb-row mux mf mz mg r) true), a2 :- (= (same-id-then run-id x Q r) true), a3 :- (= (Nat.beq (run-id r) x) false)] a1)
+  (have q (= (tbl-all (l2-measure-row mux mf mz mg) (tbl-upd run-id x f (:runs w))) true))
+  (exact (all-upd2 RunRow run-id x f (l2-measure-row mux mf mz mg) (same-id-then run-id x Q) (l2-measure-row mux mf mz mg) hin
+           (fn [r :- RunRow, a1 :- (= (l2-measure-row mux mf mz mg r) true), a2 :- (= (same-id-then run-id x Q r) true), a3 :- (= (Nat.beq (run-id r) x) false)] a1)
            (:runs w) (And.right p) hq))
-  (have r1 (= (mb-rest mux mf mz mg (run-upd w x f)) true))
-  (exact (mb-rest-mk mux mf mz mg (run-upd w x f) (And.left p) q))
-  (exact (mb-intro mux mf mz mg _ (inv-run-upd w x f hf (mb-sample mux mf mz mg w h)) r1)))
+  (have r1 (= (l2-measure-rest mux mf mz mg (run-upd w x f)) true))
+  (exact (l2-measure-rest-mk mux mf mz mg (run-upd w x f) (And.left p) q))
+  (exact (l2-measure-intro mux mf mz mg _ (well-formed-run-upd w x f hf (l2-measure-well-formed mux mf mz mg w h)) r1)))
 
 ;; a fresh run row (id next-id, which is not mux) that satisfies slice-ok
-(a/theorem mb-run-ins [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, r :- RunRow, hs :- (= (slice-ok r) true)]
-  (=> (= (run-id r) (:next-id w)) (= (mb mux mf mz mg w) true) (= (mb mux mf mz mg (bump (run-ins w r))) true))
+(a/theorem l2-measure-run-ins [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, r :- RunRow, hs :- (= (slice-ok r) true)]
+  (=> (= (run-id r) (:next-id w)) (= (l2-measure mux mf mz mg w) true) (= (l2-measure mux mf mz mg (bump (run-ins w r))) true))
   (intros hr h)
-  (have p := (mb-rest-parts mux mf mz mg w (mb-rest-of mux mf mz mg w h)))
+  (have p := (l2-measure-rest-parts mux mf mz mg w (l2-measure-rest-of mux mf mz mg w h)))
   (have hn (= (Nat.beq (:id r) mux) false))
   (have e (= (:id r) (:next-id w))) (exact hr)
   (have l := (And.left p))
   (cases hb (Nat.beq (:id r) mux))
   (case [false] (rfl))
   (case [true] (have q := (Nat.eq_of_beq_eq_true hb)) (omega))
-  (have hrow (= (mb-row mux mf mz mg r) true)) (simp only [mb-row hs (mu-at-ne mux mf mz mg r hn) Bool.and_self])
-  (have r0 (= (mb-rest mux mf mz mg (run-ins w r)) true))
-  (have q (= (tbl-all (mb-row mux mf mz mg) (List.cons RunRow r (:runs w))) true))
+  (have hrow (= (l2-measure-row mux mf mz mg r) true)) (simp only [l2-measure-row hs (mu-at-ne mux mf mz mg r hn) Bool.and_self])
+  (have r0 (= (l2-measure-rest mux mf mz mg (run-ins w r)) true))
+  (have q (= (tbl-all (l2-measure-row mux mf mz mg) (List.cons RunRow r (:runs w))) true))
   (simp only [tbl-all hrow (And.right p) Bool.and_self])
-  (exact (mb-rest-mk mux mf mz mg (run-ins w r) (And.left p) q))
-  (exact (mb-intro mux mf mz mg _ (inv-run-ins-fresh w r hr (mb-sample mux mf mz mg w h)) (mb-rest-bump mux mf mz mg _ r0))))
+  (exact (l2-measure-rest-mk mux mf mz mg (run-ins w r) (And.left p) q))
+  (exact (l2-measure-intro mux mf mz mg _ (well-formed-run-ins-fresh w r hr (l2-measure-well-formed mux mf mz mg w h)) (l2-measure-rest-bump mux mf mz mg _ r0))))
 
-(a/theorem mb-rest-run-del [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, x :- Nat]
-  (=> (= (mb-rest mux mf mz mg w) true) (= (mb-rest mux mf mz mg (run-del w x)) true))
+(a/theorem l2-measure-rest-run-del [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, x :- Nat]
+  (=> (= (l2-measure-rest mux mf mz mg w) true) (= (l2-measure-rest mux mf mz mg (run-del w x)) true))
   (intro h)
-  (have p := (mb-rest-parts mux mf mz mg w h))
-  (exact (mb-rest-mk mux mf mz mg (run-del w x) (And.left p)
-             (tbl-all-del RunRow run-id x (mb-row mux mf mz mg) (mb-row mux mf mz mg)
-               (fn [r :- RunRow, a1 :- (= (mb-row mux mf mz mg r) true), a2 :- (= (Nat.beq (run-id r) x) false)] a1)
+  (have p := (l2-measure-rest-parts mux mf mz mg w h))
+  (exact (l2-measure-rest-mk mux mf mz mg (run-del w x) (And.left p)
+             (tbl-all-del RunRow run-id x (l2-measure-row mux mf mz mg) (l2-measure-row mux mf mz mg)
+               (fn [r :- RunRow, a1 :- (= (l2-measure-row mux mf mz mg r) true), a2 :- (= (Nat.beq (run-id r) x) false)] a1)
                (:runs w) (And.right p)))))
 
-(a/theorem mb-rest-filter [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, K :- (=> Nat Bool)]
-  (=> (= (mb-rest mux mf mz mg w) true) (= (mb-rest mux mf mz mg (filter-world K w)) true))
+(a/theorem l2-measure-rest-filter [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, K :- (=> Nat Bool)]
+  (=> (= (l2-measure-rest mux mf mz mg w) true) (= (l2-measure-rest mux mf mz mg (filter-world K w)) true))
   (intro h)
-  (have p := (mb-rest-parts mux mf mz mg w h))
-  (exact (mb-rest-mk mux mf mz mg (filter-world K w) (And.left p)
-           (tbl-all-keep-same RunRow K run-id (mb-row mux mf mz mg) (:runs w) (And.right p)))))
+  (have p := (l2-measure-rest-parts mux mf mz mg w h))
+  (exact (l2-measure-rest-mk mux mf mz mg (filter-world K w) (And.left p)
+           (tbl-all-keep-same RunRow K run-id (l2-measure-row mux mf mz mg) (:runs w) (And.right p)))))
 
 ;; ---- facts for the run edits that may raise the measure (they touch an alive run, or a
 ;; cleanup-ready one)
 
-(a/theorem mb-row-mem [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, r :- RunRow]
-  (=> (= (mb mux mf mz mg w) true) (List.Mem r (:runs w)) (= (mb-row mux mf mz mg r) true))
+(a/theorem l2-measure-row-mem [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, r :- RunRow]
+  (=> (= (l2-measure mux mf mz mg w) true) (List.Mem r (:runs w)) (= (l2-measure-row mux mf mz mg r) true))
   (intros h hm)
-  (exact (tbl-all-mem RunRow (mb-row mux mf mz mg) r (:runs w) (And.right (mb-rest-parts mux mf mz mg w (mb-rest-of mux mf mz mg w h))) hm)))
-(a/theorem mb-un-alive [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, r :- RunRow]
-  (=> (List.Mem r (:runs w)) (= (run-done r) false) (= (mb mux mf mz mg w) true) (= (untracked mux mg (:id r)) true))
-  (intros hm hd h) (exact (mb-row-alive-un mux mf mz mg r (mb-row-mem mux mf mz mg w r h hm) hd)))
-(a/theorem sok-slice-done [r :- RunRow]
+  (exact (tbl-all-mem RunRow (l2-measure-row mux mf mz mg) r (:runs w) (And.right (l2-measure-rest-parts mux mf mz mg w (l2-measure-rest-of mux mf mz mg w h))) hm)))
+(a/theorem l2-measure-un-alive [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, r :- RunRow]
+  (=> (List.Mem r (:runs w)) (= (run-done r) false) (= (l2-measure mux mf mz mg w) true) (= (untracked mux mg (:id r)) true))
+  (intros hm hd h) (exact (l2-measure-row-alive-un mux mf mz mg r (l2-measure-row-mem mux mf mz mg w r h hm) hd)))
+(a/theorem slice-holder-ok-slice-done [r :- RunRow]
   (=> (= (slice-ok r) true) (= (:slice r) true) (= (run-unwinding r) false) (= (run-done r) false))
   (intros h hs hu)
   (simp only [slice-ok hs hu Bool.not_true Bool.false_or Bool.or_false] at h)
   (cases hd (run-done r)) (case [false] (rfl)) (case [true] (simp [hd] at h)))
-(a/theorem mb-un-slice [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, r :- RunRow]
-  (=> (List.Mem r (:runs w)) (= (:slice r) true) (= (run-unwinding r) false) (= (mb mux mf mz mg w) true)
+(a/theorem l2-measure-un-slice [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, r :- RunRow]
+  (=> (List.Mem r (:runs w)) (= (:slice r) true) (= (run-unwinding r) false) (= (l2-measure mux mf mz mg w) true)
       (= (untracked mux mg (:id r)) true))
   (intros hm hs hu h)
-  (have row := (mb-row-mem mux mf mz mg w r h hm))
-  (have so (= (slice-ok r) true)) (simp only [mb-row Bool.and_eq_true] at row) (exact (And.left row))
-  (exact (mb-un-alive mux mf mz mg w r hm (sok-slice-done r so hs hu) h)))
+  (have row := (l2-measure-row-mem mux mf mz mg w r h hm))
+  (have so (= (slice-ok r) true)) (simp only [l2-measure-row Bool.and_eq_true] at row) (exact (And.left row))
+  (exact (l2-measure-un-alive mux mf mz mg w r hm (slice-holder-ok-slice-done r so hs hu) h)))
 (a/theorem normal-not-done [r :- RunRow] (=> (= (run-normal r) true) (= (run-done r) false))
   (intro h) (simp only [run-normal run-alive Bool.and_eq_true] at h)
   (cases hd (run-done r)) (case [false] (rfl)) (case [true] (simp only [run-done] at hd) (simp [hd] at h)))
 
-(a/theorem run-arm-sok [n :- Nat] (forall [r :- RunRow] (=> (= (slice-ok r) true) (= (slice-ok (run-arm n r)) true)))
+(a/theorem run-arm-slice-holder-ok [n :- Nat] (forall [r :- RunRow] (=> (= (slice-ok r) true) (= (slice-ok (run-arm n r)) true)))
   (intros r h) (exact h))
-(a/theorem run-fin-push-sok [fz :- Finalizer] (forall [r :- RunRow] (=> (= (slice-ok r) true) (= (slice-ok (run-fin-push fz r)) true)))
+(a/theorem run-fin-push-slice-holder-ok [fz :- Finalizer] (forall [r :- RunRow] (=> (= (slice-ok r) true) (= (slice-ok (run-fin-push fz r)) true)))
   (intros r h) (exact h))
-(a/theorem run-park-row-sok [] (forall [r :- RunRow] (=> (= (slice-ok r) true) (= (slice-ok (run-park-row r)) true)))
+(a/theorem run-park-row-slice-holder-ok [] (forall [r :- RunRow] (=> (= (slice-ok r) true) (= (slice-ok (run-park-row r)) true)))
   (intros r h) (simp only [slice-ok run-park-row Bool.not_false Bool.true_or]))
-(a/theorem run-tick-park-sok [] (forall [r :- RunRow] (=> (= (slice-ok r) true) (= (slice-ok (run-tick-park r)) true)))
+(a/theorem run-tick-park-slice-holder-ok [] (forall [r :- RunRow] (=> (= (slice-ok r) true) (= (slice-ok (run-tick-park r)) true)))
   (intros r h) (simp only [slice-ok run-tick-park Bool.not_false Bool.true_or]))
 
 ;; the scheduling choice gives the slice to an alive run, `finalize` to a cleanup-ready one
 (a/defn q-alive [r :- RunRow] Bool (Bool.not (run-done r)))
 (a/defn q-cleanup [r :- RunRow] Bool (Bool.and (run-unwinding r) (Bool.not (fins-empty (:finalizers r)))))
-(a/theorem enter-alive-mb [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat]
-  (forall [r :- RunRow] (=> (= (q-alive r) true) (= (mb-row mux mf mz mg r) true) (= (mb-row mux mf mz mg (run-enter-row r)) true)))
+(a/theorem enter-alive-l2-measure [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat]
+  (forall [r :- RunRow] (=> (= (q-alive r) true) (= (l2-measure-row mux mf mz mg r) true) (= (l2-measure-row mux mf mz mg (run-enter-row r)) true)))
   (intros r hq h)
   (have hd (= (run-done r) false)) (exact (bnot-true _ hq))
-  (have u := (mb-row-alive-un mux mf mz mg r h hd))
+  (have u := (l2-measure-row-alive-un mux mf mz mg r h hd))
   (have so (= (slice-ok (run-enter-row r)) true)) (simp only [slice-ok run-enter-row run-done] at hd) (simp only [slice-ok run-enter-row run-done hd Bool.not_false Bool.true_or Bool.or_true])
-  (simp only [mb-row so Bool.true_and]) (exact (mu-at-un mux mf mz mg (run-enter-row r) u)))
-(a/theorem enter-cleanup-mb [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat]
-  (forall [r :- RunRow] (=> (= (q-cleanup r) true) (= (mb-row mux mf mz mg r) true) (= (mb-row mux mf mz mg (run-enter-row r)) true)))
+  (simp only [l2-measure-row so Bool.true_and]) (exact (mu-at-un mux mf mz mg (run-enter-row r) u)))
+(a/theorem enter-cleanup-l2-measure [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat]
+  (forall [r :- RunRow] (=> (= (q-cleanup r) true) (= (l2-measure-row mux mf mz mg r) true) (= (l2-measure-row mux mf mz mg (run-enter-row r)) true)))
   (intros r hq h)
   (simp only [q-cleanup Bool.and_eq_true] at hq)
   (have so (forall [hs :- (= (slice-ok r) true)] (= (slice-ok (run-enter-row r)) true)))
@@ -511,16 +511,16 @@
   (have e1 (= (mu-f (run-enter-row r)) (mfv (:finalizers r) true))) (rfl)
   (have e2 (= (mu-f r) (mfv (:finalizers r) (:slice r)))) (rfl)
   (rw [e1 e2]) (simp only [mfv e Bool.not_false Bool.true_or]) (exact (Nat.le_refl _))
-  (exact (mb-row-mono mux mf mz mg r (run-enter-row r) (rfl) so (fn [hd :- (= (run-done r) true)] hd) fl (Nat.le_refl _) h)))
-(a/theorem sched-q [w :- World, r :- RunRow] (=> (= (sched-ok w r) true) (= (q-alive r) true))
-  (intro h) (simp only [sched-ok Bool.and_eq_true] at h)
+  (exact (l2-measure-row-mono mux mf mz mg r (run-enter-row r) (rfl) so (fn [hd :- (= (run-done r) true)] hd) fl (Nat.le_refl _) h)))
+(a/theorem t-schedule-q [w :- World, r :- RunRow] (=> (= (schedule-ok w r) true) (= (q-alive r) true))
+  (intro h) (simp only [schedule-ok Bool.and_eq_true] at h)
   (have e (= (:act r) act-active)) (exact (Nat.eq_of_beq_eq_true (And.left h)))
   (simp only [q-alive run-done e act-active act-done]))
 (a/theorem cleanup-q [w :- World, r :- RunRow] (=> (= (cleanup-ready w r) true) (= (q-cleanup r) true))
   (intro h) (simp only [cleanup-ready Bool.and_eq_true] at h)
   (simp only [q-cleanup Bool.and_eq_true]) (exact (And.intro (And.left (And.right h)) (And.left (And.right (And.right h))))))
 (a/theorem found-uniq [w :- World, rid :- Nat, r :- RunRow, Q :- (=> RunRow Bool)]
-  (=> (= (inv-sample w) true) (= (run-find w rid) (Option.some RunRow r)) (= (Q r) true)
+  (=> (= (well-formed w) true) (= (run-find w rid) (Option.some RunRow r)) (= (Q r) true)
       (= (tbl-all (same-id-then run-id rid Q) (:runs w)) true))
   (intros h hf hq)
   (have hm := (tbl-find-mem RunRow run-id rid r (:runs w) hf))
@@ -532,82 +532,82 @@
 ;; Part D. The bundle copy over the raw step and the normalization
 ;; ===========================================================================
 
-(def MB (mk-bundle 'mb '[mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat] "mb-"
-          {'inv-run-upd ['(fn [q :- RunRow, hq :- (= (mb-row mux mf mz mg q) true)] hq) 4]
-           'inv-run-ins-fresh ['(Eq.refl true) 2]}))
+(def MB (mk-bundle 'l2-measure '[mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat] "l2-measure-"
+          {'well-formed-run-upd ['(fn [q :- RunRow, hq :- (= (l2-measure-row mux mf mz mg q) true)] hq) 4]
+           'well-formed-run-ins-fresh ['(Eq.refl true) 2]}))
 ;; row functions that cannot raise the measure, with the lemma (it takes the bundle parameters)
-(def ^:private mb-fns '{run-wake run-wake-mb run-complete-row run-complete-row-mb run-cancel-row run-cancel-row-mb
-                        run-unres run-unres-mb run-fin-pop run-fin-pop-mb run-fin-exit run-fin-exit-mb run-fin-pop-end run-fin-pop-end-mb
-                        run-drop-fins run-drop-fins-mb})
+(def ^:private mb-fns '{run-wake run-wake-l2-measure run-complete-row run-complete-row-l2-measure run-cancel-row run-cancel-row-l2-measure
+                        run-unres run-unres-l2-measure run-fin-pop run-fin-pop-l2-measure run-fin-exit run-fin-exit-l2-measure run-fin-pop-end run-fin-pop-end-l2-measure
+                        run-drop-fins run-drop-fins-l2-measure})
 (swap! (:renames MB) merge
-       '{inv-parts mb-parts inv-run-upd mb-run-upd inv-run-ins-fresh mb-run-ins})
+       '{well-formed-parts l2-measure-parts well-formed-run-upd l2-measure-run-upd well-formed-run-ins-fresh l2-measure-run-ins})
 
 (defpart MB :reads '[next-id runs])
-(frames/frame-theorem! 'mb-rest-mark-edge 'mb-rest 'mark-edge-inv-sample)
-(frames/frame-theorem! 'mb-rest-unmark-edge 'mb-rest 'unmark-edge-inv-sample)
-(frames/frame-theorem! 'mb-rest-remove-edge 'mb-rest 'inv-remove-edge)
-(doseq [o '[inv-source-ins-fresh inv-fork-ins-fresh inv-resource-ins-fresh inv-scope-ins-fresh inv-comp-ins-fresh inv-act-ins-fresh inv-task-ins-fresh]]
-  (prim! MB o (list 'mb-rest-bump 'mux 'mf 'mz 'mg (list (symbol (str/replace (subs (name o) 4) "-fresh" "")) 'w 'r)
+(frames/frame-theorem! 'l2-measure-rest-mark-edge 'l2-measure-rest 'well-formed-mark-edge)
+(frames/frame-theorem! 'l2-measure-rest-unmark-edge 'l2-measure-rest 'well-formed-unmark-edge)
+(frames/frame-theorem! 'l2-measure-rest-remove-edge 'l2-measure-rest 'well-formed-remove-edge)
+(doseq [o '[well-formed-source-ins-fresh well-formed-fork-ins-fresh well-formed-resource-ins-fresh well-formed-scope-ins-fresh well-formed-comp-ins-fresh well-formed-act-ins-fresh well-formed-task-ins-fresh]]
+  (prim! MB o (list 'l2-measure-rest-bump 'mux 'mf 'mz 'mg (list (symbol (str/replace (subs (name o) 12) "-fresh" "")) 'w 'r)
                     (list 'Eq.trans '(rfl) 'R))))
-(prim! MB 'inv-bump '(mb-rest-bump mux mf mz mg w R))
-(prim! MB 'insert-edge-fresh-inv-sample '(mb-rest-bump mux mf mz mg (insert-edge w (edge-set-id (:next-id w) e)) (Eq.trans (rfl) R)))
-(prim! MB 'inv-run-del '(mb-rest-run-del mux mf mz mg w x R))
-(prim! MB 'inv-filter-world '(mb-rest-filter mux mf mz mg w K R))
+(prim! MB 'well-formed-bump '(l2-measure-rest-bump mux mf mz mg w R))
+(prim! MB 'well-formed-insert-edge-fresh '(l2-measure-rest-bump mux mf mz mg (insert-edge w (edge-set-id (:next-id w) e)) (Eq.trans (rfl) R)))
+(prim! MB 'well-formed-run-del '(l2-measure-rest-run-del mux mf mz mg w x R))
+(prim! MB 'well-formed-filter-world '(l2-measure-rest-filter mux mf mz mg w K R))
 
-;; mb on the generic tree (spindel.v2.pres.tree): its table. Its own proofs follow.
+;; l2-measure on the generic tree (spindel.v2.pres.tree): its table. Its own proofs follow.
 (defn- mb-lemma [F]   ; the row function's lemma, at the bundle's parameters
   (concat (list (mb-fns (if (seq? F) (first F) F)) 'mux 'mf 'mz 'mg) (when (seq? F) (repeat (count (rest F)) '_))))
 (tree/part! MB
-  :over '{t-finally-enter-inv t-finally-enter-mb
-          inv-park-if         mb-park-if
-          t6-inv              t6-mb
-          t-take-inv          t-take-mb
-          inv-arm-park        mb-arm-park
-          t17-inv             t17-mb
-          sched-inv           sched-mb
-          t-finalize-inv      t-finalize-mb}
+  :over '{well-formed-t-finally-enter l2-measure-t-finally-enter
+          well-formed-park-if         l2-measure-park-if
+          well-formed-t6-await              l2-measure-t6-await
+          well-formed-t-take          l2-measure-t-take
+          well-formed-arm-park        l2-measure-arm-park
+          well-formed-t17-arm             l2-measure-t17-arm
+          well-formed-t-schedule           l2-measure-t-schedule
+          well-formed-t-finalize      l2-measure-t-finalize}
   ;; ---- sites: a run edit by a row function that cannot raise the measure, by its lemma; the
   ;; take's park is on an untracked run
-  :sites (merge (tree/row-sites 'inv-run-upd mb-fns (fn [F] (list 'mb-run-upd 'mux 'mf 'mz 'mg 'w 'x F 'hf (mb-lemma F) 'h0)))
-                '{[inv-run-upd run-tick-park] (mb-run-upd-ne mux mf mz mg w x run-tick-park hf h0 run-tick-park-sok h1)})
+  :sites (merge (tree/row-sites 'well-formed-run-upd mb-fns (fn [F] (list 'l2-measure-run-upd 'mux 'mf 'mz 'mg 'w 'x F 'hf (mb-lemma F) 'h0)))
+                '{[well-formed-run-upd run-tick-park] (l2-measure-run-upd-ne mux mf mz mg w x run-tick-park hf h0 run-tick-park-slice-holder-ok h1)})
   ;; ---- facts from the path: the parking run is not the tracked one
-  :ctx '{inv-park-if                   [(= (untracked mux mg rid) true)]
-         inv-arm-park                  [(= (untracked mux mg (:id r)) true)]
-         [inv-run-upd run-tick-park]   [(= (untracked mux mg x) true)]
-         t17-inv                       [(= (fin-shut w st) false)]}
-  :own '{inv-await-post [hne (= (untracked mux mg rid) true)]
-         inv-await-raw  [hne (= (untracked mux mg (:id r)) true)]
-         inv-take-park  [hne (= (untracked mux mg (:id r)) true)]}
-  :pass '{inv-await-post {inv-park-if [hne]}
-          inv-await-raw  {inv-await-post [hne]}
-          inv-take-park  {[inv-run-upd run-tick-park] [hne]}
-          raw0-arm-inv   {t17-inv [hc]}})                         ; T17's guard: the run's finally is not shut
+  :ctx '{well-formed-park-if                   [(= (untracked mux mg rid) true)]
+         well-formed-arm-park                  [(= (untracked mux mg (:id r)) true)]
+         [well-formed-run-upd run-tick-park]   [(= (untracked mux mg x) true)]
+         well-formed-t17-arm                       [(= (arm-refused w st) false)]}
+  :own '{well-formed-await-post [hne (= (untracked mux mg rid) true)]
+         well-formed-await-raw  [hne (= (untracked mux mg (:id r)) true)]
+         well-formed-take-park  [hne (= (untracked mux mg (:id r)) true)]}
+  :pass '{well-formed-await-post {well-formed-park-if [hne]}
+          well-formed-await-raw  {well-formed-await-post [hne]}
+          well-formed-take-park  {[well-formed-run-upd run-tick-park] [hne]}
+          well-formed-transition-arm   {well-formed-t17-arm [hc]}})                         ; T17's guard: the run's finally is not shut
 
 ;; finally-enter: a normal run
-(a/theorem t-finally-enter-mb [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, st :- Nat]
-  (=> (= (mb mux mf mz mg w) true) (= (mb mux mf mz mg (:world (t-finally-enter w st))) true))
+(a/theorem l2-measure-t-finally-enter [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, st :- Nat]
+  (=> (= (l2-measure mux mf mz mg w) true) (= (l2-measure mux mf mz mg (:world (t-finally-enter w st))) true))
   (intro h)
   (cases ht (tok-run w st)) (case' [some r]) (case' [none])
   (simp only [t-finally-enter ht refuse]) (exact h)
   (cases hg (run-normal r))
   (simp only [t-finally-enter ht hg refuse]) (exact h)
   (simp only [t-finally-enter ht hg accept])
-  (exact (mb-run-upd-ne mux mf mz mg w (:id r) (run-fin-push (Finalizer.mk 0 (:effect-index r) (List.nil Nat))) (run-fin-push-id _)
-           (mb-un-alive mux mf mz mg w r (And.left (tok-facts w st r ht)) (normal-not-done r hg) h)
-           (run-fin-push-sok (Finalizer.mk 0 (:effect-index r) (List.nil Nat))) h)))
+  (exact (l2-measure-run-upd-ne mux mf mz mg w (:id r) (run-fin-push (Finalizer.mk 0 (:effect-index r) (List.nil Nat))) (run-fin-push-id _)
+           (l2-measure-un-alive mux mf mz mg w r (And.left (tok-facts w st r ht)) (normal-not-done r hg) h)
+           (run-fin-push-slice-holder-ok (Finalizer.mk 0 (:effect-index r) (List.nil Nat))) h)))
 
 ;; T6 parks its (normal) token run; take parks it as well
-(a/theorem mb-park-if [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, a :- Nat, rid :- Nat,
+(a/theorem l2-measure-park-if [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, a :- Nat, rid :- Nat,
                        hne :- (= (untracked mux mg rid) true)]
-  (=> (= (mb mux mf mz mg w) true) (= (mb mux mf mz mg (park-if w a rid)) true))
+  (=> (= (l2-measure mux mf mz mg w) true) (= (l2-measure mux mf mz mg (park-if w a rid)) true))
   (intro h)
   (cases ha (act-has w a))
   (simp only [park-if ha]) (exact h)
-  (simp only [park-if ha]) (exact (mb-run-upd-ne mux mf mz mg w rid run-park-row run-park-row-id hne run-park-row-sok h)))
-(tree/restate! MB '[inv-await-raw])
-(a/theorem t6-mb [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, st :- Nat, ds :- (List Nat), mode :- Nat, k :- Nat,
+  (simp only [park-if ha]) (exact (l2-measure-run-upd-ne mux mf mz mg w rid run-park-row run-park-row-id hne run-park-row-slice-holder-ok h)))
+(tree/restate! MB '[well-formed-await-raw])
+(a/theorem l2-measure-t6-await [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, st :- Nat, ds :- (List Nat), mode :- Nat, k :- Nat,
                   fresh :- Nat, mine :- (List Nat)]
-  (=> (= (mb mux mf mz mg w) true) (= (mb mux mf mz mg (:world (t6-await w st ds mode k fresh mine))) true))
+  (=> (= (l2-measure mux mf mz mg w) true) (= (l2-measure mux mf mz mg (:world (t6-await w st ds mode k fresh mine))) true))
   (intro h)
   (cases ht (tok-run w st)) (case' [some r]) (case' [none])
   (simp only [t6-await ht refuse]) (exact h)
@@ -615,11 +615,11 @@
   (simp only [t6-await ht hg refuse]) (exact h)
   (simp only [t6-await ht hg accept])
   (have hn (= (run-normal r) true)) (simp only [await-ok Bool.and_eq_true] at hg) (exact (And.left (And.right (And.left hg))))
-  (exact (mb-await-raw mux mf mz mg w r ds mode k mine
-           (mb-un-alive mux mf mz mg w r (And.left (tok-facts w st r ht)) (normal-not-done r hn) h) h)))
-(tree/restate! MB '[inv-take-park inv-take-now])
-(a/theorem t-take-mb [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, st :- Nat, x :- Nat, k :- Nat, fresh :- Nat]
-  (=> (= (mb mux mf mz mg w) true) (= (mb mux mf mz mg (:world (t-take w st x k fresh))) true))
+  (exact (l2-measure-await-raw mux mf mz mg w r ds mode k mine
+           (l2-measure-un-alive mux mf mz mg w r (And.left (tok-facts w st r ht)) (normal-not-done r hn) h) h)))
+(tree/restate! MB '[well-formed-take-park well-formed-take-now])
+(a/theorem l2-measure-t-take [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, st :- Nat, x :- Nat, k :- Nat, fresh :- Nat]
+  (=> (= (l2-measure mux mf mz mg w) true) (= (l2-measure mux mf mz mg (:world (t-take w st x k fresh))) true))
   (intro h)
   (cases ht (tok-run w st)) (case' [some r]) (case' [none])
   (simp only [t-take ht refuse]) (exact h)
@@ -630,23 +630,23 @@
   (cases hv (take-ready s))
   (simp only [t-take ht hs hg hv accept])
   (have hn (= (run-normal r) true)) (simp only [Bool.and_eq_true] at hg) (exact (And.left (And.right hg)))
-  (exact (mb-take-park mux mf mz mg w r x k (mb-un-alive mux mf mz mg w r (And.left (tok-facts w st r ht)) (normal-not-done r hn) h) h))
-  (simp only [t-take ht hs hg hv accept]) (exact (mb-take-now mux mf mz mg w r x h)))
+  (exact (l2-measure-take-park mux mf mz mg w r x k (l2-measure-un-alive mux mf mz mg w r (And.left (tok-facts w st r ht)) (normal-not-done r hn) h) h))
+  (simp only [t-take ht hs hg hv accept]) (exact (l2-measure-take-now mux mf mz mg w r x h)))
 
 ;; T17 arm (Z#55): the resource on the (normal, untracked) token run, then its park (take-park)
-(tree/restate! MB '[inv-take-park inv-resource-ins-fresh])
-(a/theorem mb-arm-park [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, r :- RunRow, kind :- Nat, k :- Nat,
+(tree/restate! MB '[well-formed-take-park well-formed-resource-ins-fresh])
+(a/theorem l2-measure-arm-park [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, r :- RunRow, kind :- Nat, k :- Nat,
                         hne :- (= (untracked mux mg (:id r)) true)]
-  (=> (= (mb mux mf mz mg w) true) (= (mb mux mf mz mg (arm-park w r kind k)) true))
+  (=> (= (l2-measure mux mf mz mg w) true) (= (l2-measure mux mf mz mg (arm-park w r kind k)) true))
   (intro h)
-  (have h1 (= (mb mux mf mz mg (arm-raw w r kind)) true))
+  (have h1 (= (l2-measure mux mf mz mg (arm-raw w r kind)) true))
   (simp only [arm-raw])
-  (exact (mb-run-upd-ne mux mf mz mg _ (:id r) (run-arm (:next-id w)) (run-arm-run-id _) hne (run-arm-sok (:next-id w))
-           (mb-resource-ins-fresh mux mf mz mg w (ResRow.mk (:next-id w) (:id r) kind (:effect-index r) rp-armed) (rfl) h)))
+  (exact (l2-measure-run-upd-ne mux mf mz mg _ (:id r) (run-arm (:next-id w)) (run-arm-run-id _) hne (run-arm-slice-holder-ok (:next-id w))
+           (l2-measure-resource-ins-fresh mux mf mz mg w (ResRow.mk (:next-id w) (:id r) kind (:effect-index r) rp-armed) (rfl) h)))
   (simp only [arm-park])
-  (exact (mb-take-park mux mf mz mg _ (run-arm (:next-id w) r) (:next-id w) k hne h1)))
-(a/theorem t17-mb [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, st :- Nat, kind :- Nat, k :- Nat, fresh :- Nat]
-  (=> (= (fin-shut w st) false) (= (mb mux mf mz mg w) true) (= (mb mux mf mz mg (:world (t17-arm w st kind k fresh))) true))
+  (exact (l2-measure-take-park mux mf mz mg _ (run-arm (:next-id w) r) (:next-id w) k hne h1)))
+(a/theorem l2-measure-t17-arm [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, st :- Nat, kind :- Nat, k :- Nat, fresh :- Nat]
+  (=> (= (arm-refused w st) false) (= (l2-measure mux mf mz mg w) true) (= (l2-measure mux mf mz mg (:world (t17-arm w st kind k fresh))) true))
   (intros hc h)
   (cases ht (tok-run w st)) (case' [some r]) (case' [none])
   (simp only [t17-arm ht refuse]) (exact h)
@@ -654,89 +654,89 @@
   (simp only [t17-arm ht hg refuse]) (exact h)
   (have hn (= (run-normal r) true)) (simp only [Bool.and_eq_true] at hg) (exact (And.left (And.right hg)))
   (simp only [t17-arm ht hg accept])
-  (exact (mb-arm-park mux mf mz mg w r kind k (mb-un-alive mux mf mz mg w r (And.left (tok-facts w st r ht)) (normal-not-done r hn) h) h)))
+  (exact (l2-measure-arm-park mux mf mz mg w r kind k (l2-measure-un-alive mux mf mz mg w r (And.left (tok-facts w st r ht)) (normal-not-done r hn) h) h)))
 
 ;; the scheduling choice (an alive run) and finalize (a cleanup-ready run) give the slice
-(a/theorem sched-mb [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, rid :- Nat]
-  (=> (= (mb mux mf mz mg w) true) (= (mb mux mf mz mg (:world (t-schedule w rid))) true))
+(a/theorem l2-measure-t-schedule [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, rid :- Nat]
+  (=> (= (l2-measure mux mf mz mg w) true) (= (l2-measure mux mf mz mg (:world (t-schedule w rid))) true))
   (intro h)
   (cases hf (run-find w rid)) (case' [some r]) (case' [none])
   (simp only [t-schedule hf refuse]) (exact h)
-  (cases hg (sched-ok w r))
+  (cases hg (schedule-ok w r))
   (simp only [t-schedule hf hg refuse]) (exact h)
   (simp only [t-schedule hf hg accept])
-  (exact (mb-run-upd-q mux mf mz mg w rid run-enter-row run-enter-row-id q-alive
-           (found-uniq w rid r q-alive (mb-sample mux mf mz mg w h) hf (sched-q w r hg)) (enter-alive-mb mux mf mz mg) h)))
-(a/theorem t-finalize-mb [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, rid :- Nat]
-  (=> (= (mb mux mf mz mg w) true) (= (mb mux mf mz mg (:world (t-finalize w rid))) true))
+  (exact (l2-measure-run-upd-q mux mf mz mg w rid run-enter-row run-enter-row-id q-alive
+           (found-uniq w rid r q-alive (l2-measure-well-formed mux mf mz mg w h) hf (t-schedule-q w r hg)) (enter-alive-l2-measure mux mf mz mg) h)))
+(a/theorem l2-measure-t-finalize [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, rid :- Nat]
+  (=> (= (l2-measure mux mf mz mg w) true) (= (l2-measure mux mf mz mg (:world (t-finalize w rid))) true))
   (intro h)
   (cases hf (run-find w rid)) (case' [some r]) (case' [none])
   (simp only [t-finalize hf refuse]) (exact h)
   (cases hg (cleanup-ready w r))
   (simp only [t-finalize hf hg refuse]) (exact h)
   (simp only [t-finalize hf hg accept])
-  (exact (mb-run-upd-q mux mf mz mg w rid run-enter-row run-enter-row-id q-cleanup
-           (found-uniq w rid r q-cleanup (mb-sample mux mf mz mg w h) hf (cleanup-q w r hg)) (enter-cleanup-mb mux mf mz mg) h)))
+  (exact (l2-measure-run-upd-q mux mf mz mg w rid run-enter-row run-enter-row-id q-cleanup
+           (found-uniq w rid r q-cleanup (l2-measure-well-formed mux mf mz mg w h) hf (cleanup-q w r hg)) (enter-cleanup-l2-measure mux mf mz mg) h)))
 
-(tree/restate! MB '[raw-inv inv-normalize])
+(tree/restate! MB '[well-formed-raw well-formed-normalize])
 
 ;; ---- Rule R and the step
 
-(a/theorem mb-rule-r-round [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World]
-  (=> (= (mb mux mf mz mg w) true) (= (filter-safe (normalize w)) true) (= (mb mux mf mz mg (rule-r-round w)) true))
+(a/theorem l2-measure-rule-r-round [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World]
+  (=> (= (l2-measure mux mf mz mg w) true) (= (filter-safe (normalize w)) true) (= (l2-measure mux mf mz mg (rule-r-round w)) true))
   (intros h hf)
   (simp only [rule-r-round])
   (rw [rule-r-filter-eq])
-  (exact (mb-filter-world mux mf mz mg _ (keep-fn (normalize w)) (mb-normalize mux mf mz mg w h) hf)))
+  (exact (l2-measure-filter-world mux mf mz mg _ (keep-fn (normalize w)) (l2-measure-normalize mux mf mz mg w h) hf)))
 
-(a/theorem mb-rr-loop [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, fuel :- (List Nat)]
-  (forall [w0 :- World] (=> (= (mb mux mf mz mg w0) true) (= (rr-safe fuel w0) true) (= (mb mux mf mz mg (rr-loop fuel (rule-r-round w0))) true)))
+(a/theorem l2-measure-rule-r-loop [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, fuel :- (List Nat)]
+  (forall [w0 :- World] (=> (= (l2-measure mux mf mz mg w0) true) (= (rounds-safe-loop fuel w0) true) (= (l2-measure mux mf mz mg (rule-r-loop fuel (rule-r-round w0))) true)))
   (induction fuel)
-  (case [nil] (intros w0 h hs) (simp only [rr-safe] at hs) (simp only [rr-loop]) (exact (mb-rule-r-round mux mf mz mg w0 h hs)))
+  (case [nil] (intros w0 h hs) (simp only [rounds-safe-loop] at hs) (simp only [rule-r-loop]) (exact (l2-measure-rule-r-round mux mf mz mg w0 h hs)))
   (case [cons x f ih]
     (intros w0 h hs)
-    (simp only [rr-safe Bool.and_eq_true] at hs)
-    (have h1 := (mb-rule-r-round mux mf mz mg w0 h (And.left hs)))
+    (simp only [rounds-safe-loop Bool.and_eq_true] at hs)
+    (have h1 := (l2-measure-rule-r-round mux mf mz mg w0 h (And.left hs)))
     (cases ho (no-orphans (rule-r-round w0)))
-    (case [false] (simp only [ho] at hs) (simp only [rr-loop ho]) (exact (ih (rule-r-round w0) h1 (And.right hs))))
-    (case [true] (simp only [rr-loop ho]) (exact h1))))
+    (case [false] (simp only [ho] at hs) (simp only [rule-r-loop ho]) (exact (ih (rule-r-round w0) h1 (And.right hs))))
+    (case [true] (simp only [rule-r-loop ho]) (exact h1))))
 
-(a/theorem mb-rule-r [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World]
-  (=> (= (mb mux mf mz mg w) true) (= (rule-r-safe w) true) (= (mb mux mf mz mg (rule-r w)) true))
-  (intros h hs) (simp only [rule-r-safe] at hs) (simp only [rule-r]) (exact (mb-rr-loop mux mf mz mg (rr-fuel w) w h hs)))
+(a/theorem l2-measure-rule-r [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World]
+  (=> (= (l2-measure mux mf mz mg w) true) (= (rule-r-safe w) true) (= (l2-measure mux mf mz mg (rule-r w)) true))
+  (intros h hs) (simp only [rule-r-safe] at hs) (simp only [rule-r]) (exact (l2-measure-rule-r-loop mux mf mz mg (rule-r-fuel w) w h hs)))
 
-(a/theorem step-mb [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, it :- Item]
-  (=> (= (mb mux mf mz mg w) true) (= (rule-r-safe (:world (raw w it))) true) (= (mb mux mf mz mg (:world (world-step w it))) true))
+(a/theorem step-l2-measure [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, it :- Item]
+  (=> (= (l2-measure mux mf mz mg w) true) (= (rule-r-safe (:world (raw w it))) true) (= (l2-measure mux mf mz mg (:world (world-step w it))) true))
   (intros h hs)
   (cases ha (:accepted (raw w it)))
   (case [false] (have e1 := (step-refuse w it ha)) (simp only [e1 refuse]) (exact h))
-  (case [true] (have e2 := (step-accepted w it ha)) (rw [e2]) (exact (mb-rule-r mux mf mz mg (:world (raw w it)) (raw-mb mux mf mz mg w it h) hs))))
+  (case [true] (have e2 := (step-accepted w it ha)) (rw [e2]) (exact (l2-measure-rule-r mux mf mz mg (:world (raw w it)) (l2-measure-raw mux mf mz mg w it h) hs))))
 
 ;; Theorem: the bundle (in each mode) is preserved by every step
-(a/theorem step-mb-total [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, it :- Item]
-  (=> (= (p3b w) true) (= (mb mux mf mz mg w) true) (= (mb mux mf mz mg (:world (world-step w it))) true))
-  (intros h hb) (exact (step-mb mux mf mz mg w it hb (step-rule-r-safe w it h))))
+(a/theorem step-l2-measure-total [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, it :- Item]
+  (=> (= (chain-start w) true) (= (l2-measure mux mf mz mg w) true) (= (l2-measure mux mf mz mg (:world (world-step w it))) true))
+  (intros h hb) (exact (step-l2-measure mux mf mz mg w it hb (step-rule-r-safe w it h))))
 
-;; the bundle after an accepted raw0 outcome carries over to the step's world (the loser cancel,
+;; the bundle after an accepted transition outcome carries over to the step's world (the loser cancel,
 ;; then Rule R)
-(a/theorem mb-step-of-raw0 [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, it :- Item]
-  (=> (= (host-item it) false) (= (p3b w) true) (= (:accepted (raw0 w it)) true) (= (mb mux mf mz mg (:world (raw0 w it))) true)
-      (= (mb mux mf mz mg (:world (world-step w it))) true))
+(a/theorem l2-measure-step-of-transition [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, w :- World, it :- Item]
+  (=> (= (host-item it) false) (= (chain-start w) true) (= (:accepted (transition w it)) true) (= (l2-measure mux mf mz mg (:world (transition w it))) true)
+      (= (l2-measure mux mf mz mg (:world (world-step w it))) true))
   (intros hh h ha hb)
-  (have eg := (raw0g-of w it hh))
-  (have a2 (= (:accepted (raw w it)) true)) (simp only [raw post eg ha accept])
-  (have e1 (= (:world (raw w it)) (cancel-losers w (:world (raw0 w it))))) (simp only [raw post eg ha accept])
+  (have eg := (host-guarded-transition-non-host w it hh))
+  (have a2 (= (:accepted (raw w it)) true)) (simp only [raw then-cancel-losers eg ha accept])
+  (have e1 (= (:world (raw w it)) (cancel-losers w (:world (transition w it))))) (simp only [raw then-cancel-losers eg ha accept])
   (have e2 := (step-accepted w it a2))
   (rw [e2])
-  (have hr (= (mb mux mf mz mg (:world (raw w it))) true)) (rw [e1]) (exact (mb-cancel-losers mux mf mz mg w _ hb))
-  (exact (mb-rule-r mux mf mz mg _ hr (step-rule-r-safe w it h))))
+  (have hr (= (l2-measure mux mf mz mg (:world (raw w it))) true)) (rw [e1]) (exact (l2-measure-cancel-losers mux mf mz mg w _ hb))
+  (exact (l2-measure-rule-r mux mf mz mg _ hr (step-rule-r-safe w it h))))
 
-(a/theorem sok-empty [] (= (sok empty-world) true) (rfl))
+(a/theorem slice-holder-ok-empty [] (= (slice-holder-ok empty-world) true) (rfl))
 
 ;; Theorem: slice-ok for every run is invariant (a completed run never holds the slice)
-(a/theorem step-sok [w :- World, it :- Item]
-  (=> (= (p3b w) true) (= (sok w) true) (= (sok (:world (world-step w it))) true))
-  (intros h hs) (exact (step-mb-total 0 0 0 2 w it h hs)))
+(a/theorem step-slice-holder-ok [w :- World, it :- Item]
+  (=> (= (chain-start w) true) (= (slice-holder-ok w) true) (= (slice-holder-ok (:world (world-step w it))) true))
+  (intros h hs) (exact (step-l2-measure-total 0 0 0 2 w it h hs)))
 
 ;; ===========================================================================
 ;; Part E. L2: the measure lemmas
@@ -745,137 +745,137 @@
 (a/defn mu-bound [mf :- Nat, mz :- Nat, r :- RunRow] Bool
   (Bool.and (run-done r) (Bool.and (Nat.ble (mu-f r) mf) (Nat.ble (mu-z r) mz))))
 
-(a/theorem mb-row-track [x :- Nat, mf :- Nat, mz :- Nat, q :- RunRow]
-  (=> (= (mb-row x mf mz 0 q) true) (= (:id q) x)
+(a/theorem l2-measure-row-track [x :- Nat, mf :- Nat, mz :- Nat, q :- RunRow]
+  (=> (= (l2-measure-row x mf mz 0 q) true) (= (:id q) x)
       (And (= (run-done q) true) (And (<= (mu-f q) mf) (<= (mu-z q) mz))))
   (intros h e)
   (have hx (= (Nat.beq (:id q) x) true)) (rw [e]) (exact (Nat.beq_refl x))
-  (simp [mb-row mu-at hx] at h)
+  (simp [l2-measure-row mu-at hx] at h)
   (exact (And.right h)))
 
-(a/theorem mb-row-gone [x :- Nat, mf :- Nat, mz :- Nat, q :- RunRow]
-  (=> (= (mb-row x mf mz 1 q) true) (= (:id q) x) False)
+(a/theorem l2-measure-row-gone [x :- Nat, mf :- Nat, mz :- Nat, q :- RunRow]
+  (=> (= (l2-measure-row x mf mz 1 q) true) (= (:id q) x) False)
   (intros h e)
   (have hx (= (Nat.beq (:id q) x) true)) (rw [e]) (exact (Nat.beq_refl x))
-  (simp [mb-row mu-at hx] at h))
+  (simp [l2-measure-row mu-at hx] at h))
 
-(a/theorem sok-row [w :- World, q :- RunRow] (=> (= (sok w) true) (List.Mem q (:runs w)) (= (slice-ok q) true))
+(a/theorem slice-holder-ok-row [w :- World, q :- RunRow] (=> (= (slice-holder-ok w) true) (List.Mem q (:runs w)) (= (slice-ok q) true))
   (intros h hm)
-  (have r := (mb-row-mem 0 0 0 2 w q h hm))
-  (simp only [mb-row Bool.and_eq_true] at r) (exact (And.left r)))
+  (have r := (l2-measure-row-mem 0 0 0 2 w q h hm))
+  (simp only [l2-measure-row Bool.and_eq_true] at r) (exact (And.left r)))
 
 (a/theorem row-snap [x :- Nat, mf :- Nat, mz :- Nat, q :- RunRow]
-  (=> (= (slice-ok q) true) (= (same-id-then run-id x (mu-bound mf mz) q) true) (= (mb-row x mf mz 0 q) true))
+  (=> (= (slice-ok q) true) (= (same-id-then run-id x (mu-bound mf mz) q) true) (= (l2-measure-row x mf mz 0 q) true))
   (intros hs hq)
   (cases hx (Nat.beq (:id q) x))
-  (case [false] (simp only [mb-row hs (mu-at-ne x mf mz 0 q hx) Bool.and_self]))
+  (case [false] (simp only [l2-measure-row hs (mu-at-ne x mf mz 0 q hx) Bool.and_self]))
   (case [true]
     (have hx2 (= (Nat.beq (run-id q) x) true)) (exact hx)
     (simp only [same-id-then hx2 Bool.not_true Bool.false_or mu-bound] at hq)
-    (simp only [mb-row mu-at hs hx hq Bool.not_true Bool.false_or Nat.beq_refl Bool.true_and Bool.or_true])))
+    (simp only [l2-measure-row mu-at hs hx hq Bool.not_true Bool.false_or Nat.beq_refl Bool.true_and Bool.or_true])))
 
 ;; a done run's current measure is a bound for the bundle in mode 0
-(a/theorem mb-row-sok [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, q :- RunRow]
-  (=> (= (mb-row mux mf mz mg q) true) (= (slice-ok q) true))
-  (intro h) (simp only [mb-row Bool.and_eq_true] at h) (exact (And.left h)))
+(a/theorem l2-measure-row-slice-holder-ok [mux :- Nat, mf :- Nat, mz :- Nat, mg :- Nat, q :- RunRow]
+  (=> (= (l2-measure-row mux mf mz mg q) true) (= (slice-ok q) true))
+  (intro h) (simp only [l2-measure-row Bool.and_eq_true] at h) (exact (And.left h)))
 
-(a/theorem mb-of-done [w :- World, r :- RunRow]
-  (=> (= (sok w) true) (List.Mem r (:runs w)) (= (run-done r) true) (= (mb (:id r) (mu-f r) (mu-z r) 0 w) true))
+(a/theorem l2-measure-of-done [w :- World, r :- RunRow]
+  (=> (= (slice-holder-ok w) true) (List.Mem r (:runs w)) (= (run-done r) true) (= (l2-measure (:id r) (mu-f r) (mu-z r) 0 w) true))
   (intros h hm hd)
-  (have hs := (mb-sample 0 0 0 2 w h))
+  (have hs := (l2-measure-well-formed 0 0 0 2 w h))
   (have hb (= (mu-bound (mu-f r) (mu-z r) r) true)) (simp [mu-bound hd])
   (have u (= (tbl-all (same-id-then run-id (:id r) (mu-bound (mu-f r) (mu-z r))) (:runs w)) true))
   (exact (uniq-all RunRow run-id (mu-bound (mu-f r) (mu-z r)) r (:runs w) (lit-runs-nodup w hs) hm hb))
-  (have so (= (tbl-all (mb-row 0 0 0 2) (:runs w)) true)) (exact (And.right (mb-rest-parts 0 0 0 2 w (mb-rest-of 0 0 0 2 w h))))
-  (have step (forall [q :- RunRow] (=> (= (mb-row 0 0 0 2 q) true) (= (same-id-then run-id (:id r) (mu-bound (mu-f r) (mu-z r)) q) true)
-                                       (= (mb-row (:id r) (mu-f r) (mu-z r) 0 q) true))))
-  (intros q a1 a2) (exact (row-snap (:id r) (mu-f r) (mu-z r) q (mb-row-sok 0 0 0 2 q a1) a2))
-  (have rows (= (tbl-all (mb-row (:id r) (mu-f r) (mu-z r) 0) (:runs w)) true))
-  (exact (tbl-all-mono2 RunRow (mb-row 0 0 0 2) (same-id-then run-id (:id r) (mu-bound (mu-f r) (mu-z r))) (mb-row (:id r) (mu-f r) (mu-z r) 0)
+  (have so (= (tbl-all (l2-measure-row 0 0 0 2) (:runs w)) true)) (exact (And.right (l2-measure-rest-parts 0 0 0 2 w (l2-measure-rest-of 0 0 0 2 w h))))
+  (have step (forall [q :- RunRow] (=> (= (l2-measure-row 0 0 0 2 q) true) (= (same-id-then run-id (:id r) (mu-bound (mu-f r) (mu-z r)) q) true)
+                                       (= (l2-measure-row (:id r) (mu-f r) (mu-z r) 0 q) true))))
+  (intros q a1 a2) (exact (row-snap (:id r) (mu-f r) (mu-z r) q (l2-measure-row-slice-holder-ok 0 0 0 2 q a1) a2))
+  (have rows (= (tbl-all (l2-measure-row (:id r) (mu-f r) (mu-z r) 0) (:runs w)) true))
+  (exact (tbl-all-mono2 RunRow (l2-measure-row 0 0 0 2) (same-id-then run-id (:id r) (mu-bound (mu-f r) (mu-z r))) (l2-measure-row (:id r) (mu-f r) (mu-z r) 0)
            step (:runs w) so u))
-  (exact (mb-intro (:id r) (mu-f r) (mu-z r) 0 w hs (mb-rest-mk (:id r) (mu-f r) (mu-z r) 0 w (run-below w r hs hm) rows))))
+  (exact (l2-measure-intro (:id r) (mu-f r) (mu-z r) 0 w hs (l2-measure-rest-mk (:id r) (mu-f r) (mu-z r) 0 w (run-below w r hs hm) rows))))
 
 ;; Theorem (L2 b): no step increases the measure of a run that is done (cancelled or completed,
 ;; not retired): afterwards every row with its id is done, with mu-f and mu-z at most as before
 (a/theorem step-mu-le [w :- World, it :- Item, r :- RunRow, r2 :- RunRow]
-  (=> (= (p3b w) true) (= (sok w) true) (List.Mem r (:runs w)) (= (run-done r) true)
+  (=> (= (chain-start w) true) (= (slice-holder-ok w) true) (List.Mem r (:runs w)) (= (run-done r) true)
       (List.Mem r2 (:runs (:world (world-step w it)))) (= (:id r2) (:id r))
       (And (= (run-done r2) true) (And (<= (mu-f r2) (mu-f r)) (<= (mu-z r2) (mu-z r)))))
   (intros h hs hm hd hm2 he)
-  (have b := (step-mb-total (:id r) (mu-f r) (mu-z r) 0 w it h (mb-of-done w r hs hm hd)))
-  (exact (mb-row-track (:id r) (mu-f r) (mu-z r) r2 (mb-row-mem (:id r) (mu-f r) (mu-z r) 0 _ r2 b hm2) he)))
+  (have b := (step-l2-measure-total (:id r) (mu-f r) (mu-z r) 0 w it h (l2-measure-of-done w r hs hm hd)))
+  (exact (l2-measure-row-track (:id r) (mu-f r) (mu-z r) r2 (l2-measure-row-mem (:id r) (mu-f r) (mu-z r) 0 _ r2 b hm2) he)))
 
 ;; ---- (a) and (c): the progress events
 
 ;; a row within the bound
 (a/theorem row-bound [x :- Nat, mf :- Nat, mz :- Nat, q :- RunRow]
-  (=> (= (slice-ok q) true) (= (run-done q) true) (<= (mu-f q) mf) (<= (mu-z q) mz) (= (mb-row x mf mz 0 q) true))
+  (=> (= (slice-ok q) true) (= (run-done q) true) (<= (mu-f q) mf) (<= (mu-z q) mz) (= (l2-measure-row x mf mz 0 q) true))
   (intros hs hd hf hz)
   (have b1 (= (Nat.ble (mu-f q) mf) true)) (simp only [Nat.ble_eq]) (exact hf)
   (have b2 (= (Nat.ble (mu-z q) mz) true)) (simp only [Nat.ble_eq]) (exact hz)
-  (simp only [mb-row mu-at hs hd b1 b2 Nat.beq_refl Bool.and_self Bool.or_true]))
+  (simp only [l2-measure-row mu-at hs hd b1 b2 Nat.beq_refl Bool.and_self Bool.or_true]))
 
 ;; a run edit of the rows with id x (all of which satisfy Q) that leaves them within mf/mz
-(a/theorem mb-upd-tight [x :- Nat, mf :- Nat, mz :- Nat, w :- World, g :- (=> RunRow RunRow),
+(a/theorem l2-measure-upd-tight [x :- Nat, mf :- Nat, mz :- Nat, w :- World, g :- (=> RunRow RunRow),
                          hg :- (forall [q :- RunRow] (= (run-id (g q)) (run-id q))),
                          Q :- (=> RunRow Bool),
-                         hk :- (forall [q :- RunRow] (=> (= (Q q) true) (= (slice-ok q) true) (= (mb-row x mf mz 0 (g q)) true)))]
-  (=> (= (sok w) true) (< x (:next-id w)) (= (tbl-all (same-id-then run-id x Q) (:runs w)) true)
-      (= (mb x mf mz 0 (run-upd w x g)) true))
+                         hk :- (forall [q :- RunRow] (=> (= (Q q) true) (= (slice-ok q) true) (= (l2-measure-row x mf mz 0 (g q)) true)))]
+  (=> (= (slice-holder-ok w) true) (< x (:next-id w)) (= (tbl-all (same-id-then run-id x Q) (:runs w)) true)
+      (= (l2-measure x mf mz 0 (run-upd w x g)) true))
   (intros h hx hq)
-  (have hs := (mb-sample 0 0 0 2 w h))
-  (have so (= (tbl-all (mb-row 0 0 0 2) (:runs w)) true)) (exact (And.right (mb-rest-parts 0 0 0 2 w (mb-rest-of 0 0 0 2 w h))))
-  (have hin (forall [q :- RunRow] (=> (= (mb-row 0 0 0 2 q) true) (= (same-id-then run-id x Q q) true) (= (Nat.beq (run-id q) x) true)
-                                      (= (mb-row x mf mz 0 (g q)) true))))
-  (intros q a1 a2 a3) (simp only [same-id-then a3 Bool.not_true Bool.false_or] at a2) (exact (hk q a2 (mb-row-sok 0 0 0 2 q a1)))
-  (have hout (forall [q :- RunRow] (=> (= (mb-row 0 0 0 2 q) true) (= (same-id-then run-id x Q q) true) (= (Nat.beq (run-id q) x) false)
-                                       (= (mb-row x mf mz 0 q) true))))
-  (intros q a1 a2 a3) (simp only [mb-row (mb-row-sok 0 0 0 2 q a1) (mu-at-ne x mf mz 0 q a3) Bool.and_self])
-  (have rows := (all-upd2 RunRow run-id x g (mb-row 0 0 0 2) (same-id-then run-id x Q) (mb-row x mf mz 0) hin hout (:runs w) so hq))
-  (exact (mb-intro x mf mz 0 _ (inv-run-upd w x g hg hs) (mb-rest-mk x mf mz 0 (run-upd w x g) hx rows))))
+  (have hs := (l2-measure-well-formed 0 0 0 2 w h))
+  (have so (= (tbl-all (l2-measure-row 0 0 0 2) (:runs w)) true)) (exact (And.right (l2-measure-rest-parts 0 0 0 2 w (l2-measure-rest-of 0 0 0 2 w h))))
+  (have hin (forall [q :- RunRow] (=> (= (l2-measure-row 0 0 0 2 q) true) (= (same-id-then run-id x Q q) true) (= (Nat.beq (run-id q) x) true)
+                                      (= (l2-measure-row x mf mz 0 (g q)) true))))
+  (intros q a1 a2 a3) (simp only [same-id-then a3 Bool.not_true Bool.false_or] at a2) (exact (hk q a2 (l2-measure-row-slice-holder-ok 0 0 0 2 q a1)))
+  (have hout (forall [q :- RunRow] (=> (= (l2-measure-row 0 0 0 2 q) true) (= (same-id-then run-id x Q q) true) (= (Nat.beq (run-id q) x) false)
+                                       (= (l2-measure-row x mf mz 0 q) true))))
+  (intros q a1 a2 a3) (simp only [l2-measure-row (l2-measure-row-slice-holder-ok 0 0 0 2 q a1) (mu-at-ne x mf mz 0 q a3) Bool.and_self])
+  (have rows := (all-upd2 RunRow run-id x g (l2-measure-row 0 0 0 2) (same-id-then run-id x Q) (l2-measure-row x mf mz 0) hin hout (:runs w) so hq))
+  (exact (l2-measure-intro x mf mz 0 _ (well-formed-run-upd w x g hg hs) (l2-measure-rest-mk x mf mz 0 (run-upd w x g) hx rows))))
 
 (a/theorem sub-one-lt [n :- Nat, a :- Nat] (=> (= (+ a 1) n) (< (- n 1) n)) (intro h) (omega))
 
 ;; finalizer exit: the head region becomes a running clause while the cleanup slice is held
 (a/theorem mfv-exit-held [ei :- Nat, fs :- (List Finalizer)]
-  (=> (= (fin-exit-bad fs) false) (= (+ (mfv (fins-exit (Finalizer.mk 1 ei (List.nil Nat)) fs) true) 1) (mfv fs true)))
+  (=> (= (finally-exit-refused fs) false) (= (+ (mfv (fins-exit (Finalizer.mk 1 ei (List.nil Nat)) fs) true) 1) (mfv fs true)))
   (intro he) (cases fs)
-  (case [nil] (simp [fin-exit-bad] at he))
+  (case [nil] (simp [finally-exit-refused] at he))
   (case [cons fh ft]
-    (have g (= (fin-region fh) true)) (simp only [fin-exit-bad fin-running] at he) (simp only [fin-region]) (exact (bnot-false _ he))
+    (have g (= (fin-region fh) true)) (simp only [finally-exit-refused fin-running] at he) (simp only [fin-region]) (exact (bnot-false _ he))
     (have m1 (= (fin-w (Finalizer.mk 1 ei (List.nil Nat))) 1)) (rfl)
     (have m2 (= (fin-w fh) 2)) (simp only [fin-w g])
     (simp only [mfv fins-exit fins-len fe-cons m1 m2 Bool.not_false Bool.or_true Bool.true_or])))
 (a/theorem exit-held [q :- RunRow]
-  (=> (= (:slice q) true) (= (fin-exit-bad (:finalizers q)) false) (= (+ (mu-f (run-fin-exit q)) 1) (mu-f q)))
+  (=> (= (:slice q) true) (= (finally-exit-refused (:finalizers q)) false) (= (+ (mu-f (run-fin-exit q)) 1) (mu-f q)))
   (intros hs he)
   (have e1 (= (mu-f (run-fin-exit q)) (mfv (fins-exit (Finalizer.mk 1 (:effect-index q) (List.nil Nat)) (:finalizers q)) (:slice q)))) (rfl)
   (have e2 (= (mu-f q) (mfv (:finalizers q) (:slice q)))) (rfl)
   (rw [e1 e2 hs]) (exact (mfv-exit-held (:effect-index q) (:finalizers q) he)))
 ;; clause end: the head running clause pops while the slice is held
 (a/theorem mfv-leave-held [fs :- (List Finalizer)]
-  (=> (= (fin-leave-bad fs) false) (= (+ (mfv (fins-tail fs) true) 1) (mfv fs true)))
+  (=> (= (finally-leave-refused fs) false) (= (+ (mfv (fins-tail fs) true) 1) (mfv fs true)))
   (intro he) (cases fs)
-  (case [nil] (simp [fin-leave-bad] at he))
+  (case [nil] (simp [finally-leave-refused] at he))
   (case [cons fh ft]
-    (have m2 (= (fin-w fh) 1)) (simp only [fin-leave-bad] at he) (simp only [fin-w he])
+    (have m2 (= (fin-w fh) 1)) (simp only [finally-leave-refused] at he) (simp only [fin-w he])
     (simp only [mfv fins-tail fins-len fe-cons m2 Bool.not_false Bool.or_true Bool.true_or])))
 (a/theorem leave-held [q :- RunRow]
-  (=> (= (:slice q) true) (= (fin-leave-bad (:finalizers q)) false) (= (+ (mu-f (run-fin-pop q)) 1) (mu-f q)))
+  (=> (= (:slice q) true) (= (finally-leave-refused (:finalizers q)) false) (= (+ (mu-f (run-fin-pop q)) 1) (mu-f q)))
   (intros hs he)
   (have e1 (= (mu-f (run-fin-pop q)) (mfv (fins-tail (:finalizers q)) (:slice q)))) (rfl)
   (have e2 (= (mu-f q) (mfv (:finalizers q) (:slice q)))) (rfl)
   (rw [e1 e2 hs]) (exact (mfv-leave-held (:finalizers q) he)))
 
 (a/defn q-fx [mf :- Nat, mz :- Nat, q :- RunRow] Bool
-  (Bool.and (run-done q) (Bool.and (:slice q) (Bool.and (Bool.not (fin-exit-bad (:finalizers q)))
+  (Bool.and (run-done q) (Bool.and (:slice q) (Bool.and (Bool.not (finally-exit-refused (:finalizers q)))
    (Bool.and (Nat.beq (mu-f q) mf) (Nat.beq (mu-z q) mz))))))
 (a/defn q-fl [mf :- Nat, mz :- Nat, q :- RunRow] Bool
-  (Bool.and (run-done q) (Bool.and (:slice q) (Bool.and (Bool.not (fin-leave-bad (:finalizers q)))
+  (Bool.and (run-done q) (Bool.and (:slice q) (Bool.and (Bool.not (finally-leave-refused (:finalizers q)))
    (Bool.and (Nat.beq (mu-f q) mf) (Nat.beq (mu-z q) mz))))))
 
 (a/theorem fx-row [x :- Nat, mf :- Nat, mz :- Nat]
-  (forall [q :- RunRow] (=> (= (q-fx mf mz q) true) (= (slice-ok q) true) (= (mb-row x (- mf 1) mz 0 (run-fin-exit q)) true)))
+  (forall [q :- RunRow] (=> (= (q-fx mf mz q) true) (= (slice-ok q) true) (= (l2-measure-row x (- mf 1) mz 0 (run-fin-exit q)) true)))
   (intros q hq hs)
   (simp only [q-fx Bool.and_eq_true] at hq)
   (have p := (exit-held q (And.left (And.right hq)) (bnot-true _ (And.left (And.right (And.right hq))))))
@@ -885,7 +885,7 @@
   (have l2 (<= (mu-z (run-fin-exit q)) mz)) (exact (Nat.le_of_eq e2))
   (exact (row-bound x (- mf 1) mz (run-fin-exit q) hs (And.left hq) l1 l2)))
 (a/theorem fl-row [x :- Nat, mf :- Nat, mz :- Nat]
-  (forall [q :- RunRow] (=> (= (q-fl mf mz q) true) (= (slice-ok q) true) (= (mb-row x (- mf 1) mz 0 (run-fin-pop q)) true)))
+  (forall [q :- RunRow] (=> (= (q-fl mf mz q) true) (= (slice-ok q) true) (= (l2-measure-row x (- mf 1) mz 0 (run-fin-pop q)) true)))
   (intros q hq hs)
   (simp only [q-fl Bool.and_eq_true] at hq)
   (have p := (leave-held q (And.left (And.right hq)) (bnot-true _ (And.left (And.right (And.right hq))))))
@@ -898,27 +898,27 @@
 ;; Theorem (L2 a): an accepted `finally-exit` of a done run (its cleanup slice starts the head
 ;; finalizer's block) drops mu-f by one; mu-z does not grow
 (a/theorem finally-exit-dec [w :- World, st :- Nat, r :- RunRow, r2 :- RunRow]
-  (=> (= (p3b w) true) (= (sok w) true) (= (tok-run w st) (Option.some RunRow r)) (= (run-done r) true)
-      (= (:accepted (raw0 w (Item.finally-exit st))) true)
+  (=> (= (chain-start w) true) (= (slice-holder-ok w) true) (= (tok-run w st) (Option.some RunRow r)) (= (run-done r) true)
+      (= (:accepted (transition w (Item.finally-exit st))) true)
       (List.Mem r2 (:runs (:world (world-step w (Item.finally-exit st))))) (= (:id r2) (:id r))
       (And (< (mu-f r2) (mu-f r)) (<= (mu-z r2) (mu-z r))))
   (intros h hs ht hd ha hm2 he)
   (have tf := (tok-facts w st r ht))
-  (have hsam := (mb-sample 0 0 0 2 w hs))
-  (cases hfe (fin-exit-bad (:finalizers r)))
-  (case [true] (simp [raw0 t-finally-exit ht hfe refuse] at ha))
+  (have hsam := (l2-measure-well-formed 0 0 0 2 w hs))
+  (cases hfe (finally-exit-refused (:finalizers r)))
+  (case [true] (simp [transition t-finally-exit ht hfe refuse] at ha))
   (case [false]
-    (have e0 (= (:world (raw0 w (Item.finally-exit st))) (run-upd w (:id r) run-fin-exit)))
-    (simp only [raw0 t-finally-exit ht hfe accept])
+    (have e0 (= (:world (transition w (Item.finally-exit st))) (run-upd w (:id r) run-fin-exit)))
+    (simp only [transition t-finally-exit ht hfe accept])
     (have hq (= (q-fx (mu-f r) (mu-z r) r) true))
     (simp [q-fx hd (And.right tf) hfe])
     (have u (= (tbl-all (same-id-then run-id (:id r) (q-fx (mu-f r) (mu-z r))) (:runs w)) true))
     (exact (uniq-all RunRow run-id (q-fx (mu-f r) (mu-z r)) r (:runs w) (lit-runs-nodup w hsam) (And.left tf) hq))
-    (have b0 := (mb-upd-tight (:id r) (- (mu-f r) 1) (mu-z r) w run-fin-exit run-fin-exit-id (q-fx (mu-f r) (mu-z r))
+    (have b0 := (l2-measure-upd-tight (:id r) (- (mu-f r) 1) (mu-z r) w run-fin-exit run-fin-exit-id (q-fx (mu-f r) (mu-z r))
                   (fx-row (:id r) (mu-f r) (mu-z r)) hs (run-below w r hsam (And.left tf)) u))
-    (have b1 (= (mb (:id r) (- (mu-f r) 1) (mu-z r) 0 (:world (raw0 w (Item.finally-exit st)))) true)) (rw [e0]) (exact b0)
-    (have b2 := (mb-step-of-raw0 (:id r) (- (mu-f r) 1) (mu-z r) 0 w (Item.finally-exit st) (rfl) h ha b1))
-    (have t := (mb-row-track (:id r) (- (mu-f r) 1) (mu-z r) r2 (mb-row-mem (:id r) (- (mu-f r) 1) (mu-z r) 0 _ r2 b2 hm2) he))
+    (have b1 (= (l2-measure (:id r) (- (mu-f r) 1) (mu-z r) 0 (:world (transition w (Item.finally-exit st)))) true)) (rw [e0]) (exact b0)
+    (have b2 := (l2-measure-step-of-transition (:id r) (- (mu-f r) 1) (mu-z r) 0 w (Item.finally-exit st) (rfl) h ha b1))
+    (have t := (l2-measure-row-track (:id r) (- (mu-f r) 1) (mu-z r) r2 (l2-measure-row-mem (:id r) (- (mu-f r) 1) (mu-z r) 0 _ r2 b2 hm2) he))
     (have p := (exit-held r (And.right tf) hfe))
     (exact (And.intro (Nat.lt_of_le_of_lt (And.left (And.right t)) (sub-one-lt (mu-f r) (mu-f (run-fin-exit r)) p))
                       (And.right (And.right t))))))
@@ -926,27 +926,27 @@
 ;; Theorem (L2 a, C1): an accepted `finally-leave` of a done run (its block ended) drops mu-f by
 ;; one; mu-z does not grow
 (a/theorem finally-leave-dec [w :- World, st :- Nat, r :- RunRow, r2 :- RunRow]
-  (=> (= (p3b w) true) (= (sok w) true) (= (tok-run w st) (Option.some RunRow r)) (= (run-done r) true)
-      (= (:accepted (raw0 w (Item.finally-leave st))) true)
+  (=> (= (chain-start w) true) (= (slice-holder-ok w) true) (= (tok-run w st) (Option.some RunRow r)) (= (run-done r) true)
+      (= (:accepted (transition w (Item.finally-leave st))) true)
       (List.Mem r2 (:runs (:world (world-step w (Item.finally-leave st))))) (= (:id r2) (:id r))
       (And (< (mu-f r2) (mu-f r)) (<= (mu-z r2) (mu-z r))))
   (intros h hs ht hd ha hm2 he)
   (have tf := (tok-facts w st r ht))
-  (have hsam := (mb-sample 0 0 0 2 w hs))
-  (cases hfe (fin-leave-bad (:finalizers r)))
-  (case [true] (simp [raw0 t-finally-leave ht hfe refuse] at ha))
+  (have hsam := (l2-measure-well-formed 0 0 0 2 w hs))
+  (cases hfe (finally-leave-refused (:finalizers r)))
+  (case [true] (simp [transition t-finally-leave ht hfe refuse] at ha))
   (case [false]
-    (have e0 (= (:world (raw0 w (Item.finally-leave st))) (run-upd w (:id r) run-fin-pop)))
-    (simp only [raw0 t-finally-leave ht hfe accept])
+    (have e0 (= (:world (transition w (Item.finally-leave st))) (run-upd w (:id r) run-fin-pop)))
+    (simp only [transition t-finally-leave ht hfe accept])
     (have hq (= (q-fl (mu-f r) (mu-z r) r) true))
     (simp [q-fl hd (And.right tf) hfe])
     (have u (= (tbl-all (same-id-then run-id (:id r) (q-fl (mu-f r) (mu-z r))) (:runs w)) true))
     (exact (uniq-all RunRow run-id (q-fl (mu-f r) (mu-z r)) r (:runs w) (lit-runs-nodup w hsam) (And.left tf) hq))
-    (have b0 := (mb-upd-tight (:id r) (- (mu-f r) 1) (mu-z r) w run-fin-pop run-fin-pop-id (q-fl (mu-f r) (mu-z r))
+    (have b0 := (l2-measure-upd-tight (:id r) (- (mu-f r) 1) (mu-z r) w run-fin-pop run-fin-pop-id (q-fl (mu-f r) (mu-z r))
                   (fl-row (:id r) (mu-f r) (mu-z r)) hs (run-below w r hsam (And.left tf)) u))
-    (have b1 (= (mb (:id r) (- (mu-f r) 1) (mu-z r) 0 (:world (raw0 w (Item.finally-leave st)))) true)) (rw [e0]) (exact b0)
-    (have b2 := (mb-step-of-raw0 (:id r) (- (mu-f r) 1) (mu-z r) 0 w (Item.finally-leave st) (rfl) h ha b1))
-    (have t := (mb-row-track (:id r) (- (mu-f r) 1) (mu-z r) r2 (mb-row-mem (:id r) (- (mu-f r) 1) (mu-z r) 0 _ r2 b2 hm2) he))
+    (have b1 (= (l2-measure (:id r) (- (mu-f r) 1) (mu-z r) 0 (:world (transition w (Item.finally-leave st)))) true)) (rw [e0]) (exact b0)
+    (have b2 := (l2-measure-step-of-transition (:id r) (- (mu-f r) 1) (mu-z r) 0 w (Item.finally-leave st) (rfl) h ha b1))
+    (have t := (l2-measure-row-track (:id r) (- (mu-f r) 1) (mu-z r) r2 (l2-measure-row-mem (:id r) (- (mu-f r) 1) (mu-z r) 0 _ r2 b2 hm2) he))
     (have p := (leave-held r (And.right tf) hfe))
     (exact (And.intro (Nat.lt_of_le_of_lt (And.left (And.right t)) (sub-one-lt (mu-f r) (mu-f (run-fin-pop r)) p))
                       (And.right (And.right t))))))
@@ -983,57 +983,57 @@
       (simp only [tbl-all run-not-id hb2 Bool.not_false (ih h) Bool.and_self]))))
 
 (a/theorem row-un-gone [x :- Nat, q :- RunRow]
-  (=> (= (slice-ok q) true) (= (Nat.beq (:id q) x) false) (= (mb-row x 0 0 1 q) true))
-  (intros hs hn) (simp only [mb-row hs (mu-at-ne x 0 0 1 q hn) Bool.and_self]))
+  (=> (= (slice-ok q) true) (= (Nat.beq (:id q) x) false) (= (l2-measure-row x 0 0 1 q) true))
+  (intros hs hn) (simp only [l2-measure-row hs (mu-at-ne x 0 0 1 q hn) Bool.and_self]))
 
 ;; from mode 0 with bound (0, 0) to mode 1 (gone) when no row has the id
-(a/theorem mb-gone-of [x :- Nat, w :- World]
-  (=> (= (mb x 0 0 0 w) true) (= (tbl-all (run-not-id x) (:runs w)) true) (= (mb x 0 0 1 w) true))
+(a/theorem l2-measure-gone-of [x :- Nat, w :- World]
+  (=> (= (l2-measure x 0 0 0 w) true) (= (tbl-all (run-not-id x) (:runs w)) true) (= (l2-measure x 0 0 1 w) true))
   (intros h hn)
-  (have p := (mb-rest-parts x 0 0 0 w (mb-rest-of x 0 0 0 w h)))
-  (have rows (= (tbl-all (mb-row x 0 0 1) (:runs w)) true))
-  (exact (tbl-all-mono2 RunRow (mb-row x 0 0 0) (run-not-id x) (mb-row x 0 0 1)
-           (fn [q :- RunRow, a1 :- (= (mb-row x 0 0 0 q) true), a2 :- (= (run-not-id x q) true)]
-             (row-un-gone x q (mb-row-sok x 0 0 0 q a1) (bnot-true _ a2)))
+  (have p := (l2-measure-rest-parts x 0 0 0 w (l2-measure-rest-of x 0 0 0 w h)))
+  (have rows (= (tbl-all (l2-measure-row x 0 0 1) (:runs w)) true))
+  (exact (tbl-all-mono2 RunRow (l2-measure-row x 0 0 0) (run-not-id x) (l2-measure-row x 0 0 1)
+           (fn [q :- RunRow, a1 :- (= (l2-measure-row x 0 0 0 q) true), a2 :- (= (run-not-id x q) true)]
+             (row-un-gone x q (l2-measure-row-slice-holder-ok x 0 0 0 q a1) (bnot-true _ a2)))
            (:runs w) (And.right p) hn))
-  (exact (mb-intro x 0 0 1 w (mb-sample x 0 0 0 w h) (mb-rest-mk x 0 0 1 w (And.left p) rows))))
+  (exact (l2-measure-intro x 0 0 1 w (l2-measure-well-formed x 0 0 0 w h) (l2-measure-rest-mk x 0 0 1 w (And.left p) rows))))
 
-(a/theorem mb-del-gone [x :- Nat, w :- World]
-  (=> (= (mb x 0 0 0 w) true) (= (mb x 0 0 1 (run-del w x)) true))
+(a/theorem l2-measure-del-gone [x :- Nat, w :- World]
+  (=> (= (l2-measure x 0 0 0 w) true) (= (l2-measure x 0 0 1 (run-del w x)) true))
   (intro h)
-  (have p := (mb-rest-parts x 0 0 0 w (mb-rest-of x 0 0 0 w h)))
-  (have rows (= (tbl-all (mb-row x 0 0 1) (tbl-del run-id x (:runs w))) true))
-  (exact (tbl-all-del RunRow run-id x (mb-row x 0 0 0) (mb-row x 0 0 1)
-           (fn [q :- RunRow, a1 :- (= (mb-row x 0 0 0 q) true), a2 :- (= (Nat.beq (run-id q) x) false)]
-             (row-un-gone x q (mb-row-sok x 0 0 0 q a1) a2))
+  (have p := (l2-measure-rest-parts x 0 0 0 w (l2-measure-rest-of x 0 0 0 w h)))
+  (have rows (= (tbl-all (l2-measure-row x 0 0 1) (tbl-del run-id x (:runs w))) true))
+  (exact (tbl-all-del RunRow run-id x (l2-measure-row x 0 0 0) (l2-measure-row x 0 0 1)
+           (fn [q :- RunRow, a1 :- (= (l2-measure-row x 0 0 0 q) true), a2 :- (= (Nat.beq (run-id q) x) false)]
+             (row-un-gone x q (l2-measure-row-slice-holder-ok x 0 0 0 q a1) a2))
            (:runs w) (And.right p)))
-  (exact (mb-intro x 0 0 1 _ (inv-run-del w x (mb-sample x 0 0 0 w h)) (mb-rest-mk x 0 0 1 (run-del w x) (And.left p) rows))))
+  (exact (l2-measure-intro x 0 0 1 _ (well-formed-run-del w x (l2-measure-well-formed x 0 0 0 w h)) (l2-measure-rest-mk x 0 0 1 (run-del w x) (And.left p) rows))))
 
-(a/theorem mb-retire-local-gone [x :- Nat, w :- World, r :- RunRow]
-  (=> (= (mb x 0 0 0 w) true) (= (run-id r) x) (= (mb x 0 0 1 (retire-local w r)) true))
+(a/theorem l2-measure-retire-run-gone [x :- Nat, w :- World, r :- RunRow]
+  (=> (= (l2-measure x 0 0 0 w) true) (= (run-id r) x) (= (l2-measure x 0 0 1 (retire-run w r)) true))
   (intros h e)
   (rw [← e] at h) (rw [← e])
-  (simp only [retire-local retire-with])
-  (exact (mb-remove-if-empty (run-id r) 0 0 1 _ (scope-subtree w (:scope r))
-           (mb-cleanup-del (run-id r) 0 0 1 _ (:id r)
-             (mb-del-gone (run-id r) _
-               (mb-close-local (run-id r) 0 0 0 _ (scope-subtree w (:scope r)) (mb-clear-comp-run (run-id r) 0 0 0 w r h)))))))
+  (simp only [retire-run t13-retire-with-subtree])
+  (exact (l2-measure-remove-if-empty (run-id r) 0 0 1 _ (scope-subtree w (:scope r))
+           (l2-measure-cleanup-del (run-id r) 0 0 1 _ (:id r)
+             (l2-measure-del-gone (run-id r) _
+               (l2-measure-close-local (run-id r) 0 0 0 _ (scope-subtree w (:scope r)) (l2-measure-clear-comp-run (run-id r) 0 0 0 w r h)))))))
 
-(a/theorem mb-job-retire-gone [x :- Nat, w :- World]
-  (=> (= (mb x 0 0 0 w) true) (= (mb x 0 0 1 (job-apply w (Job.jretire x))) true))
+(a/theorem l2-measure-job-retire-gone [x :- Nat, w :- World]
+  (=> (= (l2-measure x 0 0 0 w) true) (= (l2-measure x 0 0 1 (job-apply w (Job.jretire x))) true))
   (intro h)
   (cases hf (run-find w x)) (case' [some r]) (case' [none])
-  (simp only [job-apply hf]) (exact (mb-gone-of x w h (rows-none x (:runs w) hf)))
+  (simp only [job-apply hf]) (exact (l2-measure-gone-of x w h (rows-none x (:runs w) hf)))
   (have e := (tbl-find-id RunRow run-id x r (:runs w) hf))
   (have hm := (tbl-find-mem RunRow run-id x r (:runs w) hf))
-  (have t := (mb-row-track x 0 0 r (mb-row-mem x 0 0 0 w r h hm) e))
+  (have t := (l2-measure-row-track x 0 0 r (l2-measure-row-mem x 0 0 0 w r h hm) e))
   (have ret := (retirable-of-mu0 r (And.left t) (And.left (And.right t)) (And.right (And.right t))))
   (simp only [job-apply hf ret])
-  (exact (mb-retire-local-gone x w r h e)))
+  (exact (l2-measure-retire-run-gone x w r h e)))
 
-;; T13 on x as a one-job cascade (retire-full) when x's rows have measure (0, 0)
-(a/theorem mb-retire-gone [x :- Nat, w :- World]
-  (=> (= (mb x 0 0 0 w) true) (= (mb x 0 0 1 (run-cascade w (List.cons Job (Job.jretire x) (List.nil Job)))) true))
+;; T13 on x as a one-job cascade (t13-retire) when x's rows have measure (0, 0)
+(a/theorem l2-measure-retire-gone [x :- Nat, w :- World]
+  (=> (= (l2-measure x 0 0 0 w) true) (= (l2-measure x 0 0 1 (run-cascade w (List.cons Job (Job.jretire x) (List.nil Job)))) true))
   (intro h)
   (have e (= (run-cascade w (List.cons Job (Job.jretire x) (List.nil Job)))
              (:world (cascade (List.append Nat (rep-list (job-zeros (List.cons Job (Job.jretire x) (List.nil Job))) (List.cons Nat 0 (tbl-ids run-id (:runs w))))
@@ -1043,7 +1043,7 @@
                               (List.append Job (List.nil Job) (job-next w (Job.jretire x)))))))
   (rfl)
   (rw [e])
-  (exact (mb-cascade x 0 0 1 _ (job-apply w (Job.jretire x)) _ (mb-job-retire-gone x w h))))
+  (exact (l2-measure-cascade x 0 0 1 _ (job-apply w (Job.jretire x)) _ (l2-measure-job-retire-gone x w h))))
 
 ;; ---- slice-exit (Z#35/Z#49): the cleanup slice returns, with no region left
 
@@ -1056,7 +1056,7 @@
 
 (a/defn q-sx [mz :- Nat, q :- RunRow] Bool (Bool.and (exit-ready q) (Nat.beq (mu-z q) mz)))
 (a/theorem sx-row [x :- Nat, mz :- Nat]
-  (forall [q :- RunRow] (=> (= (q-sx mz q) true) (= (slice-ok q) true) (= (mb-row x 0 mz 0 (run-fin-pop-end q)) true)))
+  (forall [q :- RunRow] (=> (= (q-sx mz q) true) (= (slice-ok q) true) (= (l2-measure-row x 0 mz 0 (run-fin-pop-end q)) true)))
   (intros q hq hs)
   (simp only [q-sx exit-ready Bool.and_eq_true] at hq)
   (have hn := (fe-true-nil (:finalizers q) (And.right (And.right (And.left hq)))))
@@ -1071,29 +1071,29 @@
 ;; Theorem (L2 a): an accepted `slice-exit` (a done run's cleanup slice returns with no region
 ;; open) drops mu-f to 0 (from 1); mu-z does not grow
 (a/theorem slice-exit-dec [w :- World, rid :- Nat, r :- RunRow, r2 :- RunRow]
-  (=> (= (p3b w) true) (= (sok w) true) (= (run-find w rid) (Option.some RunRow r))
-      (= (:accepted (raw0 w (Item.slice-exit rid))) true)
+  (=> (= (chain-start w) true) (= (slice-holder-ok w) true) (= (run-find w rid) (Option.some RunRow r))
+      (= (:accepted (transition w (Item.slice-exit rid))) true)
       (List.Mem r2 (:runs (:world (world-step w (Item.slice-exit rid))))) (= (:id r2) rid)
       (And (< (mu-f r2) (mu-f r)) (<= (mu-z r2) (mu-z r))))
   (intros h hs hf ha hm2 he)
-  (have hsam := (mb-sample 0 0 0 2 w hs))
+  (have hsam := (l2-measure-well-formed 0 0 0 2 w hs))
   (have hm := (tbl-find-mem RunRow run-id rid r (:runs w) hf))
   (have ei := (tbl-find-id RunRow run-id rid r (:runs w) hf))
   (cases hg (exit-ready r))
-  (case [false] (simp [raw0 t-slice-exit hf hg refuse] at ha))
+  (case [false] (simp [transition t-slice-exit hf hg refuse] at ha))
   (case [true]
-    (have e0 (= (:world (raw0 w (Item.slice-exit rid)))
+    (have e0 (= (:world (transition w (Item.slice-exit rid)))
                 (run-cascade (run-upd w rid run-fin-pop-end) (List.cons Job (Job.jretire rid) (List.nil Job)))))
-    (simp only [raw0 t-slice-exit hf hg accept retire-full])
+    (simp only [transition t-slice-exit hf hg accept t13-retire])
     (have hq (= (q-sx (mu-z r) r) true)) (simp only [q-sx hg Nat.beq_refl Bool.and_self])
     (have u := (uniq-all RunRow run-id (q-sx (mu-z r)) r (:runs w) (lit-runs-nodup w hsam) hm hq))
     (rw [ei] at u)
     (have lt (< rid (:next-id w))) (rw [← ei]) (exact (run-below w r hsam hm))
-    (have b0 := (mb-upd-tight rid 0 (mu-z r) w run-fin-pop-end run-fin-pop-end-id (q-sx (mu-z r)) (sx-row rid (mu-z r)) hs lt u))
-    (have b1 (= (mb rid 0 (mu-z r) 0 (:world (raw0 w (Item.slice-exit rid)))) true))
-    (rw [e0]) (exact (mb-run-cascade rid 0 (mu-z r) 0 _ _ b0))
-    (have b2 := (mb-step-of-raw0 rid 0 (mu-z r) 0 w (Item.slice-exit rid) (rfl) h ha b1))
-    (have t := (mb-row-track rid 0 (mu-z r) r2 (mb-row-mem rid 0 (mu-z r) 0 _ r2 b2 hm2) he))
+    (have b0 := (l2-measure-upd-tight rid 0 (mu-z r) w run-fin-pop-end run-fin-pop-end-id (q-sx (mu-z r)) (sx-row rid (mu-z r)) hs lt u))
+    (have b1 (= (l2-measure rid 0 (mu-z r) 0 (:world (transition w (Item.slice-exit rid)))) true))
+    (rw [e0]) (exact (l2-measure-run-cascade rid 0 (mu-z r) 0 _ _ b0))
+    (have b2 := (l2-measure-step-of-transition rid 0 (mu-z r) 0 w (Item.slice-exit rid) (rfl) h ha b1))
+    (have t := (l2-measure-row-track rid 0 (mu-z r) r2 (l2-measure-row-mem rid 0 (mu-z r) 0 _ r2 b2 hm2) he))
     (simp only [exit-ready Bool.and_eq_true] at hg)
     (have p := (mu-f-pos-slice r (And.left (And.right hg))))
     (exact (And.intro (Nat.lt_of_le_of_lt (And.left (And.right t)) p) (And.right (And.right t))))))
@@ -1101,28 +1101,28 @@
 ;; Theorem (L2 c): when the slice-exit leaves the run with no resource (measure (0, 0)), the
 ;; run is retired in the same step (T13): no row with its id remains
 (a/theorem slice-exit-retires [w :- World, rid :- Nat, r :- RunRow, r2 :- RunRow]
-  (=> (= (p3b w) true) (= (sok w) true) (= (run-find w rid) (Option.some RunRow r)) (= (mu-z r) 0)
-      (= (:accepted (raw0 w (Item.slice-exit rid))) true)
+  (=> (= (chain-start w) true) (= (slice-holder-ok w) true) (= (run-find w rid) (Option.some RunRow r)) (= (mu-z r) 0)
+      (= (:accepted (transition w (Item.slice-exit rid))) true)
       (List.Mem r2 (:runs (:world (world-step w (Item.slice-exit rid))))) (= (:id r2) rid) False)
   (intros h hs hf hz ha hm2 he)
-  (have hsam := (mb-sample 0 0 0 2 w hs))
+  (have hsam := (l2-measure-well-formed 0 0 0 2 w hs))
   (have hm := (tbl-find-mem RunRow run-id rid r (:runs w) hf))
   (have ei := (tbl-find-id RunRow run-id rid r (:runs w) hf))
   (cases hg (exit-ready r))
-  (case [false] (simp [raw0 t-slice-exit hf hg refuse] at ha))
+  (case [false] (simp [transition t-slice-exit hf hg refuse] at ha))
   (case [true]
-    (have e0 (= (:world (raw0 w (Item.slice-exit rid)))
+    (have e0 (= (:world (transition w (Item.slice-exit rid)))
                 (run-cascade (run-upd w rid run-fin-pop-end) (List.cons Job (Job.jretire rid) (List.nil Job)))))
-    (simp only [raw0 t-slice-exit hf hg accept retire-full])
+    (simp only [transition t-slice-exit hf hg accept t13-retire])
     (have hq (= (q-sx 0 r) true)) (simp only [q-sx hg hz Nat.beq_refl Bool.and_self])
     (have u := (uniq-all RunRow run-id (q-sx 0) r (:runs w) (lit-runs-nodup w hsam) hm hq))
     (rw [ei] at u)
     (have lt (< rid (:next-id w))) (rw [← ei]) (exact (run-below w r hsam hm))
-    (have b0 := (mb-upd-tight rid 0 0 w run-fin-pop-end run-fin-pop-end-id (q-sx 0) (sx-row rid 0) hs lt u))
-    (have b1 (= (mb rid 0 0 1 (:world (raw0 w (Item.slice-exit rid)))) true))
-    (rw [e0]) (exact (mb-retire-gone rid _ b0))
-    (have b2 := (mb-step-of-raw0 rid 0 0 1 w (Item.slice-exit rid) (rfl) h ha b1))
-    (exact (mb-row-gone rid 0 0 r2 (mb-row-mem rid 0 0 1 _ r2 b2 hm2) he))))
+    (have b0 := (l2-measure-upd-tight rid 0 0 w run-fin-pop-end run-fin-pop-end-id (q-sx 0) (sx-row rid 0) hs lt u))
+    (have b1 (= (l2-measure rid 0 0 1 (:world (transition w (Item.slice-exit rid)))) true))
+    (rw [e0]) (exact (l2-measure-retire-gone rid _ b0))
+    (have b2 := (l2-measure-step-of-transition rid 0 0 1 w (Item.slice-exit rid) (rfl) h ha b1))
+    (exact (l2-measure-row-gone rid 0 0 r2 (l2-measure-row-mem rid 0 0 1 _ r2 b2 hm2) he))))
 
 (a/theorem by-sub-lt [a :- Nat, n :- Nat] (=> (<= a (- n 1)) (< 0 n) (< a n)) (intros h1 h2) (omega))
 
@@ -1141,7 +1141,7 @@
 (a/defn q-ack [z :- Nat, mf :- Nat, mz :- Nat, q :- RunRow] Bool
   (Bool.and (run-done q) (Bool.and (Nat.beq (mu-f q) mf) (Bool.and (Nat.beq (mu-z q) mz) (nat-mem z (:resources q))))))
 (a/theorem ack-row [x :- Nat, z :- Nat, mf :- Nat, mz :- Nat]
-  (forall [q :- RunRow] (=> (= (q-ack z mf mz q) true) (= (slice-ok q) true) (= (mb-row x mf (- mz 1) 0 (run-unres z q)) true)))
+  (forall [q :- RunRow] (=> (= (q-ack z mf mz q) true) (= (slice-ok q) true) (= (l2-measure-row x mf (- mz 1) 0 (run-unres z q)) true)))
   (intros q hq hs)
   (simp only [q-ack Bool.and_eq_true] at hq)
   (have e1 := (Nat.eq_of_beq_eq_true (And.left (And.right hq))))
@@ -1154,13 +1154,13 @@
   (rw [e3]) (rw [e4] at e2) (omega)
   (exact (row-bound x mf (- mz 1) (run-unres z q) hs (And.left hq) l1 l2)))
 
-;; the acknowledged resource is listed in its owner's resources (g9, part of p3b)
+;; the acknowledged resource is listed in its owner's resources (i9-res, part of chain-start)
 (a/theorem ack-listed [w :- World, z :- Nat, zr :- ResRow, r :- RunRow]
-  (=> (= (p3b w) true) (= (resource-find w z) (Option.some ResRow zr)) (List.Mem r (:runs w)) (= (:id r) (:owner zr))
+  (=> (= (chain-start w) true) (= (resource-find w z) (Option.some ResRow zr)) (List.Mem r (:runs w)) (= (:id r) (:owner zr))
       (= (nat-mem z (:resources r)) true))
   (intros h hf hm he)
-  (have g := (g9-rest-of w (And.left (And.right (And.right (And.right (p3b-parts w h)))))))
-  (simp only [g9-rest Bool.and_eq_true] at g)
+  (have g := (i9-res-rest-of w (And.left (And.right (And.right (And.right (chain-start-parts w h)))))))
+  (simp only [i9-res-rest Bool.and_eq_true] at g)
   (have zm := (tbl-find-mem ResRow resource-id z zr (:res w) hf))
   (have zi := (tbl-find-id ResRow resource-id z zr (:res w) hf))
   (have l1 := (tbl-all-mem ResRow (res-listed (:runs w)) zr (:res w) (And.left (And.right g)) zm))
@@ -1171,51 +1171,51 @@
   (have zi2 (= (:id zr) z)) (exact zi)
   (rw [zi2] at l2) (exact l2))
 
-;; the world after T15's raw part, as the cascade of its retire-full
+;; the world after T15's raw part, as the cascade of its t13-retire
 (a/theorem ack-world [w :- World, z :- Nat, zr :- ResRow]
   (=> (= (ack-tok-ok w z) true) (= (resource-find w z) (Option.some ResRow zr))
-      (= (:world (raw0 w (Item.resource-ack z)))
+      (= (:world (transition w (Item.resource-ack z)))
          (run-cascade (ack-raw w z (:owner zr)) (List.cons Job (Job.jretire (:owner zr)) (List.nil Job)))))
-  (intros hk hf) (simp only [raw0 t15-full hk hf accept retire-full]))
+  (intros hk hf) (simp only [transition t15-resource-ack hk hf accept t13-retire]))
 
 ;; the bound after ack-raw, from the owner's rows
 (a/theorem ack-raw-bound [w :- World, z :- Nat, zr :- ResRow, r :- RunRow, mf :- Nat, mz :- Nat]
-  (=> (= (p3b w) true) (= (sok w) true) (= (ack-tok-ok w z) true) (= (resource-find w z) (Option.some ResRow zr))
+  (=> (= (chain-start w) true) (= (slice-holder-ok w) true) (= (ack-tok-ok w z) true) (= (resource-find w z) (Option.some ResRow zr))
       (List.Mem r (:runs w)) (= (:id r) (:owner zr)) (= (q-ack z mf mz r) true)
-      (= (mb (:owner zr) mf (- mz 1) 0 (ack-raw w z (:owner zr))) true))
+      (= (l2-measure (:owner zr) mf (- mz 1) 0 (ack-raw w z (:owner zr))) true))
   (intros h hs hk hf hm he hq)
-  (have hsam := (mb-sample 0 0 0 2 w hs))
+  (have hsam := (l2-measure-well-formed 0 0 0 2 w hs))
   (have hu (= (tbl-all (no-debtor z) (:edges w)) true)) (simp only [ack-tok-ok Bool.and_eq_true] at hk) (exact (And.right hk))
-  (have s2 := (mb-resource-del 0 0 0 2 w z hu hs))
+  (have s2 := (l2-measure-resource-del 0 0 0 2 w z hu hs))
   (have u := (uniq-all RunRow run-id (q-ack z mf mz) r (:runs w) (lit-runs-nodup w hsam) hm hq))
   (have he2 (= (run-id r) (:owner zr))) (exact he)
   (rw [he2] at u)
   (have lt (< (:owner zr) (:next-id w))) (rw [← he]) (exact (run-below w r hsam hm))
-  (have b0 := (mb-upd-tight (:owner zr) mf (- mz 1) (resource-del w z) (run-unres z) (run-unres-run-id z) (q-ack z mf mz)
+  (have b0 := (l2-measure-upd-tight (:owner zr) mf (- mz 1) (resource-del w z) (run-unres z) (run-unres-run-id z) (q-ack z mf mz)
                 (ack-row (:owner zr) z mf mz) s2 lt u))
   (simp only [ack-raw])
-  (exact (mb-cleanup-upd (:owner zr) mf (- mz 1) 0 _ (:owner zr) (cleanup-drop z) b0)))
+  (exact (l2-measure-cleanup-upd (:owner zr) mf (- mz 1) 0 _ (:owner zr) (cleanup-drop z) b0)))
 
 ;; Theorem (L2 a): an accepted resource acknowledgement (T15) drops its owner's mu-z (the
 ;; resource leaves the run's outstanding resources); mu-f does not grow
 (a/theorem ack-dec [w :- World, z :- Nat, zr :- ResRow, r :- RunRow, r2 :- RunRow]
-  (=> (= (p3b w) true) (= (sok w) true) (= (resource-find w z) (Option.some ResRow zr))
+  (=> (= (chain-start w) true) (= (slice-holder-ok w) true) (= (resource-find w z) (Option.some ResRow zr))
       (List.Mem r (:runs w)) (= (:id r) (:owner zr)) (= (run-done r) true)
-      (= (:accepted (raw0 w (Item.resource-ack z))) true)
+      (= (:accepted (transition w (Item.resource-ack z))) true)
       (List.Mem r2 (:runs (:world (world-step w (Item.resource-ack z))))) (= (:id r2) (:id r))
       (And (< (mu-z r2) (mu-z r)) (<= (mu-f r2) (mu-f r))))
   (intros h hs hf hm he hd ha hm2 he2)
   (cases hk (ack-tok-ok w z))
-  (case [false] (simp [raw0 t15-full hk refuse] at ha))
+  (case [false] (simp [transition t15-resource-ack hk refuse] at ha))
   (case [true]
     (have lm := (ack-listed w z zr r h hf hm he))
     (have hq (= (q-ack z (mu-f r) (mu-z r) r) true)) (simp only [q-ack hd lm Nat.beq_refl Bool.and_self])
     (have b0 := (ack-raw-bound w z zr r (mu-f r) (mu-z r) h hs hk hf hm he hq))
-    (have b1 (= (mb (:owner zr) (mu-f r) (- (mu-z r) 1) 0 (:world (raw0 w (Item.resource-ack z)))) true))
-    (rw [(ack-world w z zr hk hf)]) (exact (mb-run-cascade (:owner zr) (mu-f r) (- (mu-z r) 1) 0 _ _ b0))
-    (have b2 := (mb-step-of-raw0 (:owner zr) (mu-f r) (- (mu-z r) 1) 0 w (Item.resource-ack z) (rfl) h ha b1))
+    (have b1 (= (l2-measure (:owner zr) (mu-f r) (- (mu-z r) 1) 0 (:world (transition w (Item.resource-ack z)))) true))
+    (rw [(ack-world w z zr hk hf)]) (exact (l2-measure-run-cascade (:owner zr) (mu-f r) (- (mu-z r) 1) 0 _ _ b0))
+    (have b2 := (l2-measure-step-of-transition (:owner zr) (mu-f r) (- (mu-z r) 1) 0 w (Item.resource-ack z) (rfl) h ha b1))
     (have he3 (= (:id r2) (:owner zr))) (exact (Eq.trans he2 he))
-    (have t := (mb-row-track (:owner zr) (mu-f r) (- (mu-z r) 1) r2 (mb-row-mem (:owner zr) (mu-f r) (- (mu-z r) 1) 0 _ r2 b2 hm2) he3))
+    (have t := (l2-measure-row-track (:owner zr) (mu-f r) (- (mu-z r) 1) r2 (l2-measure-row-mem (:owner zr) (mu-f r) (- (mu-z r) 1) 0 _ r2 b2 hm2) he3))
     (have pos (< 0 (mu-z r)))
     (have e4 (= (mu-z r) (nat-len (:resources r)))) (rfl)
     (have l := (nat-del-lt z (:resources r) lm)) (rw [e4]) (omega)
@@ -1225,22 +1225,22 @@
 ;; Theorem (L2 c): when the acknowledgement leaves the run with no finalizer, no slice and no
 ;; resource (it was the last outstanding one), the run is retired in the same step (T13)
 (a/theorem ack-retires [w :- World, z :- Nat, zr :- ResRow, r :- RunRow, r2 :- RunRow]
-  (=> (= (p3b w) true) (= (sok w) true) (= (resource-find w z) (Option.some ResRow zr))
+  (=> (= (chain-start w) true) (= (slice-holder-ok w) true) (= (resource-find w z) (Option.some ResRow zr))
       (List.Mem r (:runs w)) (= (:id r) (:owner zr)) (= (run-done r) true) (= (mu-f r) 0) (= (mu-z r) 1)
-      (= (:accepted (raw0 w (Item.resource-ack z))) true)
+      (= (:accepted (transition w (Item.resource-ack z))) true)
       (List.Mem r2 (:runs (:world (world-step w (Item.resource-ack z))))) (= (:id r2) (:id r)) False)
   (intros h hs hf hm he hd h0 h1 ha hm2 he2)
   (cases hk (ack-tok-ok w z))
-  (case [false] (simp [raw0 t15-full hk refuse] at ha))
+  (case [false] (simp [transition t15-resource-ack hk refuse] at ha))
   (case [true]
     (have lm := (ack-listed w z zr r h hf hm he))
     (have hq (= (q-ack z 0 1 r) true)) (simp only [q-ack hd lm h0 h1 Nat.beq_refl Bool.and_self])
     (have b0 := (ack-raw-bound w z zr r 0 1 h hs hk hf hm he hq))
-    (have b1 (= (mb (:owner zr) 0 0 1 (:world (raw0 w (Item.resource-ack z)))) true))
-    (rw [(ack-world w z zr hk hf)]) (exact (mb-retire-gone (:owner zr) _ b0))
-    (have b2 := (mb-step-of-raw0 (:owner zr) 0 0 1 w (Item.resource-ack z) (rfl) h ha b1))
+    (have b1 (= (l2-measure (:owner zr) 0 0 1 (:world (transition w (Item.resource-ack z)))) true))
+    (rw [(ack-world w z zr hk hf)]) (exact (l2-measure-retire-gone (:owner zr) _ b0))
+    (have b2 := (l2-measure-step-of-transition (:owner zr) 0 0 1 w (Item.resource-ack z) (rfl) h ha b1))
     (have he3 (= (:id r2) (:owner zr))) (exact (Eq.trans he2 he))
-    (exact (mb-row-gone (:owner zr) 0 0 r2 (mb-row-mem (:owner zr) 0 0 1 _ r2 b2 hm2) he3))))
+    (exact (l2-measure-row-gone (:owner zr) 0 0 r2 (l2-measure-row-mem (:owner zr) 0 0 1 _ r2 b2 hm2) he3))))
 
 ;; ===========================================================================
 ;; Part F. L5, the safety half
@@ -1255,7 +1255,7 @@
   (Bool.and (Bool.not (:slice r)) (Bool.or (Nat.beq (:act r) act-parked) (Nat.beq (:act r) act-done))))
 (a/defn quiescent [w :- World] Bool (tbl-all run-quiet (:runs w)))
 ;; the cone: debtors through dep edges and through the unfilled members of the current run
-(a/defn csucc [w :- World, x :- Nat] (List Nat) (List.append Nat (dep-debtors (:edges w) x) (blk-deps w x)))
+(a/defn csucc [w :- World, x :- Nat] (List Nat) (List.append Nat (dep-debtors (:edges w) x) (blocked-deps w x)))
 
 ;; Three state facts the proof uses, also run as tripwires (progress_test). h-cur and h-mark are proved
 ;; through the step (spindel.v2.progress.l5, spindel.v2.inv.marks-step); h-mem is not a step invariant, its replacement
@@ -1275,11 +1275,11 @@
   (Bool.or (Bool.not (:marked e)) (Bool.and (Nat.beq (:kind e) ek-dep) (waiting-at w (:debtor e)))))
 (a/defn h-mark [w :- World] Bool (tbl-all (mark-ok w) (:edges w)))
 (a/defn mem-y-ok [w :- World, x :- Nat, y :- Nat] Bool
-  (Bool.or (blk-leaf w y)
-   (Bool.or (Bool.and (task-has w y) (blk-base w y))
+  (Bool.or (blocked-leaf w y)
+   (Bool.or (Bool.and (task-has w y) (blocked-base w y))
             (Bool.and (waiting-at w y) (reach-mem y (dep-debtors (:edges w) x))))))
 (a/defn mem-ok [w :- World, c :- CompRow] Bool
-  (Bool.or (Bool.not (blk-base w (:id c))) (tbl-all (mem-y-ok w (:id c)) (blk-deps w (:id c)))))
+  (Bool.or (Bool.not (blocked-base w (:id c))) (tbl-all (mem-y-ok w (:id c)) (blocked-deps w (:id c)))))
 (a/defn h-mem [w :- World] Bool (tbl-all (mem-ok w) (:comps w)))
 
 ;; ---- lemmas
@@ -1336,11 +1336,11 @@
   (intros hx hy)
   (have m (= (reach-mem y (csucc w x)) true)) (simp only [csucc reach-mem-append hy Bool.true_or])
   (exact (Reach.step (csucc w) (List.cons Nat c0 (List.nil Nat)) x y hx (Iff.mp (reach-mem-iff y (csucc w x)) m))))
-(a/theorem reach-blk [w :- World, c0 :- Nat, x :- Nat, y :- Nat]
-  (=> (Reach (csucc w) (List.cons Nat c0 (List.nil Nat)) x) (List.Mem y (blk-deps w x))
+(a/theorem reach-blocked [w :- World, c0 :- Nat, x :- Nat, y :- Nat]
+  (=> (Reach (csucc w) (List.cons Nat c0 (List.nil Nat)) x) (List.Mem y (blocked-deps w x))
       (Reach (csucc w) (List.cons Nat c0 (List.nil Nat)) y))
   (intros hx hy)
-  (have b := (Iff.mpr (reach-mem-iff y (blk-deps w x)) hy))
+  (have b := (Iff.mpr (reach-mem-iff y (blocked-deps w x)) hy))
   (have m (= (reach-mem y (csucc w x)) true)) (simp only [csucc reach-mem-append b Bool.or_true])
   (exact (Reach.step (csucc w) (List.cons Nat c0 (List.nil Nat)) x y hx (Iff.mp (reach-mem-iff y (csucc w x)) m))))
 
@@ -1359,18 +1359,18 @@
 
 ;; the hypotheses of L5 that negate its three conclusions, over the cone of c0
 (a/defn none-blocked [w :- World, c0 :- Nat] Prop
-  (forall [y :- Nat] (=> (Reach (csucc w) (List.cons Nat c0 (List.nil Nat)) y) (Not (Derive (blk-base w) (blk-deps w) (blk-leaf w) y)))))
+  (forall [y :- Nat] (=> (Reach (csucc w) (List.cons Nat c0 (List.nil Nat)) y) (Not (Derive (blocked-base w) (blocked-deps w) (blocked-leaf w) y)))))
 (a/defn none-eligible [w :- World, c0 :- Nat] Prop
   (forall [y :- Nat, d :- CompRow] (=> (= (comp-find w y) (Option.some CompRow d)) (Reach (csucc w) (List.cons Nat c0 (List.nil Nat)) y)
                                        (= (:idle d) false) (= (needs-run w d) true) (= (eligible w d) false))))
 (a/defn tasks-blocked [w :- World, c0 :- Nat] Prop
-  (forall [y :- Nat] (=> (Reach (csucc w) (List.cons Nat c0 (List.nil Nat)) y) (= (task-has w y) true) (= (blk-base w y) true)
-                         (Derive (blk-base w) (blk-deps w) (blk-leaf w) y))))
+  (forall [y :- Nat] (=> (Reach (csucc w) (List.cons Nat c0 (List.nil Nat)) y) (= (task-has w y) true) (= (blocked-base w y) true)
+                         (Derive (blocked-base w) (blocked-deps w) (blocked-leaf w) y))))
 
 ;; one computation of the cone: if every waiting computation of smaller rank in the cone is
 ;; excluded, so is this one
 (a/theorem l5-step [w :- World, c0 :- Nat, x :- Nat, m :- CompRow]
-  (=> (= (p3b w) true) (= (quiescent w) true) (= (h-cur w) true) (= (h-mark w) true) (= (h-mem w) true)
+  (=> (= (chain-start w) true) (= (quiescent w) true) (= (h-cur w) true) (= (h-mark w) true) (= (h-mem w) true)
       (none-blocked w c0) (none-eligible w c0) (tasks-blocked w c0)
       (= (comp-find w x) (Option.some CompRow m)) (Reach (csucc w) (List.cons Nat c0 (List.nil Nat)) x)
       (forall [y :- Nat, d :- CompRow] (=> (= (comp-find w y) (Option.some CompRow d)) (< (:rank d) (:rank m))
@@ -1384,10 +1384,10 @@
   (simp only [h-cur] at hc)
   (simp only [h-mark] at hk)
   (simp only [h-mem] at hme)
-  (have hs := (ga-sample w (And.left (p3b-parts w h))))
-  (have pex := (And.left (inv-parts w hs)))
+  (have hs := (acts-parked-well-formed w (And.left (chain-start-parts w h))))
+  (have pex := (And.left (well-formed-parts w hs)))
   (simp only [pending-exact pending-exact-in] at pex)
-  (have hrk := (rk-ranks w (And.left (And.right (p3b-parts w h)))))
+  (have hrk := (i12-ranks-ranks w (And.left (And.right (chain-start-parts w h)))))
   (have hm := (tbl-find-mem CompRow comp-id x m (:comps w) hf))
   (have hid := (tbl-find-id CompRow comp-id x m (:comps w) hf))
   (have hid2 (= (:id m) x)) (exact hid)
@@ -1469,16 +1469,16 @@
           (have qo := (And.right qr))
           (cases qo)
           (case [inl hp]
-            (have hb (= (blk-base w x) true)) (simp only [blk-base hf run-parked-of hrf hp rc Bool.and_self])
+            (have hb (= (blocked-base w x) true)) (simp only [blocked-base hf run-parked-of hrf hp rc Bool.and_self])
             (have mo := (tbl-all-mem CompRow (mem-ok w) m (:comps w) hme hm))
             (simp only [mem-ok hid2] at mo)
             (simp only [hb Bool.not_true Bool.false_or] at mo)
-            (have hd (forall [y :- Nat] (=> (List.Mem y (blk-deps w x)) (= (blk-leaf w y) false) (Derive (blk-base w) (blk-deps w) (blk-leaf w) y))))
+            (have hd (forall [y :- Nat] (=> (List.Mem y (blocked-deps w x)) (= (blocked-leaf w y) false) (Derive (blocked-base w) (blocked-deps w) (blocked-leaf w) y))))
             (intros y hy hl)
-            (have my := (tbl-all-mem Nat (mem-y-ok w x) y (blk-deps w x) mo hy))
+            (have my := (tbl-all-mem Nat (mem-y-ok w x) y (blocked-deps w x) mo hy))
             (simp only [mem-y-ok hl Bool.false_or Bool.or_eq_true Bool.and_eq_true] at my)
             (cases my)
-            (case [inl tk] (exact (n3 y (reach-blk w c0 x y hr hy) (And.left tk) (And.right tk))))
+            (case [inl tk] (exact (n3 y (reach-blocked w c0 x y hr hy) (And.left tk) (And.right tk))))
             (case [inr cp]
               (cases hd2 (comp-find w y))
               (case [none] (have c := (And.left cp)) (simp [waiting-at hd2] at c))
@@ -1486,7 +1486,7 @@
                 (have c := (And.left cp)) (simp only [waiting-at hd2] at c)
                 (have wd := (small y d hd2 (And.right cp)))
                 (rw [wd] at c) (simp at c)))
-            (exact (False.elim (n1 x hr (Derive.mk (blk-base w) (blk-deps w) (blk-leaf w) x hb hd)))))
+            (exact (False.elim (n1 x hr (Derive.mk (blocked-base w) (blocked-deps w) (blocked-leaf w) x hb hd)))))
           (case [inr hdn]
             (have co := (tbl-all-mem CompRow (cur-ok w) m (:comps w) hc hm))
             (simp only [cur-ok hrf rc hdn Bool.not_true Bool.false_or] at co)
@@ -1495,7 +1495,7 @@
 (a/theorem lt-of-lt-succ [a :- Nat, b :- Nat, k :- Nat] (=> (< a b) (< b (+ k 1)) (< a k)) (intros h1 h2) (omega))
 
 ;; well-founded by rank (I12): induction on a bound of the computation's rank
-(a/theorem l5-core [w :- World, c0 :- Nat, h :- (= (p3b w) true), hq :- (= (quiescent w) true), hc :- (= (h-cur w) true),
+(a/theorem l5-core [w :- World, c0 :- Nat, h :- (= (chain-start w) true), hq :- (= (quiescent w) true), hc :- (= (h-cur w) true),
                     hk :- (= (h-mark w) true), hme :- (= (h-mem w) true),
                     n1 :- (none-blocked w c0), n2 :- (none-eligible w c0), n3 :- (tasks-blocked w c0), n :- Nat]
   (forall [x :- Nat, m :- CompRow] (=> (= (comp-find w x) (Option.some CompRow m)) (< (:rank m) n)
@@ -1516,9 +1516,9 @@
 ;; computation (T11 can run it), or a task whose current run is parked and that is not Blocked (a
 ;; wait that no source, resource or runnable computation can end: a user deadlock, see the ns
 ;; docstring). Stated contrapositively: the three negations are absurd. Given the state facts
-;; h-cur, h-mark, h-mem as premises; `l5-safety-total` (spindel.v2.inv.members.step) discharges them on p3m worlds.
+;; h-cur, h-mark, h-mem as premises; `l5-safety-total` (spindel.v2.inv.members.step) discharges them on chain worlds.
 (a/theorem l5-safety [w :- World, c0 :- Nat, c :- CompRow]
-  (=> (= (p3b w) true) (= (quiescent w) true) (= (h-cur w) true) (= (h-mark w) true) (= (h-mem w) true)
+  (=> (= (chain-start w) true) (= (quiescent w) true) (= (h-cur w) true) (= (h-mark w) true) (= (h-mem w) true)
       (= (comp-find w c0) (Option.some CompRow c)) (= (comp-waiting c) true)
       (none-blocked w c0) (none-eligible w c0) (tasks-blocked w c0) False)
   (intros h hq hc hk hme hf hw n1 n2 n3)
@@ -1528,7 +1528,7 @@
   (rw [z] at hw) (simp at hw))
 
 (a/theorem l5-dirty [w :- World, c0 :- Nat, c :- CompRow]
-  (=> (= (p3b w) true) (= (quiescent w) true) (= (h-cur w) true) (= (h-mark w) true) (= (h-mem w) true)
+  (=> (= (chain-start w) true) (= (quiescent w) true) (= (h-cur w) true) (= (h-mark w) true) (= (h-mem w) true)
       (= (comp-find w c0) (Option.some CompRow c)) (= (comp-dirty c) true)
       (none-blocked w c0) (none-eligible w c0) (tasks-blocked w c0) False)
   (intros h hq hc hk hme hf hd n1 n2 n3)

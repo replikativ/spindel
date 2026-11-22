@@ -2,7 +2,7 @@
   "Loading spindel.v2.rule kernel-checks the cancel family, Rule R normalization and the step
   theorems. The deftests run scripted scenarios through the compiled transitions and drive
   `world-step` (and T14/T16 followed by Rule R) with random items, checking after every step:
-  inv-sample with a plain pending count, the honest hypotheses (live converged before and after
+  well-formed with a plain pending count, the honest hypotheses (live converged before and after
   the filter, the loop's `normalized` flag, `filter-safe`, the cascade emptied its worklist),
   I3 and I4 against the plain-Clojure BFS of spindel.v2.retain-test, and that every
   normalization round strictly decreases #non-done runs + #non-idle computations."
@@ -18,19 +18,19 @@
             [spindel.v2.retain-test :as rtt]))
 
 (def theorems
-  '[resync-exact resync-ids resync-has inv-drop-edges drop-edges-avoids inv-comp-del-unref
-    inv-scope-del inv-cleanup-ins
-    inv-close-local inv-remove-if-empty inv-debtor-side inv-cancel-run-local inv-clear-comp-run
-    inv-retire-local inv-close-scope-local inv-job-apply inv-cascade inv-run-cascade
-    t14-inv t14-refuse t16-inv t16-refuse t15-full-inv t15-full-refuse t15-full-l4
-    inv-demote-finish inv-demote inv-detach inv-norm-round inv-norm-loop inv-normalize
-    raw-inv raw-refuse raw-l4 step-refuse step-l4 step-accepted
+  '[resync-exact resync-ids resync-has well-formed-drop-edges drop-edges-avoids well-formed-comp-del-unref
+    well-formed-scope-del well-formed-cleanup-ins
+    well-formed-close-local well-formed-remove-if-empty well-formed-debtor-side well-formed-cancel-run-local well-formed-clear-comp-run
+    well-formed-retire-run well-formed-close-scope-local well-formed-job-apply well-formed-cascade well-formed-run-cascade
+    well-formed-t14-cancel t14-cancel-refuse well-formed-t16-close-scope t16-close-scope-refuse well-formed-t15-resource-ack t15-resource-ack-refuse t15-resource-ack-l4
+    well-formed-demote-finish well-formed-demote well-formed-detach well-formed-normalize-round well-formed-normalize-loop well-formed-normalize
+    well-formed-raw raw-refuse raw-l4 step-refuse step-l4 step-accepted
     tbl-all-keep tbl-all-keep2 tbl-has-keep marked-in-keep edge-ok-keep ids-keep all-ids-keep
-    nodup-filter ids-ok-keep inv-filter-world inv-rule-r-filter inv-rule-r step-inv
+    nodup-filter ids-ok-keep well-formed-filter-world well-formed-rule-r-filter well-formed-rule-r step-well-formed
     tbl-all-mem normalized-runs normalized-comps rule-r-filter-normalized rule-r-i3-step
     rule-r-normalized step-i3 step-normalized step-i4
-    inv-fin-loop inv-finalize-one inv-clear-task-run inv-detach-comp inv-rule-r-round rr-loop-eq rule-r-eq
-    inv-rr-loop])
+    well-formed-finalize-loop well-formed-finalize-one well-formed-clear-task-run well-formed-detach-comp well-formed-rule-r-round rule-r-loop-eq rule-r-eq
+    well-formed-rule-r-loop])
 
 (deftest theorems-kernel-checked
   (doseq [t theorems]
@@ -90,7 +90,7 @@
   (into {} (for [c (:comps w)]
              [(:id c) (count (filter #(and (= (:creditor %) (:id c)) (:marked %)) (:edges w)))])))
 (defn ok? [w]
-  (and (e/inv-sample w) (= (reference-pending w) (into {} (map (juxt :id :pending) (:comps w))))))
+  (and (e/well-formed w) (= (reference-pending w) (into {} (map (juxt :id :pending) (:comps w))))))
 
 ;; I3 / I4 / normalized against the plain BFS of retain-test
 (defn ref-i3? [w] (set/subset? (ids w) (rtt/ref-keep w)))
@@ -103,7 +103,7 @@
 (defn rule-r-checks
   "The honest hypotheses and the conclusions for Rule R applied to w (an accepted raw world)."
   [w msg]
-  (let [pre (r/rule-r-pre w)
+  (let [pre (r/rule-r-last-input w)
         n (r/normalize pre)
         w' (rt/rule-r-filter n)]
     (is (= w' (r/rule-r w)) msg)
@@ -113,17 +113,17 @@
     (is (true? (rt/live-converged w')) (str "converged after the filter " msg))
     (is (true? (r/normalized n)) (str "normalized flag " msg))
     (is (true? (r/filter-safe n)) (str "filter-safe " msg))
-    (is (ok? w') (str "inv-sample " msg))
+    (is (ok? w') (str "well-formed " msg))
     (is (ref-i3? w') (str "I3 " msg))
     (is (ref-normalized? w') (str "I4 + no stray computation " msg))
     (is (= (rtt/ref-live n) (set (rt/live-list n))) (str "live = reference " msg))
     (testing "each round strictly decreases the measure; the fuel suffices"
       (let [w0 (r/detach pre)
             ms (loop [x w0 acc [] k 0]
-                 (if (or (r/normalized x) (> k 40)) (conj acc (r/norm-measure x))
-                     (recur (r/norm-round x) (conj acc (r/norm-measure x)) (inc k))))]
+                 (if (or (r/normalized x) (> k 40)) (conj acc (r/normalize-measure x))
+                     (recur (r/normalize-round x) (conj acc (r/normalize-measure x)) (inc k))))]
         (is (apply > (conj ms -1)) (str "measure " ms " " msg))
-        (is (<= (count ms) (count (r/norm-fuel w0))) msg)))
+        (is (<= (count ms) (count (r/normalize-fuel w0))) msg)))
     w'))
 
 ;; ---------------------------------------------------------------------------
@@ -143,7 +143,7 @@
         o (r/t14-cancel w rk false)
         w2 (:world o)]
     (is (:accepted o))
-    (is (true? (r/casc-done w [[0 rk false]])))
+    (is (true? (r/cascade-done w [[0 rk false]])))
     (is (= [s/act-done s/mode-unwinding] ((juxt :act :mode) (find-row w2 :runs rk))))
     (is (nil? (find-row w2 :acts a)) "R's activation removed")
     (is (nil? (find-row w2 :edges ew)) "with its wait member")
@@ -193,7 +193,7 @@
     (is (= #{r2 r3} (set (r/owned-runs w (r/scope-subtree w s1)))))
     (testing "no finalizers: every run is cancelled and retires; the subtree goes"
       (let [w2 (:world (r/t14-cancel w r1 false))]
-        (is (true? (r/casc-done w [[0 r1 false]])))
+        (is (true? (r/cascade-done w [[0 r1 false]])))
         (is (empty? (:runs w2)))
         (is (every? #(= s/res-err (:tag (:result (find-row w2 :tasks %)))) [k1 k2 k3]))
         (is (false? (:open (find-row w2 :sources x))) "a source owned by the subtree is closed")
@@ -364,11 +364,11 @@
   (case kind
     :item {:raw (en/raw w a) :step (en/world-step w a) :tok (en/raw-token-ok w a)}
     :cancel (let [o (r/t14-cancel w a b)]
-              (is (true? (r/casc-done w [[0 a b]])) "cascade worklist emptied")
-              {:raw o :step (en/finish o) :tok true})
+              (is (true? (r/cascade-done w [[0 a b]])) "cascade worklist emptied")
+              {:raw o :step (en/then-rule-r o) :tok true})
     :close (let [o (r/t16-close-scope w a)]
-             (is (true? (r/casc-done w [[2 a]])) "cascade worklist emptied")
-             {:raw o :step (en/finish o) :tok true})))
+             (is (true? (r/cascade-done w [[2 a]])) "cascade worklist emptied")
+             {:raw o :step (en/then-rule-r o) :tok true})))
 
 (deftest random-steps
   (let [rng (java.util.Random. 20261105)

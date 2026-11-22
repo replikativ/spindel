@@ -1,6 +1,6 @@
 (ns spindel.v2.inv.members.cascade-test
   "Fresh test discovery loads and kernel-checks HM6. Conditional cascade
-   lemmas retain their hypotheses; arbitrary-step h3 remains a later proof."
+   lemmas retain their hypotheses; arbitrary-step current-members remains a later proof."
   (:require [clojure.test :refer [deftest is]]
             [clojure.java.io :as io]
             [ansatz.core :as a]
@@ -9,24 +9,24 @@
            [java.io PushbackReader]))
 
 (def theorems
-  '[ekb-sample ekb-rest-of ekb-intro ekb-parts ekb-pres ekb-unmark ekb-mark1 ekb-new ekb-mark-edge-r
-    ekb-insert-edge-fresh ekb-insert-edge-checked ekb-await-edge ekb-rule-r-round ekb-rr-loop ekb-rule-r
-    step-ekb ekb-empty fm-mk fm-acts-of fm-runs-of fm-cur-of fm-ab-refl fm-ab-trans fm-refl fm-trans fm-free
+  '[edge-kinds-well-formed edge-kinds-rest-of edge-kinds-intro edge-kinds-parts edge-kinds-pres edge-kinds-unmark edge-kinds-mark1 edge-kinds-new edge-kinds-mark-edge-r
+    edge-kinds-insert-edge-fresh edge-kinds-insert-edge-checked edge-kinds-await-edge edge-kinds-rule-r-round edge-kinds-rule-r-loop edge-kinds-rule-r
+    step-edge-kinds edge-kinds-empty fm-mk fm-acts-of fm-runs-of fm-cur-of fm-ab-refl fm-ab-trans fm-refl fm-trans fm-free
     fm-frame fm-same fm-rkq-congr fm-run-upd fm-act-del fm-me-filter fm-ab-fill fm-act-fill fm-comp-upd
     fm-nat-fold fm-edge-upd fm-remove-edge fm-drop-act fm-resume fm-fill-slot fm-invalidate fm-dep-consumed
     fm-deliver-dep fm-fire-dep fm-fire-wait-act fm-fire-wait fm-fire-observe fm-fire-edge fm-drop-edges
-    fm-fin-loop fm-finalize-debtor fm-fire-fold fm-fire-task-cancelled fm-task-upd fm-cancel-acts
-    fm-cancel-res fm-cleanup-set h3-m-rel-x h3-eok-rel-x h3-x-rel-x h3-r-rel-x h3-a-rel-x h3-rest-rel-x
-    h3r-rs-x h3r-run-kill h3-run-kill h3-undo-d tsq-refl tsq-trans tsq-remove-edge tsq-fill-slot
+    fm-finalize-loop fm-t10-finalize-debtor fm-fire-fold fm-fire-task-cancelled fm-task-upd fm-cancel-acts
+    fm-cancel-res fm-cleanup-set current-members-m-rel-x current-members-eok-rel-x current-members-x-rel-x current-members-r-rel-x current-members-a-rel-x current-members-rest-rel-x
+    current-members-rest-rs-x current-members-rest-run-kill current-members-run-kill current-members-undo-d tsq-refl tsq-trans tsq-remove-edge tsq-fill-slot
     tsq-dep-consumed tsq-fire-dep tsq-fire-wait tsq-fire-edge tsq-final qk-of1 qk-cons-ne qk-del qk-same
     qk-upd qk-filter qk-fill-slot qk-remove-edge qk-uniq qk-keep qk-upd-e qk-q1-fired qk-q1-fired-any
     qk-q1-fired-tt qk-q1-dne qk-q1-obs qk-inval qk-fdep qk-fwait qk-fobs qk-fire qk-sub qk-nil qk-fold
-    all-fin-loop all-finalize-debtor task-cancel-result-run h3-cancel-mid hmk-cancel-mid cmid-has
-    fm-cancel-mid fold-tasks fold-sources cmid-tsq tbl-find-upd-same tcr-tag tcr-final h3-cancel-task
-    h3-dx-of h3-cancel-task-x h3-tof-g h3-cancel-run-local-g h3-retire-with h3-retire-local
-    h3-close-scope-local h3-job-apply-g h3-cascade-g g10-gk-mono-g ncw-all-g jok-all-g h3-run-cascade-g
-    t14-h3 t-cancel-h3 t16-h3 t-close-scope-h3 t15-full-h3 t-slice-exit-h3 h3-cancel-losers
-    hm3-remove-if-empty])
+    all-finalize-loop all-t10-finalize-debtor task-cancel-result-run current-members-cancel-mid marks-waiting-cancel-mid cmid-has
+    fm-cancel-mid fold-tasks fold-sources cmid-tsq tbl-find-upd-same tcr-tag tcr-final current-members-cancel-task
+    current-members-dx-of current-members-cancel-task-x current-members-tof-g current-members-cancel-run-local-g current-members-t13-retire-with-subtree current-members-retire-run
+    current-members-close-scope-local current-members-job-apply-g current-members-cascade-g i10-current-exempt-gk-mono-g ncw-all-g jok-all-g current-members-run-cascade-g
+    current-members-t14-cancel current-members-t14-host-cancel current-members-t16-close-scope current-members-t-close-scope current-members-t15-resource-ack current-members-t-slice-exit current-members-cancel-losers
+    current-members-remove-if-empty])
 
 (defn checked-declaration [name]
   (let [^ConstantInfo declaration (.lookup ^Env @a/ansatz-env (Name/fromString (str name)))]
@@ -51,10 +51,10 @@
 
 (deftest cascade-hypotheses-remain-explicit
   (is (= {:parameters '[xm :- (List Nat), hx :- (List Nat), gx :- (List Nat), gk :- (List Nat), w :- World, js :- (List Job)]
-          :statement '(=> (= (g10 gx gk w) true) (= (hmk hx w) true) (= (ekb w) true) (= (h3 xm w) true)
-                          (= (h3 xm (run-cascade w js)) true))}
-         (source-statement "spindel/v2/inv/members/cascade.clj" 'h3-run-cascade-g)))
+          :statement '(=> (= (i10-current-exempt gx gk w) true) (= (marks-waiting hx w) true) (= (edge-kinds w) true) (= (current-members xm w) true)
+                          (= (current-members xm (run-cascade w js)) true))}
+         (source-statement "spindel/v2/inv/members/cascade.clj" 'current-members-run-cascade-g)))
   (is (= {:parameters '[w :- World, it :- Item]
-          :statement '(=> (= (ekb w) true) (= (rule-r-safe (:world (raw w it))) true)
-                          (= (ekb (:world (world-step w it))) true))}
-         (source-statement "spindel/v2/inv/members/cascade.clj" 'step-ekb))))
+          :statement '(=> (= (edge-kinds w) true) (= (rule-r-safe (:world (raw w it))) true)
+                          (= (edge-kinds (:world (world-step w it))) true))}
+         (source-statement "spindel/v2/inv/members/cascade.clj" 'step-edge-kinds))))

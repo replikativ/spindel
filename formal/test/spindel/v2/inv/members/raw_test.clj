@@ -1,9 +1,9 @@
 (ns spindel.v2.inv.members.raw-test
-  "Loading spindel.v2.inv.members.raw kernel-checks release-world and the assembly over the step items (raw) for the h-mem2 bundle h3."
+  "Loading spindel.v2.inv.members.raw kernel-checks release-world and the assembly over the step items (raw) for the h-mem2 bundle current-members."
   (:require [clojure.test :refer [deftest is]]
             [spindel.v2.inv.members.raw]))
 
-(def theorems '[h17-host-free h17-revoke-roots h17-t-release-world h17-raw0-h3 h17-raw-h3])
+(def theorems '[current-members-host-free current-members-revoke-roots current-members-t21-release-world current-members-transition current-members-raw])
 
 (deftest proved-without-sorry
   (let [src (slurp "src/spindel/v2/inv/members/raw.clj")]

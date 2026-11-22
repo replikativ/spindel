@@ -1,0 +1,321 @@
+;; Naming pass: the rules the rename map is computed from (formal/dev/naming/renames.clj).
+;; Nothing here is applied to the sources in phase 1. Decision numbers refer to the naming proposal
+;; (section d) as decided by the coordinator.
+{;; ---------------------------------------------------------------------------------------------
+ ;; The base invariant (decision 1) and the Lean/Ansatz word it must not be: `wf` = well-founded.
+ :base {:old inv-sample :new well-formed}
+
+ ;; ---------------------------------------------------------------------------------------------
+ ;; Exact renames of definitions (and a few theorems whose name no rule produces).
+ :exact
+ {;; -- base (b4)
+  inv-sample well-formed
+  inv-parts well-formed-parts
+  inv-intro well-formed-intro
+  inv-sample-empty well-formed-empty
+  step-inv step-well-formed                       ; decision 1
+  step-inv-total step-well-formed-total
+  inv-drop-cred well-formed-drop-cred-edges       ; named after the edit drop-cred-edges
+  i5-wait-of-sample i5-wait-of-well-formed
+
+  rr-no-orphans rule-r-loop-no-orphans            ; rule-r-no-orphans is P9's theorem
+  ;; lemmas named g10 that are about g10r (the part), not its exempt form
+  step-g10 step-i10-current
+  h3-g10-run current-members-i10-current-run
+  ;; tokens that are not the part of the same name: g10's exempt lists gxz/gkz, i8's view
+  g10-gk-mono-g i10-current-exempt-gk-mono-g
+  g10-gx-app i10-current-exempt-gx-app
+  g10-gx-cons i10-current-exempt-gx-cons
+  r10-gx-cons i10-current-run-ok-gx-cons
+  rc-gx-cons rc-gx-cons
+  g8-of-kw i8-closed-of-view
+  ;; h3's own proofs registered under the older prefix as a suffix: the copy's name
+  t22-un-hm3 current-members-t22-host-unawait
+  t8-unobserve-hm3 current-members-t8-unobserve
+  h10-install-h3-exempt current-members-install-exempt
+  h10-fill-prefix-h3 current-members-fill-prefix-preserved   ; h10-fill-prefix is a definition
+
+  ;; -- the step pipeline (b1; decisions 2, 3, 6)
+  finish then-rule-r
+  post then-cancel-losers
+  raw0 transition
+  raw0g host-guarded-transition                   ; not `admit` (enqueue, in the spec; also an Ansatz tactic), not `gate` (the world lock)
+  raw0g-of host-guarded-transition-non-host
+  raw-ri round-facts-raw
+  host-shut host-item-refused
+  root-shut world-released
+  body-shut create-in-scope-refused
+  cc-shut create-refused
+  fin-shut arm-refused
+  await-bad await-refused
+  take-bad take-refused
+  host-await-bad host-await-refused
+  await-kind-bad await-kind-refused
+  spawn-local-bad spawn-local-refused
+  detach-local-bad detach-local-refused
+  fin-exit-bad finally-exit-refused
+  fin-leave-bad finally-leave-refused
+  in-fin in-finally
+  run-in-fin run-in-finally
+  fin-suspends finally-suspends
+  c0-gate require-root-open
+  root-ok-if root-open-if
+
+  ;; -- transitions (b2; decision 12)
+  ;; step.clj's own T1, T8, T15 stay (see :legacy-roots) and give their names to engine.clj's
+  t1-create-source t1-create-source-basic
+  t8-observe t8-observe-basic
+  t15-resource-ack t15-resource-ack-basic
+  t1-inv well-formed-t1-create-source-basic
+  t1-refuse t1-create-source-basic-refuse
+  t1-l4 t1-create-source-basic-l4
+  t15-inv well-formed-t15-resource-ack-basic
+  t15-refuse t15-resource-ack-basic-refuse
+  t15-l4 t15-resource-ack-basic-l4
+  t1-body t1-create-source                        ; T1 in a run, any kind
+  t1-full t1-create-nonstream                     ; T1 in a run, not a stream
+  t1-stream t1-create-stream                      ; T1 stream in a run (C0)
+  t1-top-full t1-create-source-top                ; T1 top level, any kind (swap with the next row)
+  t1-create-source-top t1-create-nonstream-top    ; T1 top level, not a stream (step.clj)
+  t8-full t8-observe-any-kind                     ; T8 before the stream refusal
+  t8-obs t8-observe                               ; T8 itself (a t-<verb> name is only for an unnumbered transition)
+  finalize-debtor t10-finalize-debtor
+  retire-full t13-retire
+  t-cancel t14-host-cancel                        ; the host's cancel item: T14 (or its done-run form)
+  t15-full t15-resource-ack
+  t-release-world t21-release-world
+  t-retire-local t28-retire-local
+  sched-ok schedule-ok
+
+  ;; -- Rule R (b3; decision 13)
+  rr-loop rule-r-loop
+  rr-fuel rule-r-fuel
+  rule-r-pre rule-r-last-input
+  rr-pre last-input-loop
+  rr-safe rounds-safe-loop
+  norm-round normalize-round
+  norm-round-lv normalize-round-with-live
+  norm-loop normalize-loop
+  norm-fuel normalize-fuel
+  norm-measure normalize-measure
+  run-norm run-normalized
+  comp-norm comp-normalized
+  filter-safe-k filter-safe-for
+  fs-ref filter-keeps-ends
+  fs-mark filter-keeps-marked
+  rule-r-filter-lv rule-r-filter-with-live
+  casc-fuel cascade-fuel
+  casc-done cascade-done
+  fin-loop finalize-loop
+  fin-fuel finalize-fuel
+  fin-done finalize-done
+  fin-if-final finalize-if-final
+  fin-drop finalize-drops
+  fin-keep finalize-keeps
+  crank-of comp-rank-of
+  retire-local retire-run                         ; T13 for one run; `retire-local` stays the T28 item
+  retire-with t13-retire-with-subtree
+  close-with t16-close-with-subtree
+  close-source0 close-source-ended
+  storage-gather0 storage-seeds
+
+  ;; -- spellings (b7; decision 16, res = resource, is NOT in this pass)
+  create-source-cur create-source-in-run
+  create-link-cur create-link-in-run
+  create-stream-cur create-stream-in-run
+  src-owner-cur source-owner-in-run
+  comp-h1 comp-first-handle
+  task-h1 task-first-handle
+  source-h1 source-first-handle
+  pub-h1 pub-first-handle
+  comp-h0 comp-no-handles
+  task-h0 task-no-handles
+  source-h0 source-no-handles
+  pub-h0 pub-no-handles
+  comp-h0-at comp-zero-handles
+  task-h0-at task-zero-handles
+  source-h0-at source-zero-handles
+  pub-h0-at pub-zero-handles
+  ent-run entity-run
+  rjobs raise-jobs
+  nat-is nat-eq-to
+
+  ;; -- the chain (b6; decision 7) and Reach1 (decision 17)
+  p3b chain-start
+  p3c chain-to-i10-current
+  p3d chain-to-i11a
+  p3e chain-to-i1-scopes
+  p3f chain-to-i5-dep-final
+  p3g chain-to-i1-detached-closed
+  p3h chain-to-i1-runs
+  p3i chain-to-i8-closed
+  p3j chain-to-comp-facts
+  p3k chain-to-i14-ordered
+  p3l chain-to-marks-waiting
+  p3la chain-to-edge-kinds
+  p3m chain
+  Reach1 WorldReach
+
+  ;; -- parts that are not bundles, and the literal readings whose names the parts take
+  inv-rank i12-ranks
+  ri round-facts
+  v14 i14-ordered
+  glx i10-task-exempt
+  i1-own lit-i1-own
+  i1-runs lit-i1-runs
+  sok slice-holder-ok
+  qinv quiet-world-inv
+  bc cascade-bound
+  bn round-bound
+  Bnd Bound
+  bnd-of bound-of
+  gk0-rest host-roots-revoked-pending-rest         ; no pending activation or publication, no host edge once released
+  gh-rest host-roots-revoked-handles-rest          ; once released, every handle count is zero
+  grk-rest i1-runs-keys-rest                      ; the rest of i1-runs over the exempt list (grx-rest wraps it)
+
+  ;; -- part views and key predicates (b5, last paragraph): <part>-view, <part>-keys-ok,
+  ;;    <part>-<row>-key, <part>-<row>-ok
+  KW I10TaskView, kw i10-task-view
+  l10k i10-task-keys-ok, l10kx i10-task-exempt-keys-ok
+  RKey RunKey, rkey run-key, rkey-id run-key-id, rkeys run-keys
+  TKey TaskKey, tkey task-key, tkey-id task-key-id, tkeys task-keys
+  RK9 I9ResRunKey, rk9 i9-res-run-key
+  CK7 I7IdleCompKey, ck7 i7-idle-comp-key
+  RK7 I7IdleRunKey, rk7 i7-idle-run-key
+  g7k i7-idle-keys-ok
+  RK3 CurrentMembersRunKey, rk3 current-members-run-key
+  RK10 I10CurrentRunKey, rk10 i10-current-run-key, rk10-id i10-current-run-key-id, rk10s i10-current-run-keys
+  CK10 I10CurrentCompKey, ck10 i10-current-comp-key, ck10-id i10-current-comp-key-id, ck10s i10-current-comp-keys
+  TK10 I10CurrentTaskKey, tk10 i10-current-task-key, tk10-id i10-current-task-key-id, tk10s i10-current-task-keys
+  r10 i10-current-run-ok, c10 i10-current-comp-ok, t10 i10-current-task-ok
+  g10k i10-current-exempt-keys-ok
+  KW10 I10CurrentView, kw10 i10-current-view
+  T8K I8ClosedTaskKey, t8k i8-closed-task-key, t8k-id i8-closed-task-key-id, t8ks i8-closed-task-keys
+  S8K I8ClosedScopeKey, s8k i8-closed-scope-key, s8k-id i8-closed-scope-key-id, s8ks i8-closed-scope-keys
+  X8K I8ClosedSourceKey, x8k i8-closed-source-key, x8k-id i8-closed-source-key-id, x8ks i8-closed-source-keys
+  KW8 I8ClosedView, kw8 i8-closed-view
+  r8 i8-closed-run-ok, x8 i8-closed-source-ok
+  i8k i8-closed-keys-ok
+  SKW RootScopeReservedScopeKey, skw root-scope-reserved-scope-key, skw-id root-scope-reserved-scope-key-id,
+  skws root-scope-reserved-scope-keys
+  KWW RootScopeReservedView, kww root-scope-reserved-view
+  gwk root-scope-reserved-keys-ok
+  gyk tombs-dormant-keys-ok
+  vqk i14-validity-raw-keys-ok
+  vrk i14-validity-rule-r-keys-ok
+  iv14 i14-idle-entries-ok
+  dnaq14 i14-idle-dep-queued
+  swc14 i14-stamps-below
+  rk-up run-key-up, rk-down run-key-down, tk-done task-key-done
+  hk-wt waiting-strongly
+  gr acts-ok-with}
+
+ ;; ---------------------------------------------------------------------------------------------
+ ;; Parts: every pres.part bundle (old predicate -> new). The bundle prefix becomes "<new>-" for
+ ;; all of them (h3's "hm3-" too, decision 8). :role is for the proposal tables.
+ :parts
+ {ga {:new acts-parked :role :chain}
+  gx {:new acts-parked-exempt :role :exempt}
+  gl {:new i10-task :role :chain}
+  g9 {:new i9-res :role :chain}
+  g7 {:new i7-idle :role :round}
+  mdb {:new marks-on-dep :role :round}
+  esb {:new refs-not-edges :role :round}
+  aha {:new act-runs-alive :role :round}
+  gy {:new tombs-dormant :role :round}
+  g10r {:new i10-current :role :chain}
+  g10 {:new i10-current-exempt :role :exempt}
+  nq {:new i10-current-transport :role :exempt}
+  gw {:new root-scope-reserved :role :chain}
+  g1 {:new i1-scopes :role :chain}
+  g5 {:new i5-dep-final :role :chain}
+  gso {:new i1-detached-closed :role :chain}
+  gr0 {:new i1-runs :role :chain}
+  grx {:new i1-runs-exempt :role :exempt}
+  g8 {:new i8-closed :role :chain}
+  gd {:new comp-facts :role :chain}
+  vq {:new i14-validity-raw :role :exempt}
+  vr {:new i14-validity-rule-r :role :exempt}
+  hmk {:new marks-waiting :role :chain}
+  ar {:new alive-run-latest :role :chain}
+  ekb {:new edge-kinds :role :chain}
+  h3 {:new current-members :role :chain}
+  svb {:new i5-seen :role :alongside}
+  ;; helpers: one fact carried along a path of the tree (decision 11: they still exist, as parts
+  ;; with their own tables, and their names are read in other parts' :pass and :ctx rows)
+  ch {:new comp-exists :role :helper}
+  na {:new no-act-of-run :role :helper}
+  kx {:new edge-debtor-kept :role :helper}
+  kc {:new edge-kind-kept :role :helper}
+  mdk {:new mark-targets-dep :role :helper}
+  ka {:new awaiting-run-alive :role :helper}
+  krb {:new run-retirable :role :helper}
+  neb {:new run-gone :role :helper}
+  hkw {:new dispatch-epoch-kept :role :helper}
+  hsw {:new done-epoch-below :role :helper}
+  awo {:new comp-awake-owns-run :role :helper}
+  kdb {:new alive-runs-listed :role :helper}
+  edb {:new no-dep-edges-of :role :helper}
+  fb {:new members-round-frame :role :helper}
+  nzb {:new owner-count-at-most :role :helper}
+  ;; progress and completion parts (not in inv)
+  mb {:new l2-measure :role :progress}
+  grel {:new stays-released :role :completion}
+  gk {:new host-roots-revoked :role :completion}
+  gc {:new cleanup-runs-exist :role :completion}
+  gst {:new task-unheld-scope-absent :role :completion}
+  gos {:new open-scopes-have-runs :role :completion}
+  gox {:new open-scopes-have-runs-exempt :role :exempt}
+  gnf {:new markers-gone :role :completion}
+  gcy {:new scope-parents-acyclic :role :completion}}
+
+ ;; ---------------------------------------------------------------------------------------------
+ ;; Stems: hyphen tokens of theorem (and derived definition) names that are not definitions.
+ ;; :t the T-numbered theorems gain their verb (wf-<def>, <def>-refuse, <def>-l4).
+ :stems
+ {t2 t2-write, t3 t3-create, t3-top t3-create-top, t4 t4-spawn, t4-top t4-spawn-top, t5 t5-start,
+  t6 t6-await, t7 t7-track, t9 t9-fire, t11 t11-dispatch, t12 t12-complete, t14 t14-cancel,
+  t16 t16-close-scope, t17 t17-arm, t18 t18-resource-fire, t22 t22-host-await,
+  t22-un t22-host-unawait, t1-top t1-create-nonstream-top, sched t-schedule
+  ;; members campaigns (decision 15)
+  hm3 current-members, h3r current-members-rest
+  h9 current-members, h10 current-members, h11 current-members, h12 current-members, h13 current-members,
+  h14 current-members, h15 current-members, h16 current-members, h17 current-members, h18 current-members
+  ;; abbreviations spelled out
+  casc cascade, src source, blk blocked}
+
+ ;; prefixes a DEFINITION's name follows (besides the parts): the members campaigns
+ :family-stems
+ {h3 current-members
+  h9 current-members, h10 current-members, h11 current-members, h12 current-members, h13 current-members,
+  h14 current-members, h15 current-members, h16 current-members, h17 current-members, h18 current-members}
+ ;; exact entries whose derived definitions follow them as a prefix (kw8-ss, rk10-up)
+ :def-families #{kw kw8 kw10 rk10 ck10 tk10 bc}
+
+ ;; a members-campaign lemma that would collide after the merge takes its namespace's topic word
+ :stage-topic {h9 await-wire, h10 await-fill, h11 await-post, h12 await-guard, h13 track-take,
+               h14 dispatch, h15 raw-lifts, h16 complete, h17 raw, h18 step}
+
+ ;; ---------------------------------------------------------------------------------------------
+ ;; step.clj legacy (decision 18): deleted if nothing outside the set references it. Nothing is:
+ ;; test/spindel/v2/step_test.clj and rule_test.clj drive the compiled `st/dispatch`, which calls
+ ;; t1-create-source, t8-observe, t15-resource-ack and retire-check, and step_test lists the lemmas.
+ ;; (Candidates were: dispatch run-items t1-create-source t8-observe t15-resource-ack retire
+ ;; retire-check close-scope-shallow.)
+ :legacy-roots []
+
+ ;; Clojure vars of the generators that carry an old name (not constants of the model)
+ :clj-vars {raw0-branch-name transition-branch-name}
+
+ ;; names the segmentation must leave alone (the token is not the renamed definition)
+ :keep #{gk-all          ; members/cascade: the job list `gk` of a cascade, not the part gk
+         kc-r kc-c       ; inv/i10: "keeps current" row predicates, not the part kc
+         rk-is           ; inv/i14: a rank test
+         }
+
+ ;; hyphen tokens that must not survive in a new name (lint)
+ :stale-tokens #{raw0 raw0g gl ga gx g1 g5 g7 g8 g9 g10 g10r gr0 grx gso gw gy gd gc gk gst gos gox gnf gcy
+                 mdb mdk esb aha svb ekb hmk hkw hsw kdb edb awo krb neb nzb vq vr v14 p3b p3c p3d p3e
+                 p3f p3g p3h p3i p3j p3k p3l p3la p3m hm3 h3 rr casc glx l10k sample
+                 kw kw8 kw10 ri sok bc bn qinv ar ch na ka kc kx mb fb nq gr h9 h10 h11 h12 h13 h14 h15 h16 h17 h18
+                 norm blk src}}
