@@ -36,9 +36,10 @@
    ;; slot 3 (CLJS): the running slice's outer values of the vars it binds
    :cljs (def ctx-cell (doto (object-array 4) (aset 2 0))))
 
+;; slot 3 (JVM): true while the thread runs no inline turns (D, H2)
 (defn- ctx ^objects []
   #?(:clj (let [c (.get ctx-tl)]
-            (if (nil? c) (let [c (object-array 3)] (aset c 2 (num 0)) (.set ctx-tl c) c) c))
+            (if (nil? c) (let [c (object-array 4)] (aset c 2 (num 0)) (.set ctx-tl c) c) c))
      :cljs ctx-cell))
 
 (defn active-run [] (aget (ctx) 1))
@@ -2916,7 +2917,8 @@
                (catch #?(:clj Throwable :cljs :default) t
                  #?(:clj (binding [*out* *err*] (println "after-gate action failed:" t))
                     :cljs (js/console.error "after-gate action failed:" t))))
-          :else (handoff! x))))))
+          ;; a failed handoff skips none of the others
+          :else (isolated! "handoff" #(handoff! x)))))))
 
 (defn- process!
   "H2: try the gate; the winner runs a bounded turn, then hands off. The
@@ -2928,8 +2930,10 @@
       (let [prev (enter-world! w)]
         (try (run-turn! w)
              (finally (let [cs (take-after! w)]
-                        (hs/unlock! lk) (leave-world! prev) (run-after! cs)))))
-      (handoff! w))))
+                        (hs/unlock! lk) (leave-world! prev) (run-after! cs))
+                      ;; also on a throw: a drainer that lost the gate relies
+                      ;; on this handoff
+                      (handoff! w)))))))
 
 (defn- work-pending? [w]
   (or (not (hs/mpsc-empty? (ingress w)))
@@ -2940,11 +2944,24 @@
 
 (defn- handoff!
   "H2: after releasing the gate, queued work is never stranded: schedule the
-   world's drainer when work remains and none is scheduled."
+   world's drainer when work remains and none is scheduled. The scheduling
+   claim belongs to this submission until its runnable starts, once: an
+   executor that refuses the runnable (or runs it and then throws) makes it
+   run on a fresh thread (hs/execute-surely!), and a second start finds the
+   claim taken, so it never clears a later submission's claim."
   [w]
   (let [sched (g w rw/W-SCHEDULED)]
     (when (and (work-pending? w) (hs/flag-cas! sched false true))
-      (hs/execute! (g w rw/W-EXEC) (fn [] (hs/flag-set! sched false) (process! w))))))
+      (let [claim (hs/flag true)]
+        (try
+          (hs/execute-surely! (g w rw/W-EXEC)
+                              (fn [] (when (hs/flag-cas! claim true false)
+                                       (hs/flag-set! sched false)
+                                       (process! w))))
+          (catch #?(:clj Throwable :cljs :default) t
+            ;; no thread could be started: give back a claim still ours
+            (when (hs/flag-cas! claim true false) (hs/flag-set! sched false))
+            (throw t)))))))
 
 (defn released-ex [] (control-ex "world released" {:spindel/released true}))
 
@@ -3007,12 +3024,55 @@
          (when-not (:spindel/released (ex-data e)) (throw e)))))
 
 #?(:clj
+   (defn- inline-turns?
+     "D (H2): whether a host operation on this thread may run a turn inline.
+      False on a thread inside `without-inline-turns` that holds no gate; a
+      thread processing a world ignores the setting (H1, H4, B7)."
+     []
+     (let [c (ctx)]
+       (or (nil? (aget c 3))
+           (when-let [w (aget c 0)] (hs/held? (g w rw/W-LOCK)))))))
+
+#?(:clj
+   (defn without-inline-turns
+     "D (H2): calls `(f)` with this JVM thread running no inline turns. A host
+      operation it issues while holding no gate is enqueued and handed to the
+      world's drainer, as on a world created with `:inline? false`, and
+      returns what it returns there without waiting for the item (which may
+      commit before or after the return): a bare host item nothing (its
+      throw is reported by the processing thread), commands their usual
+      value, creations unbound handles, `value-async`/`observe!`/
+      `release-world!` their fns; `host-call!` clients wait for the reply,
+      and an interrupt ends that wait while the item still runs later. An
+      item admitted before a release commits is handled by its operation
+      when it runs (spec H2). Dispatch isolation needs an executor that runs
+      handoffs asynchronously. A thread inside a gate (a slice, an item or a
+      callback) ignores the setting. Nests; the setting is the thread's, not a
+      dynamic binding, so it never reaches a slice (B10)."
+     [f]
+     (let [c (ctx) prev (aget c 3)]
+       (aset c 3 true)
+       (try (f) (finally (aset c 3 prev))))))
+
+#?(:clj
+   (defmacro no-inline
+     "D (H2): runs `body` with this JVM thread running no inline turns; see
+      `without-inline-turns`."
+     [& body]
+     `(without-inline-turns (fn [] ~@body))))
+
+#?(:clj
    (defmacro ingress-body
      "The body of host!/internal!: `admit?` is a literal, so the release
-      check folds away for internal items."
+      check folds away for internal items. On the JVM a thread inside
+      `without-inline-turns` that holds no gate takes the non-inline branch
+      (D, H2)."
      [w f admit?]
      (let [w' (gensym "w") f' (gensym "f") lk (gensym "lk") prev (gensym "prev")
-           v (gensym "v") l (gensym "l") cs (gensym "cs")]
+           v (gensym "v") l (gensym "l") cs (gensym "cs")
+           inline (if (rw/cljs? &env)
+                    `(g ~w' rw/W-INLINE)
+                    `(and (g ~w' rw/W-INLINE) (inline-turns?)))]
        `(let [~w' ~w ~f' ~f ~lk (g ~w' rw/W-LOCK)]
           (cond
             ~@(cond
@@ -3029,7 +3089,7 @@
                                (try (first-entry! ~w') (~f') (finally (leave-world! ~prev)))))
             ;; Fast path: nothing queued and the gate is free, so running the
             ;; item now keeps FIFO order without an ingress node.
-            (and (g ~w' rw/W-INLINE) (hs/mpsc-empty? (ingress ~w')) (hs/try-lock! ~lk))
+            (and ~inline (hs/mpsc-empty? (ingress ~w')) (hs/try-lock! ~lk))
             (let [~prev (enter-world! ~w')
                   ~v (try (s! ~w' rw/W-DRAINING true)
                           (let [~v (try (first-entry! ~w') (~f') (finally (s! ~w' rw/W-DRAINING false)))]
@@ -3040,12 +3100,14 @@
                               (if (zero? (acount ~l))
                                 (do (hs/unlock! ~lk) (leave-world! ~prev))
                                 (let [~cs (take-after! ~w')]
-                                  (hs/unlock! ~lk) (leave-world! ~prev) (run-after! ~cs))))))]
-              (handoff! ~w')
+                                  (hs/unlock! ~lk) (leave-world! ~prev) (run-after! ~cs))))
+                            ;; also when the item throws: a drainer that lost
+                            ;; the gate meanwhile relies on this handoff (H2)
+                            (handoff! ~w')))]
               ~v)
             :else
             (do (hs/mpsc-add! (ingress ~w') ~f')
-                (if (g ~w' rw/W-INLINE) (process! ~w') (handoff! ~w'))
+                (if ~inline (process! ~w') (handoff! ~w'))
                 nil))))))
 
 (defn- ingress* [w f admit?]
@@ -5105,6 +5167,9 @@
                          (catch #?(:clj Exception :cljs :default) _
                            (release-child! w c))))
                   (commit! w [:fork-host (g c rw/ID)])
+                  ;; the child's inherited work is scheduled after this gate,
+                  ;; also when the caller stopped waiting for the reply (D)
+                  (aadd! (g w rw/W-AFTER) c)
                   c)))]
        (handoff! c)
        c))))
