@@ -2174,3 +2174,17 @@ entry, `(fork)` in a fork-local run refused, computations never marked). Engine 
 - LOC1's task half and LOC2 as invariants preserved by the step (in `inv`); `retire-clean` and `retire-quiet` as theorems. Both post-conditions need LOC1
   (an unmarked task in a fork-local subtree would be cancelled by the cascade with a cleanup entry) and that every
   resource wait edge belongs to its owner run's activation (so `ack-if`'s guard holds after `cancel-acts`).
+
+## T11 does not re-enter a running finally clause (2026-11-21, branch `formal/t11-running-clause`, from engine-v2 807677e)
+- `await-cont` (engine.clj) now reads `fins-empty (:finalizers r)` as `track-cont` does: a member edge of a mode-`one`
+  await gets `cont = k` only in a run with no finalizer entry at all (no open region, no running clause) and no
+  resource. Before, it read `regions-empty` (open regions only, the C1 reading of engine `reentrant-k`), so an await
+  inside a running clause got a re-entrant `cont` and T11 resumed the new run inside the clause (a B8 hole: the new
+  run's stack has no clause). `regions-empty` is deleted (no other use); `fin-region` stays (`finally-leave-refused`,
+  `fin-w`, the oracle's projection). This supersedes "`await-cont` reads regions only" in the A5 entry above.
+- No statement was edited and no proof changed: every proof treats `await-cont r mode k` as an opaque Nat. Constants
+  22,033 -> 22,031 (`regions-empty`, `regions-empty.eq_1` removed, none added). `dev/naming/fingerprint.clj` expands
+  references, so 2,303 fingerprints change through `await-cont`'s definition alone (among them `inv-step`,
+  `reach-inv`, `sys-reach-inv`, `step-chain`); `inv-empty`, `l5-safety-total`, `mv-refinement`, `well-formed`, `inv`
+  keep theirs.
+- The engine (`reentrant-k` also requiring R-INFIN = 0), spec B3 and the oracle samples follow in a separate change.

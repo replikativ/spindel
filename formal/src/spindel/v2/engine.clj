@@ -1412,12 +1412,12 @@
     [(some c) (Bool.or (comp-live c) (Bool.and (:idle c) (valid-idle w c)))]))
 
 ;; member edges: in a computation run a dep edge (creditor C) for C/K/X debtors, a wait edge
-;; (creditor A) otherwise and for resources (Z#6); cont per §2's re-entrancy rule (Y#3)
-;; (C1: a running finally clause is no region, engine `reentrant-k` reads R-FINS only)
+;; (creditor A) otherwise and for resources (Z#6); cont per §2's re-entrancy rule (Y#3):
+;; cont = k only for mode `one` in a run with no finalizer entry (neither an open region nor a
+;; running finally clause: T11 must not re-enter a clause) and no resource, as `track-cont`
 (a/defn fin-region [fz :- Finalizer] Bool (Nat.beq (:f fz) 0))
-(a/defn regions-empty [fs :- (List Finalizer)] Bool (Bool.not (tbl-any fin-region fs)))
 (a/defn await-cont [r :- RunRow, mode :- Nat, k :- Nat] Nat
-  (if (Bool.and (Nat.beq mode am-one) (Bool.and (regions-empty (:finalizers r)) (nats-empty (:resources r)))) k cont-restart))
+  (if (Bool.and (Nat.beq mode am-one) (Bool.and (fins-empty (:finalizers r)) (nats-empty (:resources r)))) k cont-restart))
 (a/defn as-dep [w :- World, r :- RunRow, d :- Nat] Bool (Bool.and (in-comp w r) (Bool.not (resource-has w d))))
 ;; a dep member on a signal or cell records the source's state as its baseline at the site (engine
 ;; `await-group!`: E-BASE := X-VALUE), whether or not the fast path then fills it (Z#61: after the

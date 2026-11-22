@@ -1749,9 +1749,11 @@
 
 (defn- reentrant-k
   "§2: `cont` is the continuation only for `one` awaits in a run without
-   finalizers or resources."
+   finalizers (no open region and no running finally clause) or resources.
+   A site inside a running clause is not re-entrant: T11 would resume the
+   new run inside a clause it never entered (B3, B8)."
   [r k]
-  (when (and (zero? (fins r)) (nil? (g r rw/R-RES))) k))
+  (when (and (zero? (fins r)) (zero? (long (or (g r rw/R-INFIN) 0))) (nil? (g r rw/R-RES))) k))
 
 (defn enter-finally!
   "Body contract: a `finally` region opens (rewritten by the body macros)."
@@ -1770,11 +1772,18 @@
     (commit! (cw) [:finally-exit (g r rw/ID)])))
 
 (defn leave-finalizer!
-  "The finally clause entered by `exit-finally!` ended (also by a throw)."
+  "The finally clause entered by `exit-finally!` ended (also by a throw).
+   Without a running clause it is refused, as in the model (a refused log
+   entry), and throws: the body broke the region protocol."
   []
   (when-let [r (active-run)]
-    (s! r rw/R-INFIN (max 0 (dec (long (or (g r rw/R-INFIN) 0)))))
-    (commit! (cw) [:finally-leave (g r rw/ID)])))
+    (let [n (long (or (g r rw/R-INFIN) 0))]
+      (if (zero? n)
+        (do (refuse! (cw) [:finally-leave (g r rw/ID)])
+            (throw (ex-info "finally-leave without a running finally clause (B3)"
+                            {:spindel/invalid :finally-leave})))
+        (do (s! r rw/R-INFIN (dec n))
+            (commit! (cw) [:finally-leave (g r rw/ID)]))))))
 
 (defn- finalizer-refusal
   "C1 W4 (B8 reduced to suspension): finalizers are synchronous. A
