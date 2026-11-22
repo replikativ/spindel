@@ -781,7 +781,7 @@ remains pending and observable; a timeout cannot certify retirement.
 
 ### 3.3 Rule R (A#3, X#10)
 
-After every commit:
+As the last part of every transition, before it commits (§5.1):
 
 1. **Normalize, to a fixpoint.** Repeat until nothing changes:
    1. recompute `live(W)`;
@@ -1862,8 +1862,8 @@ Shaped by the ansatz feasibility read (`ansatz/.internal/design/spindel-v2-feasi
      - the projected engine state is compared with the model as id-keyed
        sets;
      - executable invariant checks (`inv-all`, `lit-all`) run as tripwires.
-       The proved `inv` itself is not yet evaluated on replayed states: fork
-       markers and validity crank/stamp are not projected;
+       The proved `inv` itself is evaluated on every replayed world of
+       samples 4, 5 and 13 (`top_test`), not on every replayed state;
      - refusals are compared through `Outcome.accepted`. Samples 43–50 drive
        the refusals of T21, the cycle, pins and handles, resources and the
        semaphore maximum.

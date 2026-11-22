@@ -30,4 +30,8 @@ with **Getting Started**, then **Concepts**.
 
 - **[Engine](engine.md)** — the implementation deep-dive: state shape, deterministic addressing, CPS / trampoline, executors and the drain loop, glitch-free propagation, the overlay backend, memory invariants and GC
 - **[Engine Formalism](engine-formalism.md)** — algebraic properties (`track` as comonad, `await` as monad, the delta algebra laws), flow-chart diagrams, and a correctness argument per reactive composition
+- **[Engine v2 Overview](engine-v2-overview.md)** — the map of the v2 engine: its state and one step in pictures, the properties with their spec sections and theorems, what is not proved
+- **[Engine v2 Specification](engine-v2-spec.md)** — the normative contract of the v2 engine: vocabulary, state, transitions T*, invariants I*, forks and savepoints, verification plan
+- **[Engine Memory v2](engine-memory-v2.md)** — *design candidate*: owned world storage; the v2 specification is authoritative
+- **[Formal Model](../formal/README.md)** — the machine-checked model of the v2 engine (ansatz): what is proved, the reading list, the invariant table, the trust boundary
 - **[API Reference](api-reference.md)** — namespace-by-namespace listing of every public function and macro
