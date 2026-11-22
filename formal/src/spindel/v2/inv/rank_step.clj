@@ -2,7 +2,7 @@
   "Obligation P5: I12 ranks (`ranks-ok`) are preserved by EVERY transition, kernel-checked
   (Init only). The bundle is `i12-ranks w = well-formed w && ranks-ok w`.
 
-    step-rank   i12-ranks w, rule-r-safe (:world (raw w it)) -> i12-ranks (:world (world-step w it))
+    step-i12-ranks   i12-ranks w, rule-r-safe (:world (raw w it)) -> i12-ranks (:world (world-step w it))
 
   (the hypotheses of `step-well-formed`; ranks themselves need no extra hypothesis.)
 
@@ -22,21 +22,14 @@
     - a fresh computation (T3) has an id that no edge names (`edge-fresh-ok`, from
       edges-ref-ok and ids-below of well-formed);
     - ranks change only in the raise (spindel.v2.inv.rank).
-  Part B lifts each to the bundle (`rk-<edit>`: the well-formed lemma plus the ranks lemma).
+  Part B lifts each to the bundle (`i12-ranks-<edit>`: the well-formed lemma plus the ranks lemma),
+  as the cells of the part `RK` (spindel.v2.pres.part).
 
-  Part C: every composite well-formed lemma that `step-well-formed` depends on is re-checked for the
-  bundle by `rank-copy!`: the theorem's source form (read from its namespace, lemma-defining
-  macros expanded) with `well-formed` replaced by `i12-ranks` and every well-formed lemma by its
-  bundle version (`inv-X` -> `rk-X`, `X-inv` -> `X-rk`; `well-formed-comp-upd` gains the rank
-  argument `(fn [c] (rfl))`). The transitions whose well-formed proof does not carry over
-  (T6 await: the raise's `ok`; the edge inserts of T7 track, T8, T22, take, reactivation; the
-  T3 creation) have hand-written bundle proofs (`rank-overrides`), checked at their place
-  in the dependency order. Every copied theorem is an ordinary kernel-checked theorem in the
-  env (`rank-copied` lists them); nothing is trusted from the copy mechanism."
+  Part C: the composite lemmas under `step-well-formed` are restated for the bundle from the
+  generic step tree (spindel.v2.pres.tree, `restate!`), as for every other part. The transitions
+  that insert an edge or raise a rank have bundle proofs written here (the part's :over): T7 track,
+  reactivation, T22, take, T8 (the inserted edge is rank-ok) and T6 await (the raise's `ok`)."
   (:require [ansatz.core :as a]
-            [clojure.java.io :as io]
-            [clojure.string :as str]
-            [clojure.walk :as walk]
             [spindel.v2.state :refer :all]
             [spindel.v2.edits :refer :all]
             [spindel.v2.reach :refer :all]
@@ -44,7 +37,9 @@
             [spindel.v2.step :refer :all]
             [spindel.v2.rule :refer :all]
             [spindel.v2.engine :refer :all]
-            [spindel.v2.inv.rank :refer :all]))
+            [spindel.v2.inv.rank :refer :all]
+            [spindel.v2.pres.part :refer [mk-bundle prim!]]
+            [spindel.v2.pres.tree :as tree]))
 
 ;; ===========================================================================
 ;; The bundle
@@ -480,127 +475,36 @@
 ;; Part B. The bundle under the primitive edits
 ;; ===========================================================================
 
-;; `rk-prim!`: the bundle version of a primitive well-formed lemma (same binders and
-;; premises; the well-formed premise becomes i12-ranks) from the well-formed lemma and a ranks
-;; proof. `ranks` is a form over the source binder names, the premise names `h0 ... hn`, and
-;; `R` = ranks-ok of the input world; nil = the edit leaves ranks-ok definitionally unchanged.
+;; The bundle's cell for a primitive edit: the well-formed lemma and a ranks proof (`prim!`). The form
+;; is over the lemma's binders, its premises `h0 ... hn` and `R` = ranks-ok of the input world; nil =
+;; the edit leaves ranks-ok definitionally unchanged.
 
-(def ^:private rank-ns *ns*)
+(def RK (assoc (mk-bundle 'i12-ranks [] "i12-ranks-"
+                          ;; a computation update: one more argument, the row function keeps the rank
+                          {'well-formed-comp-upd ['(fn [c :- CompRow] (Eq.refl (:rank c))) 5]})
+               :names {"-rest" 'ranks-ok "-rest-of" 'i12-ranks-ranks}))
 
-(defn- ns-source-forms [ns-sym]
-  (let [path (str (-> (name ns-sym) (str/replace "." "/") (str/replace "-" "_")) ".clj")
-        the-ns (the-ns ns-sym)]
-    (binding [*ns* the-ns]
-      (with-open [r (java.io.PushbackReader. (io/reader (io/resource path)))]
-        (loop [acc []]
-          (let [f (read {:eof ::eof} r)]
-            (if (= f ::eof) acc (recur (conj acc f)))))))))
+;; edits that touch neither edges nor computations (rfl frame)
+(doseq [o '[well-formed-run-upd well-formed-scope-upd well-formed-pub-upd well-formed-source-upd
+            well-formed-task-upd well-formed-act-upd well-formed-resource-upd well-formed-cleanup-upd
+            well-formed-cleanup-del well-formed-set-pins well-formed-run-del well-formed-resource-del
+            well-formed-source-ins-fresh well-formed-fork-ins-fresh well-formed-fork-del well-formed-resource-ins-fresh
+            well-formed-scope-ins-fresh well-formed-run-ins-fresh well-formed-task-ins-fresh well-formed-act-ins-fresh
+            well-formed-bump well-formed-scope-del well-formed-cleanup-ins]]
+  (prim! RK o nil))
+;; edge edits, computation edits
+(doseq [[o ranks] '[[well-formed-mark-edge (ranks-mark-edge w x R)]
+                    [well-formed-unmark-edge (ranks-unmark-edge w x R)]
+                    [well-formed-edge-upd (ranks-edge-upd w x f hk hc hd R)]
+                    [well-formed-remove-edge (ranks-remove-edge w x R)]
+                    [well-formed-drop-cred-edges (ranks-drop-cred w a R)]
+                    [well-formed-drop-edges (ranks-drop-edges w p R)]
+                    [well-formed-comp-del-unref (ranks-comp-del w x R)]
+                    [well-formed-comp-ins-fresh (ranks-comp-ins-fresh w r h0 (i12-ranks-well-formed w h2) R)]
+                    [well-formed-filter-world (ranks-filter-world w K R)]]]
+  (prim! RK o ranks))
 
-(defn- theorem-form? [f]
-  (and (seq? f) (contains? #{'a/theorem 'ansatz.core/theorem} (first f))))
-
-(defn- expand-top [ns-sym f]
-  ;; lemma-defining macros of the namespace itself are expanded; `do` is flattened
-  (cond
-    (and (seq? f) (= 'do (first f))) (mapcat #(expand-top ns-sym %) (rest f))
-    (and (seq? f) (symbol? (first f)) (not (theorem-form? f)))
-    (let [v (binding [*ns* (the-ns ns-sym)] (resolve (first f)))]
-      (if (and (var? v) (:macro (meta v)) (= (the-ns ns-sym) (:ns (meta v))))
-        (expand-top ns-sym (binding [*ns* (the-ns ns-sym)] (macroexpand-1 f)))
-        [f]))
-    :else [f]))
-
-(def source-nss '[spindel.v2.edits spindel.v2.step spindel.v2.rule spindel.v2.engine])
-
-(def ^:private source-theorems
-  "[name form] of every theorem of the source namespaces, in load order."
-  (delay
-    (vec (for [nsym source-nss, f (ns-source-forms nsym), g (expand-top nsym f) :when (theorem-form? g)]
-           [(second g) g]))))
-
-(defn- theorem-source [nm]
-  (or (some (fn [[n g]] (when (= n nm) g)) @source-theorems)
-      (throw (ex-info (str "no source for theorem " nm) {:name nm}))))
-
-(defn- binder-names [binders] (vec (take-nth 3 binders)))
-
-(defn- inv-premise? [p] (and (seq? p) (= '= (first p)) (seq? (second p)) (= 'well-formed (first (second p)))))
-
-(def ^:private renames
-  "well-formed lemma -> its bundle version"
-  (atom {}))
-
-(defn- eval-theorem! [form]
-  (try (binding [*ns* rank-ns] (eval form))
-       (catch Throwable t
-         (throw (ex-info (str "rank-step: theorem " (second form) " failed: " (ex-message t)) {:form form} t)))))
-
-(defn- prim-form [orig rk ranks]
-  (let [[_ _ binders stmt] (theorem-source orig)
-        _ (assert (and (seq? stmt) (= '=> (first stmt))) (str orig ": statement is not an implication"))
-        prems (butlast (rest stmt))
-        concl (last stmt)
-        hs (vec (map-indexed (fn [i _] (symbol (str "h" i))) prems))
-        i (first (keep-indexed (fn [i p] (when (inv-premise? p) i)) prems))
-        w (second (second (nth prems i)))
-        w2 (second (second concl))
-        hi (nth hs i)
-        args (concat (binder-names binders) (assoc hs i (list 'i12-ranks-well-formed w hi)))
-        R (list 'i12-ranks-ranks w hi)
-        ranks-term (if ranks
-                     (walk/postwalk-replace {'R R} ranks)
-                     (list 'Eq.trans 'e-frame R))
-        sub (fn [x] (walk/postwalk-replace {'well-formed 'i12-ranks} x))]
-    (concat
-     (list 'a/theorem rk binders (sub stmt) (cons 'intros hs))
-     (when-not ranks [(list 'have 'e-frame (list '= (list 'ranks-ok w2) (list 'ranks-ok w))) '(rfl)])
-     [(list 'exact (list 'i12-ranks-intro w2 (cons orig args) ranks-term))])))
-
-(defn- rk-prim! [orig rk ranks]
-  (eval-theorem! (apply list (prim-form orig rk ranks)))
-  (swap! renames assoc orig rk))
-
-(defmacro ^:private defrk-prims [& specs]
-  `(do ~@(for [[orig rk ranks] (partition 3 specs)] `(rk-prim! '~orig '~rk '~ranks))))
-
-(defrk-prims
-  ;; edits that touch neither edges nor computations (rfl frame)
-  well-formed-run-upd i12-ranks-run-upd nil
-  well-formed-scope-upd i12-ranks-scope-upd nil
-  well-formed-pub-upd i12-ranks-pub-upd nil
-  well-formed-source-upd i12-ranks-source-upd nil
-  well-formed-task-upd i12-ranks-task-upd nil
-  well-formed-act-upd i12-ranks-act-upd nil
-  well-formed-resource-upd i12-ranks-resource-upd nil
-  well-formed-cleanup-upd i12-ranks-cleanup-upd nil
-  well-formed-cleanup-del i12-ranks-cleanup-del nil
-  well-formed-set-pins i12-ranks-set-pins nil
-  well-formed-run-del i12-ranks-run-del nil
-  well-formed-resource-del i12-ranks-resource-del nil
-  well-formed-source-ins-fresh i12-ranks-source-ins-fresh nil
-  well-formed-fork-ins-fresh i12-ranks-fork-ins-fresh nil
-  well-formed-fork-del i12-ranks-fork-del nil
-  well-formed-resource-ins-fresh i12-ranks-resource-ins-fresh nil
-  well-formed-scope-ins-fresh i12-ranks-scope-ins-fresh nil
-  well-formed-run-ins-fresh i12-ranks-run-ins-fresh nil
-  well-formed-task-ins-fresh i12-ranks-task-ins-fresh nil
-  well-formed-act-ins-fresh i12-ranks-act-ins-fresh nil
-  well-formed-bump i12-ranks-bump nil
-  well-formed-scope-del i12-ranks-scope-del nil
-  well-formed-cleanup-ins i12-ranks-cleanup-ins nil
-  ;; edge edits
-  well-formed-mark-edge i12-ranks-mark-edge (ranks-mark-edge w x R)
-  well-formed-unmark-edge i12-ranks-unmark-edge (ranks-unmark-edge w x R)
-  well-formed-edge-upd i12-ranks-edge-upd (ranks-edge-upd w x f hk hc hd R)
-  well-formed-remove-edge i12-ranks-remove-edge (ranks-remove-edge w x R)
-  well-formed-drop-cred-edges i12-ranks-drop-cred-edges (ranks-drop-cred w a R)
-  well-formed-drop-edges i12-ranks-drop-edges (ranks-drop-edges w p R)
-  ;; computation edits
-  well-formed-comp-del-unref i12-ranks-comp-del-unref (ranks-comp-del w x R)
-  well-formed-comp-ins-fresh i12-ranks-comp-ins-fresh (ranks-comp-ins-fresh w r h0 (i12-ranks-well-formed w h2) R)
-  well-formed-filter-world i12-ranks-filter-world (ranks-filter-world w K R))
-
-;; computation updates: one more argument, the row function keeps the rank
+;; computation updates: the row function keeps the rank
 (a/theorem i12-ranks-comp-upd [w :- World, x :- Nat, f :- (=> CompRow CompRow),
                         hid :- (forall [c :- CompRow] (= (comp-id (f c)) (comp-id c))),
                         hp :- (forall [c :- CompRow] (= (:pending (f c)) (:pending c))),
@@ -608,7 +512,7 @@
   (=> (= (i12-ranks w) true) (= (i12-ranks (comp-upd w x f)) true))
   (intro h)
   (exact (i12-ranks-intro _ (well-formed-comp-upd w x f hid hp (i12-ranks-well-formed w h)) (ranks-comp-upd w x f hid hr (i12-ranks-ranks w h)))))
-(swap! renames assoc 'well-formed-comp-upd 'i12-ranks-comp-upd 'well-formed-parts 'i12-ranks-parts)
+(swap! (:renames RK) assoc 'well-formed-comp-upd 'i12-ranks-comp-upd 'well-formed-parts 'i12-ranks-parts)
 
 ;; activation removal (with its creditor edges)
 (a/theorem i12-ranks-drop-act [w :- World, a :- Nat]
@@ -616,7 +520,7 @@
   (intro h)
   (have hr (= (ranks-ok (drop-act w a)) (ranks-ok (drop-cred-edges w a)))) (rfl)
   (exact (i12-ranks-intro _ (well-formed-drop-act w a (i12-ranks-well-formed w h)) (Eq.trans hr (ranks-drop-cred w a (i12-ranks-ranks w h))))))
-(swap! renames assoc 'well-formed-drop-act 'i12-ranks-drop-act)
+(swap! (:renames RK) assoc 'well-formed-drop-act 'i12-ranks-drop-act)
 
 ;; inserting an edge: rank-ok edges only
 (a/theorem i12-ranks-insert-edge-fresh [w :- World, e :- EdgeRow]
@@ -630,153 +534,94 @@
   (intros hr h)
   (exact (i12-ranks-intro _ (well-formed-insert-edge-checked w e (i12-ranks-well-formed w h))
            (ranks-insert-edge-checked w e hr (i12-ranks-ranks w h)))))
-(swap! renames assoc 'well-formed-insert-edge-fresh 'i12-ranks-insert-edge-fresh 'well-formed-insert-edge-checked 'i12-ranks-insert-edge-checked)
+(swap! (:renames RK) assoc 'well-formed-insert-edge-fresh 'i12-ranks-insert-edge-fresh 'well-formed-insert-edge-checked 'i12-ranks-insert-edge-checked)
 
 ;; ===========================================================================
-;; Part C. The composite lemmas, copied (see the namespace docstring)
+;; Part C. The composite lemmas: the generic step tree (spindel.v2.pres.tree)
 ;; ===========================================================================
 
-(defn- statement-mentions-inv? [form]
-  (let [[_ _ binders stmt] form] (boolean (some #{'well-formed} (flatten (list (seq binders) stmt))))))
+;; Every composite well-formed lemma under `step-well-formed` is restated for the bundle from the tree's
+;; generic lemma (`restate!`), except the transitions that insert an edge or raise a rank: their
+;; bundle proofs are written here (:over), each after the lemmas it uses.
+(tree/part! RK
+  :over '{well-formed-track-raw           i12-ranks-track-raw             ; T7: a dep edge on a source
+          well-formed-react-add           i12-ranks-react-add             ; a reactivation edge, with its raise
+          well-formed-host-await-raw      i12-ranks-host-await-raw        ; T22: a wait edge
+          well-formed-take-park           i12-ranks-take-park             ; take: a wait edge
+          well-formed-t8-observe-any-kind i12-ranks-t8-observe-any-kind   ; T8: no dep edge
+          well-formed-t6-await            i12-ranks-t6-await})            ; T6: dep edges, with their raises
 
-(defn- rank-name [sym]
-  (let [s (name sym)]
-    (symbol (if (str/includes? s "well-formed") (str/replace-first s "well-formed" "i12-ranks")
-                  (str s "-i12-ranks")))))
-
-(defn- rank-subst [x rn]
-  (cond
-    (and (seq? x) (= 'well-formed-comp-upd (first x)))
-    (let [[_ W X F HID HP & more] x]
-      (assert (= 1 (count more)) (str "well-formed-comp-upd call with unexpected arity: " (pr-str x)))
-      (apply list 'i12-ranks-comp-upd (map #(rank-subst % rn)
-                                    (concat [W X F HID HP '(fn [c :- CompRow] (Eq.refl (:rank c)))] more))))
-    (= x 'well-formed-comp-upd) (throw (ex-info "well-formed-comp-upd used as a value" {}))
-    (seq? x) (apply list (map #(rank-subst % rn) x))
-    (vector? x) (mapv #(rank-subst % rn) x)
-    (symbol? x) (cond (= x 'well-formed) 'i12-ranks
-                      (contains? rn x) (rn x)
-                      :else x)
-    :else x))
-
-(defn- rank-form [form rk rn]
-  (let [[head _ binders stmt & proof] form]
-    (apply list head rk (rank-subst binders rn) (rank-subst stmt rn) (map #(rank-subst % rn) proof))))
-
-(def ^:private rank-overrides
-  "Bundle proofs written by hand, keyed by the well-formed lemma they replace (registered in
-  load order, so they may use every bundle lemma before them)."
-  (atom {}))
-
-(defmacro ^:private defrank-override
-  "`orig`: the well-formed lemma replaced; `deps`: the well-formed lemmas whose bundle versions
-  the form uses (copied first); `form`: the bundle theorem."
-  [orig deps form]
-  `(swap! rank-overrides assoc '~orig {:deps '~deps :form '~form}))
-
-(def rank-copied
-  "the theorems checked by rank-copy!, in order"
-  (atom []))
-
-(defn- rank-closure [root]
-  (let [thms @source-theorems
-        S (set (keep (fn [[n g]] (when (statement-mentions-inv? g) n)) thms))
-        deps (fn [n]
-               (cond (contains? @renames n) []
-                     (contains? @rank-overrides n) (:deps (get @rank-overrides n))
-                     :else (let [[_ _ _ _ & proof] (theorem-source n)]
-                             (filter S (filter symbol? (flatten proof))))))]
-    (loop [todo [root] seen #{}]
-      (if-let [n (first todo)]
-        (if (seen n) (recur (rest todo) seen) (recur (concat (rest todo) (deps n)) (conj seen n)))
-        (filterv seen (map first thms))))))
-
-(defn rank-copy!
-  "Check the bundle version of every well-formed lemma `root` depends on, in load order."
-  [root rk-root]
-  (doseq [n (rank-closure root) :when (not (contains? @renames n))]
-    (let [rk (if (= n root) rk-root (rank-name n))
-          form (if-let [o (get @rank-overrides n)]
-                 (:form o)
-                 (rank-form (theorem-source n) rk @renames))]
-      (eval-theorem! form)
-      (swap! renames assoc n (second form))
-      (swap! rank-copied conj (second form)))))
-
-;; ---- hand-written bundle proofs
+(tree/restate! RK '[well-formed-track-fin])
 
 ;; T7 track: the debtor is a source, no computation (unique ids), so the dep edge is rank-ok
-(defrank-override well-formed-track-raw [well-formed-track-fin]
-  (a/theorem i12-ranks-track-raw [w :- World, r :- RunRow, x :- Nat, s :- SourceRow, k :- Nat]
-    (=> (= (comp-has w (:of r)) true) (= (source-find w x) (Option.some SourceRow s))
-        (= (i12-ranks w) true) (= (i12-ranks (track-raw w r x s k)) true))
-    (intros hc hs h)
-    (have hx (= (comp-has w x) false))
-    (exact (comp-not-source w x (And.right (And.right (i12-ranks-parts w h))) (tbl-find-has SourceRow source-id x s (:sources w) hs)))
-    (have hk (= (rank-edge-ok w (track-edge r x s k)) true)) (simp [rank-edge-ok track-edge hx])
-    (have h2 (= (i12-ranks (match (site-edge (:edges w) (:of r) (:effect-index r) x)
-                               [none (track-new w r x s k)]
-                               [(some e) (comp-upd (track-fin s (:id e) (edge-upd w (:id e) (edge-reread (track-cont r k) s)))
-                                                   (:of r) (comp-consume-adopt (:effect-index r) x))])) true))
-    (cases he (site-edge (:edges w) (:of r) (:effect-index r) x)) (case' [some e]) (case' [none])
-    (simp only [track-new])
-    (exact (i12-ranks-comp-upd _ (:of r) (comp-consume-adopt (:effect-index r) x)
-             (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _) (fn [c :- CompRow] (Eq.refl (:rank c)))
-             (i12-ranks-track-fin s (:next-id w) _ (i12-ranks-insert-edge-fresh w (track-edge r x s k) (track-edge-ok w r x s k hc hs) hk h))))
-    (exact (i12-ranks-comp-upd _ (:of r) (comp-consume-adopt (:effect-index r) x)
-             (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _) (fn [c :- CompRow] (Eq.refl (:rank c)))
-             (i12-ranks-track-fin s (:id e) _
-               (i12-ranks-edge-upd w (:id e) (edge-reread (track-cont r k) s) (edge-reread-edge-id _ _) (edge-reread-kind _ _)
-                 (edge-reread-creditor _ _) (edge-reread-debtor _ _) (edge-reread-marked _ _) h))))
-    (simp only [track-raw])
-    (exact (i12-ranks-run-upd _ (:id r) run-tick run-tick-run-id h2))))
+(a/theorem i12-ranks-track-raw [w :- World, r :- RunRow, x :- Nat, s :- SourceRow, k :- Nat]
+  (=> (= (comp-has w (:of r)) true) (= (source-find w x) (Option.some SourceRow s))
+      (= (i12-ranks w) true) (= (i12-ranks (track-raw w r x s k)) true))
+  (intros hc hs h)
+  (have hx (= (comp-has w x) false))
+  (exact (comp-not-source w x (And.right (And.right (i12-ranks-parts w h))) (tbl-find-has SourceRow source-id x s (:sources w) hs)))
+  (have hk (= (rank-edge-ok w (track-edge r x s k)) true)) (simp [rank-edge-ok track-edge hx])
+  (have h2 (= (i12-ranks (match (site-edge (:edges w) (:of r) (:effect-index r) x)
+                             [none (track-new w r x s k)]
+                             [(some e) (comp-upd (track-fin s (:id e) (edge-upd w (:id e) (edge-reread (track-cont r k) s)))
+                                                 (:of r) (comp-consume-adopt (:effect-index r) x))])) true))
+  (cases he (site-edge (:edges w) (:of r) (:effect-index r) x)) (case' [some e]) (case' [none])
+  (simp only [track-new])
+  (exact (i12-ranks-comp-upd _ (:of r) (comp-consume-adopt (:effect-index r) x)
+           (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _) (fn [c :- CompRow] (Eq.refl (:rank c)))
+           (i12-ranks-track-fin s (:next-id w) _ (i12-ranks-insert-edge-fresh w (track-edge r x s k) (track-edge-ok w r x s k hc hs) hk h))))
+  (exact (i12-ranks-comp-upd _ (:of r) (comp-consume-adopt (:effect-index r) x)
+           (comp-consume-adopt-comp-id _ _) (comp-consume-adopt-pending _ _) (fn [c :- CompRow] (Eq.refl (:rank c)))
+           (i12-ranks-track-fin s (:id e) _
+             (i12-ranks-edge-upd w (:id e) (edge-reread (track-cont r k) s) (edge-reread-edge-id _ _) (edge-reread-kind _ _)
+               (edge-reread-creditor _ _) (edge-reread-debtor _ _) (edge-reread-marked _ _) h))))
+  (simp only [track-raw])
+  (exact (i12-ranks-run-upd _ (:id r) run-tick run-tick-run-id h2)))
 
 ;; a reactivation edge is kept only with an ok raise (spindel.v2.inv.rank)
-(defrank-override well-formed-react-add []
-  (a/theorem i12-ranks-react-add [w :- World, c :- Nat, v :- Valid]
-    (=> (= (i12-ranks w) true) (= (i12-ranks (react-add w c v)) true))
-    (intro h)
-    (exact (i12-ranks-intro _ (well-formed-react-add w c v (i12-ranks-well-formed w h)) (react-add-ranks w c v (i12-ranks-ranks w h))))))
+(a/theorem i12-ranks-react-add [w :- World, c :- Nat, v :- Valid]
+  (=> (= (i12-ranks w) true) (= (i12-ranks (react-add w c v)) true))
+  (intro h)
+  (exact (i12-ranks-intro _ (well-formed-react-add w c v (i12-ranks-well-formed w h)) (react-add-ranks w c v (i12-ranks-ranks w h)))))
 
 ;; T22: the host-wait edge is a wait edge
-(defrank-override well-formed-host-await-raw [well-formed-demand-reactive well-formed-fire-edge]
-  (a/theorem i12-ranks-host-await-raw [w :- World, d :- Nat]
-    (=> (= (i12-ranks w) true) (= (i12-ranks (host-await-raw w d)) true))
-    (intro h)
-    (have hk (= (rank-edge-ok w (host-wait-edge d)) true)) (apply rank-edge-ok-nondep) (rfl)
-    (have h1 (= (i12-ranks (host-await-dem w d)) true))
-    (exact (i12-ranks-demand-reactive _ d (i12-ranks-insert-edge-checked w (host-wait-edge d) hk h)))
-    (cases hr (fast-ready (host-await-dem w d) d))
-    (case [false] (simp only [host-await-raw hr]) (exact h1))
-    (case [true] (simp only [host-await-raw hr]) (exact (i12-ranks-fire-edge _ _ (:next-id w) h1)))))
+(tree/restate! RK '[well-formed-demand-reactive well-formed-fire-edge])
+
+(a/theorem i12-ranks-host-await-raw [w :- World, d :- Nat]
+  (=> (= (i12-ranks w) true) (= (i12-ranks (host-await-raw w d)) true))
+  (intro h)
+  (have hk (= (rank-edge-ok w (host-wait-edge d)) true)) (apply rank-edge-ok-nondep) (rfl)
+  (have h1 (= (i12-ranks (host-await-dem w d)) true))
+  (exact (i12-ranks-demand-reactive _ d (i12-ranks-insert-edge-checked w (host-wait-edge d) hk h)))
+  (cases hr (fast-ready (host-await-dem w d) d))
+  (case [false] (simp only [host-await-raw hr]) (exact h1))
+  (case [true] (simp only [host-await-raw hr]) (exact (i12-ranks-fire-edge _ _ (:next-id w) h1))))
 
 ;; take: the parked take's edge is a wait edge
-(defrank-override well-formed-take-park []
-  (a/theorem i12-ranks-take-park [w :- World, r :- RunRow, x :- Nat, k :- Nat]
-    (=> (= (i12-ranks w) true) (= (i12-ranks (take-park w r x k)) true))
-    (intro h)
-    (have hk (= (rank-edge-ok (bump (act-ins w (take-act w r k))) (take-edge r (:next-id w) x)) true))
-    (apply rank-edge-ok-nondep) (rfl)
-    (simp only [take-park])
-    (exact (i12-ranks-run-upd _ (:id r) run-tick-park run-tick-park-id
-             (i12-ranks-insert-edge-checked _ _ hk (i12-ranks-act-ins-fresh w (take-act w r k) (rfl) h))))))
+(a/theorem i12-ranks-take-park [w :- World, r :- RunRow, x :- Nat, k :- Nat]
+  (=> (= (i12-ranks w) true) (= (i12-ranks (take-park w r x k)) true))
+  (intro h)
+  (have hk (= (rank-edge-ok (bump (act-ins w (take-act w r k))) (take-edge r (:next-id w) x)) true))
+  (apply rank-edge-ok-nondep) (rfl)
+  (simp only [take-park])
+  (exact (i12-ranks-run-upd _ (:id r) run-tick-park run-tick-park-id
+           (i12-ranks-insert-edge-checked _ _ hk (i12-ranks-act-ins-fresh w (take-act w r k) (rfl) h)))))
 
 ;; T8: the observe edge is no dep edge
-(defrank-override well-formed-t8-observe-any-kind [well-formed-demand-reactive well-formed-fire-edge]
-  (a/theorem i12-ranks-t8-observe-any-kind [w :- World, d :- Nat, cb :- Nat, fresh :- Nat]
-    (=> (= (i12-ranks w) true) (= (i12-ranks (:world (t8-observe-any-kind w d cb fresh))) true))
-    (intro h)
-    (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (edge-ok-in w (observe-edge w d cb))))
-    (case [false] (simp only [t8-observe-any-kind hg refuse]) (exact h))
-    (case [true]
-      (have he (= (edge-ok-in w (observe-edge w d cb)) true))
-      (simp only [Bool.and_eq_true] at hg) (exact (And.right hg))
-      (have hk (= (rank-edge-ok w (observe-edge w d cb)) true)) (apply rank-edge-ok-nondep) (rfl)
-      (have h1 := (i12-ranks-demand-reactive _ d (i12-ranks-insert-edge-fresh w (observe-edge w d cb) he hk h)))
-      (simp only [t8-observe-any-kind hg accept observe-raw])
-      (cases hr (deb-ready (demand-reactive (insert-edge-fresh w (observe-edge w d cb)) d) d))
-      (case [false] (simp only [hr]) (exact h1))
-      (case [true] (simp only [hr]) (exact (i12-ranks-fire-edge _ _ (:next-id w) h1))))))
+(a/theorem i12-ranks-t8-observe-any-kind [w :- World, d :- Nat, cb :- Nat, fresh :- Nat]
+  (=> (= (i12-ranks w) true) (= (i12-ranks (:world (t8-observe-any-kind w d cb fresh))) true))
+  (intro h)
+  (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (edge-ok-in w (observe-edge w d cb))))
+  (case [false] (simp only [t8-observe-any-kind hg refuse]) (exact h))
+  (case [true]
+    (have he (= (edge-ok-in w (observe-edge w d cb)) true))
+    (simp only [Bool.and_eq_true] at hg) (exact (And.right hg))
+    (have hk (= (rank-edge-ok w (observe-edge w d cb)) true)) (apply rank-edge-ok-nondep) (rfl)
+    (have h1 := (i12-ranks-demand-reactive _ d (i12-ranks-insert-edge-fresh w (observe-edge w d cb) he hk h)))
+    (simp only [t8-observe-any-kind hg accept observe-raw])
+    (cases hr (deb-ready (demand-reactive (insert-edge-fresh w (observe-edge w d cb)) d) d))
+    (case [false] (simp only [hr]) (exact h1))
+    (case [true] (simp only [hr]) (exact (i12-ranks-fire-edge _ _ (:next-id w) h1)))))
 
 ;; T6: the accumulator's ranks hold while `ok` (a dep edge on a computation comes with its
 ;; raise, spindel.v2.inv.rank's await-new-dep-ranks); T6 accepts only an ok accumulator
@@ -823,41 +668,41 @@
              (fn [hok2 :- (= (:ok (await-step r a mode k acc d)) true)] (await-step-ranks r a mode k acc d hr hok2))
              hok))))
 
-(defrank-override well-formed-await-raw [well-formed-await-pre well-formed-await-post]
-  (a/theorem i12-ranks-await-raw [w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
-    (=> (= (i12-ranks w) true) (= (:ok (await-acc w r ds mode k mine)) true)
-        (= (i12-ranks (await-raw w r ds mode k mine)) true))
-    (intros h hok)
-    (have h1 := (i12-ranks-await-pre w r ds mode k mine h))
-    (have hs (= (well-formed (:world (await-acc w r ds mode k mine))) true))
-    (exact (well-formed-await-wire r (:next-id w) mode k (nat-distinct ds)
-             (AwAcc.mk (await-pre w r ds mode k mine) (List.nil DE) true) (i12-ranks-well-formed _ h1)))
-    (have hr (= (ranks-ok (:world (await-acc w r ds mode k mine))) true))
-    (exact (await-wire-ranks r (:next-id w) mode k (nat-distinct ds)
-             (AwAcc.mk (await-pre w r ds mode k mine) (List.nil DE) true)
-             (fn [x :- (= (:ok (AwAcc.mk (await-pre w r ds mode k mine) (List.nil DE) true)) true)] (i12-ranks-ranks _ h1))
-             hok))
-    (exact (i12-ranks-await-post (:next-id w) (:id r) ds (await-acc w r ds mode k mine) (i12-ranks-intro _ hs hr)))))
+(tree/restate! RK '[well-formed-await-pre well-formed-await-post])
 
-(defrank-override well-formed-t6-await [well-formed-await-raw]
-  (a/theorem i12-ranks-t6-await [w :- World, st :- Nat, ds :- (List Nat), mode :- Nat, k :- Nat, fresh :- Nat, mine :- (List Nat)]
-    (=> (= (i12-ranks w) true) (= (i12-ranks (:world (t6-await w st ds mode k fresh mine))) true))
-    (intro h)
-    (cases ht (tok-run w st))
-    (case [none] (simp only [t6-await ht refuse]) (exact h))
-    (case [some r]
-      (cases hg (Bool.and (await-ok w r ds mode fresh) (:ok (await-acc w r ds mode k mine))))
-      (case [false] (simp only [t6-await ht hg refuse]) (exact h))
-      (case [true]
-        (simp only [t6-await ht hg accept])
-        (simp only [Bool.and_eq_true] at hg)
-        (exact (i12-ranks-await-raw w r ds mode k mine h (And.right hg)))))))
+(a/theorem i12-ranks-await-raw [w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat, k :- Nat, mine :- (List Nat)]
+  (=> (= (i12-ranks w) true) (= (:ok (await-acc w r ds mode k mine)) true)
+      (= (i12-ranks (await-raw w r ds mode k mine)) true))
+  (intros h hok)
+  (have h1 := (i12-ranks-await-pre w r ds mode k mine h))
+  (have hs (= (well-formed (:world (await-acc w r ds mode k mine))) true))
+  (exact (well-formed-await-wire r (:next-id w) mode k (nat-distinct ds)
+           (AwAcc.mk (await-pre w r ds mode k mine) (List.nil DE) true) (i12-ranks-well-formed _ h1)))
+  (have hr (= (ranks-ok (:world (await-acc w r ds mode k mine))) true))
+  (exact (await-wire-ranks r (:next-id w) mode k (nat-distinct ds)
+           (AwAcc.mk (await-pre w r ds mode k mine) (List.nil DE) true)
+           (fn [x :- (= (:ok (AwAcc.mk (await-pre w r ds mode k mine) (List.nil DE) true)) true)] (i12-ranks-ranks _ h1))
+           hok))
+  (exact (i12-ranks-await-post (:next-id w) (:id r) ds (await-acc w r ds mode k mine) (i12-ranks-intro _ hs hr))))
+
+(a/theorem i12-ranks-t6-await [w :- World, st :- Nat, ds :- (List Nat), mode :- Nat, k :- Nat, fresh :- Nat, mine :- (List Nat)]
+  (=> (= (i12-ranks w) true) (= (i12-ranks (:world (t6-await w st ds mode k fresh mine))) true))
+  (intro h)
+  (cases ht (tok-run w st))
+  (case [none] (simp only [t6-await ht refuse]) (exact h))
+  (case [some r]
+    (cases hg (Bool.and (await-ok w r ds mode fresh) (:ok (await-acc w r ds mode k mine))))
+    (case [false] (simp only [t6-await ht hg refuse]) (exact h))
+    (case [true]
+      (simp only [t6-await ht hg accept])
+      (simp only [Bool.and_eq_true] at hg)
+      (exact (i12-ranks-await-raw w r ds mode k mine h (And.right hg))))))
 
 ;; ===========================================================================
 ;; The step
 ;; ===========================================================================
 
-(rank-copy! 'step-well-formed 'step-rank)
+(tree/restate! RK '[step-well-formed])
 
 (a/theorem i12-ranks-empty [] (= (i12-ranks empty-world) true) (rfl))
 
@@ -865,4 +710,4 @@
 (a/theorem step-ranks [w :- World, it :- Item]
   (=> (= (i12-ranks w) true) (= (rule-r-safe (:world (raw w it))) true)
       (= (ranks-ok (:world (world-step w it))) true))
-  (intros h hs) (exact (i12-ranks-ranks _ (step-rank w it h hs))))
+  (intros h hs) (exact (i12-ranks-ranks _ (step-i12-ranks w it h hs))))

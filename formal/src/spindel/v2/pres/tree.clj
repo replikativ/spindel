@@ -542,7 +542,7 @@
     (swap! (:copied B) conj nm)))
 
 (defn- papp [B head] (let [pn (bnames (:params B))] (if (seq pn) (apply list head pn) head)))
-(defn- qterm [B] (papp B (symbol (str (name (:pred B)) "-rest"))))
+(defn- qterm [B] (papp B (c/bsym B "-rest")))
 
 (defn- site-term [B p F]
   (let [[bs stmt i] (site-binders B p F)

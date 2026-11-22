@@ -2043,7 +2043,7 @@
   (have p := (chain-start-parts w h))
   (have q := (round-facts-parts w (And.right (And.right (And.right (And.right p))))))
   (have hs := (step-rule-r-safe w it h))
-  (exact (chain-start-intro _ (step-acts w it (And.left p) hs) (step-rank w it (And.left (And.right p)) hs)
+  (exact (chain-start-intro _ (step-acts w it (And.left p) hs) (step-i12-ranks w it (And.left (And.right p)) hs)
            (step-i10-task w it (And.left p) (And.left (And.right (And.right p))) hs) (step-i9-res w it (And.left (And.right (And.right (And.right p)))) hs)
            (round-facts-intro _ (step-i7-idle w it (And.left p) (And.left q) hs) (step-marks-on-dep w it (And.left (And.right q)) hs)
              (step-refs-not-edges w it (And.left (And.right (And.right q))) hs) (step-act-runs-alive w it (And.left p) (And.left (And.right (And.right (And.right q)))) hs)
