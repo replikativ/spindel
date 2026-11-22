@@ -4985,6 +4985,17 @@
     (when-not (inherited? w x) (throw (lineage-ex x)))
     (new-handle w x)))
 
+(defn- publish-world!
+  "Registers the constructed world `c` with its family. From here on the
+   family's atom maintenance can enter `c`, and hand it off (a stale copied
+   sweep generation schedules that at once), so every field a first entry
+   reads must be set before. `fork-world*` and `instance-world*` leave this
+   to their callers."
+  [c]
+  (lt/register-world! (g c rw/W-FAMILY) c (g c rw/ID) (g c rw/W-WATCHES)
+                      (gl c rw/W-SWEEP-GEN) request-atom-sweep!
+                      (kid-collector (g c rw/W-KID-TOKEN))))
+
 (defn- fork-world*
   "D3: the copy-on-write fork of `w` at the current commit (MVCC, §2.7). O(1)
    in the world's rows: `w` keeps owning them and advances its ordinal, so it
@@ -4993,7 +5004,8 @@
    through its lineage and copies what it touches. The child gets fresh
    administration and copies of the queues, pins and roots (work in flight,
    design v3 §6); its inherited armed resources are dormant until its first
-   turn (§8.1)."
+   turn (§8.1). The child is not yet published to its family
+   (`publish-world!`)."
   [w]
   (let [c (aclone ^objects w)
         armed (g w rw/W-ARMED)
@@ -5069,15 +5081,13 @@
                                   (.set m k (image v))))
                        m))
       (s! c rw/W-LOG (alist)))
-    (lt/register-world! (g c rw/W-FAMILY) c (g c rw/ID) (g c rw/W-WATCHES)
-                        (gl c rw/W-SWEEP-GEN) request-atom-sweep!
-                        (kid-collector (g c rw/W-KID-TOKEN)))
     c))
 
 (defn- instance-world*
   "S3: a fork of the savepoint basis `b` (never run, owns no rows): the basis
    is not changed (no ordinal, no token); the instance reads through the
-   basis's lineage, whose tokens keep the versions it needs."
+   basis's lineage, whose tokens keep the versions it needs. Not yet
+   published to its family (`publish-world!`)."
   [b]
   (share-token! b)
   (let [c (aclone ^objects b)
@@ -5121,9 +5131,6 @@
     (when-let [reg (g b rw/W-REG)]
       (s! c rw/W-REG (hs/mcopy reg))
       (s! c rw/W-LOG (alist)))
-    (lt/register-world! (g c rw/W-FAMILY) c (g c rw/ID) (g c rw/W-WATCHES)
-                        (gl c rw/W-SWEEP-GEN) request-atom-sweep!
-                        (kid-collector (g c rw/W-KID-TOKEN)))
     c))
 
 (defn- host-fork-call!
@@ -5164,7 +5171,7 @@
               w
               (fn []
                 (when (g w rw/W-UNBORN) (throw (ex-info "fork! of an unactivated instance" {})))
-                (let [c (fork-world* w)]
+                (let [c (doto (fork-world* w) publish-world!)]
                   (when (:mergeable? opts)
                     (s! c rw/W-MPARENT (g w rw/ID))
                     (s! c rw/W-MBASE {}))
@@ -5439,7 +5446,7 @@
                 (s! r rw/R-BIND (thread-frame))   ; the child resumes with the frame live at the effect
                 (aadd! (g w rw/W-RESUME) a)
                 (unregister! w a)                 ; a delivery carrier, not a parked activation
-                (let [child (fork-world* w)]
+                (let [child (doto (fork-world* w) publish-world!)]
                   (own-child! w owner child true)
           ;; the parent takes the delivery back and continues on its own copy
                   (remove-row! (g w rw/W-RESUME) a)
@@ -5529,7 +5536,7 @@
                          ;; the basis is a fork of this commit that is never run, only forked;
                          ;; its run continues with the frame live at the effect
                                  (s! (rv w r) rw/R-BIND (thread-frame))
-                                 (let [basis (fork-world* w)
+                                 (let [basis (doto (fork-world* w) publish-world!)
                                        pub (publication w (id-of z) site payload basis
                                                         (boolean (g (rv w (g (rv w r) rw/R-OF)) rw/K-LOCAL)))]
                            ;; the parent's own copy of the run keeps no slice (it is parked)
@@ -5606,7 +5613,7 @@
        (throw (ex-info "instantiate: the owner belongs to an unrelated world" {:spindel/invalid :lineage})))
      (when (:fork-local pub)
        (throw (invalid-op :fork-local "instantiate: the run is fork-local, every instance would retire it (Z#77)")))
-     (let [c (instance-world* b)]
+     (let [c (doto (instance-world* b) publish-world!)]
        (s! c rw/W-PENDING-ACT (:act pub))
        ;; E4: unborn until activate!: host items commit, but its inherited work
        ;; and dormant resources wait; dropped unactivated, it is collected
