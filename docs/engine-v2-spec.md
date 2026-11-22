@@ -339,12 +339,15 @@ prototypes are not acceptance evidence for this smaller operation API.
     `without-inline-turns` that holds no gate takes the non-inline path for
     its own operations, with the queued-result semantics listed in H2. A
     rejected handoff runs the drainer on a fresh platform thread instead of
-    leaving the world marked scheduled with its queue stranded. No
+    leaving the world marked scheduled with its queue stranded; a gate
+    holder hands off also when its item throws; a host fork schedules its
+    child from the fork item. No
     transition changes (another legal commit order); the model needs no
     change.
-  - Z#80 (B3; user decision 2026-11-21, dvergr step 6b): **hard abort of a
-    runaway SCI activation** (`v2.sci`, `:slice-budget-ms`). An explicit B3
-    exception for misbehaving code, see B3. No transition changes: the run
+  - Z#80 (B3; user decision 2026-11-21, dvergr step 6b): **hard abort of an
+    SCI activation past an elapsed-time budget** (`v2.sci`,
+    `:slice-budget-ms`), checked at polls, so it can also abort finite
+    code. An explicit B3 exception, see B3. No transition changes: the run
     completes through T12 with an ordinary error, after its open regions
     exit and leave in the model's order.
   - Z#77 (§1, §2, T4, T28, §5.2, I16, §8.1 F6, D3, S3/S8, §13; user decision
@@ -1037,7 +1040,8 @@ Each `track` *site* in a run (identified by `at`) has its own edge, with
     it suits UI threads. A JVM thread inside `without-inline-turns` (macro
     `no-inline`) that holds no gate does the same for its own operations.
     Such an operation is enqueued, handed to the world's drainer and returns
-    at once: it has queued-result semantics, the ones of a non-inline world.
+    without waiting for its item: it has queued-result semantics, the ones
+    of a non-inline world.
     - **Condition:** this keeps turns off the caller only when the world's
       executor runs handoffs asynchronously and accepts them. An executor
       that runs them in the caller defeats it; one that refuses them gets the
@@ -1046,31 +1050,46 @@ Each `track` *site* in a run (identified by `at`) has its own edge, with
       setting: H1's held-gate path, H3's callback delivery, H4's
       cross-world routing and B7 are unchanged. The setting is the thread's,
       not a dynamic binding, so it never reaches a slice (B10).
+    - **Return and commit are independent.** The call returns without
+      waiting for the item. The item may commit before the call returns (an
+      asynchronous drainer, or an inline caller of the same world, processes
+      it) or after.
     - **What an opted-in caller observes:**
       - a bare `gated`/`host!` item returns no value and throws nothing to
         its caller; its throw is reported by the processing thread (Z#78);
       - commands (`write!`, `reset!`, `deliver!`, `post!`, `cancel-task!`,
-        `release!`) return what they return on a non-inline world before
-        the item commits; `reset!` returns its value before the write
-        commits;
-      - `value-async` and `observe!` return their withdrawal fn before the
-        registration commits; a withdrawal queues after it (FIFO);
+        `release!`) return what they return on a non-inline world (`reset!`
+        and `write!` their value) without waiting for the item;
+      - `value-async` and `observe!` return their withdrawal fn without
+        waiting for the registration; a withdrawal queues after it (FIFO);
       - a creation (`task`, `spawn!`, a source) returns a handle that stays
         unbound until its item commits;
-      - `release-world!` returns its rows-left fn before the release
-        commits;
+      - `release-world!` returns its rows-left fn without waiting for the
+        release;
       - a `host-call!` client (`swap!`, `get-in-world`, `fork!`, `consume`,
         ...) waits for the reply as before, but an interrupt now ends the
         wait also for an uncontended item; that item still runs later and
-        may succeed or fail, unreported to the caller;
-      - admission is checked at the call: an operation admitted before T21
-        commits is refused in its item if it is processed after it (no
-        state change, a refused log entry), and only one after it is
-        refused at the call with `::released`; internal items
-        (acknowledgements, terminal subscriptions) are still accepted;
+        may succeed or fail, unreported to the caller. A host fork schedules
+        the child's inherited work from its own item, so an abandoned reply
+        does not strand it;
       - a moved host item function (a `swap!` fn, a `send-world!` fn) runs
         under the drainer's dynamic bindings, not the caller's; bodies are
         unaffected, since creation captures the caller's frame (B10).
+    - **Release (T21) and queued items.** Ingress checks the release when it
+      admits an operation: once T21 has committed, a host operation is
+      refused at the call with `::released` (internal items, such as
+      acknowledgements and terminal subscriptions, are still accepted). An
+      item admitted before T21 commits but processed after it is not refused
+      by ingress; each operation decides when its item runs:
+      - source changes (`write!`, `deliver!`, `post!`, `release!`,
+        `append!`), creations and pins are refused in the item: no state
+        change, a refused log entry, a creation's handle stays unbound;
+      - `observe!` and `value-async` deliver `::released` to their
+        callback;
+      - world-state operations (`swap-world!`, `assoc-in-world!`, ...) and
+        the functions of bare `host!`/`host-call!`/`send-world!` items run.
+      An opted-in caller reaches this case more often, because its items
+      wait in the queue.
     - Inline callers of the same world may still process an opted-in
       caller's items in their budget. No transition changes: an opted-in
       operation can only choose another legal commit order (the drainer's
@@ -1089,6 +1108,8 @@ Each `track` *site* in a run (identified by `at`) has its own edge, with
       already-accepted work makes progress, a failed handoff after a gate
       skips none of the others, and a submission never clears a later
       submission's claim (Z#79).
+    - A holder hands off after releasing the gate also when its own item
+      throws: a drainer that lost the gate meanwhile relies on it.
   - No host thread ever blocks on a world.
   - **Throws belong to their caller (Z#78).** An item that its own caller
     processes inline throws to that caller. A queued item processed by
@@ -1250,10 +1271,13 @@ interpreter of the same trees:
   during normal-entry cleanup preserves its continuation and then unwinds
   outer regions, without restarting that finalizer or running a body suffix.
   T11 transfers no open region: re-entry requires a site with none (§2).
-  - **Exception: hard abort of misbehaving code (Z#80).** The SCI adapter
-    (`v2.sci`, `:slice-budget-ms`) hard-aborts an adapter activation that
-    runs past its wall-clock budget, with SCI's uncatchable interrupt. This
-    is a bound for code that violates B9, not a cleanup protocol:
+  - **Exception: hard abort past an elapsed-time budget (Z#80).** The SCI
+    adapter (`v2.sci`, `:slice-budget-ms`) can hard-abort an adapter
+    activation with SCI's uncatchable interrupt. The budget is an
+    elapsed-time limit checked at polls (interpreted fn and loop entries):
+    the first poll after it expires aborts the activation, whether or not
+    the code would have terminated. It bounds B9 violations without
+    deciding them, and it is not a cleanup protocol:
     - finalizers of the aborted activation may be skipped or truncated
       (SCI native `finally` blocks are attempted; partial-cps's generated
       handlers and user catches do not run);
@@ -1266,7 +1290,8 @@ interpreter of the same trees:
     - the run completes through T12 with an ordinary error
       (`::budget-exceeded`, `:hard true`, no cause): creditors see that
       error, never the interrupt; a run already cancelled stays cancelled
-      (T14), and no SCI code of the run runs afterwards.
+      (T14), and no SCI code of the run runs afterwards, also when the
+      activation left the run parked (its resumption fails the run).
 - **B4:** effects occur only at lexically visible registered sites
   (CLAUDE.md Rule 2).
 - **B5:** closures held by user code are not engine state.

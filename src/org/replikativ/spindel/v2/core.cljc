@@ -3038,11 +3038,14 @@
      "D (H2): calls `(f)` with this JVM thread running no inline turns. A host
       operation it issues while holding no gate is enqueued and handed to the
       world's drainer, as on a world created with `:inline? false`, and
-      returns what it returns there, before the item commits: a bare host
-      item nothing (its throw is reported by the processing thread), commands
-      their usual value, creations unbound handles, `value-async`/`observe!`/
+      returns what it returns there without waiting for the item (which may
+      commit before or after the return): a bare host item nothing (its
+      throw is reported by the processing thread), commands their usual
+      value, creations unbound handles, `value-async`/`observe!`/
       `release-world!` their fns; `host-call!` clients wait for the reply,
-      and an interrupt ends that wait while the item still runs later. Dispatch isolation needs an executor that runs
+      and an interrupt ends that wait while the item still runs later. An
+      item admitted before a release commits is handled by its operation
+      when it runs (spec H2). Dispatch isolation needs an executor that runs
       handoffs asynchronously. A thread inside a gate (a slice, an item or a
       callback) ignores the setting. Nests; the setting is the thread's, not a
       dynamic binding, so it never reaches a slice (B10)."
