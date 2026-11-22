@@ -270,7 +270,11 @@
 (defn- request-atom-sweep! [w]
   (when (and (not (g w rw/W-META-CLOSED))
              (hs/flag-cas! (g w rw/W-SWEEP-PENDING) false true))
-    (hs/metadata-later! #(atom-maintenance! w))))
+    (try (hs/metadata-later! #(atom-maintenance! w))
+         (catch #?(:clj Throwable :cljs :default) t
+           ;; nothing was scheduled: a later request must not find it pending
+           (hs/flag-set! (g w rw/W-SWEEP-PENDING) false)
+           (throw t)))))
 
 (declare host!)
 
@@ -5006,15 +5010,19 @@
     (new-handle w x)))
 
 (defn- publish-world!
-  "Registers the constructed world `c` with its family. From here on the
-   family's atom maintenance can enter `c`, and hand it off (a stale copied
-   sweep generation schedules that at once), so every field a first entry
-   reads must be set before. `fork-world*` and `instance-world*` leave this
-   to their callers."
-  [c]
-  (lt/register-world! (g c rw/W-FAMILY) c (g c rw/ID) (g c rw/W-WATCHES)
-                      (gl c rw/W-SWEEP-GEN) request-atom-sweep!
-                      (kid-collector (g c rw/W-KID-TOKEN))))
+  "Registers the constructed world `c` with its family. The registry
+   insertion publishes it: from then on the family's atom maintenance can
+   enter `c` and hand it off (a stale copied sweep generation, or a
+   concurrent atom collection, schedules that at once), so every field a
+   first entry reads must be set before. `fork-world*` and `instance-world*`
+   leave this to their callers. With `failed!`, a throw after the insertion
+   goes to `(failed! t)`: it is a failure of a published world; only a throw
+   before the insertion propagates."
+  ([c] (publish-world! c nil))
+  ([c failed!]
+   (lt/register-world! (g c rw/W-FAMILY) c (g c rw/ID) (g c rw/W-WATCHES)
+                       (gl c rw/W-SWEEP-GEN) request-atom-sweep!
+                       (kid-collector (g c rw/W-KID-TOKEN)) failed!)))
 
 (defn- fork-world*
   "D3: the copy-on-write fork of `w` at the current commit (MVCC, §2.7). O(1)
@@ -5195,16 +5203,17 @@
    3. the child is built privately (`fork-world*`) with that world state and
       the merge fields; its verify fields are set by the copy;
    4. `w`'s root scope owns it, weakly (F2);
-   5. acceptance: Rule R, then the logged `[:fork-host c]` (verify mode). The
-      outcome is fixed here: the commit observer (`W-HOOK`) is called
-      isolated, so its throw is reported on this thread (as an isolated host
-      item's) and skips nothing below;
-   6. publication: the child joins its family, then `W-AFTER`, which hands it
-      off after `w`'s gate is released. Until then no thread can enter it:
-      the family's atom maintenance finds it only from step 6. A
-      registration that throws leaves no membership; the child, accepted and
-      owned, is released (its completion ends the owner's obligation), and
-      the fork throws `{:spindel/unpublished true :child c}`.
+   5. acceptance: Rule R and the logged `[:fork-host c]` (`commit!`). The
+      outcome is fixed here; the commit observer is isolated (`log-commit!`);
+   6. publication: the family registry insertion. From then on the family's
+      atom maintenance can enter the child (on its own thread, also before
+      `w`'s gate is released); a failure after the insertion is the
+      published child's, reported, and the child stays published and owned.
+      A failure before it leaves the child unpublished: it is released
+      through its ingress (processed after `w`'s gate) and the fork throws
+      `{:spindel/unpublished true :child c}`;
+   7. `W-AFTER`: the child is handed off after `w`'s gate is released. This
+      is the fork's only handoff of the child (`fork!` adds none).
    Returns the child."
   [w init-state mergeable?]
   (when (g w rw/W-UNBORN) (throw (ex-info "fork! of an unactivated instance" {})))
@@ -5215,14 +5224,9 @@
       (s! c rw/W-MPARENT (g w rw/ID))
       (s! c rw/W-MBASE {}))
     (own-child! w (rv w (g w rw/W-ROOT)) c false)   ; F2: weakly, by the root scope
-    (rule-r! w)
-    (when (some? (g w rw/W-LOG))
-      (let [item (log-accept! w [:fork-host (g c rw/ID)])]
-        (when-let [hook (g w rw/W-HOOK)]
-          (isolated! "commit observer" #(hook w item)))))
-    (try (publish-world! c)
+    (commit! w [:fork-host (g c rw/ID)])
+    (try (publish-world! c #(report! "fork publication" %))
          (catch #?(:clj Throwable :cljs :default) t
-           (lt/unregister-world! (g c rw/W-FAMILY) (g c rw/ID))
            (release-child! w c)
            (throw (ex-info "fork!: the accepted child could not be published to its family; it is released"
                            {:spindel/unpublished true :child c} t))))

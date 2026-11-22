@@ -233,6 +233,39 @@
      (binding [*err* (java.io.StringWriter.)] (v2/release-world! w))
      (is (true? (v2/await-complete w 2000 ::timeout)) "the owner's obligation ended"))))
 
+(def ^:private objects-class (Class/forName "[Ljava.lang.Object;"))
+
+(deftest a-failure-after-insertion-is-the-published-childs
+  ;; a concurrent atom collection captures the inserted entry, and the
+  ;; collection action cannot be installed: the child has already run
+  (checked
+   (let [w (vworld {:executor caller-runs})
+         fam (aget ^objects w rw/W-FAMILY)
+         seen (atom [])
+         err (java.io.StringWriter.)
+         on-collect hs/on-collect!
+         fired (atom false)
+         child-world? (fn [x] (and (instance? objects-class x) (= rw/T-WORLD (aget ^objects x rw/TYPE))
+                                   (not (identical? x w)) (member? w (aget ^objects x rw/ID))))
+         c (with-synchronous-maintenance
+             (with-redefs [hs/on-collect! (fn [x action]
+                                            (if (and (child-world? x) (compare-and-set! fired false true))
+                                              (do (lt/atom-collected! fam (fn [y] (when-not (identical? y w)
+                                                                                    (#'v2/request-atom-sweep! y))))
+                                                  (throw (ex-info "cleaner failed" {})))
+                                              (on-collect x action)))]
+               (binding [*err* err]
+                 (v2/host-call! w (fn []
+                                    (binding [v2/*world* w] (task (swap! seen conj (recorder))))
+                                    (v2/fork! w {:init-state (fn [s _] (assoc s :k :init))}))))))
+         cid (v2/world-id c)
+         mine (filterv #(= cid (first %)) @seen)]
+     (is @fired)
+     (is (= [[cid {:k :init} "test-maintenance"]] mine) "the collection entered the child at its insertion")
+     (is (member? w cid) "the fork returned its published child")
+     (is (committed? w cid))
+     (is (re-find #"fork publication failed" (str err)) "the failure is reported"))))
+
 (deftest a-throwing-observer-cannot-block-a-release
   (binding [*divergences* (atom [])]
     (let [w (v2/world {:verify? true :hook (release-refusing-observer)})]
