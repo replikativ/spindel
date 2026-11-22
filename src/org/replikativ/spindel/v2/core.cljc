@@ -2940,13 +2940,12 @@
       (let [x (anth cs i)]
         (cond
           ;; still under an enclosing world's gate (a nested entry): the
-          ;; action waits for that gate to be left too
-          (and (fn? x) (holding-gate?)) (aadd! (g (cw) rw/W-AFTER) x)
+          ;; action, and the handoff of a world (which can run its turn on
+          ;; this thread), waits for that gate to be left too
+          (holding-gate?) (aadd! (g (cw) rw/W-AFTER) x)
           (fn? x)
           (try (x)
-               (catch #?(:clj Throwable :cljs :default) t
-                 #?(:clj (binding [*out* *err*] (println "after-gate action failed:" t))
-                    :cljs (js/console.error "after-gate action failed:" t))))
+               (catch #?(:clj Throwable :cljs :default) t (report! "after-gate action" t)))
           ;; a failed handoff skips none of the others
           :else (isolated! "handoff" #(handoff! x)))))))
 
@@ -5245,9 +5244,10 @@
    (S3); `:init-state` is not supported with another owner.
 
    With its default owner the fork commits before the child is published to
-   its family, and the child is returned once committed (`fork-host-item!`).
-   From inside a host item of `w` (H1) the fork runs in that item, and the
-   child is handed off after `w`'s gate is released, never under it."
+   its family, and the child is returned once committed (`fork-host-item!`);
+   it is handed off after the gate that processed the fork is released,
+   never under it. From inside a host item of `w` (H1) the fork runs in that
+   item."
   ([w] (fork! w nil))
   ([w opts]
    ;; a body forks its own world with the (fork) effect; a host fork of
@@ -5263,11 +5263,10 @@
        (throw (ex-info "fork!: :init-state with another :owner is not supported"
                        {:spindel/invalid :init-state})))
      (if-not other-owner?
-       (let [c (host-fork-call! w #(fork-host-item! w init-state (:mergeable? opts)))]
-         ;; under a gate (a host item of `w`, or another world's claim) the
-         ;; child is already in that gate's W-AFTER: no handoff under it
-         (when-not (holding-gate?) (handoff! c))
-         c)
+       ;; the child is handed off from `w`'s W-AFTER only, after the gate
+       ;; that processed the item is released: a queued caller's reply is
+       ;; delivered from inside that gate
+       (host-fork-call! w #(fork-host-item! w init-state (:mergeable? opts)))
        (let [c (host-fork-call!
                 w
                 (fn []

@@ -250,6 +250,36 @@
     (is (member? w (v2/world-id c)) "published and returned")
     (is (committed? w (v2/world-id c)))))
 
+(deftest a-queued-forks-child-is-handed-off-after-the-source-gate
+  ;; the fork's reply is delivered from inside the drainer's turn; the
+  ;; waiting caller must not run the child while that turn holds the gate
+  (checked
+   (let [w (vworld {:executor caller-runs})
+         ^java.util.concurrent.locks.ReentrantLock lk (aget ^objects w rw/W-LOCK)
+         queued #(count (seq (aget ^objects w rw/W-INGRESS)))
+         seen (atom [])
+         entered (promise)
+         go (promise)]
+     (hs/lock! lk)
+     ;; under the held gate: created at once, runnable, not run
+     (binding [v2/*world* w]
+       (task (swap! seen conj [(v2/world-id (v2/current-world)) (.isLocked lk)])))
+     (let [fork (future (v2/fork! w {:init-state (fn [s _] (assoc s :k 1))}))
+           _ (is (wait-until #(= 1 (queued))) "the fork is queued")
+           next-item (future (v2/host-call! w (fn [] (deliver entered true) (deref go 5000 nil))))
+           _ (is (wait-until #(= 2 (queued))) "and an item after it")
+           _ (hs/unlock! lk)
+           drainer (future (#'v2/process! w))
+           _ (is (deref entered 5000 false) "the drainer is inside the next item")
+           c (deref fork 5000 ::timeout)
+           cid (v2/world-id c)]
+       (is (= [] (filterv #(= cid (first %)) @seen))
+           "the caller's reply did not run the child while the drainer holds the gate")
+       (deliver go true)
+       @drainer @next-item
+       (is (wait-until #(some (fn [[id]] (= cid id)) @seen)))
+       (is (= [[cid false]] (filterv #(= cid (first %)) @seen)) "the child ran after the gate was released")))))
+
 (deftest separate-owner-forks-refuse-init-state
   (let [w (v2/world) o (v2/fork! w)]
     (is (= :init-state (:spindel/invalid (ex-data (try (v2/fork! w {:owner o :init-state identity}) nil
@@ -284,3 +314,23 @@
            "after activation the inherited work runs, and sees the initial state")
        (is (= 2 (count (mine))))
        (v2/abandon! (first @pubs))))))
+
+(deftest a-nested-fork-of-another-world-hands-off-after-the-enclosing-gate
+  ;; a host item of `a` forks `b` (the claim path, which runs b's turn under
+  ;; a's gate): b's after-gate work waits for a's gate too
+  (checked
+   (let [a (vworld)
+         b (vworld {:executor caller-runs})
+         ^java.util.concurrent.locks.ReentrantLock la (aget ^objects a rw/W-LOCK)
+         lb (aget ^objects b rw/W-LOCK)
+         seen (atom [])]
+     ;; under b's held gate: created at once, runnable, not run
+     (hs/lock! lb)
+     (binding [v2/*world* b]
+       (task (swap! seen conj [(v2/world-id (v2/current-world)) (.isLocked la)])))
+     (hs/unlock! lb)
+     (let [c (v2/host-call! a (fn [] (v2/fork! b)))
+           cid (v2/world-id c)]
+       (is (wait-until #(some (fn [[id]] (= cid id)) @seen)))
+       (is (= [[cid false]] (filterv #(= cid (first %)) @seen))
+           "the child ran after a's gate was released, not under it")))))
