@@ -192,3 +192,35 @@
     (is (true? (try (v2/no-inline (throw (ex-info "out" {})))
                     (catch clojure.lang.ExceptionInfo _ (inline-here?))))
         "restored when the body throws")))
+
+(defn- capturing-executor
+  "An executor that only collects its runnables; `(run-captured)` runs them
+   (and those they submit) on the calling thread."
+  []
+  (let [q (java.util.concurrent.LinkedBlockingQueue.)]
+    [(reify java.util.concurrent.Executor (execute [_ r] (.add q r)))
+     (fn run-captured [] (loop [n 0] (if-let [r (.poll q)] (do (.run ^Runnable r) (recur (inc n))) n)))
+     q]))
+
+(deftest a-throwing-inline-item-still-hands-off
+  ;; an inline item holds the gate; an opted-in item is queued and its
+  ;; drainer loses the gate (its claim is spent); then the inline item
+  ;; throws. The inline caller must hand off after unlocking, or the
+  ;; queued item is stranded
+  (checked
+   (let [[ex run-captured q] (capturing-executor)
+         w (vworld {:executor ex})
+         in-item (promise)
+         go (promise)
+         ran (promise)
+         inline (future (v2/host! w (fn [] (deliver in-item true) @go (throw (ex-info "boom" {})))))]
+     (is (true? (deref in-item 2000 false)))
+     @(off-thread #(v2/host! w (fn [] (deliver ran true))))
+     (is (= 1 (run-captured)) "the drainer ran and lost the gate")
+     (deliver go true)
+     (is (thrown-with-msg? Exception #"boom" (try @inline (catch java.util.concurrent.ExecutionException e (throw (.getCause e))))))
+     (is (pos? (.size ^java.util.Collection q)) "the inline caller handed off")
+     (run-captured)
+     (is (true? (deref ran 1000 false)) "the queued item ran")
+     (v2/release-world! w)
+     (run-captured))))

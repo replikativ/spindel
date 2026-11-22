@@ -2930,8 +2930,10 @@
       (let [prev (enter-world! w)]
         (try (run-turn! w)
              (finally (let [cs (take-after! w)]
-                        (hs/unlock! lk) (leave-world! prev) (run-after! cs)))))
-      (handoff! w))))
+                        (hs/unlock! lk) (leave-world! prev) (run-after! cs))
+                      ;; also on a throw: a drainer that lost the gate relies
+                      ;; on this handoff
+                      (handoff! w)))))))
 
 (defn- work-pending? [w]
   (or (not (hs/mpsc-empty? (ingress w)))
@@ -3095,8 +3097,10 @@
                               (if (zero? (acount ~l))
                                 (do (hs/unlock! ~lk) (leave-world! ~prev))
                                 (let [~cs (take-after! ~w')]
-                                  (hs/unlock! ~lk) (leave-world! ~prev) (run-after! ~cs))))))]
-              (handoff! ~w')
+                                  (hs/unlock! ~lk) (leave-world! ~prev) (run-after! ~cs))))
+                            ;; also when the item throws: a drainer that lost
+                            ;; the gate meanwhile relies on this handoff (H2)
+                            (handoff! ~w')))]
               ~v)
             :else
             (do (hs/mpsc-add! (ingress ~w') ~f')
