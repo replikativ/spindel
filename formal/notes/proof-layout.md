@@ -2360,9 +2360,10 @@ fingerprint before and after (`dev/naming/fingerprint.clj`, `compare.clj`).
   short name a part used to have, and an Item constructor in a pattern that shares its name with a
   definition, are left alone
   (`dev/naming/scope.clj`).
-- step.clj's `dispatch` and its transitions stay: `step_test` and `rule_test` drive the compiled
-  function. Its T1, T8 and T15 are `<name>-basic`; the full forms in engine.clj and rule.clj have
-  the plain names.
+- step.clj's `dispatch` and its transitions stayed in the naming pass (`step_test` and `rule_test`
+  drove the compiled function; its T1, T8 and T15 were `<name>-basic`). They are deleted since:
+  the two tests drive engine.clj's `transition`, and the 27 constants are the `:deleted` list of
+  `notes/renames.edn`.
 - Not renamed: internal helper families whose names are abbreviations of a proof step (`hk-`,
   `fm-`, `qk-`, `wdom-`, `oc-`, `z59-`, `sl-`, `s9-`). They keep their suffix words and take only
   the part's name where it was a prefix.

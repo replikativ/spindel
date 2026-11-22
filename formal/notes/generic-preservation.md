@@ -58,7 +58,7 @@ re-elaboration).
    is an `a/defn`).
 5. Each of i10-task's own copies of those lemmas, restated with its exact statement, is proved by
    `(exact (gq-<lemma> i10-task-rest pgl ...))`: 46 of 46 (the 47th, `well-formed-t8-observe-basic`, has no i10-task copy because
-   i10-task never needed it).
+   i10-task never needed it; that lemma belonged to step.clj's first step function and is deleted since).
 
 Timings (one JVM, after `inv.copier` is loaded; the standalone run of the script, with an earlier REPL run in
 parentheses):

@@ -62,7 +62,8 @@
   root-ok-if root-open-if
 
   ;; -- transitions (b2; decision 12)
-  ;; step.clj's own T1, T8, T15 stay (see :legacy-roots) and give their names to engine.clj's
+  ;; step.clj's own T1, T8, T15 stayed in the substitution (see :legacy-roots) and gave their names
+  ;; to engine.clj's; the `-basic` forms are deleted since
   t1-create-source t1-create-source-basic
   t8-observe t8-observe-basic
   t15-resource-ack t15-resource-ack-basic
@@ -297,11 +298,14 @@
                h14 dispatch, h15 raw-lifts, h16 complete, h17 raw, h18 step}
 
  ;; ---------------------------------------------------------------------------------------------
- ;; step.clj legacy (decision 18): deleted if nothing outside the set references it. Nothing is:
- ;; test/spindel/v2/step_test.clj and rule_test.clj drive the compiled `st/dispatch`, which calls
- ;; t1-create-source, t8-observe, t15-resource-ack and retire-check, and step_test lists the lemmas.
- ;; (Candidates were: dispatch run-items t1-create-source t8-observe t15-resource-ack retire
- ;; retire-check close-scope-shallow.)
+ ;; step.clj legacy (decision 18): deleted if nothing outside the set references it. At the
+ ;; substitution nothing was: test/spindel/v2/step_test.clj and rule_test.clj drove the compiled
+ ;; `st/dispatch`, which called t1-create-source, t8-observe, t15-resource-ack and retire-check, and
+ ;; step_test listed the lemmas. (Candidates were: dispatch run-items t1-create-source t8-observe
+ ;; t15-resource-ack retire retire-check close-scope-shallow.)
+ ;; Since then the two tests drive engine.clj's `transition` and the set is deleted by hand, after
+ ;; the substitution: 27 constants, the :deleted list of notes/renames.edn. The roots stay empty
+ ;; here because this file describes the substitution as it ran.
  :legacy-roots []
 
  ;; Clojure vars of the generators that carry an old name (not constants of the model)

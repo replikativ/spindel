@@ -55,7 +55,7 @@
 (defn edge-row [kind creditor debtor] (s/->EdgeRow 0 kind creditor debtor s/cont-restart 0 s/ph-armed false false 0 false 0 0))
 (defn add-edge [w kind creditor debtor]
   (let [id (:next-id w)] [id (e/insert-edge-fresh w (edge-row kind creditor debtor))]))
-(defn add-source [w owner] (let [x (:next-id w)] [x (:world (st/dispatch w [1 owner s/sk-signal 0 x]))]))
+(defn add-source [w owner] (let [x (:next-id w)] [x (:world (en/transition w [1 owner s/sk-signal 0 x]))]))
 (defn add-resource [w run]
   (let [z (:next-id w)]
     [z (s/run-upd (s/bump (s/resource-ins w (s/->ResRow z run s/rk-timer 0 s/rp-armed))) run
@@ -320,7 +320,7 @@
         [ob w] (add-edge w s/ek-observe 0 c)
         [d sd rd w] (add-comp-run w ex :handles 0 :result ok-result)
         [dd w] (add-edge w s/ek-dep d c)
-        w (if (.nextBoolean rng) (:world (st/dispatch w [11 d])) w)  ; pin D
+        w (if (.nextBoolean rng) (:world (en/transition w [11 d])) w)  ; pin D
         [k sk rk w] (add-task-run w root)
         [k2 sk2 rk2 w] (add-task-run w sk)
         [a ew w] (park-on w rk k2)

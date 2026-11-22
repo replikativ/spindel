@@ -217,7 +217,6 @@
 ;;   <part>-<x>             the same for a part of the top invariant (i10-task-<x>, i8-closed-<x>);
 ;;                          these lemmas are in inv/ and are built by pres/
 ;;   tN-<verb>              transition N of the spec (§8); `t-<verb>` is a transition without a number
-;;   <x>-basic              step.clj's first form of the transition (t1-create-source-basic)
 ;;   <item>-refused         the guard that refuses the item
 ;;   world-released         the world's `released` flag
 ;;   <x>-in-run, <x>-top    x called from a run, or by the host at top level

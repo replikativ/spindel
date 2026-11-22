@@ -24,8 +24,7 @@
 
   Transitions (Part F): `t14-cancel w r rep`, `t16-close-scope w s`, `t13-retire w r` (T13),
   `t15-resource-ack w z` (T15 with the Z#6 token `ack-tok-ok`: resource row and no edge with debtor z).
-  step.clj's `dispatch` keeps its shallow T13 (`close-scope-shallow`) for its own lemmas; the
-  model's step uses `raw` = dispatch with T15 := t15-resource-ack.
+  engine.clj's `transition` routes the resource-ack item to `t15-resource-ack`.
 
   The model's step `world-step` (raw part + Rule R) and its theorems live in
   spindel.v2.engine, after the transitions that create runs.
@@ -861,7 +860,7 @@
 (a/defn t16-close-scope [w :- World, s :- Nat] Outcome
   (if (scope-has w s) (accept (run-cascade w (List.cons Job (Job.jclose s) (List.nil Job)))) (refuse w)))
 
-;; T13 with the Z#18 steps and the T16 cascade (replaces step.clj's shallow retire-check)
+;; T13 with the Z#18 steps and the T16 cascade
 (a/defn t13-retire [w :- World, rid :- Nat] World
   (run-cascade w (List.cons Job (Job.jretire rid) (List.nil Job))))
 

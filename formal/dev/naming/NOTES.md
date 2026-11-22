@@ -40,9 +40,17 @@ All commands from `formal/`. JVM steps go through `~/Development/ansatz/.interna
    with the same fingerprints. A load error names a constant the substitution did not reach: a
    name built from strings (add a generator edit) or a local read as a global (scope.clj).
 
+After the pass (a deletion, a refactor, a later rename): dump the fingerprints before and after the
+change and compare them constant by constant,
+
+       bb dev/naming/delta.clj dev/naming/out/fp-before.edn dev/naming/out/fp-after.edn [MAP.edn]
+
+It lists what was removed, added and changed and checks the headline theorems. `compare.clj` is for
+the substitution itself (it maps the old names through `notes/renames.edn`).
+
 Files: `dump.clj` (model to EDN), `renames.clj` (map, checks, dry run, `--apply`), `lex.clj`
 (whole-symbol lexer), `scope.clj` (locals and constructors), `fingerprint.clj`, `compare.clj`,
-`stale.clj`.
+`delta.clj`, `stale.clj`.
 
 ## State (2026-11-21)
 
