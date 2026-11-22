@@ -136,6 +136,16 @@
 
 (def ^:dynamic *world* nil)
 
+(defn- report!
+  "Reports `t` (`what` failed) on this thread. Never throws: a report is
+   never part of a transition (an observer's or an isolated caller's throw
+   cannot interrupt the engine through its report)."
+  [what t]
+  (try #?(:clj (binding [*out* *err*] (println what "failed:" t))
+          :cljs (js/console.error what "failed:" t))
+       (catch #?(:clj Throwable :cljs :default) _ nil))
+  nil)
+
 (defn- alloc-id!
   "A fresh id from the family counter, shared by a world and its forks."
   ^long [w]
@@ -260,7 +270,11 @@
 (defn- request-atom-sweep! [w]
   (when (and (not (g w rw/W-META-CLOSED))
              (hs/flag-cas! (g w rw/W-SWEEP-PENDING) false true))
-    (hs/metadata-later! #(atom-maintenance! w))))
+    (try (hs/metadata-later! #(atom-maintenance! w))
+         (catch #?(:clj Throwable :cljs :default) t
+           ;; nothing was scheduled: a later request must not find it pending
+           (hs/flag-set! (g w rw/W-SWEEP-PENDING) false)
+           (throw t)))))
 
 (declare host!)
 
@@ -663,12 +677,30 @@
         (vector? x) (mapv #(opaque-item w %) x)
         :else x))
 
-(defn log-commit! [w item0]
-  (let [log (g w rw/W-LOG)
-        item (opaque-item w item0)]
-    (aadd! log {:item item :accepted true})
-    (when-let [hook (g w rw/W-HOOK)] (hook w item)))
+(defn- log-accept!
+  "Verify mode: appends the accepted entry for `item0`; returns the logged
+   item (the observer's argument)."
+  [w item0]
+  (let [item (opaque-item w item0)]
+    (aadd! (g w rw/W-LOG) {:item item :accepted true})
+    item))
+
+(defn- observe-commit!
+  "Verify mode: the commit observer (`W-HOOK`) on the logged `item` (nil:
+   nothing logged), once the transition is complete. It is isolated: its
+   throw is reported (`report!`) and never interrupts the transition."
+  [w item]
+  (when item
+    (when-let [hook (g w rw/W-HOOK)]
+      (try (hook w item)
+           (catch #?(:clj Throwable :cljs :default) t (report! "commit observer" t)))))
   nil)
+
+(defn log-commit!
+  "Verify mode, at the end of a transition: the accepted entry, then the
+   commit observer (`observe-commit!`)."
+  [w item0]
+  (observe-commit! w (log-accept! w item0)))
 
 #?(:clj
    (defmacro commit!
@@ -2847,9 +2879,7 @@
    turn (an unrelated host operation, or the drainer)."
   [what f]
   (try (f)
-       (catch #?(:clj Throwable :cljs :default) t
-         #?(:clj (binding [*out* *err*] (println what "failed:" t))
-            :cljs (js/console.error what "failed:" t)))))
+       (catch #?(:clj Throwable :cljs :default) t (report! what t))))
 
 (defn- run-callbacks!
   "Host callbacks run between items, on the processing thread (H3), each
@@ -2919,13 +2949,12 @@
       (let [x (anth cs i)]
         (cond
           ;; still under an enclosing world's gate (a nested entry): the
-          ;; action waits for that gate to be left too
-          (and (fn? x) (holding-gate?)) (aadd! (g (cw) rw/W-AFTER) x)
+          ;; action, and the handoff of a world (which can run its turn on
+          ;; this thread), waits for that gate to be left too
+          (holding-gate?) (aadd! (g (cw) rw/W-AFTER) x)
           (fn? x)
           (try (x)
-               (catch #?(:clj Throwable :cljs :default) t
-                 #?(:clj (binding [*out* *err*] (println "after-gate action failed:" t))
-                    :cljs (js/console.error "after-gate action failed:" t))))
+               (catch #?(:clj Throwable :cljs :default) t (report! "after-gate action" t)))
           ;; a failed handoff skips none of the others
           :else (isolated! "handoff" #(handoff! x)))))))
 
@@ -3861,14 +3890,15 @@
     (throw (ex-info "host-call! while processing another world (B7): use send-world!"
                     {:spindel/invalid :host-call}))
     :else
+    ;; the reply is tagged: on CLJS anything can be thrown, nil and false too
     #?(:clj (let [p (promise)]
-              (host! w #(deliver p (try [(f) nil] (catch Throwable t [nil t]))))
-              (let [[v t] @p] (if t (throw t) v)))
+              (host! w #(deliver p (try [::ok (f)] (catch Throwable t [::threw t]))))
+              (let [[tag x] @p] (if (= ::threw tag) (throw x) x)))
        :cljs (let [box (volatile! ::none)]
-               (host! w #(vreset! box (try [(f) nil] (catch :default t [nil t]))))
+               (host! w #(vreset! box (try [::ok (f)] (catch :default t [::threw t]))))
                (if (= ::none @box)
                  (throw (ex-info "host-call!: the world did not process the item synchronously" {}))
-                 (let [[v t] @box] (if t (throw t) v)))))))
+                 (let [[tag x] @box] (if (= ::threw tag) (throw x) x)))))))
 
 (defn call-in!
   "Tooling and tests: host-call!."
@@ -4853,10 +4883,14 @@
     (if (g w rw/W-UNBORN)
       ;; E4: an instance that never ran is discarded as if dropped: nothing
       ;; in it runs, its copied finalizers included
-      (do (commit! w [:release-world]) (s! w rw/W-RELEASED true) (finish-metadata! w) (maybe-finish-token! w)
+      (let [item (do (rule-r! w) (when (some? (g w rw/W-LOG)) (log-accept! w [:release-world])))]
+          ;; the observer runs once the transition is complete (released)
+        (s! w rw/W-RELEASED true)
+        (observe-commit! w item)
+        (finish-metadata! w) (maybe-finish-token! w)
           ;; nothing in it ever ran: complete at once (C1 W1, E4 abandonment)
-          (some-> (g w rw/W-KIDS) hs/kids-released!)
-          (complete-world! w))
+        (some-> (g w rw/W-KIDS) hs/kids-released!)
+        (complete-world! w))
       (let [ex (released-ex)
             roots (g w rw/W-ROOTS)]
         (doseq [e (map #(rv w %) (hs/mvals roots))]
@@ -4878,9 +4912,11 @@
               (let [x (rv w x0)]
                 (s! x rw/HANDLES 0)
                 (when (zero? (gl x rw/REFS)) (aadd! (g w rw/W-RQ) x))))))
-        (commit! w [:release-world])
-        (s! w rw/W-RELEASED true)
-        (some-> (g w rw/W-KIDS) hs/kids-released!)
+        (let [item (do (rule-r! w) (when (some? (g w rw/W-LOG)) (log-accept! w [:release-world])))]
+          ;; the observer runs once the transition is complete (released)
+          (s! w rw/W-RELEASED true)
+          (some-> (g w rw/W-KIDS) hs/kids-released!)
+          (observe-commit! w item))
         (maybe-complete! w)))))
 
 (declare work-pending?)
@@ -4985,6 +5021,22 @@
     (when-not (inherited? w x) (throw (lineage-ex x)))
     (new-handle w x)))
 
+(defn- publish-world!
+  "Registers the constructed world `c` with its family. The registry
+   insertion publishes it: from then on the family's atom maintenance can
+   enter `c` and hand it off (a stale copied sweep generation, or a
+   concurrent atom collection, schedules that at once), so every field a
+   first entry reads must be set before. `fork-world*` and `instance-world*`
+   leave this to their callers. The collection action is installed before
+   the insertion. With `failed!` (non-throwing), a throw after the insertion
+   goes to `(failed! t)`: it is a failure of a published world; only a throw
+   before the insertion propagates."
+  ([c] (publish-world! c nil))
+  ([c failed!]
+   (lt/register-world! (g c rw/W-FAMILY) c (g c rw/ID) (g c rw/W-WATCHES)
+                       (gl c rw/W-SWEEP-GEN) request-atom-sweep!
+                       (kid-collector (g c rw/W-KID-TOKEN)) failed!)))
+
 (defn- fork-world*
   "D3: the copy-on-write fork of `w` at the current commit (MVCC, §2.7). O(1)
    in the world's rows: `w` keeps owning them and advances its ordinal, so it
@@ -4993,92 +5045,98 @@
    through its lineage and copies what it touches. The child gets fresh
    administration and copies of the queues, pins and roots (work in flight,
    design v3 §6); its inherited armed resources are dormant until its first
-   turn (§8.1)."
-  [w]
-  (let [c (aclone ^objects w)
-        armed (g w rw/W-ARMED)
-        o (rw/epoch-ordinal (g w rw/W-EPOCH))
-        _ (share-token! w)
-        tok (register-token! w o)
-        id (alloc-id! w)]
-    (s! w rw/W-EPOCH (rw/epoch (g w rw/ID) (inc o)))
-    (s! c rw/ID id)
-    (s! c rw/W-EPOCH (rw/epoch id 0))
+   turn (§8.1). The child is not yet published to its family
+   (`publish-world!`). With `init` (child id -> world state), the child's
+   world state is `(init id)`, evaluated right after the child's id is
+   allocated and before anything else changes: its throw leaves only that
+   id unused."
+  ([w] (fork-world* w nil))
+  ([w init]
+   (let [id (alloc-id! w)
+         st (when init (init id))
+         c (aclone ^objects w)
+         armed (g w rw/W-ARMED)
+         o (rw/epoch-ordinal (g w rw/W-EPOCH))
+         _ (share-token! w)
+         tok (register-token! w o)]
+     (when init (s! c rw/W-STATE st))
+     (s! w rw/W-EPOCH (rw/epoch (g w rw/ID) (inc o)))
+     (s! c rw/ID id)
+     (s! c rw/W-EPOCH (rw/epoch id 0))
     ;; lineage: w's rows below the child's id are its basis (§8.1), read at
     ;; ordinal o (the token keeps those versions); w's copy map as it is now
-    (s! c rw/W-LINEAGE (cons [(g w rw/ID) id o tok (g w rw/W-FWD)] (g w rw/W-LINEAGE)))
-    (s! c rw/W-FWD {})
-    (s! c rw/W-TOKENS nil)
-    (s! c rw/W-LOCK (hs/lock))
-    (s! c rw/W-INGRESS (hs/mpsc))
-    (s! c rw/W-SCHEDULED (hs/flag false))
-    (s! c rw/W-DRAINING false)
-    (s! c rw/W-CALLBACKS (alist))
+     (s! c rw/W-LINEAGE (cons [(g w rw/ID) id o tok (g w rw/W-FWD)] (g w rw/W-LINEAGE)))
+     (s! c rw/W-FWD {})
+     (s! c rw/W-TOKENS nil)
+     (s! c rw/W-LOCK (hs/lock))
+     (s! c rw/W-INGRESS (hs/mpsc))
+     (s! c rw/W-SCHEDULED (hs/flag false))
+     (s! c rw/W-DRAINING false)
+     (s! c rw/W-CALLBACKS (alist))
     ;; lifecycle state is the world's own, never inherited (spec §8.1 D3)
-    (s! c rw/W-OWNED nil)
+     (s! c rw/W-OWNED nil)
     ;; C1c stage B: the parent's counts are the child's to normalize, with
     ;; what the parent itself has not normalized yet
-    (s! c rw/W-OWNED-N nil)
-    (s! c rw/W-NORMALIZE (not-empty (reduce-kv (fn [m sid [s _]] (assoc m sid s))
-                                               (or (g w rw/W-NORMALIZE) {}) (g w rw/W-OWNED-N))))
-    (s! c rw/W-HOLDER nil)
-    (s! c rw/W-AFTER (alist))
-    (s! c rw/W-UNBORN false)
-    (s! c rw/W-PUB-WORLD nil)
-    (s! c rw/W-WATCHES (lt/index))
-    (s! c rw/W-SWEEP-PENDING (hs/flag false))
-    (s! c rw/W-META-CLOSED false)
+     (s! c rw/W-OWNED-N nil)
+     (s! c rw/W-NORMALIZE (not-empty (reduce-kv (fn [m sid [s _]] (assoc m sid s))
+                                                (or (g w rw/W-NORMALIZE) {}) (g w rw/W-OWNED-N))))
+     (s! c rw/W-HOLDER nil)
+     (s! c rw/W-AFTER (alist))
+     (s! c rw/W-UNBORN false)
+     (s! c rw/W-PUB-WORLD nil)
+     (s! c rw/W-WATCHES (lt/index))
+     (s! c rw/W-SWEEP-PENDING (hs/flag false))
+     (s! c rw/W-META-CLOSED false)
     ;; Z#77: the fork-local runs are retired at the child's first gate entry
     ;; (T28), with what this world has not retired itself (a basis)
-    (s! c rw/W-LOCAL nil)
-    (s! c rw/W-RETIRE (let [l (g w rw/W-LOCAL)] (if l (cons l (g w rw/W-RETIRE)) (g w rw/W-RETIRE))))
-    (doseq [i [rw/W-READY rw/W-RESUME rw/W-START rw/W-CLEANUP rw/W-RQ]]
-      (s! c i (hs/lcopy (g w i))))
-    (s! c rw/W-PINS (hs/mcopy (g w rw/W-PINS)))
-    (s! c rw/W-ROOTS (hs/mcopy (g w rw/W-ROOTS)))
-    (s! c rw/W-ARMED nil)
+     (s! c rw/W-LOCAL nil)
+     (s! c rw/W-RETIRE (let [l (g w rw/W-LOCAL)] (if l (cons l (g w rw/W-RETIRE)) (g w rw/W-RETIRE))))
+     (doseq [i [rw/W-READY rw/W-RESUME rw/W-START rw/W-CLEANUP rw/W-RQ]]
+       (s! c i (hs/lcopy (g w i))))
+     (s! c rw/W-PINS (hs/mcopy (g w rw/W-PINS)))
+     (s! c rw/W-ROOTS (hs/mcopy (g w rw/W-ROOTS)))
+     (s! c rw/W-ARMED nil)
     ;; dormant: this world's armed resources (savepoints among them), plus
     ;; what it still holds dormant itself (a basis is never run, only forked)
-    (s! c rw/W-DORMANT (seq (concat (when armed (hs/oset-vals armed)) (g w rw/W-DORMANT))))
+     (s! c rw/W-DORMANT (seq (concat (when armed (hs/oset-vals armed)) (g w rw/W-DORMANT))))
     ;; C1: the child inherits every unretired run (W-RUNS, copied) and every
     ;; outstanding resource; the non-armed ones are discharged at its first
     ;; turn (R1); its own completion ledger starts empty (W1, R2)
-    (let [o (g w rw/W-OUTSTANDING)
-          o (when (and o (pos? (hs/oset-count o))) o)]
-      (s! c rw/W-OUTSTANDING (when o (hs/oset-copy o)))
-      (s! c rw/W-DISCHARGE (seq (concat (when o (remove #(and armed (some? (hs/oset-get armed (id-of %))))
-                                                        (hs/oset-vals o)))
-                                        (g w rw/W-DISCHARGE)))))
-    (s! c rw/W-KIDS nil)
-    (s! c rw/W-KID-TOKEN (hs/kid-cell))
-    (s! c rw/W-COMPLETE false)
-    (s! c rw/W-COMPLETE-SUBS nil)
-    (s! c rw/W-JOIN-SUBS nil)
-    (s! c rw/W-PENDING-ACT nil)
-    (s! c rw/W-MBASE nil)
-    (s! c rw/W-SEALED (hs/flag false))   ; C2: a fork starts unsealed
-    (s! c rw/W-ADMITTING (hs/kids))
-    (s! c rw/W-MPARENT nil)
-    (when-let [reg (g w rw/W-REG)]
+     (let [o (g w rw/W-OUTSTANDING)
+           o (when (and o (pos? (hs/oset-count o))) o)]
+       (s! c rw/W-OUTSTANDING (when o (hs/oset-copy o)))
+       (s! c rw/W-DISCHARGE (seq (concat (when o (remove #(and armed (some? (hs/oset-get armed (id-of %))))
+                                                         (hs/oset-vals o)))
+                                         (g w rw/W-DISCHARGE)))))
+     (s! c rw/W-KIDS nil)
+     (s! c rw/W-KID-TOKEN (hs/kid-cell))
+     (s! c rw/W-COMPLETE false)
+     (s! c rw/W-COMPLETE-SUBS nil)
+     (s! c rw/W-JOIN-SUBS nil)
+     (s! c rw/W-PENDING-ACT nil)
+     (s! c rw/W-MBASE nil)
+     (s! c rw/W-SEALED (hs/flag false))   ; C2: a fork starts unsealed
+     (s! c rw/W-ADMITTING (hs/kids))
+     (s! c rw/W-MPARENT nil)
+     (when-let [reg (g w rw/W-REG)]
       ;; verify mode: the child's registry holds the rows as they are at the
       ;; fork (the parent keeps changing its own in place)
-      (s! c rw/W-REG (let [m (hs/mcopy reg)]
-                       #?(:clj (doseq [^java.util.Map$Entry e (vec (.entrySet ^java.util.Map m))]
-                                 (.put ^java.util.Map m (.getKey e) (image (.getValue e))))
-                          :cljs (doseq [[k v] (vec (es6-iterator-seq (.entries m)))]
-                                  (.set m k (image v))))
-                       m))
-      (s! c rw/W-LOG (alist)))
-    (lt/register-world! (g c rw/W-FAMILY) c (g c rw/ID) (g c rw/W-WATCHES)
-                        (gl c rw/W-SWEEP-GEN) request-atom-sweep!
-                        (kid-collector (g c rw/W-KID-TOKEN)))
-    c))
+       (s! c rw/W-REG (let [m (hs/mcopy reg)]
+                        #?(:clj (doseq [^java.util.Map$Entry e (vec (.entrySet ^java.util.Map m))]
+                                  (.put ^java.util.Map m (.getKey e) (image (.getValue e))))
+                           :cljs (doseq [[k v] (vec (es6-iterator-seq (.entries m)))]
+                                   (.set m k (image v))))
+                        m))
+       (s! c rw/W-LOG (alist)))
+     c)))
 
 (defn- instance-world*
   "S3: a fork of the savepoint basis `b` (never run, owns no rows): the basis
    is not changed (no ordinal, no token); the instance reads through the
-   basis's lineage, whose tokens keep the versions it needs."
-  [b]
+   basis's lineage, whose tokens keep the versions it needs. Born with all
+   its birth fields (E4: unborn, its pending activation `act`, its owner, its
+   initial world state), not yet published to its family (`publish-world!`)."
+  [b act owner state]
   (share-token! b)
   (let [c (aclone ^objects b)
         id (alloc-id! b)]
@@ -5095,8 +5153,12 @@
     (s! c rw/W-OWNED-N nil)             ; a basis never runs: it has no counts, only W-NORMALIZE
     (s! c rw/W-HOLDER nil)
     (s! c rw/W-AFTER (alist))
-    (s! c rw/W-UNBORN false)
-    (s! c rw/W-PUB-WORLD nil)
+    ;; E4: unborn until activate!: host items commit, but its inherited work
+    ;; and dormant resources wait; dropped unactivated, it is collected
+    ;; without running anything (it never ran)
+    (s! c rw/W-UNBORN true)
+    (s! c rw/W-PUB-WORLD owner)
+    (s! c rw/W-STATE state)
     (s! c rw/W-WATCHES (lt/index))
     (s! c rw/W-SWEEP-PENDING (hs/flag false))
     (s! c rw/W-META-CLOSED false)
@@ -5113,7 +5175,7 @@
     (s! c rw/W-COMPLETE false)
     (s! c rw/W-COMPLETE-SUBS nil)
     (s! c rw/W-JOIN-SUBS nil)
-    (s! c rw/W-PENDING-ACT nil)
+    (s! c rw/W-PENDING-ACT act)
     (s! c rw/W-MBASE nil)
     (s! c rw/W-SEALED (hs/flag false))   ; C2: a fork starts unsealed
     (s! c rw/W-ADMITTING (hs/kids))
@@ -5121,9 +5183,6 @@
     (when-let [reg (g b rw/W-REG)]
       (s! c rw/W-REG (hs/mcopy reg))
       (s! c rw/W-LOG (alist)))
-    (lt/register-world! (g c rw/W-FAMILY) c (g c rw/ID) (g c rw/W-WATCHES)
-                        (gl c rw/W-SWEEP-GEN) request-atom-sweep!
-                        (kid-collector (g c rw/W-KID-TOKEN)))
     c))
 
 (defn- host-fork-call!
@@ -5136,52 +5195,117 @@
     (let [claim (hs/flag false)
           res (volatile! nil)]
       (gated w (when (hs/flag-cas! claim false true)
-                 (vreset! res (try [(f) nil] (catch #?(:clj Throwable :cljs :default) t [nil t])))))
+                 (vreset! res (try [::ok (f)] (catch #?(:clj Throwable :cljs :default) t [::threw t])))))
       (if (hs/flag-cas! claim false true)
         (throw (ex-info "fork!: the world is busy, and a body of another world may not wait for it (B7)"
                         {:spindel/invalid :busy}))
-        (let [[v t] (loop [] (or @res (do #?(:clj (Thread/onSpinWait)) (recur))))]
-          (if t (throw t) v))))
+        (let [[tag x] (loop [] (or @res (do #?(:clj (Thread/onSpinWait)) (recur))))]
+          (if (= ::threw tag) (throw x) x))))
     (host-call! w f)))
+
+(defn- fork-host-item!
+  "D3, the host fork item of `w` with its default owner (`fork!`), under
+   `w`'s gate. In order:
+   1. refused (a throw, no log item, nothing allocated) when `w` is unborn
+      or released: an item admitted before T21 can run after it, and a fork
+      from inside a host item of `w` bypasses ingress admission (H1);
+   2. the child's id is allocated, then `init-state` (pure,
+      `(f state {:world-id id})`) is applied to `w`'s world state before
+      anything else changes: its throw is the fork's, and leaves only an
+      unused id (an allocator gap: no MVCC token, epoch step or log item);
+   3. the child is built privately (`fork-world*`) with that world state and
+      the merge fields; its verify fields are set by the copy;
+   4. `w`'s root scope owns it, weakly (F2);
+   5. acceptance: Rule R and the logged `[:fork-host c]` (`commit!`). The
+      outcome is fixed here; the commit observer is isolated (`log-commit!`);
+   6. publication: the child's collection action, then the family registry
+      insertion. From then on the family's atom maintenance can enter the
+      child (on its own thread, also before `w`'s gate is released); a
+      failure after the insertion (the sweep request) is the published
+      child's, reported, and the child stays published and owned. A failure
+      before it leaves the child unpublished: it is released through its
+      ingress (processed after `w`'s gate) and the fork throws
+      `{:spindel/unpublished true :child c}`;
+   7. `W-AFTER`: the child is handed off after `w`'s gate is released. This
+      is the fork's only handoff of the child (`fork!` adds none).
+   Returns the child."
+  [w init-state mergeable?]
+  (when (g w rw/W-UNBORN) (throw (ex-info "fork! of an unactivated instance" {})))
+  (when (g w rw/W-RELEASED) (throw (released-ex)))
+  (let [c (fork-world* w (when init-state
+                           (fn [id] (init-state (g w rw/W-STATE) {:world-id id}))))]
+    (when mergeable?
+      (s! c rw/W-MPARENT (g w rw/ID))
+      (s! c rw/W-MBASE {}))
+    (own-child! w (rv w (g w rw/W-ROOT)) c false)   ; F2: weakly, by the root scope
+    (commit! w [:fork-host (g c rw/ID)])
+    (try (publish-world! c #(report! "fork publication" %))
+         (catch #?(:clj Throwable :cljs :default) t
+           (release-child! w c)
+           (throw (ex-info "fork!: the accepted child could not be published to its family; it is released"
+                           {:spindel/unpublished true :child c} t))))
+    ;; the child's inherited work is scheduled after this gate, also when
+    ;; the caller stopped waiting for the reply (D)
+    (aadd! (g w rw/W-AFTER) c)
+    c))
 
 (defn fork!
   "D3, host form: a frozen fork of `w` between slices. Returns the child
    world; act on it through `in-world` handles. With `{:mergeable? true}`
    the child keeps the basis of every source it inherited and touches, so
-   `merge!` can adopt its writes into `w`. With `{:owner o}` (a world of the
-   same family) the root scope of `o` owns the child instead of `w`'s (F2),
-   so it outlives `w`, as an instance outlives its publication's world (S3)."
+   `merge!` can adopt its writes into `w`. With `{:init-state f}` the
+   child's world state starts as `(f state {:world-id id})`: `state` is
+   `w`'s at the fork, `id` the child's world id (`world-id`); `f` is pure.
+   The child's first entry sees it. With `{:owner o}` (a world of
+   the same family) the root scope of `o` owns the child instead of `w`'s
+   (F2), so it outlives `w`, as an instance outlives its publication's world
+   (S3); `:init-state` is not supported with another owner.
+
+   With its default owner the fork commits before the child is published to
+   its family, and the child is returned once committed (`fork-host-item!`);
+   it is handed off after the gate that processed the fork is released,
+   never under it. From inside a host item of `w` (H1) the fork runs in that
+   item."
   ([w] (fork! w nil))
   ([w opts]
    ;; a body forks its own world with the (fork) effect; a host fork of
    ;; another world is a host operation of that world, also from a body
    (when (and (active-run) (identical? w (cw)))
      (throw (ex-info "fork! inside a body: use the (fork) effect" {})))
-   (let [owner (:owner opts)]
+   (let [owner (:owner opts)
+         init-state (:init-state opts)
+         other-owner? (and owner (not (identical? owner w)))]
      (when (and owner (not (identical? (g owner rw/W-FAMILY) (g w rw/W-FAMILY))))
        (throw (ex-info "fork!: the owner belongs to an unrelated world" {:spindel/invalid :lineage})))
-     (let [c (host-fork-call!
-              w
-              (fn []
-                (when (g w rw/W-UNBORN) (throw (ex-info "fork! of an unactivated instance" {})))
-                (let [c (fork-world* w)]
-                  (when (:mergeable? opts)
-                    (s! c rw/W-MPARENT (g w rw/ID))
-                    (s! c rw/W-MBASE {}))
-                  (if (or (nil? owner) (identical? owner w))
-                    (own-child! w (rv w (g w rw/W-ROOT)) c false)   ; F2: weakly, by the root scope
+     (when (and other-owner? init-state)
+       (throw (ex-info "fork!: :init-state with another :owner is not supported"
+                       {:spindel/invalid :init-state})))
+     (if-not other-owner?
+       ;; the child is handed off from `w`'s W-AFTER only, after the gate
+       ;; that processed the item is released: a queued caller's reply is
+       ;; delivered from inside that gate
+       (host-fork-call! w #(fork-host-item! w init-state (:mergeable? opts)))
+       (let [c (host-fork-call!
+                w
+                (fn []
+                  (when (g w rw/W-UNBORN) (throw (ex-info "fork! of an unactivated instance" {})))
+                  (let [c (fork-world* w)]
+                    (publish-world! c)
+                    (when (:mergeable? opts)
+                      (s! c rw/W-MPARENT (g w rw/ID))
+                      (s! c rw/W-MBASE {}))
                     ;; as activate!: the owner's gate is only tried, never waited
                     ;; for (E3); a released owner releases the child
                     (try (host! owner #(own-child! owner (rv owner (g owner rw/W-ROOT)) c false))
                          (catch #?(:clj Exception :cljs :default) _
-                           (release-child! w c))))
-                  (commit! w [:fork-host (g c rw/ID)])
-                  ;; the child's inherited work is scheduled after this gate,
-                  ;; also when the caller stopped waiting for the reply (D)
-                  (aadd! (g w rw/W-AFTER) c)
-                  c)))]
-       (handoff! c)
-       c))))
+                           (release-child! w c)))
+                    (commit! w [:fork-host (g c rw/ID)])
+                    ;; the child's inherited work is scheduled after this gate,
+                    ;; also when the caller stopped waiting for the reply (D)
+                    (aadd! (g w rw/W-AFTER) c)
+                    c)))]
+         (handoff! c)
+         c)))))
 
 (defn- quiescent*
   "§9 under the gate: no unretired run, no cleanup entry, no outstanding
@@ -5439,7 +5563,7 @@
                 (s! r rw/R-BIND (thread-frame))   ; the child resumes with the frame live at the effect
                 (aadd! (g w rw/W-RESUME) a)
                 (unregister! w a)                 ; a delivery carrier, not a parked activation
-                (let [child (fork-world* w)]
+                (let [child (doto (fork-world* w) publish-world!)]
                   (own-child! w owner child true)
           ;; the parent takes the delivery back and continues on its own copy
                   (remove-row! (g w rw/W-RESUME) a)
@@ -5529,7 +5653,7 @@
                          ;; the basis is a fork of this commit that is never run, only forked;
                          ;; its run continues with the frame live at the effect
                                  (s! (rv w r) rw/R-BIND (thread-frame))
-                                 (let [basis (fork-world* w)
+                                 (let [basis (doto (fork-world* w) publish-world!)
                                        pub (publication w (id-of z) site payload basis
                                                         (boolean (g (rv w (g (rv w r) rw/R-OF)) rw/K-LOCAL)))]
                            ;; the parent's own copy of the run keeps no slice (it is parked)
@@ -5606,16 +5730,14 @@
        (throw (ex-info "instantiate: the owner belongs to an unrelated world" {:spindel/invalid :lineage})))
      (when (:fork-local pub)
        (throw (invalid-op :fork-local "instantiate: the run is fork-local, every instance would retire it (Z#77)")))
-     (let [c (instance-world* b)]
-       (s! c rw/W-PENDING-ACT (:act pub))
-       ;; E4: unborn until activate!: host items commit, but its inherited work
-       ;; and dormant resources wait; dropped unactivated, it is collected
-       ;; without running anything (it never ran)
-       (s! c rw/W-UNBORN true)
-       (s! c rw/W-PUB-WORLD owner)
-       ;; nobody else can reach the instance yet: its initial state is set
-       ;; directly, without a host item (so also from another world's slice)
-       (when init-state (s! c rw/W-STATE (init-state (g c rw/W-STATE))))
+     ;; nobody else can reach the instance yet: its initial state is set
+     ;; directly, without a host item (so also from another world's slice),
+     ;; and computed before anything is allocated
+     (let [st (if init-state (init-state (g b rw/W-STATE)) (g b rw/W-STATE))
+           c (instance-world* b (:act pub) owner st)]
+       ;; published with every birth field set: the family's maintenance
+       ;; can enter it from here on, and finds it unborn
+       (publish-world! c)
        c))))
 
 (defn consume

@@ -1039,6 +1039,13 @@ Each `track` *site* in a run (identified by `at`) has its own edge, with
   MPSC queue. This covers `write`, `deliver`, `post`, `spawn`, `observe`,
   handle drops, resource fires and acknowledgements, and cross-world
   deliveries. Enqueueing never waits for the world.
+  - **Nested same-world operations.** A host operation of `W` issued from
+    inside a host item of `W` runs in that item (the held-gate path). A
+    host `fork!` of `W` from inside a host item of `W` thus commits in that
+    item: the fork's world cut and the item's host work before it lie at one
+    point of `W`'s slice history. With the default owner, the child is
+    handed off after `W`'s gate is released, never under it (§8.1 F7); a
+    fork with another owner keeps its caller-side handoff.
 - **H2 – bounded combining (W#11, X#9).** After enqueueing, the host thread
   *tries* to take the gate.
   - **It wins:** it processes its own item, then at most a constant budget of
@@ -1506,6 +1513,53 @@ difference, since every access to `W′`'s rows goes through its gate.
 - **F5:** the layer-1 invariants hold in every world. Physical storage is
   bounded by Σ over live worlds of their own rows and copies, plus the
   versions that live forks and anchors (publications) can read.
+- **F7 – host fork birth (2026-11-22).** A host fork (between slices) with
+  its default owner, `W`'s root scope:
+  - **Initial state.** The initial application state of `W′` is
+    `init-state(copy(W.state), {world-id: id(W′)})`, or `copy(W.state)`
+    without one. `init-state` is pure. The fork item evaluates it after
+    allocating `id(W′)` and before any other change of `W` (token, ordinal,
+    log): its throw is the fork's and leaves only an unused id, an allocator
+    gap that family replay aligns. Application state is outside the model.
+  - **Refusal at item time.** The item re-checks that `W` is born and not
+    released: an item admitted before T21 can run after it, and a fork from
+    a host item of `W` (H1) bypasses ingress admission. A refused fork
+    allocates nothing and logs nothing.
+  - **The outcome is fixed at acceptance.** The order is: the private child
+    (initial state and merge fields set), its marker owned by `W`'s root
+    scope (F2), then acceptance (Rule R, the logged `[:fork-host W′]`). The
+    commit observer is isolated (§11.4): its throw is reported and skips
+    neither publication, nor the handoff, nor the return of `W′`.
+  - **Publication after the commit.** After the fork commits, `W′` gets
+    its collection action (its collection removes its registry entry and
+    acknowledges its owner), then is published by its insertion into the
+    family registry (its atom-sweep membership). The engine's automatic
+    dispatch (maintenance, handoffs) cannot enter `W′` before. Three
+    automatic entries follow, in this order of possibility:
+    - *publication-time maintenance:* from the insertion on, the family's
+      atom maintenance (a stale copied sweep generation, a concurrent atom
+      collection) can enter `W′` on its own thread, also while `W`'s gate is
+      still held;
+    - *the after-gate handoff:* the fork item puts `W′` in `W`'s after-gate
+      list; `W′` is handed off once the gate that processed the item is
+      released (also when that gate is an enclosing world's, H1). The caller
+      adds no handoff, so a queued caller's reply (delivered from inside the
+      gate) never runs `W′` under it;
+    - *a queued recovery release:* when the publication fails before the
+      insertion (installing the collection action, inserting), `W′` stays
+      accepted and owned but unpublished: its release (T21) is queued on its
+      ingress and handed off after `W`'s gate (its completion ends the
+      owner's obligation), and the fork throws to its caller with `W′`.
+    A failure after the insertion (requesting the sweep) is a failure of the
+    published `W′`: it is reported, and `W′` stays published and owned.
+    These orderings are the automatic dispatch's. A caller holding `W′` acts
+    on it as on any world: an operation of its own (e.g. `await-complete`
+    on the unpublished `W′` of a failed publication) can enter it earlier,
+    and runs its queued items then.
+  - **Scope.** A host fork with another owner (F2) takes no `init-state` and
+    is published at construction, as are the child of the `fork` effect and a
+    savepoint basis. An instance (S3) is published with all its birth fields
+    set.
 
 ### 8.2 Savepoints (R#7, R#17)
 
@@ -1534,6 +1588,9 @@ A savepoint publishes the rest of a body to a handler (see `savepoints.md`).
   - `R`'s copy in `W′` is parked on its copied `savepoint` edge, which
     becomes `W′.pending-activation`;
   - every other inherited `savepoint` edge fires `err ::forked` (§8.1);
+  - `W′` is published to its family with all its birth fields set
+    (unborn, `pending-activation`, owner, initial state): no thread enters
+    it before;
   - before activation, the handler may perform writes in `W′` (trace
     entries, weights, counters, handlers).
 - **S4 – activate.** `activate(W′, v)` fires `W′.pending-activation` with `v`
@@ -1856,6 +1913,11 @@ Shaped by the ansatz feasibility read (`ansatz/.internal/design/spindel-v2-feasi
      still open.
    - The engine writes a test-only commit log. Each item carries the stamps
      and ids the engine allocated, and the model checks their freshness.
+     The commit observer (the verify hook) runs after the transition is
+     complete (T21: with the world released) and is isolated: its throw is
+     reported and interrupts no transition (T21 and a fork's publication
+     included). The verification harness records its own errors as
+     divergences.
    - Scheduling choices are items, so the model refuses inadmissible ones.
      A refusal counts as divergence.
    - After each commit:

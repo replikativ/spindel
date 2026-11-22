@@ -92,21 +92,45 @@
 (defn unregister-world! [family id]
   (locked #(hs/mdel! (:worlds family) id)))
 
+(defn- collection-action
+  "The world's collection action, built in its own function: a JS closure
+   shares its enclosing function's context, so one made in
+   `register-world!` (where the world is a local) would keep it alive."
+  [worlds idx id ww collected!]
+  (fn []
+    (clear-index! idx id)
+    (locked (fn [] (remove-exact! worlds id ww)))
+    (when collected! (collected!))))
+
 (defn register-world!
   "O(1) insertion, after independent world metadata fields are initialized.
-   Compare the copied sweep generation AFTER publishing registry membership."
+   The collection action is installed first, then the insertion publishes
+   `w` (family maintenance can find it from then on), then the copied sweep
+   generation is compared AFTER publishing registry membership. A throw
+   before the insertion propagates: `w` is not published. With `failed!`,
+   a throw after it (the sweep request) is a failure of the published world,
+   passed to `(failed! t)`, and registration returns; `failed!` must not
+   throw (a throw of it is dropped)."
   ([family w id idx copied-generation request!]
-   (register-world! family w id idx copied-generation request! nil))
+   (register-world! family w id idx copied-generation request! nil nil))
   ([family w id idx copied-generation request! collected!]
+   (register-world! family w id idx copied-generation request! collected! nil))
+  ([family w id idx copied-generation request! collected! failed!]
    (let [ww (hs/weak w) worlds (:worlds family)]
-     (locked #(hs/mput! worlds id ww))
      ;; Exactly one world collection action. Detached index/world registry
      ;; hold only ids and weak refs, and this action does not reference w.
      ;; `collected!` (C1: the world's owner acknowledgement) must not either.
-     (hs/on-collect! w #(do (clear-index! idx id)
-                            (locked (fn [] (remove-exact! worlds id ww)))
-                            (when collected! (collected!))))
-     (when (< copied-generation (generation family)) (request! w)))))
+     ;; Installed before the insertion: a published world always has it (its
+     ;; collection removes its entry and acknowledges its owner); before the
+     ;; insertion its run removes nothing.
+     (hs/on-collect! w (collection-action worlds idx id ww collected!))
+     (locked #(hs/mput! worlds id ww))
+     (try (when (< copied-generation (generation family)) (request! w))
+          (catch #?(:clj Throwable :cljs :default) t
+            (if failed!
+              (try (failed! t) (catch #?(:clj Throwable :cljs :default) _ nil))
+              (throw t))))
+     nil)))
 
 (defn atom-collected!
   "Increment before snapshot, release the metadata lock before dereferencing
