@@ -3885,14 +3885,15 @@
     (throw (ex-info "host-call! while processing another world (B7): use send-world!"
                     {:spindel/invalid :host-call}))
     :else
+    ;; the reply is tagged: on CLJS anything can be thrown, nil and false too
     #?(:clj (let [p (promise)]
-              (host! w #(deliver p (try [(f) nil] (catch Throwable t [nil t]))))
-              (let [[v t] @p] (if t (throw t) v)))
+              (host! w #(deliver p (try [::ok (f)] (catch Throwable t [::threw t]))))
+              (let [[tag x] @p] (if (= ::threw tag) (throw x) x)))
        :cljs (let [box (volatile! ::none)]
-               (host! w #(vreset! box (try [(f) nil] (catch :default t [nil t]))))
+               (host! w #(vreset! box (try [::ok (f)] (catch :default t [::threw t]))))
                (if (= ::none @box)
                  (throw (ex-info "host-call!: the world did not process the item synchronously" {}))
-                 (let [[v t] @box] (if t (throw t) v)))))))
+                 (let [[tag x] @box] (if (= ::threw tag) (throw x) x)))))))
 
 (defn call-in!
   "Tooling and tests: host-call!."
@@ -5182,12 +5183,12 @@
     (let [claim (hs/flag false)
           res (volatile! nil)]
       (gated w (when (hs/flag-cas! claim false true)
-                 (vreset! res (try [(f) nil] (catch #?(:clj Throwable :cljs :default) t [nil t])))))
+                 (vreset! res (try [::ok (f)] (catch #?(:clj Throwable :cljs :default) t [::threw t])))))
       (if (hs/flag-cas! claim false true)
         (throw (ex-info "fork!: the world is busy, and a body of another world may not wait for it (B7)"
                         {:spindel/invalid :busy}))
-        (let [[v t] (loop [] (or @res (do #?(:clj (Thread/onSpinWait)) (recur))))]
-          (if t (throw t) v))))
+        (let [[tag x] (loop [] (or @res (do #?(:clj (Thread/onSpinWait)) (recur))))]
+          (if (= ::threw tag) (throw x) x))))
     (host-call! w f)))
 
 (defn- fork-host-item!
