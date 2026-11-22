@@ -823,9 +823,9 @@
   (doseq [n ["63-w" "64-w" "65-w"]]
     (is (= [] (o/roundtrip (log n))) (str "sample " n))))
 
-;; Host forks with `:init-state` (spindel #PR, generator oracle/gen/samples-fork-init.clj), sample 66: a host fork
-;; whose initializer throws is refused before any allocation and logs nothing, so the ordinary allocation and the
-;; fork after it align with the family allocator; `:held` is a host fork of the root from inside a host item of the
+;; Host forks with `:init-state` (spindel #347, generator oracle/gen/samples-fork-init.clj), sample 66: a host fork
+;; whose initializer throws leaves only its child id unused (an allocator gap) and logs nothing; the ordinary
+;; allocation and the fork after it align with the family allocator across the gap; `:held` is a host fork of the root from inside a host item of the
 ;; root (H1), committed in that item after the item's spawn. The initial world state is outside the model (the
 ;; oracle skips `[:world-state]`), so the successful `[:fork-host c]` trace is unchanged.
 (deftest fork-init-sample
