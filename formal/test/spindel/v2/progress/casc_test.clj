@@ -2,8 +2,8 @@
   "Loading spindel.v2.progress.casc and spindel.v2.inv.acts kernel-checks P4 (cascade completion,
   `cascade-done-ok`), P2 (normalization ends normalized, `normalized-ok`) and the activation
   invariant `acts-parked` that discharges their hypothesis in every step (`step-acts`,
-  `step-normalized-acts-parked`, `cascade-done-acts-parked`), including every copied composite lemma (`bc-copy!`,
-  `copy!`). The runtime tests keep the flags as tripwires: `acts-parked`, `acts-alive`, `cascade-done` and
+  `step-normalized-acts-parked`, `cascade-done-acts-parked`), including every composite lemma restated from the step tree
+  (`restate!`). The runtime tests keep the flags as tripwires: `acts-parked`, `acts-alive`, `cascade-done` and
   `normalized` after every step of the engine-test random driver."
   (:require [clojure.test :refer [deftest is testing]]
             [ansatz.core :as a]
@@ -29,9 +29,9 @@
 
 (deftest theorems-kernel-checked
   (doseq [t theorems] (is (present? t) (str t)))
-  (is (< 30 (count @c/bc-copied)))
+  (is (< 30 (count @(:copied c/BC))))
   (is (< 100 (count @(:copied ac/GA))))
-  (doseq [t (concat @c/bc-copied @(:copied ac/GA) @(:copied ac/GX))] (is (present? t) (str t))))
+  (doseq [t (concat @(:copied c/BC) @(:copied ac/GA) @(:copied ac/GX))] (is (present? t) (str t))))
 
 (deftest invariant-runs
   (is (true? (ac/acts-parked s/empty-world)))

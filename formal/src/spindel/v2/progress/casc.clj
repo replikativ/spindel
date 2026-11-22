@@ -17,22 +17,21 @@
   and it starts below `cascade-fuel` (`cascade-fuel-above`).
   Monotonicity: the bundle `cascade-bound b w` = well-formed, acts-alive, #alive <= (:alive b), #rows <=
   (:rows b), the ids of the non-idle computations = (:active b), proved per primitive edit
-  (Part B) and copied for the 38 composite cascade lemmas by `bc-copy!` (the well-formed proof
-  re-checked with the bundle; overrides: resume and its callers, T14's local part).
+  (Part B) and restated for the 38 composite cascade lemmas from the generic step tree (Part C:
+  the bundle is the part `BC`; its own proofs: resume and its callers, T14's local part).
   P2 (Part E): `round-lt` (a round of a non-normalized world lowers `normalize-measure`: the first
   stray run's cancel acts, else the first stray computation is demoted (idle or removed); unique
   ids pick the stray row), `round-bound-round-lv` (no count grows: bundle `round-bound`), `normalize-loop-ok`."
   (:require [ansatz.core :as a]
-            [clojure.java.io :as io]
-            [clojure.string :as str]
-            [clojure.walk :as walk]
             [spindel.v2.state :refer :all]
             [spindel.v2.edits :refer :all]
             [spindel.v2.reach :refer :all]
             [spindel.v2.retain :refer :all]
             [spindel.v2.step :refer :all]
             [spindel.v2.rule :refer :all]
-            [spindel.v2.engine :refer :all]))
+            [spindel.v2.engine :refer :all]
+            [spindel.v2.pres.part :refer [mk-bundle prim!]]
+            [spindel.v2.pres.tree :as tree]))
 
 ;; ===========================================================================
 ;; Part A. The cascade bundle
@@ -350,7 +349,7 @@
       (omega))))
 
 ;; ===========================================================================
-;; Part C. The bundle under the primitive edits, and the copy of the composite lemmas
+;; Part C. The bundle under the primitive edits and through the composite lemmas
 ;; ===========================================================================
 
 (a/theorem cascade-bound-run-upd [bnd :- Bound, w :- World, x :- Nat, f :- (=> RunRow RunRow),
@@ -378,167 +377,38 @@
   (exact (cascade-bound-intro bnd _ (well-formed-comp-upd w x f hid hp (cascade-bound-well-formed bnd w h))
            (Eq.trans (cascade-bound-rest-comp-upd bnd w x f hid hac) (cascade-bound-rest-of bnd w h)))))
 
-(def ^:private casc-ns *ns*)
+;; The bundle as a part (spindel.v2.pres.part). Its cell for a primitive edit is the well-formed lemma and
+;; a cascade-bound-rest proof (`prim!`): a form over the lemma's binders, its premises `h0 ... hn` and `R` =
+;; cascade-bound-rest of the input world; nil = the edit leaves cascade-bound-rest definitionally unchanged.
+;; The composite lemmas are restated from the generic step tree (spindel.v2.pres.tree, `restate!`), each
+;; where it is first used; the lemmas that revive or cancel a run have proofs written here (:over).
 
-(defn- ns-source-forms [ns-sym]
-  (let [path (str (-> (name ns-sym) (str/replace "." "/") (str/replace "-" "_")) ".clj")]
-    (binding [*ns* (the-ns ns-sym)]
-      (with-open [r (java.io.PushbackReader. (io/reader (io/resource path)))]
-        (loop [acc []]
-          (let [f (read {:eof ::eof} r)]
-            (if (= f ::eof) acc (recur (conj acc f)))))))))
+(def BC (mk-bundle 'cascade-bound '[bnd :- Bound] "cascade-bound-"
+                   ;; the row-function lemmas of the bundle take one more argument than their well-formed versions
+                   {'well-formed-comp-upd ['(fn [c :- CompRow] (Eq.refl (comp-active c))) 5]
+                    'well-formed-run-upd ['(fn [r :- RunRow] (Eq.refl (run-alive r))) 4]
+                    'well-formed-act-upd ['(fn [c :- ActRow] (Eq.refl (:run c))) 4]}))
+(swap! (:renames BC) assoc 'well-formed-run-upd 'cascade-bound-run-upd 'well-formed-act-upd 'cascade-bound-act-upd
+       'well-formed-comp-upd 'cascade-bound-comp-upd 'well-formed-parts 'cascade-bound-parts)
 
-(defn- theorem-form? [f] (and (seq? f) (contains? #{'a/theorem 'ansatz.core/theorem} (first f))))
+;; edits that touch neither runs, activations nor computations (rfl frame)
+(doseq [o '[well-formed-scope-upd well-formed-source-upd well-formed-task-upd well-formed-resource-upd
+            well-formed-cleanup-del well-formed-cleanup-ins well-formed-edge-upd well-formed-scope-del]]
+  (prim! BC o nil))
+;; runs, activations, computations
+(doseq [[o rest-f] '[[well-formed-run-del (cascade-bound-rest-run-del bnd w x R)]
+                     [well-formed-remove-edge (Eq.trans (cascade-bound-rest-remove-edge bnd w x) R)]
+                     [well-formed-drop-cred-edges (Eq.trans (cascade-bound-rest-drop-cred bnd w a) R)]
+                     [well-formed-drop-act (cascade-bound-rest-drop-act bnd w a R)]
+                     [well-formed-drop-edges (Eq.trans (cascade-bound-rest-drop-edges bnd w p) R)]]]
+  (prim! BC o rest-f))
 
-(defn- expand-top [ns-sym f]
-  (cond
-    (and (seq? f) (= 'do (first f))) (mapcat #(expand-top ns-sym %) (rest f))
-    (and (seq? f) (symbol? (first f)) (not (theorem-form? f)))
-    (let [v (binding [*ns* (the-ns ns-sym)] (resolve (first f)))]
-      (if (and (var? v) (:macro (meta v)) (= (the-ns ns-sym) (:ns (meta v))))
-        (expand-top ns-sym (binding [*ns* (the-ns ns-sym)] (macroexpand-1 f)))
-        [f]))
-    :else [f]))
-
-(def source-nss '[spindel.v2.edits spindel.v2.step spindel.v2.rule])
-
-(def ^:private source-theorems
-  (delay (vec (for [nsym source-nss, f (ns-source-forms nsym), g (expand-top nsym f) :when (theorem-form? g)]
-                [(second g) g]))))
-
-(defn- theorem-source [nm]
-  (or (some (fn [[n g]] (when (= n nm) g)) @source-theorems)
-      (throw (ex-info (str "no source for theorem " nm) {:name nm}))))
-
-(defn- binder-names [binders] (vec (take-nth 3 binders)))
-(defn- inv-premise? [p] (and (seq? p) (= '= (first p)) (seq? (second p)) (= 'well-formed (first (second p)))))
-
-(def ^:private renames "well-formed lemma -> its bundle version" (atom {}))
-(def bc-copied "the theorems checked by bc-copy!, in order" (atom []))
-
-;; REPL iteration only: skip a generated theorem whose name is already in the env
-(defonce ^:dynamic *dev-skip-declared* false)
-
-(defn- declared? [s] (some? (.lookup ^ansatz.kernel.Env @a/ansatz-env (ansatz.kernel.Name/fromString (str s)))))
-
-(defn- eval-theorem! [form]
-  (try (when-not (and *dev-skip-declared* (declared? (second form))) (binding [*ns* casc-ns] (eval form)))
-       (catch Throwable t
-         (throw (ex-info (str "casc: theorem " (second form) " failed: " (ex-message t)) {:form form} t)))))
-
-;; a primitive: the well-formed lemma plus a cascade-bound-rest proof; `rest` is a form over the binder
-;; names, the premise names h0..hn and R = cascade-bound-rest of the input world; nil = rfl frame
-(defn- prim-form [orig bcn rest-f]
-  (let [[_ _ binders stmt] (theorem-source orig)
-        prems (butlast (rest stmt))
-        concl (last stmt)
-        hs (vec (map-indexed (fn [i _] (symbol (str "h" i))) prems))
-        i (first (keep-indexed (fn [i p] (when (inv-premise? p) i)) prems))
-        w (second (second (nth prems i)))
-        w2 (second (second concl))
-        hi (nth hs i)
-        args (concat (binder-names binders) (assoc hs i (list 'cascade-bound-well-formed 'bnd w hi)))
-        R (list 'cascade-bound-rest-of 'bnd w hi)
-        rest-term (if rest-f (walk/postwalk-replace {'R R} rest-f) (list 'Eq.trans 'e-frame R))
-        sub (fn [x] (walk/postwalk (fn [y] (if (and (seq? y) (= 'well-formed (first y))) (list 'cascade-bound 'bnd (second y)) y)) x))]
-    (concat
-     (list 'a/theorem bcn (into '[bnd :- Bound] binders) (sub stmt) (cons 'intros hs))
-     (when-not rest-f [(list 'have 'e-frame (list '= (list 'cascade-bound-rest 'bnd w2) (list 'cascade-bound-rest 'bnd w))) '(rfl)])
-     [(list 'exact (list 'cascade-bound-intro 'bnd w2 (cons orig args) rest-term))])))
-
-(defn- bc-prim! [orig bcn rest]
-  (eval-theorem! (apply list (prim-form orig bcn rest)))
-  (swap! renames assoc orig bcn))
-
-(defmacro ^:private defbc-prims [& specs]
-  `(do ~@(for [[orig bcn rest] (partition 3 specs)] `(bc-prim! '~orig '~bcn '~rest))))
-
-(swap! renames assoc 'well-formed-run-upd 'cascade-bound-run-upd 'well-formed-act-upd 'cascade-bound-act-upd 'well-formed-comp-upd 'cascade-bound-comp-upd
-       'well-formed-parts 'cascade-bound-parts)
-
-(defbc-prims
-  ;; edits that touch neither runs, activations nor computations (rfl frame)
-  well-formed-scope-upd cascade-bound-scope-upd nil
-  well-formed-source-upd cascade-bound-source-upd nil
-  well-formed-task-upd cascade-bound-task-upd nil
-  well-formed-resource-upd cascade-bound-resource-upd nil
-  well-formed-cleanup-del cascade-bound-cleanup-del nil
-  well-formed-cleanup-ins cascade-bound-cleanup-ins nil
-  well-formed-edge-upd cascade-bound-edge-upd nil
-  well-formed-scope-del cascade-bound-scope-del nil
-  ;; runs, activations, computations
-  well-formed-run-del cascade-bound-run-del (cascade-bound-rest-run-del bnd w x R)
-  well-formed-remove-edge cascade-bound-remove-edge (Eq.trans (cascade-bound-rest-remove-edge bnd w x) R)
-  well-formed-drop-cred-edges cascade-bound-drop-cred-edges (Eq.trans (cascade-bound-rest-drop-cred bnd w a) R)
-  well-formed-drop-act cascade-bound-drop-act (cascade-bound-rest-drop-act bnd w a R)
-  well-formed-drop-edges cascade-bound-drop-edges (Eq.trans (cascade-bound-rest-drop-edges bnd w p) R))
-
-(defn- statement-mentions-inv? [form]
-  (let [[_ _ binders stmt] form] (boolean (some #{'well-formed} (flatten (list (seq binders) stmt))))))
-
-(defn- bc-name [sym]
-  (let [s (name sym)]
-    (symbol (if (str/includes? s "well-formed") (str/replace-first s "well-formed" "cascade-bound")
-                  (str s "-cascade-bound")))))
-
-;; the row-function lemmas of the bundle take one more argument than their well-formed versions
-(def ^:private extra-args
-  {'well-formed-comp-upd ['(fn [c :- CompRow] (Eq.refl (comp-active c))) 5]
-   'well-formed-run-upd ['(fn [r :- RunRow] (Eq.refl (run-alive r))) 4]
-   'well-formed-act-upd ['(fn [c :- ActRow] (Eq.refl (:run c))) 4]})
-
-(defn- bc-subst [x rn]
-  (cond
-    (and (seq? x) (= 'well-formed (first x))) (list 'cascade-bound 'bnd (bc-subst (second x) rn))
-    (and (seq? x) (symbol? (first x)) (contains? rn (first x)))
-    (let [h (first x)
-          args (map #(bc-subst % rn) (rest x))
-          args (if-let [[e k] (extra-args h)]
-                 (do (assert (>= (count args) k) (str h " applied to too few arguments: " (pr-str x)))
-                     (concat (take k args) [e] (drop k args)))
-                 args)]
-      (apply list (rn h) 'bnd args))
-    (seq? x) (apply list (map #(bc-subst % rn) x))
-    (vector? x) (mapv #(bc-subst % rn) x)
-    (symbol? x) (cond (contains? extra-args x) (throw (ex-info (str x " used as a value") {}))
-                      (contains? rn x) (list (rn x) 'bnd)
-                      :else x)
-    :else x))
-
-(defn- bc-form [form bcn rn]
-  (let [[head _ binders stmt & proof] form]
-    (apply list head bcn (into '[bnd :- Bound] (bc-subst binders rn)) (bc-subst stmt rn)
-           (map #(bc-subst % rn) proof))))
-
-(def ^:private bc-overrides
-  "Bundle proofs written by hand, keyed by the well-formed lemma they replace" (atom {}))
-
-(defmacro ^:private defbc-override [orig deps form]
-  `(swap! bc-overrides assoc '~orig {:deps '~deps :form '~form}))
-
-(defn- bc-closure [root]
-  (let [thms @source-theorems
-        S (set (keep (fn [[n g]] (when (statement-mentions-inv? g) n)) thms))
-        deps (fn [n]
-               (cond (contains? @renames n) []
-                     (contains? @bc-overrides n) (:deps (get @bc-overrides n))
-                     :else (let [[_ _ _ _ & proof] (theorem-source n)]
-                             (filter S (filter symbol? (flatten proof))))))]
-    (loop [todo [root] seen #{}]
-      (if-let [n (first todo)]
-        (if (seen n) (recur (rest todo) seen) (recur (concat (rest todo) (deps n)) (conj seen n)))
-        (filterv seen (map first thms))))))
-
-(defn bc-copy!
-  "Check the bundle version of every well-formed lemma `root` depends on, in load order."
-  [root]
-  (doseq [n (bc-closure root) :when (not (contains? @renames n))]
-    (let [form (if-let [o (get @bc-overrides n)]
-                 (:form o)
-                 (bc-form (theorem-source n) (bc-name n) @renames))]
-      (eval-theorem! form)
-      (swap! renames assoc n (second form))
-      (swap! bc-copied conj (second form)))))
+(tree/part! BC
+  :over '{well-formed-resume           cascade-bound-resume             ; a run with an activation is alive: nothing revives
+          well-formed-fill-slot        cascade-bound-fill-slot
+          well-formed-fire-dep         cascade-bound-fire-dep
+          well-formed-fire-wait-act    cascade-bound-fire-wait-act
+          well-formed-cancel-run-local cascade-bound-cancel-run-local}) ; the cancelled run is no longer alive
 
 ;; ---- resume: a run with an activation is alive, so resuming it revives nothing
 
@@ -616,48 +486,46 @@
     (have e (= (:act r) act-parked)) (exact (Nat.eq_of_beq_eq_true h))
     (simp only [run-alive run-wake wake-act h e])))
 
-(defbc-override well-formed-resume [well-formed-drop-act]
-  (a/theorem cascade-bound-resume [bnd :- Bound, w :- World, a :- ActRow]
-    (=> (= (act-run-ok (:runs w) a) true) (= (cascade-bound bnd w) true) (= (cascade-bound bnd (resume w a)) true))
-    (intros ha h)
-    (exact (cascade-bound-run-upd bnd _ (:run a) run-wake run-wake-run-id run-wake-alive (cascade-bound-drop-act bnd w (:id a) h)))))
+(a/theorem cascade-bound-resume [bnd :- Bound, w :- World, a :- ActRow]
+  (=> (= (act-run-ok (:runs w) a) true) (= (cascade-bound bnd w) true) (= (cascade-bound bnd (resume w a)) true))
+  (intros ha h)
+  (exact (cascade-bound-run-upd bnd _ (:run a) run-wake run-wake-run-id run-wake-alive (cascade-bound-drop-act bnd w (:id a) h))))
 
-(defbc-override well-formed-fill-slot [well-formed-resume]
-  (a/theorem cascade-bound-fill-slot [bnd :- Bound, w :- World, a :- ActRow, x :- Nat, v :- RunResult]
-    (=> (= (act-run-ok (:runs w) a) true) (= (cascade-bound bnd w) true) (= (cascade-bound bnd (fill-slot w a x v)) true))
-    (intros ha h)
-    (cases hm (act-ready (act-fill x v a)))
-    (simp only [fill-slot hm])
-    (exact (cascade-bound-act-upd bnd w (:id a) (act-fill x v) (act-fill-act-id x v) (fn [c :- ActRow] (Eq.refl (:run c))) h))
-    (simp only [fill-slot hm]) (exact (cascade-bound-resume bnd w a ha h))))
+(a/theorem cascade-bound-fill-slot [bnd :- Bound, w :- World, a :- ActRow, x :- Nat, v :- RunResult]
+  (=> (= (act-run-ok (:runs w) a) true) (= (cascade-bound bnd w) true) (= (cascade-bound bnd (fill-slot w a x v)) true))
+  (intros ha h)
+  (cases hm (act-ready (act-fill x v a)))
+  (simp only [fill-slot hm])
+  (exact (cascade-bound-act-upd bnd w (:id a) (act-fill x v) (act-fill-act-id x v) (fn [c :- ActRow] (Eq.refl (:run c))) h))
+  (simp only [fill-slot hm]) (exact (cascade-bound-resume bnd w a ha h)))
 
-(defbc-override well-formed-fire-dep [well-formed-invalidate well-formed-fill-slot well-formed-dep-consumed]
-  (a/theorem cascade-bound-fire-dep [bnd :- Bound, w :- World, e :- EdgeRow]
-    (=> (= (cascade-bound bnd w) true) (= (cascade-bound bnd (fire-dep w e)) true))
-    (intro h)
-    (cases ha (act-with-member (:id e) (:acts w))) (case' [some a]) (case' [none])
-    (simp only [fire-dep ha]) (exact (cascade-bound-invalidate bnd w e h))
-    (have hok := (acts-alive-mem w a (cascade-bound-acts-alive bnd w h) (act-with-member-mem (:id e) (:acts w) a ha)))
-    (cases hc (Bool.and (run-current-of w (:run a) (:creditor e)) (deb-avail w (:debtor e))))
-    (simp only [fire-dep ha hc]) (exact (cascade-bound-invalidate bnd w e h))
-    (simp only [fire-dep ha hc deliver-dep])
-    (have hok2 (= (act-run-ok (:runs (dep-consumed w e)) a) true))
-    (exact (Eq.trans (congrArg (fn [rs :- (List RunRow)] (act-run-ok rs a)) (dep-consumed-runs w e)) hok))
-    (exact (cascade-bound-fill-slot bnd _ a _ _ hok2 (cascade-bound-dep-consumed bnd w e h)))))
+(tree/restate! BC '[well-formed-invalidate well-formed-dep-consumed])
+(a/theorem cascade-bound-fire-dep [bnd :- Bound, w :- World, e :- EdgeRow]
+  (=> (= (cascade-bound bnd w) true) (= (cascade-bound bnd (fire-dep w e)) true))
+  (intro h)
+  (cases ha (act-with-member (:id e) (:acts w))) (case' [some a]) (case' [none])
+  (simp only [fire-dep ha]) (exact (cascade-bound-invalidate bnd w e h))
+  (have hok := (acts-alive-mem w a (cascade-bound-acts-alive bnd w h) (act-with-member-mem (:id e) (:acts w) a ha)))
+  (cases hc (Bool.and (run-current-of w (:run a) (:creditor e)) (deb-avail w (:debtor e))))
+  (simp only [fire-dep ha hc]) (exact (cascade-bound-invalidate bnd w e h))
+  (simp only [fire-dep ha hc deliver-dep])
+  (have hok2 (= (act-run-ok (:runs (dep-consumed w e)) a) true))
+  (exact (Eq.trans (congrArg (fn [rs :- (List RunRow)] (act-run-ok rs a)) (dep-consumed-runs w e)) hok))
+  (exact (cascade-bound-fill-slot bnd _ a _ _ hok2 (cascade-bound-dep-consumed bnd w e h))))
 
-(defbc-override well-formed-fire-wait-act [well-formed-edge-set-phase well-formed-fill-slot]
-  (a/theorem cascade-bound-fire-wait-act [bnd :- Bound, res :- RunResult, w :- World, e :- EdgeRow]
-    (=> (= (cascade-bound bnd w) true) (= (cascade-bound bnd (fire-wait-act res w e)) true))
-    (intro h)
-    (cases ha (act-find w (:creditor e))) (case' [some a]) (case' [none])
-    (simp only [fire-wait-act ha]) (exact (cascade-bound-edge-set-phase bnd w (:id e) ph-fired h))
-    (have hok := (acts-alive-mem w a (cascade-bound-acts-alive bnd w h) (tbl-find-mem ActRow act-id (:creditor e) a (:acts w) ha)))
-    (cases hc (run-current w (:run a)))
-    (simp only [fire-wait-act ha hc]) (exact (cascade-bound-edge-set-phase bnd w (:id e) ph-fired h))
-    (have hok2 (= (act-run-ok (:runs (edge-upd w (:id e) (edge-set-phase ph-fired))) a) true)) (exact hok)
-    (simp only [fire-wait-act ha hc]) (exact (cascade-bound-fill-slot bnd _ a _ _ hok2 (cascade-bound-edge-set-phase bnd w (:id e) ph-fired h)))))
+(tree/restate! BC '[well-formed-edge-set-phase])
+(a/theorem cascade-bound-fire-wait-act [bnd :- Bound, res :- RunResult, w :- World, e :- EdgeRow]
+  (=> (= (cascade-bound bnd w) true) (= (cascade-bound bnd (fire-wait-act res w e)) true))
+  (intro h)
+  (cases ha (act-find w (:creditor e))) (case' [some a]) (case' [none])
+  (simp only [fire-wait-act ha]) (exact (cascade-bound-edge-set-phase bnd w (:id e) ph-fired h))
+  (have hok := (acts-alive-mem w a (cascade-bound-acts-alive bnd w h) (tbl-find-mem ActRow act-id (:creditor e) a (:acts w) ha)))
+  (cases hc (run-current w (:run a)))
+  (simp only [fire-wait-act ha hc]) (exact (cascade-bound-edge-set-phase bnd w (:id e) ph-fired h))
+  (have hok2 (= (act-run-ok (:runs (edge-upd w (:id e) (edge-set-phase ph-fired))) a) true)) (exact hok)
+  (simp only [fire-wait-act ha hc]) (exact (cascade-bound-fill-slot bnd _ a _ _ hok2 (cascade-bound-edge-set-phase bnd w (:id e) ph-fired h))))
 
-(bc-copy! 'well-formed-fire-edge)
+(tree/restate! BC '[well-formed-fire-edge])
 
 ;; ---- T14's local part: the run is done and its activations are gone
 
@@ -825,9 +693,9 @@
   (simp only [alive-cnt run-upd set-runs])
   (exact (count-upd-false-lt RunRow run-id x run-cancel-row run-alive run-cancel-row-alive r (:runs w) hf ha)))
 
-(bc-copy! 'well-formed-cancel-debtor)
-(bc-copy! 'well-formed-cleanup-set)
-(bc-copy! 'well-formed-cancel-res)
+(tree/restate! BC '[well-formed-cancel-debtor])
+(tree/restate! BC '[well-formed-cleanup-set])
+(tree/restate! BC '[well-formed-cancel-res])
 
 (a/theorem cascade-bound-cancel-tail [bnd :- Bound, w :- World, r :- RunRow, rep :- Bool]
   (=> (= (cascade-bound bnd (cancel-acts (run-upd w (:id r) run-cancel-row) (:id r))) true)
@@ -836,17 +704,16 @@
   (simp only [cancel-run-local])
   (exact (cascade-bound-cancel-debtor bnd rep _ r (cascade-bound-cleanup-set bnd _ (:id r) _ (cascade-bound-cancel-res bnd _ r h)))))
 
-(defbc-override well-formed-cancel-run-local [well-formed-cancel-debtor well-formed-cleanup-set well-formed-cancel-res]
-  (a/theorem cascade-bound-cancel-run-local [bnd :- Bound, w :- World, r :- RunRow, rep :- Bool]
-    (=> (= (cascade-bound bnd w) true) (= (cascade-bound bnd (cancel-run-local w r rep)) true))
-    (intro h)
-    (have p := (cascade-bound-rest-parts bnd w (cascade-bound-rest-of bnd w h)))
-    (have h1 := (cancel-acts-cascade-bound w (:id r) (cascade-bound-well-formed bnd w h) (And.left p)))
-    (exact (cascade-bound-cancel-tail bnd w r rep
-             (cascade-bound-weaken _ bnd _ h1 (Nat.le_trans (alive-cancel-le w (:id r)) (And.left (And.right p)))
-               (And.left (And.right (And.right p))) (And.right (And.right (And.right p))))))))
+(a/theorem cascade-bound-cancel-run-local [bnd :- Bound, w :- World, r :- RunRow, rep :- Bool]
+  (=> (= (cascade-bound bnd w) true) (= (cascade-bound bnd (cancel-run-local w r rep)) true))
+  (intro h)
+  (have p := (cascade-bound-rest-parts bnd w (cascade-bound-rest-of bnd w h)))
+  (have h1 := (cancel-acts-cascade-bound w (:id r) (cascade-bound-well-formed bnd w h) (And.left p)))
+  (exact (cascade-bound-cancel-tail bnd w r rep
+           (cascade-bound-weaken _ bnd _ h1 (Nat.le_trans (alive-cancel-le w (:id r)) (And.left (And.right p)))
+             (And.left (And.right (And.right p))) (And.right (And.right (And.right p)))))))
 
-(bc-copy! 'well-formed-run-cascade)
+(tree/restate! BC '[well-formed-run-cascade])
 
 ;; ===========================================================================
 ;; Part D. P4: the cascade empties its worklist within cascade-fuel
@@ -1356,12 +1223,12 @@
 (a/theorem round-bound-cascade-bound [a :- Nat, k :- Nat, w :- World] (=> (= (round-bound a k w) true) (= (cascade-bound (bound-of w) w) true))
   (intro h) (have p := (round-bound-parts a k w h)) (exact (cascade-bound-of-bnd w (And.left p) (And.left (And.right p)))))
 
-(bc-copy! 'well-formed-detach-source)
-(bc-copy! 'well-formed-detach-task)
-(bc-copy! 'well-formed-detach-comp)
+(tree/restate! BC '[well-formed-detach-source])
+(tree/restate! BC '[well-formed-detach-task])
+(tree/restate! BC '[well-formed-detach-comp])
 
-(bc-copy! 'well-formed-detach)
-(bc-copy! 'well-formed-end-basis)
+(tree/restate! BC '[well-formed-detach])
+(tree/restate! BC '[well-formed-end-basis])
 
 ;; ---- the round keeps the bundle (both counts never grow)
 

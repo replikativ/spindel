@@ -2213,6 +2213,8 @@ No tree change.
 
 ## 5y. Stage 4, last PR: the copier is deleted; the programme's totals
 
+(The two private copiers this section leaves, in `inv.rank-step` and `progress.casc`, went later: §5z.)
+
 **Result.** `pres.part` no longer contains the copier: `lcopy!`, `lcopy-try!`, `override!`,
 `patch!`, `closure`, `copy-one-form`, `source-of`, `subst-forms` and `app-of?` are deleted, and
 the bundle record loses its `:overrides` and `:patches` maps (264 → 216 lines). What stays is what
@@ -2354,8 +2356,8 @@ fingerprint before and after (`dev/naming/fingerprint.clj`, `compare.clj`).
   says how to rerun it.
 - One copy rule. Every base lemma is `well-formed-<x>`; a part's lemma is that name with the
   part's name in place of `well-formed` (`pres.part/copy-name`). A bundle's prefix is its
-  predicate's name. The private copiers of `inv.rank-step` and `progress.casc` follow the same
-  rule with `i12-ranks` and `cascade-bound`.
+  predicate's name. `inv.rank-step` (`i12-ranks`) and `progress.casc` (`cascade-bound`) had private
+  copiers with the same rule; both are parts on the tree now (§5z).
 - The substitution is by whole symbol and reads scope: a hypothesis or binder that has the
   short name a part used to have, and an Item constructor in a pattern that shares its name with a
   definition, are left alone
@@ -2367,3 +2369,25 @@ fingerprint before and after (`dev/naming/fingerprint.clj`, `compare.clj`).
 - Not renamed: internal helper families whose names are abbreviations of a proof step (`hk-`,
   `fm-`, `qk-`, `wdom-`, `oc-`, `z59-`, `sl-`, `s9-`). They keep their suffix words and take only
   the part's name where it was a prefix.
+
+## 5z. The last two copiers: `i12-ranks` and `cascade-bound` as parts
+
+`inv.rank-step` and `progress.casc` each had a private copy of the old copier (read the base
+proof's source, substitute the bundle for `well-formed`, re-check: `rank-copy!`, `bc-copy!`, about
+150 lines each, with their own `prim-form`, closure and override table). Both bundles have the
+shape of a part, `well-formed w && rest w`, so both are parts now:
+
+- `RK` (`inv.rank-step`): `i12-ranks`, rest `ranks-ok`. The predicate and its projection had names
+  before there were parts, so the bundle gives them (`:names`, the one addition to `mk-bundle`'s
+  record) instead of `i12-ranks-rest` / `-rest-of`. Extra argument at `comp-upd` (the row function
+  keeps the rank). :over: the six transitions that insert an edge or raise a rank.
+- `BC` (`progress.casc`): `cascade-bound bnd`, a parameterised part. Extra arguments at `run-upd`,
+  `act-upd`, `comp-upd`. :over: `resume` and its three callers, T14's local part.
+
+Neither takes facts from the path (no :ctx, :own, :pass). `progress.casc` now loads after
+`pres.tree`; `pres.part` required it without using it.
+
+Numbers: `rank_step.clj` 868 → 713 lines, `casc.clj` 1831 → 1698. The constants: every lemma
+keeps its name and statement, except `step-rank`, now `step-i12-ranks` like every part's step; 49
+branch lemmas `i12-ranks-transition-<item>` are new (the tree cuts `transition` by item). Load:
+`inv.rank-step` 7 s → 2 s, `progress.casc` 5 s → 5 s (of about 315 s for the model).

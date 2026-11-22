@@ -1,7 +1,7 @@
 (ns spindel.v2.inv.rank-step-test
   "Loading spindel.v2.inv.rank-step kernel-checks P5: the bundle i12-ranks (well-formed and I12
-  ranks-ok) is preserved by every step (`step-rank`), including every copied composite lemma
-  (`rank-copied`). ranks-ok itself stays a runtime tripwire in engine-test and the oracle."
+  ranks-ok) is preserved by every step (`step-i12-ranks`), including every composite lemma restated
+  from the step tree (the part `RK`). ranks-ok itself stays a runtime tripwire in engine-test and the oracle."
   (:require [clojure.test :refer [deftest is]]
             [ansatz.core :as a]
             [spindel.v2.inv.rank-step :as rs]))
@@ -15,14 +15,14 @@
     ranks-comp-ins-fresh nodup-app-disjoint comp-not-source i12-ranks-comp-upd i12-ranks-drop-act i12-ranks-insert-edge-fresh
     i12-ranks-insert-edge-checked await-step-ranks await-wire-ranks
     i12-ranks-track-raw i12-ranks-react-add i12-ranks-host-await-raw i12-ranks-take-park i12-ranks-t8-observe-any-kind i12-ranks-await-raw i12-ranks-t6-await
-    step-rank i12-ranks-empty step-ranks])
+    step-i12-ranks i12-ranks-empty step-ranks])
 
 (defn- present? [t] (some? (.lookup ^ansatz.kernel.Env @a/ansatz-env (ansatz.kernel.Name/fromString (str t)))))
 
 (deftest theorems-kernel-checked
   (doseq [t theorems] (is (present? t) (str t)))
-  (is (< 100 (count @rs/rank-copied)))
-  (doseq [t @rs/rank-copied] (is (present? t) (str t))))
+  (is (< 100 (count @(:copied rs/RK))))
+  (doseq [t @(:copied rs/RK)] (is (present? t) (str t))))
 
 (deftest inv-rank-runs
   (is (true? (rs/i12-ranks spindel.v2.state/empty-world))))

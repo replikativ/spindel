@@ -481,7 +481,7 @@ premises either. `layer2.mvcc`'s refinement is to its own ghost value-copy table
 | P2 | normalization terminates and ends normalized | proved | `normalized-ok`, `rule-r-normalized-ok` (`progress.casc`) |
 | P3 | Rule R's filter is safe | proved | `filter-safe-of-refs` (`inv.copier`), `step-rule-r-safe` (`inv.base`) |
 | P4 | cascade completion | proved | `cascade-done-ok` (`progress.casc`) |
-| P5 | I12 ranks kept | proved | `step-rank`, `step-ranks` (`inv.rank-step`) |
+| P5 | I12 ranks kept | proved | `step-i12-ranks`, `step-ranks` (`inv.rank-step`) |
 | P6 | §3.4 validation walk within fuel | proved | `valid-done-ok` (`progress.react`) |
 | P7 | settle worklist within fuel | proved | `settle-done-ok` (`progress.l5`) |
 | P8 | reactivation worklist within fuel | proved | `react-done-ok` (`progress.react`) |

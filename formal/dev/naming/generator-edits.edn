@@ -35,7 +35,7 @@
  {:file "src/spindel/v2/pres/tree.clj" :line 440
   :old ":else s))]" :new "" :why "pres-name: case removed"}
 
- ;; ---- the two private copiers
+ ;; ---- the two private copiers (both replaced by parts on the step tree later: notes/proof-layout.md §5z)
  {:file "src/spindel/v2/inv/rank_step.clj" :line 644
   :old "(symbol (cond (str/ends-with? s \"-inv-sample\") (str (subs s 0 (- (count s) 11)) \"-rk\")"
   :new "(symbol (if (str/includes? s \"well-formed\") (str/replace-first s \"well-formed\" \"i12-ranks\")"

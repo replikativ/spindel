@@ -32,7 +32,6 @@
             [spindel.v2.rule :refer :all]
             [spindel.v2.engine :refer :all]
             [spindel.v2.inv.rank :refer :all]
-            [spindel.v2.progress.casc :refer :all]
             [spindel.v2.inv :refer :all]
             [spindel.v2.pres.frames :as frames]))
 
@@ -81,14 +80,16 @@
          (throw (ex-info (str "lit: theorem " (second form) " failed: " (ex-message t)) {:form form} t)))))
 
 ;; a bundle: :pred, :params [sym type ...], :prefix, :extra-args {lemma [form position]},
-;; :renames (base lemma -> the part's lemma) and :copied (the generated names) atoms
+;; :renames (base lemma -> the part's lemma) and :copied (the generated names) atoms.
+;; Its lemmas are <pred>-rest, <pred>-rest-of, <pred>-intro, <pred>-well-formed; a bundle over a
+;; predicate that has a name already gives it under :names {suffix name} (i12-ranks: ranks-ok)
 (defn mk-bundle [pred params prefix extra]
   {:pred pred :params params :prefix prefix :extra-args extra
    :renames (atom {}) :copied (atom [])})
 
 (defn- pargs [B] (binder-names (:params B)))
 (defn- papp [B head & args] (apply list head (concat (pargs B) args)))
-(defn- bsym [B suffix] (symbol (str (name (:pred B)) suffix)))
+(defn bsym [B suffix] (or (get (:names B) suffix) (symbol (str (name (:pred B)) suffix))))
 
 (defn- pred-subst [B x]
   (walk/postwalk (fn [y] (if (and (seq? y) (= 'well-formed (first y))) (papp B (:pred B) (second y)) y)) x))
