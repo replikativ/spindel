@@ -822,3 +822,21 @@
 (deftest projection-roundtrip-running-clause
   (doseq [n ["63-w" "64-w" "65-w"]]
     (is (= [] (o/roundtrip (log n))) (str "sample " n))))
+
+;; Host forks with `:init-state` (spindel #PR, generator oracle/gen/samples-fork-init.clj), sample 66: a host fork
+;; whose initializer throws is refused before any allocation and logs nothing, so the ordinary allocation and the
+;; fork after it align with the family allocator; `:held` is a host fork of the root from inside a host item of the
+;; root (H1), committed in that item after the item's spawn. The initial world state is outside the model (the
+;; oracle skips `[:world-state]`), so the successful `[:fork-host c]` trace is unchanged.
+(deftest fork-init-sample
+  (let [r (log "66-root")
+        [i j] (keep-indexed (fn [i c] (when (= :fork-host (first (:item c))) i)) r)
+        spec {:root {:log r :kind :root}
+              :child {:log (log "66-child") :from :root :kind :fork-host :at i}
+              :held {:log (log "66-held") :from :root :kind :fork-host :at j}}
+        fam (o/replay-family spec)]
+    (is (= :spawn-top (first (:item (nth r (dec j))))) "the held fork follows its item's spawn")
+    (doseq [[k {:keys [res]}] fam]
+      (is (= [(count (:log (spec k))) 0 0] ((juxt :checked :n-divergences :resyncs) res)) (str "sample 66 " k)))
+    (doseq [n ["66-root" "66-child" "66-held"]]
+      (is (= [] (o/roundtrip (log n))) (str "sample " n)))))
