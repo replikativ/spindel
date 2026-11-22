@@ -411,3 +411,26 @@
        (is (wait-until #(some (fn [[id]] (= cid id)) @seen)))
        (is (= [[cid false]] (filterv #(= cid (first %)) @seen))
            "the child ran after a's gate was released, not under it")))))
+
+(deftest a-savepoint-basis-never-runs
+  ;; the basis is published while a sibling task is still runnable in its
+  ;; copy, and its stale sweep generation has maintenance enter it at once
+  (checked
+   (let [w (vworld {:executor caller-runs})
+         pubs (atom [])
+         seen (atom [])]
+     (v2/install-handlers! w {:s (fn [p] (swap! pubs conj p))})
+     (stale-generation! w)
+     (with-synchronous-maintenance
+       (v2/host-call! w (fn []
+                          (binding [v2/*world* w]
+                            (task (v2/savepoint :s nil) :after)
+                            (task (swap! seen conj (recorder)))))))
+     (let [p (first @pubs)
+           bid (v2/world-id (:basis p))]
+       (is (member? w bid) "the basis is registered")
+       (is (= [] (filterv #(= bid (first %)) @seen)) "no work runs in the basis")
+       (testing "an instance of it runs the inherited work once activated"
+         (let [i (doto (v2/instantiate p) (v2/activate! :go))]
+           (is (wait-until #(some (fn [[id]] (= (v2/world-id i) id)) @seen)))))
+       (v2/abandon! p)))))

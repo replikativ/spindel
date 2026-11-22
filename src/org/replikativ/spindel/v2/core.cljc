@@ -5653,7 +5653,11 @@
                          ;; the basis is a fork of this commit that is never run, only forked;
                          ;; its run continues with the frame live at the effect
                                  (s! (rv w r) rw/R-BIND (thread-frame))
-                                 (let [basis (doto (fork-world* w) publish-world!)
+                                 (let [basis (fork-world* w)
+                                       ;; S1: never run. Unborn (E4) before it is published, so
+                                       ;; neither maintenance nor any handoff runs its copied work
+                                       _ (s! basis rw/W-UNBORN true)
+                                       _ (publish-world! basis)
                                        pub (publication w (id-of z) site payload basis
                                                         (boolean (g (rv w (g (rv w r) rw/R-OF)) rw/K-LOCAL)))]
                            ;; the parent's own copy of the run keeps no slice (it is parked)
