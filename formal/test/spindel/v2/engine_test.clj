@@ -38,7 +38,11 @@
     well-formed-t-open-scope t-open-scope-refuse t-open-scope-l4 well-formed-t-close-scope t-close-scope-refuse
     well-formed-t-detach t-detach-refuse well-formed-zero-handles well-formed-revoke-roots well-formed-t21-release-world
     t21-release-world-refuse well-formed-raise-loop well-formed-raise-for well-formed-react-add blocked-sound blocked-complete
-    well-formed-create-source-in-run well-formed-t1-create-nonstream t1-create-nonstream-refuse comp-demand-row-id])
+    well-formed-create-source-in-run well-formed-t1-create-nonstream t1-create-nonstream-refuse comp-demand-row-id
+    ;; §2 re-entrant sites: the cont T6 writes, and the rule for both definitions
+    await-cont-restart-with-finalizer await-cont-restart-with-resource await-cont-restart-unless-mode-one
+    await-cont-reentrant-needs-no-finalizer reentrant-cont-needs-no-finalizer
+    await-edge-cont edge-reawait-cont t6-await-reentrant-needs-no-finalizer])
 
 (deftest theorems-kernel-checked
   (doseq [t theorems]

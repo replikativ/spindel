@@ -225,6 +225,9 @@
 ;;
 ;; Part A fresh rows. B row constructors, validation. C T4, T5, T3. D T11 dispatch.
 ;; E settle, T12. F T6, T22, T8. G the step: the table and the pipeline above.
+;; The re-entry rule of §2 (an edge's cont is a k only if its run holds no finalizer entry and no
+;; resource) is `reentrant-cont-needs-no-finalizer`, next to `await-cont` in part F; T7's half is
+;; next to `track-cont` in step.clj.
 ;; README.md has the full legend ("Names") and the old names ("Old kernel names").
 
 ;; ===========================================================================
@@ -1418,6 +1421,47 @@
 (a/defn fin-region [fz :- Finalizer] Bool (Nat.beq (:f fz) 0))
 (a/defn await-cont [r :- RunRow, mode :- Nat, k :- Nat] Nat
   (if (Bool.and (Nat.beq mode am-one) (Bool.and (fins-empty (:finalizers r)) (nats-empty (:resources r)))) k cont-restart))
+;; The rule as theorems (true also when k itself is the restart code): a mode other than `one`, a
+;; finalizer entry or a resource gives `cont-restart`. `reentrant-cont-needs-no-finalizer` states
+;; the rule for both definitions (`track-cont`, step.clj): a cont other than restart needs a run
+;; with no finalizer entry and no resource.
+(a/theorem await-cont-restart-with-finalizer [r :- RunRow, mode :- Nat, k :- Nat]
+  (=> (= (fins-empty (:finalizers r)) false) (= (await-cont r mode k) cont-restart))
+  (intro h)
+  (simp only [await-cont h Bool.false_and Bool.and_false]))
+
+(a/theorem await-cont-restart-with-resource [r :- RunRow, mode :- Nat, k :- Nat]
+  (=> (= (nats-empty (:resources r)) false) (= (await-cont r mode k) cont-restart))
+  (intro h)
+  (simp only [await-cont h Bool.and_false]))
+
+(a/theorem await-cont-restart-unless-mode-one [r :- RunRow, mode :- Nat, k :- Nat]
+  (=> (= (Nat.beq mode am-one) false) (= (await-cont r mode k) cont-restart))
+  (intro h)
+  (simp only [await-cont h Bool.false_and]))
+
+(a/theorem await-cont-reentrant-needs-no-finalizer [r :- RunRow, mode :- Nat, k :- Nat]
+  (=> (Not (= (await-cont r mode k) cont-restart))
+      (And (= (Nat.beq mode am-one) true)
+           (And (= (fins-empty (:finalizers r)) true) (= (nats-empty (:resources r)) true))))
+  (intro hne)
+  (cases hm (Nat.beq mode am-one))
+  (case [false] (exact (absurd (await-cont-restart-unless-mode-one r mode k hm) hne)))
+  (case [true]
+    (cases hf (fins-empty (:finalizers r)))
+    (case [false] (exact (absurd (await-cont-restart-with-finalizer r mode k hf) hne)))
+    (case [true]
+      (cases hz (nats-empty (:resources r)))
+      (case [false] (exact (absurd (await-cont-restart-with-resource r mode k hz) hne)))
+      (case [true] (exact (And.intro (rfl) (And.intro (rfl) (rfl))))))))
+
+(a/theorem reentrant-cont-needs-no-finalizer [r :- RunRow, mode :- Nat, k :- Nat]
+  (And (=> (Not (= (track-cont r k) cont-restart))
+           (And (= (fins-empty (:finalizers r)) true) (= (nats-empty (:resources r)) true)))
+       (=> (Not (= (await-cont r mode k) cont-restart))
+           (And (= (Nat.beq mode am-one) true)
+                (And (= (fins-empty (:finalizers r)) true) (= (nats-empty (:resources r)) true)))))
+  (exact (And.intro (track-cont-reentrant-needs-no-finalizer r k) (await-cont-reentrant-needs-no-finalizer r mode k))))
 (a/defn as-dep [w :- World, r :- RunRow, d :- Nat] Bool (Bool.and (in-comp w r) (Bool.not (resource-has w d))))
 ;; a dep member on a signal or cell records the source's state as its baseline at the site (engine
 ;; `await-group!`: E-BASE := X-VALUE), whether or not the fast path then fills it (Z#61: after the
@@ -1431,6 +1475,36 @@
 (a/defn edge-reawait [c :- Nat, e :- EdgeRow] EdgeRow
   (EdgeRow.mk (:id e) (:kind e) (:creditor e) (:debtor e) c (:at e) ph-armed (:marked e) (:has-seen e) (:seen e)
               (:has-base e) (:base-value e) (:base-version e)))
+
+;; T6: the cont of the edges it writes. The wiring (`await-step`) writes, per distinct debtor, either
+;; the row `await-edge` (inserted with a fresh id; a wait edge always restarts) or the site's
+;; existing dep edge updated by `edge-reawait (await-cont r mode k)`, r being the run as it is in
+;; the input world. `t6-await-reentrant-needs-no-finalizer` is stated about these two rows, not
+;; about the resulting world: after the wiring the transition fills, parks and finalizes, and
+;; Rule R follows. That the rows are in the world after the wiring is `current-members-prefix-fields`
+;; (inv/members/await_wire.clj), under the invariant. T22's host-wait edge (`host-wait-edge`) is
+;; `cont-restart` by definition.
+(a/theorem await-edge-cont [w :- World, r :- RunRow, a :- Nat, mode :- Nat, k :- Nat, d :- Nat]
+  (= (:cont (await-edge w r a mode k d)) (if (as-dep w r d) (await-cont r mode k) cont-restart))
+  (cases hd (as-dep w r d))
+  (all_goals (simp only [await-edge hd])))
+
+(a/theorem edge-reawait-cont [c :- Nat, e :- EdgeRow]
+  (= (:cont (edge-reawait c e)) c) (rfl))
+
+(a/theorem t6-await-reentrant-needs-no-finalizer [w :- World, r :- RunRow, a :- Nat, mode :- Nat, k :- Nat, d :- Nat, e0 :- EdgeRow, e :- EdgeRow]
+  (=> (Or (= e (await-edge w r a mode k d)) (= e (edge-reawait (await-cont r mode k) e0)))
+      (Not (= (:cont e) cont-restart))
+      (And (= (Nat.beq mode am-one) true)
+           (And (= (fins-empty (:finalizers r)) true) (= (nats-empty (:resources r)) true))))
+  (intros hw hne)
+  (apply (await-cont-reentrant-needs-no-finalizer r mode k))
+  (intro hc)
+  (apply hne)
+  (cases hw)
+  (case [inl h] (rw [h]) (rw [await-edge-cont]) (rw [hc])
+    (cases hd (as-dep w r d)) (all_goals (simp only [hd])))
+  (case [inr h] (rw [h]) (exact hc)))
 
 (a/structure DE [] (deb Nat) (edge Nat))
 (a/structure AwAcc [] (world World) (pairs (List DE)) (ok Bool))

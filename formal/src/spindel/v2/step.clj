@@ -840,6 +840,28 @@
 ;; (a track reads one source, like a mode-`one` await)
 (a/defn track-cont [r :- RunRow, k :- Nat] Nat
   (if (Bool.and (fins-empty (:finalizers r)) (nats-empty (:resources r))) k cont-restart))
+;; The rule as theorems (they are true also when k itself is the restart code): a run that holds a
+;; finalizer entry, or a resource, gets `cont-restart`; so a cont other than restart needs neither.
+(a/theorem track-cont-restart-with-finalizer [r :- RunRow, k :- Nat]
+  (=> (= (fins-empty (:finalizers r)) false) (= (track-cont r k) cont-restart))
+  (intro h)
+  (simp only [track-cont h Bool.false_and]))
+
+(a/theorem track-cont-restart-with-resource [r :- RunRow, k :- Nat]
+  (=> (= (nats-empty (:resources r)) false) (= (track-cont r k) cont-restart))
+  (intro h)
+  (simp only [track-cont h Bool.and_false]))
+
+(a/theorem track-cont-reentrant-needs-no-finalizer [r :- RunRow, k :- Nat]
+  (=> (Not (= (track-cont r k) cont-restart))
+      (And (= (fins-empty (:finalizers r)) true) (= (nats-empty (:resources r)) true)))
+  (intro hne)
+  (cases hf (fins-empty (:finalizers r)))
+  (case [false] (exact (absurd (track-cont-restart-with-finalizer r k hf) hne)))
+  (case [true]
+    (cases hz (nats-empty (:resources r)))
+    (case [false] (exact (absurd (track-cont-restart-with-resource r k hz) hne)))
+    (case [true] (exact (And.intro (rfl) (rfl))))))
 ;; §4.4: the baseline is the current state; a first track's delivery is <nil, value, nil>, an
 ;; adopted site's is <adopted baseline, value>; either way the baseline then is the current state
 (a/defn track-edge [r :- RunRow, x :- Nat, s :- SourceRow, k :- Nat] EdgeRow
@@ -963,6 +985,125 @@
   (=> (= (run-tok-ok w st) false) (= (:world (t7-track w st x k fresh)) w))
   (intro hf)
   (simp only [t7-track (run-tok-none w st hf) refuse]))
+
+;; ---- T7: the cont of the edge it writes (§2 re-entrant sites, as a postcondition of the raw
+;; transition). `track-raw` writes one edge: a fresh one with the next id, or the site's existing
+;; edge re-read in place (`track-edge-id`). If that edge is in the resulting world (a read of a
+;; closed source consumes it in the same commit, Z#48), its cont is `track-cont r k`, r being the
+;; run as it is in the input world. `t7-track-reentrant-needs-no-finalizer` is the statement for an
+;; accepted T7 of a computation's run (a task's run writes no edge). It is about the world before
+;; Rule R, and it is a postcondition of this transition, not an invariant of later worlds.
+(a/theorem track-edge-cont [r :- RunRow, x :- Nat, s :- SourceRow, k :- Nat]
+  (= (:cont (track-edge r x s k)) (track-cont r k)) (rfl))
+
+(a/theorem edge-reread-cont [c :- Nat, s :- SourceRow, e :- EdgeRow]
+  (= (:cont (edge-reread c s e)) c) (rfl))
+
+(a/theorem tbl-find-del-self [A :- Type, idf :- (=> A Nat), x :- Nat, xs :- (List A)]
+  (= (tbl-find idf x (tbl-del idf x xs)) (Option.none A))
+  (induction xs)
+  (case' [cons h t ih])
+  (case' [nil])
+  (simp [tbl-find tbl-del])
+  (cases hx (Nat.beq (idf h) x))
+  (all_goals (simp [tbl-find tbl-del hx ih])))
+
+(a/theorem edge-find-remove-edge-self [w :- World, y :- Nat]
+  (= (edge-find (remove-edge w y) y) (Option.none EdgeRow))
+  (cases hf (edge-find w y))
+  (case [none] (simp only [remove-edge hf]))
+  (case [some e]
+    (cases hm (:marked e))
+    (case [false] (simp only [remove-edge hf hm edge-find edge-del set-edges])
+      (exact (tbl-find-del-self EdgeRow edge-id y (:edges w))))
+    (case [true] (simp only [remove-edge hf hm edge-find comp-upd set-comps edge-del set-edges])
+      (exact (tbl-find-del-self EdgeRow edge-id y (:edges w))))))
+
+(a/theorem tbl-find-upd-self-cont [f :- (=> EdgeRow EdgeRow), c :- Nat, x :- Nat, e :- EdgeRow, xs :- (List EdgeRow)]
+  (=> (forall [q :- EdgeRow] (= (edge-id (f q)) (edge-id q)))
+      (forall [q :- EdgeRow] (= (:cont (f q)) c))
+      (= (tbl-find edge-id x (tbl-upd edge-id x f xs)) (Option.some EdgeRow e))
+      (= (:cont e) c))
+  (induction xs)
+  (case' [cons h t ih])
+  (case' [nil])
+  (intros hid hc hf) (simp [tbl-find tbl-upd] at hf)
+  (intros hid hc hf)
+  (cases hx (Nat.beq (edge-id h) x))
+  (case [false] (simp only [tbl-upd hx tbl-find] at hf) (exact (ih hid hc hf)))
+  (case [true]
+    (have hx2 (= (Nat.beq (edge-id (f h)) x) true)) (rw [(hid h)]) (exact hx)
+    (simp only [tbl-upd hx tbl-find hx2 Option.some.injEq] at hf)
+    (rw [← hf]) (exact (hc h))))
+
+(a/theorem track-raw-new-edge-cont [w :- World, r :- RunRow, x :- Nat, s :- SourceRow, k :- Nat, e :- EdgeRow]
+  (=> (= (site-edge (:edges w) (:of r) (:effect-index r) x) (Option.none EdgeRow))
+      (= (edge-find (track-raw w r x s k) (:next-id w)) (Option.some EdgeRow e))
+      (= (:cont e) (track-cont r k)))
+  (intros hs hf)
+  (have frame (= (edge-find (track-raw w r x s k) (:next-id w))
+                 (edge-find (track-fin s (:next-id w) (insert-edge-fresh w (track-edge r x s k))) (:next-id w))))
+  (simp only [track-raw hs track-new edge-find run-upd set-runs comp-upd set-comps])
+  (rw [frame] at hf)
+  (cases ho (:open s))
+  (case [false]
+    (simp only [track-fin ho] at hf)
+    (rw [(edge-find-remove-edge-self (insert-edge-fresh w (track-edge r x s k)) (:next-id w))] at hf)
+    (simp at hf))
+  (case [true]
+    (simp only [track-fin ho insert-edge-fresh insert-edge edge-ins bump set-next-id set-edges tbl-ins
+                edge-find tbl-find edge-id edge-set-marked edge-set-id Nat.beq_refl Option.some.injEq track-edge] at hf)
+    (rw [← hf])))
+
+(a/theorem track-raw-reused-edge-cont [w :- World, r :- RunRow, x :- Nat, s :- SourceRow, k :- Nat, e0 :- EdgeRow, e :- EdgeRow]
+  (=> (= (site-edge (:edges w) (:of r) (:effect-index r) x) (Option.some EdgeRow e0))
+      (= (edge-find (track-raw w r x s k) (:id e0)) (Option.some EdgeRow e))
+      (= (:cont e) (track-cont r k)))
+  (intros hs hf)
+  (have frame (= (edge-find (track-raw w r x s k) (:id e0))
+                 (edge-find (track-fin s (:id e0) (edge-upd w (:id e0) (edge-reread (track-cont r k) s))) (:id e0))))
+  (simp only [track-raw hs edge-find run-upd set-runs comp-upd set-comps])
+  (rw [frame] at hf)
+  (cases ho (:open s))
+  (case [false]
+    (simp only [track-fin ho] at hf)
+    (rw [(edge-find-remove-edge-self (edge-upd w (:id e0) (edge-reread (track-cont r k) s)) (:id e0))] at hf)
+    (simp at hf))
+  (case [true]
+    (simp only [track-fin ho edge-find edge-upd set-edges] at hf)
+    (exact (tbl-find-upd-self-cont (edge-reread (track-cont r k) s) (track-cont r k) (:id e0) e (:edges w)
+             (edge-reread-edge-id (track-cont r k) s) (edge-reread-cont (track-cont r k) s) hf))))
+
+;; the id of the edge T7 writes for run r reading source x
+(a/defn track-edge-id [w :- World, r :- RunRow, x :- Nat] Nat
+  (match (site-edge (:edges w) (:of r) (:effect-index r) x) [none (:next-id w)] [(some e) (:id e)]))
+
+(a/theorem track-raw-edge-cont [w :- World, r :- RunRow, x :- Nat, s :- SourceRow, k :- Nat, e :- EdgeRow]
+  (=> (= (edge-find (track-raw w r x s k) (track-edge-id w r x)) (Option.some EdgeRow e))
+      (= (:cont e) (track-cont r k)))
+  (intro hf)
+  (cases hs (site-edge (:edges w) (:of r) (:effect-index r) x))
+  (case [none] (simp only [track-edge-id hs] at hf) (exact (track-raw-new-edge-cont w r x s k e hs hf)))
+  (case [some e0] (simp only [track-edge-id hs] at hf) (exact (track-raw-reused-edge-cont w r x s k e0 e hs hf))))
+
+(a/theorem t7-track-reentrant-needs-no-finalizer [w :- World, st :- Nat, x :- Nat, k :- Nat, fresh :- Nat, r :- RunRow, e :- EdgeRow]
+  (=> (= (tok-run w st) (Option.some RunRow r)) (= (comp-has w (:of r)) true)
+      (= (:accepted (t7-track w st x k fresh)) true)
+      (= (edge-find (:world (t7-track w st x k fresh)) (track-edge-id w r x)) (Option.some EdgeRow e))
+      (Not (= (:cont e) cont-restart))
+      (And (= (fins-empty (:finalizers r)) true) (= (nats-empty (:resources r)) true)))
+  (intros ht hc ha hf hne)
+  (apply (track-cont-reentrant-needs-no-finalizer r k))
+  (intro hk0)
+  (apply hne)
+  (cases hs (source-find w x)) (case' [some s]) (case' [none])
+  (simp [t7-track ht hs refuse] at ha)
+  (cases hk (trackable s))
+  (simp [t7-track ht hs hk refuse] at ha)
+  (cases hg (Bool.or (Nat.beq fresh (:next-id w)) (opt-some (site-edge (:edges w) (:of r) (:effect-index r) x))))
+  (simp [t7-track ht hs hk hc hg refuse] at ha)
+  (simp only [t7-track ht hs hk hc hg accept] at hf)
+  (rw [(track-raw-edge-cont w r x s k e hf)]) (exact hk0))
 
 ;; ---- T8 observe / unobserve
 
