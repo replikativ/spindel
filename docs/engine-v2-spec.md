@@ -334,6 +334,14 @@ prototypes are not acceptance evidence for this smaller operation API.
     item that wrote a source in the released world. Items run inline by
     their own caller still throw to it. No transition changes (a throwing
     item commits nothing it has not committed).
+  - Z#79 (H2; user decision 2026-11-21, dvergr step 6b): **opt-in
+    per-thread queued dispatch.** A JVM host thread inside
+    `without-inline-turns` that holds no gate takes the non-inline path for
+    its own operations, with the queued-result semantics listed in H2. A
+    rejected handoff runs the drainer on a fresh platform thread instead of
+    leaving the world marked scheduled with its queue stranded. No
+    transition changes (another legal commit order); the model needs no
+    change.
   - Z#77 (§1, §2, T4, T28, §5.2, I16, §8.1 F6, D3, S3/S8, §13; user decision
     2026-11-18, dvergr F9, `fork-local-design.md`): **fork-local tasks.**
     - A task started with `task-with {:fork-local true}` is fork-local, and
@@ -1019,8 +1027,49 @@ Each `track` *site* in a run (identified by `at`) has its own edge, with
     further work, counting both ingress items and slices (Y#4). Each slice
     is finite by B9. If work remains, it schedules the
     world's drainer on the world's executor and releases the gate.
-  - **Inline is optional:** a world created with `:inline? false` runs no
-    user slice on host threads. It suits UI threads.
+  - **Inline is optional,** per world and per JVM host thread (Z#79). A
+    world created with `:inline? false` runs no user slice on host threads;
+    it suits UI threads. A JVM thread inside `without-inline-turns` (macro
+    `no-inline`) that holds no gate does the same for its own operations.
+    Such an operation is enqueued, handed to the world's drainer and returns
+    at once: it has queued-result semantics, the ones of a non-inline world.
+    - **Condition:** this keeps turns off the caller only when the world's
+      executor runs handoffs asynchronously and accepts them. An executor
+      that runs them in the caller defeats it; one that refuses them gets the
+      fallback runner (Handoff, below).
+    - **A thread inside a gate** (a slice, an item or a callback) ignores the
+      setting: H1's held-gate path, H3's callback delivery, H4's
+      cross-world routing and B7 are unchanged. The setting is the thread's,
+      not a dynamic binding, so it never reaches a slice (B10).
+    - **What an opted-in caller observes:**
+      - a bare `gated`/`host!` item returns no value and throws nothing to
+        its caller; its throw is reported by the processing thread (Z#78);
+      - commands (`write!`, `reset!`, `deliver!`, `post!`, `cancel-task!`,
+        `release!`) return what they return on a non-inline world before
+        the item commits; `reset!` returns its value before the write
+        commits;
+      - `value-async` and `observe!` return their withdrawal fn before the
+        registration commits; a withdrawal queues after it (FIFO);
+      - a creation (`task`, `spawn!`, a source) returns a handle that stays
+        unbound until its item commits;
+      - `release-world!` returns its rows-left fn before the release
+        commits;
+      - a `host-call!` client (`swap!`, `get-in-world`, `fork!`, `consume`,
+        ...) waits for the reply as before, but an interrupt now ends the
+        wait also for an uncontended item; that item still runs later and
+        may succeed or fail, unreported to the caller;
+      - admission is checked at the call: an operation admitted before T21
+        commits is refused in its item if it is processed after it (no
+        state change, a refused log entry), and only one after it is
+        refused at the call with `::released`; internal items
+        (acknowledgements, terminal subscriptions) are still accepted;
+      - a moved host item function (a `swap!` fn, a `send-world!` fn) runs
+        under the drainer's dynamic bindings, not the caller's; bodies are
+        unaffected, since creation captures the caller's frame (B10).
+    - Inline callers of the same world may still process an opted-in
+      caller's items in their budget. No transition changes: an opted-in
+      operation can only choose another legal commit order (the drainer's
+      instead of the caller's).
   - **What H2 guarantees:** no deadlock, because no host thread waits on
     another. It does not promise latency: an inline caller spends at most
     the budget of finite slices.
