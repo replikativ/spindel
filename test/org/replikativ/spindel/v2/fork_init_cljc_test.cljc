@@ -49,11 +49,21 @@
          (is (= [] (fork-ids w)) "nothing committed")
          (v2/release-world! w)))))
 
-(defn- signal-done
-  "Completes an async test from a slice: after the slice's gate is left
-   (cljs.test starts the next test synchronously from `done`)."
-  [done]
-  #?(:cljs (js/setTimeout done 0) :clj (done)))
+#?(:cljs
+   (defn- finisher
+     "An async test's completion, once: `(finish)` from a slice completes it
+      after the slice's gate is left (cljs.test starts the next test
+      synchronously from `done`); without it, the test fails after `ms`."
+     [done ms]
+     (let [fired (atom false)
+           deadline (js/setTimeout #(when (compare-and-set! fired false true)
+                                      (is false "no signal from the child's slice before the deadline")
+                                      (done))
+                                   ms)]
+       (fn []
+         (when (compare-and-set! fired false true)
+           (js/clearTimeout deadline)
+           (js/setTimeout done 0))))))
 
 (defn- child-slice
   "A task body for the world `w`'s turn: in a child of `w`, `(f child-id
@@ -67,14 +77,15 @@
 #?(:cljs
    (deftest a-fork-from-a-host-item-replies-synchronously
      (async done
-            (let [w (v2/world {:verify? true})
+            (let [finish (finisher done 2000)
+                  w (v2/world {:verify? true})
                   cid (atom nil)
                   c (v2/host-call! w (fn []
                                        (binding [v2/*world* w]
                                          (task (child-slice w (fn [id st]
                                                                 (is (= @cid id) "the child's copy of the task")
                                                                 (is (= {:k :held} st) "sees its initial state")
-                                                                (signal-done done)))))
+                                                                (finish)))))
                                        (v2/fork! w {:init-state (fn [s _] (assoc s :k :held))})))]
               (reset! cid (v2/world-id c))
               (is (= {:k :held} (v2/world-state c)))
@@ -84,14 +95,15 @@
 #?(:cljs
    (deftest a-queued-fork-still-commits-and-hands-off
      (async done
-            (let [w (v2/world {:inline? false :verify? true})
+            (let [finish (finisher done 2000)
+                  w (v2/world {:inline? false :verify? true})
                   ;; queued before the fork: the fork item finds the task runnable
                   _ (binding [v2/*world* w]
                       (task (child-slice w (fn [id st]
                                              (is (= [id] (fork-ids w)) "the queued fork item committed")
                                              (is (member? w id) "published")
                                              (is (= {:k :queued} st) "the child sees its initial state")
-                                             (signal-done done)))))
+                                             (finish)))))
                   e (try (v2/fork! w {:init-state (fn [s _] (assoc s :k :queued))}) nil
                          (catch :default e e))]
               (is (re-find #"synchronously" (ex-message e)) "the reply is not synchronous")
