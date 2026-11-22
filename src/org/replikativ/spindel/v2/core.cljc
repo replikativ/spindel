@@ -136,6 +136,16 @@
 
 (def ^:dynamic *world* nil)
 
+(defn- report!
+  "Reports `t` (`what` failed) on this thread. Never throws: a report is
+   never part of a transition (an observer's or an isolated caller's throw
+   cannot interrupt the engine through its report)."
+  [what t]
+  (try #?(:clj (binding [*out* *err*] (println what "failed:" t))
+          :cljs (js/console.error what "failed:" t))
+       (catch #?(:clj Throwable :cljs :default) _ nil))
+  nil)
+
 (defn- alloc-id!
   "A fresh id from the family counter, shared by a world and its forks."
   ^long [w]
@@ -671,9 +681,16 @@
     (aadd! (g w rw/W-LOG) {:item item :accepted true})
     item))
 
-(defn log-commit! [w item0]
+(defn log-commit!
+  "Verify mode, at the end of a transition: the accepted entry, then the
+   commit observer (`W-HOOK`). The transition is complete before the
+   observer runs, so the observer is isolated: its throw is reported
+   (`report!`) and never interrupts the transition (T21, a fork, ...)."
+  [w item0]
   (let [item (log-accept! w item0)]
-    (when-let [hook (g w rw/W-HOOK)] (hook w item)))
+    (when-let [hook (g w rw/W-HOOK)]
+      (try (hook w item)
+           (catch #?(:clj Throwable :cljs :default) t (report! "commit observer" t)))))
   nil)
 
 #?(:clj
@@ -2853,9 +2870,7 @@
    turn (an unrelated host operation, or the drainer)."
   [what f]
   (try (f)
-       (catch #?(:clj Throwable :cljs :default) t
-         #?(:clj (binding [*out* *err*] (println what "failed:" t))
-            :cljs (js/console.error what "failed:" t)))))
+       (catch #?(:clj Throwable :cljs :default) t (report! what t))))
 
 (defn- run-callbacks!
   "Host callbacks run between items, on the processing thread (H3), each

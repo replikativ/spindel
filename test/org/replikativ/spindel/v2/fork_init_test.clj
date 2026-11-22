@@ -204,22 +204,51 @@
        (is (wait-until #(some (fn [[id]] (= cid id)) @seen)) "the child runs after the gate")
        (is (= {:k :init} (second (first (filter #(= cid (first %)) @seen)))))))))
 
-(deftest an-accepted-fork-that-cannot-be-published-is-released
+(defn- release-refusing-observer
+  "A commit observer that throws at every T21 (`[:release-world]`), after
+   checking Rule R."
+  []
+  (let [check (verify/checking-hook *divergences*)]
+    (fn [w item]
+      (check w item)
+      (when (= :release-world (first item)) (throw (ex-info "observer failed" {}))))))
+
+(deftest a-fork-whose-insertion-fails-is-released-unpublished
   (checked
-   (let [w (vworld)
+   (let [w (v2/world {:verify? true :hook (release-refusing-observer)})
          register lt/register-world!
          n (next-id w)                       ; the child's id
-         e (with-redefs [lt/register-world! (fn [family x id & more]
-                                              (when (= id n) (throw (ex-info "registry full" {})))
-                                              (apply register family x id more))]
-             (try (v2/fork! w) nil (catch clojure.lang.ExceptionInfo e e)))
+         e (binding [*err* (java.io.StringWriter.)]
+             (with-redefs [lt/register-world! (fn [family x id & more]
+                                                ;; fails before the registry insertion
+                                                (when (= id n) (throw (ex-info "registry full" {})))
+                                                (apply register family x id more))]
+               (try (v2/fork! w) nil (catch clojure.lang.ExceptionInfo e e))))
          c (:child (ex-data e))]
      (is (:spindel/unpublished (ex-data e)) "surfaced to the caller, with the child")
      (is (committed? w (v2/world-id c)) "the fork stays accepted")
      (is (not (member? w (v2/world-id c))) "no family membership")
-     (is (true? (v2/await-complete c 2000 ::timeout)) "the child is released and completes")
-     (v2/release-world! w)
+     (is (true? (v2/await-complete c 2000 ::timeout))
+         "the child is released and completes, although the observer throws at its T21")
+     (binding [*err* (java.io.StringWriter.)] (v2/release-world! w))
      (is (true? (v2/await-complete w 2000 ::timeout)) "the owner's obligation ended"))))
+
+(deftest a-throwing-observer-cannot-block-a-release
+  (binding [*divergences* (atom [])]
+    (let [w (v2/world {:verify? true :hook (release-refusing-observer)})]
+      (binding [*err* (java.io.StringWriter.)] (v2/release-world! w))
+      (is (true? (v2/await-complete w 2000 ::timeout)) "T21 commits and the world completes"))))
+
+(deftest a-failing-report-cannot-interrupt-a-fork
+  (let [w (v2/world {:verify? true
+                     :hook (fn [_ item] (when (= :fork-host (first item)) (throw (ex-info "observer failed" {}))))})
+        closed (proxy [java.io.Writer] []
+                 (write [& _] (throw (java.io.IOException. "Stream closed")))
+                 (flush [] (throw (java.io.IOException. "Stream closed")))
+                 (close []))
+        c (binding [*err* closed] (v2/fork! w))]
+    (is (member? w (v2/world-id c)) "published and returned")
+    (is (committed? w (v2/world-id c)))))
 
 (deftest separate-owner-forks-refuse-init-state
   (let [w (v2/world) o (v2/fork! w)]
