@@ -785,3 +785,40 @@
   (doseq [n ["61-w" "62-w"]]
     (is (= [] (o/roundtrip (log n))) (str "sample " n))))
 
+
+;; ---------------------------------------------------------------------------
+;; Z#81 no re-entry inside a running finally clause, samples 63-65 (generator oracle/gen/samples-t11.clj). A dep
+;; edge registered in a running clause (63: a track, 64: an await of a live computation) restarts the body on
+;; invalidation: the new run enters, exits and leaves its own clause. 65: a finally-leave without a running clause
+;; is refused by the engine as by the model.
+(def ^:private running-clause-specs
+  {"63" {:w {:log (log "63-w") :kind :root}}
+   "64" {:w {:log (log "64-w") :kind :root}}
+   "65" {:w {:log (log "65-w") :kind :root}}})
+
+(deftest running-clause-samples
+  (doseq [[n spec] running-clause-specs]
+    (let [fam (o/replay-family spec)]
+      (doseq [[k {:keys [res]}] fam]
+        (is (= [(count (:log (spec k))) 0 0] ((juxt :checked :n-divergences :resyncs) res)) (str "sample " n " " k))))))
+
+(deftest running-clause-sample-shapes
+  (let [items (fn [n] (mapv :item (log n)))
+        finally-kinds (fn [n r] (mapv first (filter #(and (#{:finally-enter :finally-exit :finally-leave} (first %))
+                                                          (= r (second %)))
+                                                    (items n))))
+        ;; the run the last dispatch (the computation with the clause) schedules
+        rerun (fn [n] (let [its (items n)
+                            i (last (keep-indexed (fn [i x] (when (= :dispatch (first x)) i)) its))]
+                        (second (first (filter #(= :schedule (first %)) (drop i its))))))]
+    (doseq [n ["63-w" "64-w"]]
+      (is (= [:finally-enter :finally-exit :finally-leave] (finally-kinds n (rerun n)))
+          (str n ": the rerun enters, exits and leaves its own clause (it restarted from the body)")))
+    (is (every? :accepted (log "63-w")))
+    (is (every? :accepted (log "64-w")))
+    (is (= [[:finally-leave false]] (keep #(when (= :finally-leave (first (:item %))) [(first (:item %)) (:accepted %)]) (log "65-w")))
+        "65: the orphan finally-leave is refused")))
+
+(deftest projection-roundtrip-running-clause
+  (doseq [n ["63-w" "64-w" "65-w"]]
+    (is (= [] (o/roundtrip (log n))) (str "sample " n))))
