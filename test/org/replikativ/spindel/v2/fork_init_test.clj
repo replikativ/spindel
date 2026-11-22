@@ -69,6 +69,166 @@
   (let [cw (v2/current-world)]
     [(v2/world-id cw) (v2/world-state cw) (.getName (Thread/currentThread))]))
 
+(deftest init-state-is-seen-by-the-first-slice-under-early-maintenance
+  (checked
+   (let [w (vworld {:executor caller-runs})
+         seen (atom [])]
+     (stale-generation! w)
+     (let [c (with-synchronous-maintenance
+               ;; the fork from a host item of w, which first starts a task:
+               ;; the child inherits it as runnable work
+               (v2/host-call! w (fn []
+                                  (binding [v2/*world* w]
+                                    (task (swap! seen conj (let [r (recorder)] (conj r (committed? w (first r)))))))
+                                  (v2/fork! w {:init-state (fn [s _] (assoc s :k :init))}))))
+           cid (v2/world-id c)
+           mine (filterv #(= cid (first %)) @seen)]
+       (is (= 1 (count mine)) "the child's copy of the task ran once")
+       (is (= "test-maintenance" (nth (first mine) 2))
+           "the child was entered by the family's maintenance, at registration")
+       (is (true? (nth (first mine) 3)) "after the parent committed the fork")
+       (is (= {:k :init} (second (first mine))) "its first slice sees the initial state")
+       (is (= {} (v2/world-state w)) "the parent's state is unchanged")
+       (is (= {:k :init} (v2/world-state c)))))))
+
+(deftest a-default-owner-fork-is-published-after-its-commit
+  (checked
+   (let [obs (atom [])
+         w (v2/world {:verify? true
+                      :hook (fn [w item]
+                              (when (= :fork-host (first item))
+                                (swap! obs conj [:observer (second item) (member? w (second item))])))})
+         register lt/register-world!
+         regs (atom [])
+         c (with-redefs [lt/register-world! (fn [family x id & more]
+                                              (swap! regs conj [:register id (committed? w id)])
+                                              (apply register family x id more))]
+             (v2/fork! w))
+         cid (v2/world-id c)]
+     (is (= [[:observer cid false]] @obs) "no family membership at the commit")
+     (is (= [[:register cid true]] @regs) "registered once, after the commit")
+     (is (member? w cid))
+     (testing "the (fork) effect's child and a savepoint basis are registered as before"
+       (let [regs (atom [])
+             pubs (atom [])]
+         (v2/install-handlers! w {:s (fn [p] (swap! pubs conj p))})
+         (with-redefs [lt/register-world! (fn [family x id & more]
+                                            (swap! regs conj id)
+                                            (apply register family x id more))]
+           (binding [v2/*world* w]
+             (let [t (task (let [[side child] (v2/fork)] (if (= side :parent) (v2/world-id child) side)))
+                   s (task (v2/savepoint :s 1))]
+               (is (some #{(v2/value t 2000 ::timeout)} @regs) "the effect's child")
+               (is (wait-until #(= 1 (count @pubs))))
+               (is (some #{(v2/world-id (:basis (first @pubs)))} @regs) "the basis")
+               (v2/abandon! (first @pubs))
+               (is (:spindel/cancelled (ex-data (try (v2/value s 2000 ::timeout) (catch Exception e e)))))))))))))
+
+(deftest a-throwing-initializer-leaves-only-an-id-gap
+  (checked
+   (let [w (vworld)
+         state (fn [] {:epoch (aget ^objects w rw/W-EPOCH)
+                       :tokens (some-> (aget ^objects w rw/W-TOKENS) count) :log (count (verify/log w))})
+         before (state)
+         n (next-id w)
+         got (atom nil)
+         e (try (v2/fork! w {:init-state (fn [s ctx]
+                                           (reset! got [s ctx])
+                                           (throw (ex-info "init failed" {::init true})))})
+                nil
+                (catch clojure.lang.ExceptionInfo e e))]
+     (is (::init (ex-data e)) "the initializer's throw is the fork's")
+     (is (= [{} {:world-id n}] @got) "called with the source state and the child's id")
+     (is (= (inc n) (next-id w)) "the child's id stays unused")
+     (is (= before (state)) "no epoch step, MVCC token or log item")
+     (let [s (binding [v2/*world* w] (v2/signal 1))
+           _ (is (= (+ 2 n) (next-id w)) "an ordinary allocation takes the next id")
+           c (v2/fork! w {:init-state (fn [s {:keys [world-id]}] (assoc s :id world-id))})]
+       (is (= (+ 2 n) (v2/world-id c)) "the next fork takes the id after it")
+       (is (= [:fork-host (v2/world-id c)] (:item (peek (verify/log w)))))
+       (is (= {:id (v2/world-id c)} (v2/world-state c)) "the initializer saw the child's own id")
+       (is (= 1 (v2/value (v2/in-world c s) 1000 ::timeout)))))))
+
+(deftest a-throwing-observer-does-not-undo-an-accepted-fork
+  (let [w (v2/world {:verify? true
+                     :hook (fn [_ item]
+                             (when (= :fork-host (first item)) (throw (ex-info "observer failed" {}))))})
+        seen (atom [])
+        err (java.io.StringWriter.)
+        c (binding [*err* err]
+            (v2/host-call! w (fn []
+                               (binding [v2/*world* w] (task (swap! seen conj (recorder))))
+                               (v2/fork! w {:init-state (fn [s _] (assoc s :k :init))}))))
+        cid (v2/world-id c)]
+    (is (some? cid) "the fork returns the child")
+    (is (committed? w cid) "the fork is accepted")
+    (is (member? w cid) "and published")
+    (is (wait-until #(some (fn [[id]] (= cid id)) @seen)) "the child was handed off")
+    (is (= {:k :init} (second (first (filter #(= cid (first %)) @seen)))))
+    (is (re-find #"commit observer failed" (str err)) "the observer's throw is reported")))
+
+(deftest a-fork-queued-before-a-release-is-refused
+  (checked
+   (let [w (vworld)
+         lk (aget ^objects w rw/W-LOCK)
+         queued #(count (seq (aget ^objects w rw/W-INGRESS)))]
+     (hs/lock! lk)
+     (let [n (next-id w)
+           f (future (try (v2/fork! w {:init-state (fn [s _] (assoc s :k 1))}) (catch Throwable t t)))]
+       (is (wait-until #(= 1 (queued))) "the fork is admitted and queued")
+       (#'v2/release-world* w)               ; T21 first
+       (hs/unlock! lk)
+       (#'v2/process! w)
+       (let [r (deref f 2000 ::timeout)]
+         (is (:spindel/released (ex-data r)) "the fork is refused when its item runs")
+         (is (= n (next-id w)) "no child id")
+         (is (not-any? #(= :fork-host (first (:item %))) (verify/log w))))))))
+
+(deftest a-fork-from-a-host-item-never-enters-the-child-under-the-parent-gate
+  (checked
+   (let [parent (promise)
+         nested (atom 0)
+         ex (reify java.util.concurrent.Executor
+              (execute [_ r]
+                (when (and (realized? parent) (hs/held? (aget ^objects @parent rw/W-LOCK)))
+                  (swap! nested inc))
+                (.run ^Runnable r)))
+         w (vworld {:executor ex})
+         seen (atom [])]
+     (deliver parent w)
+     (let [c (v2/host-call! w (fn []
+                                (binding [v2/*world* w] (task (swap! seen conj (recorder))))
+                                (v2/fork! w {:init-state (fn [s _] (assoc s :k :init))})))
+           cid (v2/world-id c)]
+       (is (zero? @nested) "no handoff runs under the parent's gate")
+       (is (wait-until #(some (fn [[id]] (= cid id)) @seen)) "the child runs after the gate")
+       (is (= {:k :init} (second (first (filter #(= cid (first %)) @seen)))))))))
+
+(deftest an-accepted-fork-that-cannot-be-published-is-released
+  (checked
+   (let [w (vworld)
+         register lt/register-world!
+         n (next-id w)                       ; the child's id
+         e (with-redefs [lt/register-world! (fn [family x id & more]
+                                              (when (= id n) (throw (ex-info "registry full" {})))
+                                              (apply register family x id more))]
+             (try (v2/fork! w) nil (catch clojure.lang.ExceptionInfo e e)))
+         c (:child (ex-data e))]
+     (is (:spindel/unpublished (ex-data e)) "surfaced to the caller, with the child")
+     (is (committed? w (v2/world-id c)) "the fork stays accepted")
+     (is (not (member? w (v2/world-id c))) "no family membership")
+     (is (true? (v2/await-complete c 2000 ::timeout)) "the child is released and completes")
+     (v2/release-world! w)
+     (is (true? (v2/await-complete w 2000 ::timeout)) "the owner's obligation ended"))))
+
+(deftest separate-owner-forks-refuse-init-state
+  (let [w (v2/world) o (v2/fork! w)]
+    (is (= :init-state (:spindel/invalid (ex-data (try (v2/fork! w {:owner o :init-state identity}) nil
+                                                       (catch clojure.lang.ExceptionInfo e e))))))
+    (is (some? (v2/world-id (v2/fork! w {:owner o}))) "without it, unchanged")
+    (is (= {:a 1} (v2/world-state (v2/fork! w {:owner w :init-state (fn [s _] (assoc s :a 1))})))
+        "the source itself is the default owner")))
+
 (deftest instantiate-publishes-an-unborn-instance
   (checked
    (let [w (vworld {:executor caller-runs})
