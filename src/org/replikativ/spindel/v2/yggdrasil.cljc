@@ -678,9 +678,12 @@
         the record's data at creation and at every change of status, plan,
         done set and branches (F6a), and `:on-discard` runs when the layer
         discards the fork by itself (its parent's world ended, or a discard of
-        its parent cascaded). Refused in an unmanaged world and when `parent`
-        is a fork whose settlement is not `:open`."
-       [parent {:keys [owner bases meta journal on-discard]}]
+        its parent cascaded). `:init-state` is passed to the engine fork
+        unchanged (`v2/fork!`: `(f state {:world-id id})`, the child's initial
+        world state, seen by its first entry); not with another `:owner`.
+        Refused in an unmanaged world and when `parent` is a fork whose
+        settlement is not `:open`."
+       [parent {:keys [owner bases meta journal on-discard init-state]}]
        (host-only! "fork!")
        (let [phk (holder-for-write! parent "fork!")
              pe (entry phk)
@@ -689,7 +692,9 @@
          (doseq [[sid b] bases]
            (when-not (contains? (:systems @pe) sid) (throw (unknown-system sid)))
            (check-base! sid b))
-         (let [child (v2/fork! parent (if owner {:owner owner} {}))
+         (let [child (v2/fork! parent (cond-> {}
+                                        owner (assoc :owner owner)
+                                        init-state (assoc :init-state init-state)))
                id (random-uuid)
                rec (atom {:fork/id id :parent phk :parent-fork (:fork-id @pe) :status :open
                           :parent-world-id (v2/world-id parent) :child-world-id (v2/world-id child)
