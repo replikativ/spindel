@@ -1,9 +1,9 @@
 (ns spindel.v2.step
   "Raw transitions of spindel engine v2 (spec v1.5.1 §5.1): the effect of each modelled
-  host/slice operation BEFORE Rule R, and the Item type. `dispatch : World -> Item -> Outcome`
-  here is the raw part for T1, T2, T7-T9, T15 (shallow T13), T18-T20; it refuses the items
-  added for the engine (and `arm`, Z#55: T17's park is engine's). The model's step is spindel.v2.engine/world-step = Rule R (rule.clj)
-  of engine's `raw`, which routes EVERY item (with T8, T13, T15 replaced by their full forms).
+  host/slice operation BEFORE Rule R, and the Item type. Here are the transitions T2, T7, T9,
+  T18-T20, T8's unobserve and T1 at top level (the kinds without a stream), and the parts of
+  T1, T8, T15 and T17. Every item is routed by spindel.v2.engine's `transition`; the model's
+  step is spindel.v2.engine/world-step = Rule R (rule.clj) of engine's `raw`.
 
   Items: the payload order of every constructor (the engine emits exactly this order; the
   runtime form is [tag field ...], tag = the constructor index). `st` = the acting run's
@@ -124,10 +124,10 @@
                further precondition (the transitions check what they need: e.g. T7 checks that
                the creditor computation and the debtor source exist, so `edge-ok-in` holds)
     tN-refuse  (:accepted o) = false -> (:world o) = w
-    tN-l4      token check false -> (:world o) = w   (t1, t7, t9, t15, t18; t17 in engine)
-    well-formed-dispatch / dispatch-refuse / dispatch-l4   the same for `dispatch`, by `cases item`
-    well-formed-run-items, run-items-from-empty   well-formed holds along any item sequence
-  and per helper: well-formed-fire-edge (T9 on any edge), well-formed-write-raw, well-formed-retire-check, ...
+    tN-l4      token check false -> (:world o) = w   (t7, t9, t18; t15 in rule, t17 in engine)
+  and per helper: well-formed-fire-edge (T9 on any edge), well-formed-write-raw, well-formed-ack-raw, ...
+  The same three statements for every item are engine's well-formed-transition, transition-refuse
+  and transition-l4.
   The primitive edit lemmas they compose are in spindel.v2.edits (appended section).
 
   Modelled semantics and readings (see also the report's ambiguity list):
@@ -149,11 +149,10 @@
   - Edge `seen : Nat?` (Z#15) is the pair (has-seen, seen); none = (false, 0). Dep edges set
     it to the version they consumed (track read, delivery), which is the validity version of
     Z#24.
-  - T8: observe registers an observe edge (creditor host = 0, phase armed) after `edge-ok-in`
+  - T8: observe (spindel.v2.engine's `t8-observe`, which first validates an idle computation)
+    registers an observe edge (`observe-edge`: creditor host = 0, phase armed) after `edge-ok-in`
     (the debtor exists). Z#15: when d is a source or a live computation it is delivered at
-    once (seen := version); otherwise seen = none. On an idle computation step's T8 refuses
-    (`validate-idle-todo`); the model's step uses spindel.v2.engine's T8, which validates.
-    unobserve removes an observe edge.
+    once (seen := version); otherwise seen = none. unobserve removes an observe edge.
   - T9 (`fire-edge`): only an armed edge fires. dep: if it is a member of an activation of
     the creditor's current run and the debtor is available (I13: a computation only while
     live) it is delivered (re-armed with the debtor's current baseline, seen := its version,
@@ -168,17 +167,16 @@
     run act := active). The loser tasks of a resolved `any`, and of an `all` that failed
     fast, are cancelled by spindel.v2.engine (it needs the cascade). TODO: savepoint edges
     (`fire-savepoint-todo`, layer 2).
-  - T13 (`retire-check`): retirable = act done, no slice, no finalizers, no resources;
-    retire removes the run row and cleanup[R] and closes the run scope. STUB: T16 is only
-    `close-scope-shallow` (open := false) here. The model's step (spindel.v2.rule/world-step)
-    replaces T15 by `rule/t15-resource-ack`, whose T13 is the full Z#18 retirement with the T16
-    cascade (`rule/t13-retire`); `dispatch` keeps this shallow version for its lemmas.
-  - T15 (Z#6): refused while an edge has Z as debtor (`ack-tok-ok`); removes Z from res,
-    from its run's resources and its cleanup rows, then T13.
+  - T13: `retirable` = act done, no slice, no finalizers, no resources. The retirement (the
+    run row and cleanup[R] go, the run scope closes by the T16 cascade, Z#18) is
+    spindel.v2.rule's `t13-retire`.
+  - T15 (Z#6, spindel.v2.rule's `t15-resource-ack`): refused while an edge has Z as debtor
+    (`ack-tok-ok`); removes Z from res, from its run's resources and its cleanup rows
+    (`ack-raw`), then T13.
   - T17 (Z#55, the item lives in spindel.v2.engine): `arm-raw` adds a new armed resource owned by
     the run with at = effect-index to the run's resources (no index step); engine's `arm-park` then
     parks the run on a `one` activation over the resource's wait edge (take-park), advancing the
-    index once. `dispatch` refuses the item (it needs engine's park).
+    index once.
   - T18: only an armed resource fires (once); phase := fired; every armed wait edge whose
     debtor is z fires (T9) (Z#6: edges-ref-ok admits a resource debtor for wait edges).
   - T19: handles -= 1 on the computation/task/source/publication with that id (searched
@@ -658,7 +656,8 @@
 ;; Part D. Transitions
 ;; ===========================================================================
 
-;; ---- T1 create-source
+;; ---- T1 create-source: the parts, and the top-level form for the kinds without a stream
+;; (spindel.v2.engine's `t1-create-source` and `t1-create-source-top` are the transitions)
 
 (a/defn source-kind-ok [kind :- Nat] Bool (Nat.ble kind sk-semaphore))
 (a/defn in-comp [w :- World, r :- RunRow] Bool (comp-has w (:of r)))
@@ -669,17 +668,6 @@
 ;; §5.2: a computation run records the creation in its basis, with at = effect-index
 (a/defn record-basis [w :- World, r :- RunRow, id :- Nat] World
   (if (in-comp w r) (comp-upd w (:of r) (comp-add-basis (Created.mk id (:effect-index r)))) w))
-
-(a/defn create-source-raw [w :- World, r :- RunRow, kind :- Nat, v :- Nat] World
-  (run-upd (record-basis (bump (source-ins w (new-source (:next-id w) (source-owner w r) kind v))) r (:next-id w))
-           (:id r) run-tick))
-
-(a/defn t1-create-source-basic [w :- World, st :- Nat, kind :- Nat, v :- Nat, fresh :- Nat] Outcome
-  (match (tok-run w st)
-    [none (refuse w)]
-    [(some r) (if (Bool.and (Nat.beq fresh (:next-id w)) (source-kind-ok kind))
-                  (accept (create-source-raw w r kind v))
-                  (refuse w))]))
 
 (a/defn scope-open-at [w :- World, s :- Nat] Bool
   (match (scope-find w s) [none false] [(some sc) (:open sc)]))
@@ -697,37 +685,6 @@
   (simp only [record-basis hc])
   (exact (well-formed-comp-upd w (:of r) (comp-add-basis (Created.mk id (:effect-index r)))
            (comp-add-basis-comp-id _) (comp-add-basis-pending _) h)))
-
-(a/theorem well-formed-create-source-raw [w :- World, r :- RunRow, kind :- Nat, v :- Nat]
-  (=> (= (well-formed w) true) (= (well-formed (create-source-raw w r kind v)) true))
-  (intro h)
-  (simp only [create-source-raw])
-  (exact (well-formed-run-upd _ (:id r) run-tick run-tick-run-id
-           (well-formed-record-basis _ r (:next-id w)
-             (well-formed-source-ins-fresh w (new-source (:next-id w) (source-owner w r) kind v) (rfl) h)))))
-
-(a/theorem well-formed-t1-create-source-basic [w :- World, st :- Nat, kind :- Nat, v :- Nat, fresh :- Nat]
-  (=> (= (well-formed w) true) (= (well-formed (:world (t1-create-source-basic w st kind v fresh))) true))
-  (intro h)
-  (cases ht (tok-run w st)) (case' [some r]) (case' [none])
-  (simp only [t1-create-source-basic ht refuse]) (exact h)
-  (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (source-kind-ok kind)))
-  (simp only [t1-create-source-basic ht hg refuse]) (exact h)
-  (simp only [t1-create-source-basic ht hg accept]) (exact (well-formed-create-source-raw w r kind v h)))
-
-(a/theorem t1-create-source-basic-refuse [w :- World, st :- Nat, kind :- Nat, v :- Nat, fresh :- Nat]
-  (=> (= (:accepted (t1-create-source-basic w st kind v fresh)) false) (= (:world (t1-create-source-basic w st kind v fresh)) w))
-  (intro ha)
-  (cases ht (tok-run w st)) (case' [some r]) (case' [none])
-  (simp only [t1-create-source-basic ht refuse])
-  (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (source-kind-ok kind)))
-  (simp only [t1-create-source-basic ht hg refuse])
-  (simp [t1-create-source-basic ht hg accept] at ha))
-
-(a/theorem t1-create-source-basic-l4 [w :- World, st :- Nat, kind :- Nat, v :- Nat, fresh :- Nat]
-  (=> (= (run-tok-ok w st) false) (= (:world (t1-create-source-basic w st kind v fresh)) w))
-  (intro hf)
-  (simp only [t1-create-source-basic (run-tok-none w st hf) refuse]))
 
 (a/theorem well-formed-t1-create-nonstream-top [w :- World, scope :- Nat, kind :- Nat, v :- Nat, fresh :- Nat]
   (=> (= (well-formed w) true) (= (well-formed (:world (t1-create-nonstream-top w scope kind v fresh))) true))
@@ -1107,6 +1064,7 @@
 
 ;; ---- T8 observe / unobserve
 
+;; T8 observe is spindel.v2.engine's `t8-observe` (it validates an idle computation first); its edge:
 ;; Z#15: registration delivers at once when d is a source or a live computation (seen := its
 ;; version); otherwise seen = none and the first delivery is the settle (d is demanded by the
 ;; T5/T11 item that follows, reading in the docstring)
@@ -1115,43 +1073,11 @@
 (a/defn observe-edge [w :- World, d :- Nat, cb :- Nat] EdgeRow
   (EdgeRow.mk 0 ek-observe 0 d cb 0 ph-armed false (deb-ready w d) (if (deb-ready w d) (deb-version w d) 0)
               false 0 0))
-(a/defn idle-comp [w :- World, d :- Nat] Bool
-  (match (comp-find w d) [none false] [(some c) (:idle c)]))
-
-;; TODO(validation, §3.4 R#3): observing an idle computation must first validate it
-;; (reactivate or re-run). Not modelled yet: such an observe refuses (`validate-idle-todo`).
-(a/defn validate-idle-todo [w :- World] Outcome (refuse w))
-
-(a/defn t8-observe-basic [w :- World, d :- Nat, cb :- Nat, fresh :- Nat] Outcome
-  (if (Bool.and (Nat.beq fresh (:next-id w)) (edge-ok-in w (observe-edge w d cb)))
-      (if (idle-comp w d) (validate-idle-todo w) (accept (insert-edge-fresh w (observe-edge w d cb))))
-      (refuse w)))
 
 (a/defn t8-unobserve [w :- World, x :- Nat] Outcome
   (match (edge-find w x)
     [none (refuse w)]
     [(some e) (if (Nat.beq (:kind e) ek-observe) (accept (remove-edge w x)) (refuse w))]))
-
-(a/theorem well-formed-t8-observe-basic [w :- World, d :- Nat, cb :- Nat, fresh :- Nat]
-  (=> (= (well-formed w) true) (= (well-formed (:world (t8-observe-basic w d cb fresh))) true))
-  (intro h)
-  (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (edge-ok-in w (observe-edge w d cb))))
-  (simp only [t8-observe-basic hg refuse]) (exact h)
-  (cases hi (idle-comp w d))
-  (simp only [t8-observe-basic hg hi accept])
-  (have he (= (edge-ok-in w (observe-edge w d cb)) true))
-  (simp only [Bool.and_eq_true] at hg) (exact (And.right hg))
-  (exact (well-formed-insert-edge-fresh w (observe-edge w d cb) he h))
-  (simp only [t8-observe-basic hg hi validate-idle-todo refuse]) (exact h))
-
-(a/theorem t8-observe-basic-refuse [w :- World, d :- Nat, cb :- Nat, fresh :- Nat]
-  (=> (= (:accepted (t8-observe-basic w d cb fresh)) false) (= (:world (t8-observe-basic w d cb fresh)) w))
-  (intro ha)
-  (cases hg (Bool.and (Nat.beq fresh (:next-id w)) (edge-ok-in w (observe-edge w d cb))))
-  (simp only [t8-observe-basic hg refuse])
-  (cases hi (idle-comp w d))
-  (simp [t8-observe-basic hg hi accept] at ha)
-  (simp only [t8-observe-basic hg hi validate-idle-todo refuse]))
 
 (a/theorem well-formed-t8-unobserve [w :- World, x :- Nat]
   (=> (= (well-formed w) true) (= (well-formed (:world (t8-unobserve w x))) true))
@@ -1194,29 +1120,13 @@
   (=> (= (fire-tok-ok w x) false) (= (:world (t9-fire w x tag v)) w))
   (intro hg) (simp only [t9-fire hg refuse]))
 
-;; ---- T13 retire? and T15 resource-ack
+;; ---- T13's predicate and T15's edit (the transitions are spindel.v2.rule's `t13-retire` and
+;; `t15-resource-ack`: the Z#18 retirement with the T16 cascade)
 
 (a/defn retirable [r :- RunRow] Bool
   (Bool.and (Nat.beq (:act r) act-done)
             (Bool.and (Bool.not (:slice r))
                       (Bool.and (fins-empty (:finalizers r)) (nats-empty (:resources r))))))
-
-;; STUB(T16), superseded in the step by spindel.v2.rule/t13-retire (Z#18 order, T16 cascade).
-;; Retiring closes the run scope via T16. Here the scope is only marked closed
-;; (`close-scope-shallow`). Cancelling the work it owns, closing its explicit child scopes and
-;; sources and removing the empty subtree are T16's cancel cascade (next batch). Once the run
-;; row and cleanup[R] are gone the scope has no retention reason (a run scope is reachable only
-;; from its run), so Rule R cancels what it still owns and removes it.
-(a/defn close-scope-shallow [w :- World, s :- Nat] World (scope-upd w s scope-close))
-
-(a/defn retire [w :- World, r :- RunRow] World
-  (cleanup-del (run-del (close-scope-shallow w (:scope r)) (:id r)) (:id r)))
-
-;; T13: called on every path that can make the predicate true
-(a/defn retire-check [w :- World, rid :- Nat] World
-  (match (run-find w rid)
-    [none w]
-    [(some r) (if (retirable r) (retire w r) w)]))
 
 ;; remove Z from res, from its run's resources and from its run's cleanup rows
 (a/defn ack-raw [w :- World, z :- Nat, owner :- Nat] World
@@ -1225,54 +1135,12 @@
 ;; T15 (Z#6): the acknowledgement token needs the resource row and no edge with Z as debtor
 (a/defn ack-tok-ok [w :- World, z :- Nat] Bool
   (Bool.and (resource-has w z) (tbl-all (no-debtor z) (:edges w))))
-(a/defn t15-resource-ack-basic [w :- World, z :- Nat] Outcome
-  (if (tbl-all (no-debtor z) (:edges w))
-      (match (resource-find w z)
-        [none (refuse w)]
-        [(some zr) (accept (retire-check (ack-raw w z (:owner zr)) (:owner zr)))])
-      (refuse w)))
-
-(a/theorem well-formed-retire [w :- World, r :- RunRow]
-  (=> (= (well-formed w) true) (= (well-formed (retire w r)) true))
-  (intro h)
-  (simp only [retire close-scope-shallow])
-  (exact (well-formed-cleanup-del _ (:id r) (well-formed-run-del _ (:id r)
-           (well-formed-scope-upd w (:scope r) scope-close scope-close-scope-id h)))))
-
-(a/theorem well-formed-retire-check [w :- World, rid :- Nat]
-  (=> (= (well-formed w) true) (= (well-formed (retire-check w rid)) true))
-  (intro h)
-  (cases hf (run-find w rid)) (case' [some r]) (case' [none])
-  (simp only [retire-check hf]) (exact h)
-  (cases hr (retirable r))
-  (simp only [retire-check hf hr]) (exact h)
-  (simp only [retire-check hf hr]) (exact (well-formed-retire w r h)))
-
 (a/theorem well-formed-ack-raw [w :- World, z :- Nat, owner :- Nat]
   (=> (= (tbl-all (no-debtor z) (:edges w)) true) (= (well-formed w) true) (= (well-formed (ack-raw w z owner)) true))
   (intros hu h)
   (simp only [ack-raw])
   (exact (well-formed-cleanup-upd _ owner (cleanup-drop z)
            (well-formed-run-upd _ owner (run-unres z) (run-unres-run-id z) (well-formed-resource-del w z hu h)))))
-
-(a/theorem well-formed-t15-resource-ack-basic [w :- World, z :- Nat]
-  (=> (= (well-formed w) true) (= (well-formed (:world (t15-resource-ack-basic w z))) true))
-  (intro h)
-  (cases hu (tbl-all (no-debtor z) (:edges w)))
-  (simp only [t15-resource-ack-basic hu refuse]) (exact h)
-  (cases hf (resource-find w z)) (case' [some zr]) (case' [none])
-  (simp only [t15-resource-ack-basic hu hf refuse]) (exact h)
-  (simp only [t15-resource-ack-basic hu hf accept])
-  (exact (well-formed-retire-check _ (:owner zr) (well-formed-ack-raw w z (:owner zr) hu h))))
-
-(a/theorem t15-resource-ack-basic-refuse [w :- World, z :- Nat]
-  (=> (= (:accepted (t15-resource-ack-basic w z)) false) (= (:world (t15-resource-ack-basic w z)) w))
-  (intro ha)
-  (cases hu (tbl-all (no-debtor z) (:edges w)))
-  (simp only [t15-resource-ack-basic hu refuse])
-  (cases hf (resource-find w z)) (case' [some zr]) (case' [none])
-  (simp only [t15-resource-ack-basic hu hf refuse])
-  (simp [t15-resource-ack-basic hu hf accept] at ha))
 
 (a/theorem res-tok-none [w :- World, z :- Nat]
   (=> (= (res-tok-ok w z) false) (= (resource-find w z) (Option.none ResRow)))
@@ -1282,14 +1150,6 @@
   (have hh (= (tbl-has resource-id z (:res w)) true))
   (exact (tbl-find-has ResRow resource-id z zr (:res w) hf))
   (simp [res-tok-ok resource-has hh] at hg))
-
-(a/theorem t15-resource-ack-basic-l4 [w :- World, z :- Nat]
-  (=> (= (ack-tok-ok w z) false) (= (:world (t15-resource-ack-basic w z)) w))
-  (intro hg)
-  (cases hu (tbl-all (no-debtor z) (:edges w)))
-  (simp only [t15-resource-ack-basic hu refuse])
-  (have hr (= (res-tok-ok w z) false)) (simp only [ack-tok-ok hu Bool.and_true] at hg) (exact hg)
-  (simp only [t15-resource-ack-basic hu (res-tok-none w z hr) refuse]))
 
 ;; ---- T17 arm (Z#55): the resource part; the item (resource, activation, wait edge, park) is
 ;; spindel.v2.engine's `t17-arm`
@@ -1490,62 +1350,11 @@
   (simp [t20-unpin hm accept] at ha))
 
 ;; ===========================================================================
-;; Part E. dispatch : World -> Item -> Outcome
+;; Part E. The item's validity token
 ;; ===========================================================================
 
-(a/defn dispatch [w :- World, it :- Item] Outcome
-  (match it
-    [(create-source st kind v fresh) (t1-create-source-basic w st kind v fresh)]
-    [(create-source-top scope kind v fresh) (t1-create-nonstream-top w scope kind v fresh)]
-    [(write x v) (t2-write w x v)]
-    [(track st x k fresh) (t7-track w st x k fresh)]
-    [(observe d cb fresh) (t8-observe-basic w d cb fresh)]
-    [(unobserve e) (t8-unobserve w e)]
-    [(fire e tag val) (t9-fire w e tag val)]
-    [(resource-ack z) (t15-resource-ack-basic w z)]
-    [(arm st kind k fresh) (refuse w)]
-    [(resource-fire z tag val) (t18-resource-fire w z tag val)]
-    [(handle-drop x) (t19-handle-drop w x)]
-    [(pin x) (t20-pin w x)]
-    [(unpin x) (t20-unpin w x)]
-    [(create-comp st c i b) (refuse w)]
-    [(create-comp-top sc c i b) (refuse w)]
-    [(spawn st b fresh ins loc) (refuse w)]
-    [(spawn-top sc b fresh ins loc) (refuse w)]
-    [(start c fresh) (refuse w)]
-    [(await st ds m k fresh mine) (refuse w)]
-    [(dispatch-comp c fresh) (refuse w)]
-    [(complete st tag val) (refuse w)]
-    [(schedule r) (refuse w)]
-    [(host-await d fresh) (refuse w)]
-    [(host-unawait e) (refuse w)]
-    [(handle-new x) (refuse w)]
-    [(deliver x v) (refuse w)]
-    [(post x v) (refuse w)]
-    [(take st x k fresh) (refuse w)]
-    [(release x) (refuse w)]
-    [(finalize r) (refuse w)]
-    [(cancel r) (refuse w)]
-    [(release-world) (refuse w)]
-    [(open-scope st s) (refuse w)]
-    [(close-scope s) (refuse w)]
-    [(detach k s) (refuse w)]
-    [(finally-enter st) (refuse w)]
-    [(finally-exit st) (refuse w)]
-    [(slice-exit r) (refuse w)]
-    [(create-link st l) (refuse w)]
-    [(create-link-top sc l) (refuse w)]
-    [(link-demand l k) (refuse w)]
-    [(link-realize l tag v n) (refuse w)]
-    [(append x v t) (refuse w)]
-    [(close x tag v) (refuse w)]
-    [(finally-leave st) (refuse w)]
-    [(own s m) (refuse w)]
-    [(owned-done s c) (refuse w)]
-    [(drain ids) (refuse w)]
-    [(retire-local v) (refuse w)]))
-
-;; the item's validity token (§2), true for host operations that carry none
+;; the item's validity token (§2), true for host operations that carry none; the step that
+;; routes the items is spindel.v2.engine's `transition`
 (a/defn item-token-ok [w :- World, it :- Item] Bool
   (match it
     [(create-source st kind v fresh) (run-tok-ok w st)]
@@ -1597,152 +1406,3 @@
     [(owned-done s c) true]
     [(drain ids) true]
     [(retire-local v) true]))
-
-(a/theorem well-formed-dispatch [w :- World, it :- Item]
-  (=> (= (well-formed w) true) (= (well-formed (:world (dispatch w it))) true))
-  (intro h)
-  (cases it)
-  (exact (well-formed-t1-create-source-basic w _ _ _ _ h))
-  (exact (well-formed-t1-create-nonstream-top w _ _ _ _ h))
-  (exact (well-formed-t2-write w _ _ h))
-  (exact (well-formed-t7-track w _ _ _ _ h))
-  (exact (well-formed-t8-observe-basic w _ _ _ h))
-  (exact (well-formed-t8-unobserve w _ h))
-  (exact (well-formed-t9-fire w _ _ _ h))
-  (exact (well-formed-t15-resource-ack-basic w _ h))
-  (simp only [dispatch refuse]) (exact h)
-  (exact (well-formed-t18-resource-fire w _ _ _ h))
-  (exact (well-formed-t19 w _ h))
-  (exact (well-formed-t20-pin w _ h))
-  (exact (well-formed-t20-unpin w _ h))
-  (simp only [dispatch refuse]) (exact h)
-  (simp only [dispatch refuse]) (exact h)
-  (simp only [dispatch refuse]) (exact h)
-  (simp only [dispatch refuse]) (exact h)
-  (simp only [dispatch refuse]) (exact h)
-  (simp only [dispatch refuse]) (exact h)
-  (simp only [dispatch refuse]) (exact h)
-  (simp only [dispatch refuse]) (exact h)
-  (simp only [dispatch refuse]) (exact h)
-  (simp only [dispatch refuse]) (exact h)
-  (simp only [dispatch refuse]) (exact h)
-  (simp only [dispatch refuse]) (exact h)
-  (simp only [dispatch refuse]) (exact h)
-  (simp only [dispatch refuse]) (exact h)
-  (simp only [dispatch refuse]) (exact h)
-  (simp only [dispatch refuse]) (exact h)
-  (simp only [dispatch refuse]) (exact h)
-  (simp only [dispatch refuse]) (exact h)
-  (simp only [dispatch refuse]) (exact h)
-  (simp only [dispatch refuse]) (exact h)
-  (simp only [dispatch refuse]) (exact h)
-  (simp only [dispatch refuse]) (exact h)
-  (simp only [dispatch refuse]) (exact h)
-  (simp only [dispatch refuse]) (exact h)
-  (simp only [dispatch refuse]) (exact h)
-  (all_goals (simp only [dispatch refuse]))
-  (all_goals (exact h)))
-
-(a/theorem dispatch-refuse [w :- World, it :- Item]
-  (=> (= (:accepted (dispatch w it)) false) (= (:world (dispatch w it)) w))
-  (intro ha)
-  (cases it)
-  (exact (t1-create-source-basic-refuse w _ _ _ _ ha))
-  (exact (t1-create-nonstream-top-refuse w _ _ _ _ ha))
-  (exact (t2-write-refuse w _ _ ha))
-  (exact (t7-track-refuse w _ _ _ _ ha))
-  (exact (t8-observe-basic-refuse w _ _ _ ha))
-  (exact (t8-unobserve-refuse w _ ha))
-  (exact (t9-fire-refuse w _ _ _ ha))
-  (exact (t15-resource-ack-basic-refuse w _ ha))
-  (simp only [dispatch refuse])
-  (exact (t18-resource-fire-refuse w _ _ _ ha))
-  (exact (t19-refuse w _ ha))
-  (exact (t20-pin-refuse w _ ha))
-  (exact (t20-unpin-refuse w _ ha))
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (all_goals (simp only [dispatch refuse])))
-
-;; L4: an operation with an invalid token changes nothing
-(a/theorem dispatch-l4 [w :- World, it :- Item]
-  (=> (= (item-token-ok w it) false) (= (:world (dispatch w it)) w))
-  (intro hg)
-  (cases it)
-  (exact (t1-create-source-basic-l4 w _ _ _ _ hg))
-  (simp [item-token-ok] at hg)
-  (simp [item-token-ok] at hg)
-  (exact (t7-track-l4 w _ _ _ _ hg))
-  (simp [item-token-ok] at hg)
-  (simp [item-token-ok] at hg)
-  (exact (t9-fire-l4 w _ _ _ hg))
-  (exact (t15-resource-ack-basic-l4 w _ hg))
-  (simp only [dispatch refuse])
-  (exact (t18-resource-fire-l4 w _ _ _ hg))
-  (simp [item-token-ok] at hg)
-  (simp [item-token-ok] at hg)
-  (simp [item-token-ok] at hg)
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (simp only [dispatch refuse])
-  (all_goals (simp only [dispatch refuse])))
-
-;; the step's raw part preserves the sample bundle along any item sequence
-(a/defn run-items [w :- World, its :- (List Item)] World
-  (match its [nil w] [(cons h t) (run-items (:world (dispatch w h)) t)]))
-
-(a/theorem well-formed-run-items [its :- (List Item)]
-  (forall [w :- World] (=> (= (well-formed w) true) (= (well-formed (run-items w its)) true)))
-  (induction its)
-  (case' [cons h t ih])
-  (case' [nil])
-  (intros w hw) (simp only [run-items]) (exact hw)
-  (intros w hw) (simp only [run-items]) (exact (ih (:world (dispatch w h)) (well-formed-dispatch w h hw))))
-
-(a/theorem run-items-from-empty [its :- (List Item)] (= (well-formed (run-items empty-world its)) true)
-  (exact (well-formed-run-items its empty-world well-formed-empty)))

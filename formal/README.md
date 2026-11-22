@@ -326,7 +326,6 @@ A name says what the thing is about, in the spec's words. The grammar:
 | `pres-<x>`, `pres-<x>@<part>` | the generic proof of `<x>` over an abstract part; the part's own instance of it |
 | `chain-start`, `chain-to-<part>`, `chain` | the nested conjunctions of parts, up to and including `<part>`; `chain` is the last |
 | `tN-<verb>` | transition N of the spec (§8); `t-<verb>` is a transition without a number |
-| `<x>-basic` | step.clj's first form of a transition whose full form is in engine.clj |
 | `<item>-refused` | the guard that refuses the item |
 | `transition` | the table: one branch per item |
 | `host-guarded-transition` | `transition` behind `host-item-refused` |
@@ -359,7 +358,7 @@ The naming pass (2026-11) renamed about 3,200 hand-written and 9,700 generated c
 | `t1-body`, `t1-full`, `t1-stream`, `t1-top-full` | `t1-create-source`, `t1-create-nonstream`, `t1-create-stream`, `t1-create-source-top` |
 | `t8-obs`, `t8-full` | `t8-observe`, `t8-observe-any-kind` |
 | `t15-full`, `retire-full`, `t-cancel` | `t15-resource-ack`, `t13-retire`, `t14-host-cancel` |
-| step.clj's `t1-create-source`, `t8-observe`, `t15-resource-ack` | the same with `-basic` |
+| step.clj's `dispatch`, `run-items`, its `t1-create-source`, `t8-observe`, `t15-resource-ack`, `retire-check` and their lemmas | deleted (the first step function; `:deleted` in `notes/renames.edn`). The step is engine.clj's `transition` |
 | `t2-…`, `t6-…`, `t12-…` (lemma stems) | `t2-write-…`, `t6-await-…`, `t12-complete-…` |
 | `rr-loop`, `rr-fuel`, `rule-r-pre` | `rule-r-loop`, `rule-r-fuel`, `rule-r-last-input` |
 | `norm-…`, `casc-…`, `fin-…` (Rule R) | `normalize-…`, `cascade-…`, `finalize-…` |

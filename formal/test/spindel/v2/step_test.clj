@@ -1,13 +1,15 @@
 (ns spindel.v2.step-test
   "Loading spindel.v2.step kernel-checks every transition lemma (a failing proof throws at
   load). The deftests check the named theorems are in the kernel env, run scripted scenarios
-  through the compiled `dispatch`, and drive it with random items, checking well-formed after
-  every step and that every refusal leaves the world unchanged."
+  for step.clj's items (0-12) through the compiled `engine/transition` (the per-item transition,
+  before the loser cancel and Rule R), and drive it with random items, checking well-formed
+  after every step and that every refusal leaves the world unchanged."
   (:require [clojure.test :refer [deftest is testing]]
             [ansatz.core :as a]
             [spindel.v2.state :as s]
             [spindel.v2.edits :as e]
-            [spindel.v2.step :as st]))
+            [spindel.v2.step :as st]
+            [spindel.v2.engine :as en]))
 
 (def theorems
   '[;; appended to edits.clj
@@ -25,13 +27,12 @@
     well-formed-remove-edge well-formed-drop-cred-edges well-formed-drop-act well-formed-nat-fold tbl-find-has
     ;; step.clj
     run-tok-none res-tok-none well-formed-resume well-formed-fill-slot well-formed-invalidate well-formed-fire-dep
-    well-formed-fire-wait well-formed-fire-observe well-formed-fire-edge well-formed-create-source-raw well-formed-write-raw
-    well-formed-track-raw track-edge-ok well-formed-retire well-formed-retire-check well-formed-ack-raw
-    well-formed-t1-create-source-basic t1-create-source-basic-refuse t1-create-source-basic-l4 well-formed-t1-create-nonstream-top t1-create-nonstream-top-refuse well-formed-t2-write t2-write-refuse well-formed-t7-track t7-track-refuse t7-track-l4
-    well-formed-t8-observe-basic t8-observe-basic-refuse well-formed-t8-unobserve t8-unobserve-refuse
-    well-formed-t9-fire t9-fire-refuse t9-fire-l4 well-formed-t15-resource-ack-basic t15-resource-ack-basic-refuse t15-resource-ack-basic-l4 well-formed-t17-arm t17-arm-refuse t17-arm-l4
+    well-formed-fire-wait well-formed-fire-observe well-formed-fire-edge well-formed-write-raw
+    well-formed-track-raw track-edge-ok well-formed-ack-raw
+    well-formed-t1-create-nonstream-top t1-create-nonstream-top-refuse well-formed-t2-write t2-write-refuse well-formed-t7-track t7-track-refuse t7-track-l4
+    well-formed-t8-unobserve t8-unobserve-refuse
+    well-formed-t9-fire t9-fire-refuse t9-fire-l4 well-formed-t17-arm t17-arm-refuse t17-arm-l4
     well-formed-t18-resource-fire t18-resource-fire-refuse t18-resource-fire-l4 well-formed-t19 t19-refuse well-formed-t20-pin t20-pin-refuse well-formed-t20-unpin t20-unpin-refuse pin-count-pos
-    well-formed-dispatch dispatch-refuse dispatch-l4 well-formed-run-items run-items-from-empty
     ;; §2 re-entrant sites: the cont T7 writes
     track-cont-restart-with-finalizer track-cont-restart-with-resource track-cont-reentrant-needs-no-finalizer
     track-edge-cont edge-reread-cont tbl-find-del-self edge-find-remove-edge-self tbl-find-upd-self-cont
@@ -92,7 +93,7 @@
 (defn ok? [w]
   (and (e/well-formed w) (= (reference-pending w) (into {} (map (juxt :id :pending) (:comps w))))))
 
-(defn step [w item] (st/dispatch w item))
+(defn step [w item] (en/transition w item))
 
 (defn base-world
   "root scope 1; computations C (run RC) and D (run RD); task K (run RK, own run scope)."
@@ -234,8 +235,8 @@
       (is (ok? w2)))))
 
 (deftest arm-fire-ack-retire
-  ;; Z#55: the `arm` item (resource + park) is engine's; here the resource part `arm-raw` (T17
-  ;; proper), then T18/T15 through dispatch
+  ;; Z#55: the `arm` item is the resource and the park (engine_test); here only the resource part
+  ;; `arm-raw` (T17 proper), so the run stays active, then T18/T15 through the transition
   (let [{:keys [w rk sk]} (base-world)
         z (:next-id w)
         w (st/arm-raw w (find-row w :runs rk) s/rk-timer)]
@@ -258,7 +259,7 @@
             (is (nil? (find-row w4 :res z)))
             (is (nil? (find-row w4 :runs rk)) "retired: run row removed")
             (is (empty? (filter #(= rk (:run %)) (:cleanup w4))) "cleanup[R] removed")
-            (is (false? (:open (find-row w4 :scopes sk))) "run scope closed (shallow T16 stub)")
+            (is (nil? (find-row w4 :scopes sk)) "run scope closed and, empty, removed (T13's T16 cascade)")
             (is (ok? w4))))
         (testing "T15 on a running run: resource removed, run not retired"
           (let [w4 (:world (step w2 (resource-ack z)))]
@@ -332,8 +333,7 @@
       (refused-unchanged (create-source-top 2 s/sk-signal 0 (inc n)))
       (refused-unchanged (track (stamp w rc) x 1 (inc n)))
       (refused-unchanged (observe x 1 (inc n)))
-      (refused-unchanged (arm (stamp w rc) s/rk-timer 0 (inc n)))
-      (refused-unchanged (arm (stamp w rc) s/rk-timer 0 n)) "Z#55: dispatch refuses arm (it needs engine's park)")
+      (refused-unchanged (arm (stamp w rc) s/rk-timer 0 (inc n))))
     (testing "other refusals"
       (refused-unchanged (write 999 1))
       (refused-unchanged (create-source-top 2 9 0 n))
@@ -351,7 +351,7 @@
         [a w] (add-act w rk [])
         [ew w] (add-edge w s/ek-wait a k2)
         w (s/act-upd w a #(assoc % :members [(s/->Member ew 0)]))
-        ;; Z#55: dispatch refuses `arm` (engine's item), so T15/T18 get a resource of rc's from T17 proper
+        ;; a resource of rc's from T17 proper, so T15/T18 have one before the first accepted `arm`
         w (st/arm-raw w (find-row w :runs rc) s/rk-timer)]
     w))
 
@@ -397,6 +397,5 @@
               (is (true? (:converged (st/dirty-run w (second item))))))
             (is (ok? w2) (str "run " run " step " i " " (pr-str item)))
             (recur (inc i) w2)))))
-    (testing "every item kind but arm (Z#55: engine's item, refused by dispatch) was accepted at least once"
-      (is (every? pos? (assoc @accepted 8 1)) (pr-str @accepted))
-      (is (zero? (nth @accepted 8))))))
+    (testing "every item kind was accepted at least once"
+      (is (every? pos? @accepted) (pr-str @accepted)))))
