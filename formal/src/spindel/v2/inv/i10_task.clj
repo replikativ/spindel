@@ -215,4 +215,4 @@
 (a/theorem step-lit-i10-task [w :- World, it :- Item]
   (=> (= (acts-parked w) true) (= (i10-task w) true) (= (rule-r-safe (:world (raw w it))) true)
       (= (inv-i10-task (:world (world-step w it))) true))
-  (intros hg h hs) (exact (i10-task-i10-task _ (step-i10-task w it hg h hs))))
+  (intros hg h hs) (exact (inv-i10-task-of _ (step-i10-task w it hg h hs))))

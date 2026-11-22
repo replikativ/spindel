@@ -477,7 +477,7 @@
   (apply (any-elim ActRow (fm-ab b2) _ (:acts w) q)) (intros b mb kb)
   (have q2 := (tbl-all-mem RunRow _ r2 _ (fm-runs-of w w2 hf) mr2)) (simp only [fm-rr] at q2)
   (apply (any-elim RunRow (current-members-rkq r2) _ (:runs w) q2)) (intros r mr kr)
-  (have e := (current-members-current-members-run-key-eq r r2 kr))
+  (have e := (current-members-run-key-eq r r2 kr))
   (simp only [fm-ab Bool.and_eq_true] at kb)
   (have rb := (Nat.eq_of_beq_eq_true (And.left kb)))
   (have i1 (= (:id r) (:run b)))

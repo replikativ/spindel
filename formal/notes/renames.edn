@@ -1210,7 +1210,7 @@
   gl-complete-raw-o i10-task-complete-raw-hand
   gl-empty i10-task-empty
   gl-filter-world-o i10-task-filter-world-hand
-  gl-i10-task i10-task-i10-task
+  gl-i10-task inv-i10-task-of
   gl-intro i10-task-intro
   gl-new-run-of i10-task-new-run-of
   gl-of-glx-comp i10-task-of-i10-task-exempt-comp
@@ -1931,7 +1931,7 @@
   h3-retire-local current-members-retire-run
   h3-retire-one current-members-retire-one
   h3-retire-with current-members-t13-retire-with-subtree
-  h3-rk3-eq current-members-current-members-run-key-eq
+  h3-rk3-eq current-members-run-key-eq
   h3-rkq-refl current-members-rkq-refl
   h3-rm-cons-ne current-members-rm-cons-ne
   h3-rm-head current-members-rm-head

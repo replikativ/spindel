@@ -145,7 +145,7 @@
   (intros hs he)
   (simp only [pend-ok tbl-any Bool.or_eq_true] at he)
   (simp only [pend-ok Bool.or_eq_true])
-  (rcases he (or h1 (or h2 current-members)))
+  (rcases he (or h1 (or h2 h3)))
   (exact (Or.inl h1))
   (simp only [covers Bool.and_eq_true] at h2)
   (have hn (= (:node j) (:creditor e))) (exact (Nat.eq_of_beq_eq_true (And.left h2)))
@@ -157,7 +157,7 @@
   (simp only [Nat.blt_eq])
   (omega)
   (exact (Or.inl (rank-edge-ok-of-lt w e hl)))
-  (exact (Or.inr current-members)))
+  (exact (Or.inr h3)))
 
 (a/theorem raise-inv-skip [w :- World, j :- RJ, t :- (List RJ)]
   (=> (= (Nat.ble (:need j) (comp-rank w (:node j))) true)
@@ -262,7 +262,7 @@
             (have hhn (= (comp-has w (:node j)) true)) (rw [← hceq]) (exact hhc)
             (have hrc (= (comp-rank (comp-upd w (:node j) (comp-set-rank (:need j))) (:creditor e)) (:need j)))
             (rw [hceq]) (exact (comp-rank-set-eq w (:node j) (:need j) hhn))
-            (rcases he (or h1 (or h2 current-members)))
+            (rcases he (or h1 (or h2 h3)))
             (simp only [rank-edge-ok hkd hhd hhc Bool.not_true Bool.false_or] at h1)
             (have hl (= (Nat.blt (comp-rank (comp-upd w (:node j) (comp-set-rank (:need j))) (:debtor e))
                                  (comp-rank (comp-upd w (:node j) (comp-set-rank (:need j))) (:creditor e))) true))
@@ -274,11 +274,11 @@
             (rw [hrd hrc]) (exact (And.right h2))
             (simp only [pend-ok Bool.or_eq_true]) (exact (Or.inl (rank-edge-ok-of-lt _ e hl)))
             (simp only [pend-ok raise-todo tbl-any-app Bool.or_eq_true])
-            (exact (Or.inr (Or.inl (covers-transfer w _ e t hrd current-members)))))
+            (exact (Or.inr (Or.inl (covers-transfer w _ e t hrd h3)))))
           (case [false]
             (have hrc (= (comp-rank (comp-upd w (:node j) (comp-set-rank (:need j))) (:creditor e)) (comp-rank w (:creditor e))))
             (exact (comp-rank-set-ne w (:node j) (:need j) (:creditor e) hcn))
-            (rcases he (or h1 (or h2 current-members)))
+            (rcases he (or h1 (or h2 h3)))
             (simp only [pend-ok rank-edge-ok hhas hrd hrc Bool.or_eq_true])
             (simp only [rank-edge-ok Bool.or_eq_true] at h1)
             (exact (Or.inl h1))
@@ -286,7 +286,7 @@
             (have hne (= (:node j) (:creditor e))) (exact (Nat.eq_of_beq_eq_true (And.left h2)))
             (rw [← hne] at hcn) (simp [Nat.beq_refl] at hcn)
             (simp only [pend-ok raise-todo tbl-any-app Bool.or_eq_true])
-            (exact (Or.inr (Or.inl (covers-transfer w _ e t hrd current-members))))))))))
+            (exact (Or.inr (Or.inl (covers-transfer w _ e t hrd h3))))))))))
 
 (a/theorem raise-inv-raise [w :- World, j :- RJ, t :- (List RJ)]
   (=> (= (Nat.ble (:need j) (comp-rank w (:node j))) false)

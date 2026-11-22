@@ -1583,7 +1583,7 @@
     (case [some r0]
       (exact (find-witness (task-key t) r0 (:runs w) (lit-runs-nodup w (i10-task-well-formed w h)) h1 hf)))))
 
-(a/theorem i10-task-i10-task [w :- World] (=> (= (i10-task w) true) (= (inv-i10-task w) true))
+(a/theorem inv-i10-task-of [w :- World] (=> (= (i10-task w) true) (= (inv-i10-task w) true))
   (intro h)
   (simp only [inv-i10-task Bool.and_eq_true])
   (exact (And.intro (all-of-mem RunRow (task-run-is w) (:runs w) (fn [r :- RunRow, hm :- (List.Mem r (:runs w))] (i10-task-task-run-is w r h hm)))
