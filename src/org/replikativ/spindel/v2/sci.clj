@@ -45,8 +45,9 @@
    code; its open finally regions are dropped (their finalizers are SCI
    code), so it retires.
 
-   **Budget (B3 exception, spec Z#80).** A hard bound for misbehaving code,
-   off by default (`install!`'s `:slice-budget-ms`). The unit is an adapter
+   **Budget (B3 exception, spec Z#80).** An elapsed-time limit checked at
+   polls, off by default (`install!`'s `:slice-budget-ms`): the first poll
+   past it aborts, also code that would have terminated. The unit is an adapter
    activation: the outermost entry of a run's code on a thread, including
    continuations of the run resumed synchronously on that stack; a nested
    activation of another run (a computation demanded on the stack) has its
@@ -62,8 +63,10 @@
      error and never see the interrupt; a run already cancelled stays
      cancelled;
    - no SCI code of the run afterwards: its error continuation passes the
-     error on, and effects, creations and completions of the aborted
-     activation throw the interrupt again;
+     error on, effects, creations, scopes, paths and completions of the
+     aborted activation throw the interrupt again, and continuations
+     captured in it never enter SCI (a run it left parked fails when it
+     resumes; an external whose start callback was aborted fails at once);
    - `:on-abandon` once, off the gate.
    This breaks B3 for the aborted activation: finalizers not yet run are
    skipped or truncated, effects already performed persist, and a resource
@@ -103,10 +106,12 @@
 
 ;; The adapter activation running on this thread: the outermost `in-run`
 ;; entry of a run in a world, an array [world run regions deadline budget
-;; aborted?]. `regions` holds the run's finally stack as SCI code changed it
-;; through the spliced functions, innermost last: `:open` (a region whose
-;; body runs, the engine's R-FINS) or `:running` (its finally clause runs,
-;; R-INFIN). `deadline` and `budget` are nanos (nil: no budget).
+;; aborted? dead]. `regions` holds the run's finally stack as SCI code
+;; changed it through the spliced functions, innermost last: `:open` (a
+;; region whose body runs, the engine's R-FINS) or `:running` (its finally
+;; clause runs, R-INFIN). `deadline` and `budget` are nanos (nil: no
+;; budget). `dead` is a cell the continuations captured in the activation
+;; share: set when it is hard-aborted (`dead-here`).
 (def ^:private ^ThreadLocal adapting (ThreadLocal.))
 
 (defn- activation
@@ -144,10 +149,27 @@
   (interrupt/interrupt! "SCI slice budget exceeded" {::budget true}))
 
 (defn- live!
-  "Nothing of an aborted activation runs on: no effect, creation or
-   completion (B1: its slice can then only throw)."
+  "Nothing of an aborted activation runs on: no effect, creation, scope,
+   path or completion (B1: its slice can then only throw). The finally
+   bookkeeping and closing a scope or path stay allowed: they are unwind."
   []
   (when-let [a (activation)] (when (aget a 5) (abort-again!))))
+
+(defn- dead-here
+  "The budget error when `cell` (of the activation a continuation was
+   captured in) records a hard abort that applies to the world processed
+   now: the aborted world itself, or a world forked from it after the abort
+   (its fork cut is not below the id counter at the abort). Savepoint
+   instances and forks made before keep their own runs."
+  [^objects cell]
+  (when cell
+    (when-let [[e wid fam next-id] (aget cell 0)]
+      (let [w (v2/cw)]
+        (when (and w (identical? (hs/deref-weak fam) (rw/g w rw/W-FAMILY))
+                   (or (= wid (rw/g w rw/ID))
+                       (some (fn [[a cut]] (and (= a wid) (>= (long cut) (long next-id))))
+                             (rw/g w rw/W-LINEAGE))))
+          e)))))
 
 (defn check-budget!
   "The budget poll (`:slice-budget-ms`, see `install!`). The embedding calls
@@ -179,8 +201,8 @@
   (live!)
   (let [cur store/*ctx*
         ctx (if (and cur (identical? (:sci.impl/lineage cur) (:sci.impl/lineage home))) cur home)
-        b (when-not body? (regions))]
-    [ctx (sci/capture-continuation-context ctx) (if b (aget b 0) [])]))
+        a (when-not body? (activation))]
+    [ctx (sci/capture-continuation-context ctx) (if a (aget ^objects (aget a 2) 0) []) (when a (aget a 6))]))
 
 (defn- select
   "The interpreter to run captured code of `ctx` in, for world `w`."
@@ -257,13 +279,20 @@
 (defn- abandon!
   "The hard path: the aborted activation's open regions are closed in the
    model's order (their remaining finalizers are skipped, a B3 exception)
-   and the run fails with the budget error. Returns the error to throw."
+   and the run fails with the budget error. Its continuations are dead from
+   now on (`dead-here`): a run the activation left parked (an external
+   whose start callback was aborted) never re-enters SCI and fails when it
+   resumes. Returns the error to throw."
   [cfg ^objects a]
-  (let [r (aget a 1)
-        n (close-regions! (aget a 2))]
-    (notify-abandon! cfg {:world (aget a 0) :run-id (rw/g r rw/ID) :regions n
-                          :budget-ms (quot (long (aget a 4)) 1000000)})
-    (budget-ex (aget a 4))))
+  (let [w (aget a 0) r (aget a 1)
+        e (budget-ex (aget a 4))]
+    (aset ^objects (aget a 6) 0
+          [e (rw/g w rw/ID) (hs/weak (rw/g w rw/W-FAMILY))
+           (let [^java.util.concurrent.atomic.AtomicLong n (rw/g w rw/W-NEXT)] (.get n))])
+    (let [n (close-regions! (aget a 2))]
+      (notify-abandon! cfg {:world w :run-id (rw/g r rw/ID) :regions n
+                            :budget-ms (quot (long (aget a 4)) 1000000)}))
+    e))
 
 (defn- thunk-or-nil
   "What an effect returns to the body: a Thunk of its own code, else nothing."
@@ -289,29 +318,32 @@
       (let [b (doto (object-array 1) (aset 0 stack))
             budget (when-let [ms (:slice-budget-ms @cfg)] (* 1000000 (long ms)))
             t0 (System/nanoTime)
-            a (doto (object-array 6)
+            a (doto (object-array 7)
                 (aset 0 w) (aset 1 r) (aset 2 b)
-                (aset 3 (when budget (+ t0 (long budget)))) (aset 4 budget) (aset 5 false))
+                (aset 3 (when budget (+ t0 (long budget)))) (aset 4 budget) (aset 5 false)
+                (aset 6 (object-array 1)))
             entered (volatile! false)
             fail (fn [e] (when own (aset own 0 e)) (throw e))]
         (.set adapting a)
-        (let [v (try
-                  (let [target (select cfg w ctx)
-                        run (sci/continuation-context-fn (sci/retarget-continuation-context cc target)
-                                                         (fn [] (vreset! entered true) (force-all (f))))]
-                    (run))
-                  (catch Throwable t
-                    (cond (aget a 5) a          ; aborted: abandoned below
-                          @entered (throw (unwrap t))
-                          :else (fail (refuse! b t))))
-                  (finally
-                    (.set adapting prev)
-                    ;; the parent's clock does not run while a nested activation does
-                    (when prev
-                      (when-let [dl (aget prev 3)]
-                        (aset prev 3 (num (+ (long dl) (- (System/nanoTime) t0))))))))]
-          ;; also when a host helper swallowed the abort and the code returned
-          (if (aget a 5) (fail (abandon! cfg a)) v))))))
+        (try
+          (let [v (try
+                    (let [target (select cfg w ctx)
+                          run (sci/continuation-context-fn (sci/retarget-continuation-context cc target)
+                                                           (fn [] (vreset! entered true) (force-all (f))))]
+                      (run))
+                    (catch Throwable t
+                      (cond (aget a 5) a          ; aborted: abandoned below
+                            @entered (throw (unwrap t))
+                            :else (fail (refuse! b t)))))]
+            ;; also when a host helper swallowed the abort and the code returned
+            (if (aget a 5) (fail (abandon! cfg a)) v))
+          (finally
+            (.set adapting prev)
+            ;; the parent's clock does not run while a nested activation
+            ;; does, its abort translation and region closing included
+            (when prev
+              (when-let [dl (aget prev 3)]
+                (aset prev 3 (num (+ (long dl) (- (System/nanoTime) t0))))))))))))
 
 (defn- in-run [cfg cap f] (in-run* cfg cap f nil))
 
@@ -388,12 +420,15 @@
   "The host functions spliced into expansions for the lineage of `home`."
   [cfg home]
   (let [err* (fn [cap ek] (fn [e]
-                            (if (handed-off? e)
-                              (throw e)   ; to the slice: the run fails without SCI code
-                              (in-run cfg cap #(ek e)))))
+                            (cond
+                              (handed-off? e) (throw e)   ; to the slice: the run fails without SCI code
+                              :else (if-let [x (dead-here (nth cap 3))]
+                                      (throw x)           ; captured in a hard-aborted activation
+                                      (in-run cfg cap #(ek e))))))
         ;; the engine routes a throw of `k` to `ek` (resume-k): the run's own
         ;; failure is recorded for exactly that handoff
         k* (fn [cap k] (fn [v]
+                         (when-let [x (dead-here (nth cap 3))] (throw x))
                          (let [own (object-array 1)]
                            (try (in-run* cfg cap #(k v) own)
                                 (catch Throwable t
@@ -431,6 +466,11 @@
                        w (v2/cw)]
                    (thunk-or-nil (v2/external-effect! (fn [complete!]
                                                         (let [c ((in-interpreter cfg w cap f fail-refused) complete!)]
+                                                          ;; aborted in the start callback (a host helper
+                                                          ;; swallowed it): the effect fails now, so the
+                                                          ;; parked run resumes into its failure
+                                                          (when-let [^objects a (activation)]
+                                                            (when (aget a 5) (throw (budget-ex (aget a 4)))))
                                                           (if (fn? c) (in-interpreter cfg w cap c join-refused) c)))
                                                       (k* cap k) (err* cap ek)))))
      :await-op (fn [op opts k ek]
@@ -460,9 +500,9 @@
                         nil)
      ;; a scope or saved path acts only in the run that opened it (refused,
      ;; with no effect, in another run or an unrelated world)
-     :open-scope (fn [] (opened (v2/open-scope!)))
+     :open-scope (fn [] (live!) (opened (v2/open-scope!)))
      :close-scope (fn [s] (when-let [x (own s identity)] (v2/close-scope-fx! x)) nil)
-     :push-path (fn [p] (opened (v2/push-path! p)))
+     :push-path (fn [p] (live!) (opened (v2/push-path! p)))
      :pop-path (fn [s] (when-let [x (own s (constantly nil))] (v2/pop-path! x)) nil)}))
 
 ;; ---------------------------------------------------------------------------
@@ -679,8 +719,8 @@
 
    - `:select` – the resolver, see `set-resolver!`.
    - `:effects` – `{sci-sym registered-sym}`, see `expose-effect!`.
-   - `:slice-budget-ms` – nil (default: off) or the wall-clock budget of one
-     adapter activation, a hard bound for runaway code (see the namespace
+   - `:slice-budget-ms` – nil (default: off) or the elapsed-time budget of
+     one adapter activation, checked at polls (see the namespace
      doc, Budget). It needs `ctx` to have an `:interrupt-fn` that calls
      `check-budget!`.
    - `:on-abandon` – called once, off the gate, with `{:world :run-id

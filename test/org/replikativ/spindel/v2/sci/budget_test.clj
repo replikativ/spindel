@@ -14,11 +14,14 @@
 (def ^:private budget-ms 100)
 
 (defn- interpreter
-  "An interpreter with the budget on; abandonment reports go to `reports`."
+  "An interpreter with the budget on; abandonment reports go to `reports`.
+   `host/swallow` is a host helper that calls an SCI fn and swallows any
+   throw (the interrupt included)."
   [reports bindings]
   (let [p (s/interpreter {:interrupt-fn v2sci/check-budget!
                           :bindings bindings
-                          :namespaces {'host {'now (fn [] (System/currentTimeMillis))}}}
+                          :namespaces {'host {'now (fn [] (System/currentTimeMillis))
+                                              'swallow (fn [f] (try (f) (catch Throwable _ nil)))}}}
                          {:slice-budget-ms budget-ms
                           :on-abandon (fn [r] (swap! reports conj r))})]
     (sci/eval-string* p "(defn busy [] (let [end (+ (host/now) 3000)] (loop [] (when (< (host/now) end) (recur))) :done))")
@@ -188,3 +191,53 @@
        (is (= 0 (sci/eval-string* p "@caught")))
        (is (no-handoff-left?))
        (is (completes? w))))))
+
+(deftest a-swallowed-abort-in-an-external-start-is-terminal
+  ;; external parks the run before its start callback runs; the callback's
+  ;; abort is swallowed by a host helper and the callback returns. The run
+  ;; must fail and never resume into SCI, also when the saved complete! is
+  ;; called later (before: it succeeded, running the suffix and finalizer)
+  (checked
+   (let [w (s/vworld)
+         reports (atom [])
+         p (interpreter reports {})
+         t (ev w p "(def saved (atom nil)) (def log (atom []))
+                    (task (try (external (fn [complete!] (reset! saved complete!) (host/swallow busy) nil))
+                               (swap! log conj :suffix) :succeeded
+                               (finally (swap! log conj :fin))))")]
+     (is (budget-error? (outcome t)) "the run failed at once")
+     ((sci/eval-string* p "@saved") :late)
+     (Thread/sleep 50)
+     (is (budget-error? (outcome t)) "a later completion changes nothing")
+     (is (= [] (sci/eval-string* p "@log")) "no SCI code of the run ran after the abort")
+     (is (s/wait-until #(= 1 (count @reports))))
+     (is (completes? w)))))
+
+(deftest no-scope-opens-after-the-abort
+  ;; the native finally runs after the interrupt; its with-scope must not
+  ;; open a scope (an effect of the aborted activation)
+  (checked
+   (let [w (s/vworld)
+         p (interpreter (atom []) {})
+         t (ev w p "(task (try (busy) (finally (with-scope :cleanup))))")]
+     (is (budget-error? (outcome t)))
+     (is (not-any? #(= :open-scope (first (:item %))) (verify/log w)))
+     (is (completes? w)))))
+
+(deftest a-nested-abort-unwinds-on-the-childs-clock
+  ;; the computation demanded on the task's stack is aborted inside a CPS
+  ;; region; closing that region (its :finally-exit, slowed down here) is
+  ;; part of the child's abort, so the parent's clock stays paused
+  (binding [s/*divergences* (atom [])]
+    (let [check (verify/checking-hook s/*divergences*)
+          w (v2/world {:verify? true
+                       :hook (fn [w item]
+                               (when (= :finally-exit (first item)) (Thread/sleep 180))
+                               (check w item))})
+          sig (binding [v2/*world* w] (v2/signal 0))
+          p (interpreter (atom []) {'sig sig})
+          t (ev w p "(def c (spin (try (track sig) (busy) (finally :x))))
+                     (task (try (await c) (catch Exception e [:caught (:type (ex-data e))])))")]
+      (is (= [:caught ::v2sci/budget-exceeded] (v t)))
+      (is (completes? w))
+      (is (empty? @s/*divergences*)))))
