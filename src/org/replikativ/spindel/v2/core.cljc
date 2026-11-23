@@ -5240,8 +5240,9 @@
       child (on its own thread, also before `w`'s gate is released); a
       failure after the insertion (the sweep request) is the published
       child's, reported, and the child stays published and owned. A failure
-      before it leaves the child unpublished: it is released through its
-      ingress (processed after `w`'s gate) and the fork throws
+      before it leaves the child unpublished: its host admission is shut at
+      once, it is released through its ingress (processed after `w`'s gate)
+      and the fork throws
       `{:spindel/unpublished true :child c}`;
    7. `W-AFTER`: the child is handed off after `w`'s gate is released. This
       is the fork's only handoff of the child (`fork!` adds none).
@@ -5258,6 +5259,8 @@
     (commit! w [:fork-host (g c rw/ID)])
     (try (publish-world! c #(report! "fork publication" %))
          (catch #?(:clj Throwable :cljs :default) t
+           ;; no host work is admitted to it after this decision
+           (s! c rw/W-SHUT :released)
            (release-child! w c)
            (throw (ex-info "fork!: the accepted child could not be published to its family; it is released"
                            {:spindel/unpublished true :child c} t))))
@@ -5593,14 +5596,16 @@
                     (commit! w [:fork (g r rw/ID) (g child rw/ID)])
                     ;; a failure after the registry insertion is the published
                     ;; child's (reported); one before it leaves the committed
-                    ;; child unpublished, and it is released (its owner scope
-                    ;; is acknowledged by its completion)
+                    ;; child unpublished: its host admission is shut now, before
+                    ;; the run gets it, and its queued T21 releases it (its
+                    ;; completion acknowledges its owner scope)
                     (if (try (publish-world! child #(report! "fork publication" %)) true
                              (catch #?(:clj Throwable :cljs :default) t
                                (report! "fork publication" t) false))
             ;; scheduled after the parent's gate is released (E3)
                       (aadd! (g w rw/W-AFTER) child)
-                      (release-child! w child))
+                      (do (s! child rw/W-SHUT :released)
+                          (release-child! w child)))
                     (k [:parent child])))))
             (unwind! ek))))
 

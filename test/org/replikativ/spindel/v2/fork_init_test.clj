@@ -483,3 +483,67 @@
          (is (= [[iid {}]] (mapv #(subvec % 0 2) (filterv #(= iid (first %)) @seen)))
              "with the basis's unchanged state"))
        (v2/abandon! p)))))
+
+(deftest a-fork-effects-unpublished-child-admits-no-work
+  ;; the child's publication fails before its insertion: the run still gets
+  ;; [:parent child], but the child takes no host work, and its queued
+  ;; release completes it and acknowledges the run's scope
+  (checked
+   (let [w (vworld)
+         on-collect hs/on-collect!
+         fired (atom false)
+         ran (atom false)
+         err (java.io.StringWriter.)
+         kid (promise)
+         t (binding [*err* err]
+             (with-redefs [hs/on-collect! (fn [x action]
+                                            (if (and (world-row? x) (not (identical? x w))
+                                                     (compare-and-set! fired false true))
+                                              (throw (ex-info "cleaner failed" {}))
+                                              (on-collect x action)))]
+               (binding [v2/*world* w]
+                 (task (let [[side child] (v2/fork)]
+                         (if (= side :parent)
+                           (do (deliver kid child)
+                               (try (v2/send-world! child #(reset! ran true)) :accepted
+                                    (catch clojure.lang.ExceptionInfo e
+                                      (if (:spindel/released (ex-data e)) :refused (throw e)))))
+                           :child))))))
+         child (deref kid 2000 nil)]
+     (is @fired "the insertion failed")
+     (is (= :refused (v2/value t 2000 ::timeout)) "no host work is admitted to the child")
+     (is (not (member? w (v2/world-id child))) "unpublished")
+     (is (true? (v2/await-complete child 2000 ::timeout)) "its queued release completes it")
+     (is (false? @ran))
+     (is (re-find #"fork publication failed" (str err)))
+     (v2/release-world! w)
+     (is (true? (v2/await-complete w 2000 ::timeout)) "the run's scope was acknowledged"))))
+
+(deftest a-fork-effects-publication-failure-after-insertion-is-reported
+  ;; the sweep request fails after the insertion: the child stays published,
+  ;; and its copy of the run resumes
+  (checked
+   (let [w (vworld)
+         err (java.io.StringWriter.)
+         seen (atom [])
+         _ (stale-generation! w)
+         later hs/metadata-later!
+         fail-once (atom true)
+         kid (promise)
+         t (binding [*err* err]
+             (with-redefs [hs/metadata-later! (fn [f & more]
+                                                (if (compare-and-set! fail-once true false)
+                                                  (throw (ex-info "scheduler down" {}))
+                                                  (apply later f more)))]
+               (binding [v2/*world* w]
+                 (task (let [[side child] (v2/fork)]
+                         (if (= side :parent)
+                           (do (deliver kid (v2/world-id child))
+                               (await (v2/deferred)))   ; the run's scope keeps the child
+                           (swap! seen conj (v2/world-id (v2/current-world)))))))))
+         cid (deref kid 2000 nil)]
+     (is (false? @fail-once) "the child's sweep request failed")
+     (is (member? w cid) "published")
+     (is (wait-until #(= [cid] @seen)) "the child's copy of the run resumed")
+     (is (re-find #"fork publication failed" (str err)) "the failure is reported")
+     (v2/cancel-task! t))))
