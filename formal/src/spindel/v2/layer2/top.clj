@@ -45,7 +45,9 @@
 
 ;; the systems reachable from an initial one (live cells hold the empty world, none complete, no join, no
 ;; live publication) by the operations of spindel.v2.layer2.sys, each with the premises its theorems take: a fork,
-;; fork effect or instance takes an id no cell has accepted, from a live cell (a live publication); a
+;; fork effect or instance takes an id no cell has accepted, from a live cell (a live publication); a fork or
+;; fork effect is from a world that is not released (spec §8.1 F7, refusal at item time; the engine refuses
+;; the host fork of a released world, and a release cancels every run, so no `(fork)` effect follows it); a
 ;; publication is made from a live cell; a disown is of a cell that is not complete
 (a/inductive SysReach [] :in Prop :indices [cells (=> Nat Cell) pubs (=> Nat Pub)]
   (init [cells (=> Nat Cell)] [pubs (=> Nat Pub)]
@@ -56,12 +58,12 @@
         [hr0 (forall [k :- Nat] (= (:rpend (cells k)) false))]
         :where [cells pubs])
   (step [cells (=> Nat Cell)] [pubs (=> Nat Pub)] [k Nat] [it Item] [r (SysReach cells pubs)] [hr0 (= (:rpend (cells k)) false)] :where [(sys-step cells k it) pubs])
-  (fork [cells (=> Nat Cell)] [pubs (=> Nat Pub)] [k Nat] [m Nat] [owner Nat] [r (SysReach cells pubs)] [hl (= (:live (cells k)) true)] [hf (forall [j :- Nat] (= (tbl-all (nat-ne m) (:kids (cells j))) true))] [hr0 (= (:rpend (cells k)) false)] :where [(sys-fork cells k m owner) pubs])
+  (fork [cells (=> Nat Cell)] [pubs (=> Nat Pub)] [k Nat] [m Nat] [owner Nat] [r (SysReach cells pubs)] [hl (= (:live (cells k)) true)] [hf (forall [j :- Nat] (= (tbl-all (nat-ne m) (:kids (cells j))) true))] [hr0 (= (:rpend (cells k)) false)] [hnr (= (:released (:world (cells k))) false)] :where [(sys-fork cells k m owner) pubs])
   (wake [cells (=> Nat Cell)] [pubs (=> Nat Pub)] [k Nat] [r (SysReach cells pubs)] [hr0 (= (:rpend (cells k)) false)] :where [(sys-wake cells k) pubs])
   (accept [cells (=> Nat Cell)] [pubs (=> Nat Pub)] [k Nat] [m Nat] [r (SysReach cells pubs)]  :where [(sys-accept cells k m) pubs])
   (complete [cells (=> Nat Cell)] [pubs (=> Nat Pub)] [k Nat] [r (SysReach cells pubs)]  :where [(sys-complete cells k) pubs])
   (drop [cells (=> Nat Cell)] [pubs (=> Nat Pub)] [k Nat] [r (SysReach cells pubs)]  :where [(sys-drop cells k) pubs])
-  (fork-effect [cells (=> Nat Cell)] [pubs (=> Nat Pub)] [k Nat] [m Nat] [owner Nat] [st Nat] [kont Nat] [v Nat] [r (SysReach cells pubs)] [hl (= (:live (cells k)) true)] [hf (forall [j :- Nat] (= (tbl-all (nat-ne m) (:kids (cells j))) true))] [hr0 (= (:rpend (cells k)) false)] :where [(sys-fork-effect-g cells k m owner st kont v) pubs])
+  (fork-effect [cells (=> Nat Cell)] [pubs (=> Nat Pub)] [k Nat] [m Nat] [owner Nat] [st Nat] [kont Nat] [v Nat] [r (SysReach cells pubs)] [hl (= (:live (cells k)) true)] [hf (forall [j :- Nat] (= (tbl-all (nat-ne m) (:kids (cells j))) true))] [hr0 (= (:rpend (cells k)) false)] [hnr (= (:released (:world (cells k))) false)] :where [(sys-fork-effect-g cells k m owner st kont v) pubs])
   (publish [cells (=> Nat Cell)] [pubs (=> Nat Pub)] [k Nat] [p Nat] [st Nat] [kont Nat] [fresh Nat] [r (SysReach cells pubs)] [hl (= (:live (cells k)) true)] [hr0 (= (:rpend (cells k)) false)] :where [(sys-publish cells k st kont fresh) (pubs-publish cells pubs k p st kont fresh)])
   (resume [cells (=> Nat Cell)] [pubs (=> Nat Pub)] [p Nat] [v Nat] [r (SysReach cells pubs)] [hr0 (= (:rpend (cells (:cell (pubs p)))) false)] :where [(sys-resume cells pubs p v) pubs])
   (instantiate [cells (=> Nat Cell)] [pubs (=> Nat Pub)] [p Nat] [m Nat] [owner Nat] [r (SysReach cells pubs)] [hlp (= (:live (pubs p)) true)] [hf (forall [j :- Nat] (= (tbl-all (nat-ne m) (:kids (cells j))) true))] :where [(sys-instantiate-g cells pubs p m owner) pubs])
@@ -96,7 +98,7 @@
     (have S := (sysinv-s _ _ ih)) (have Pp := (sysinv-p _ _ ih)) (have Cc := (sysinv-c _ _ ih))
     (have Q := (sysinv-q _ _ ih)) (have QP := (sysinv-qp _ _ ih)) (have J := (sysinv-j _ _ ih))
     (exact (sysinv-mk _ _ (sinv-step cells k it S) Pp (cinv-step-q cells k it S Q Cc) (qsinv-step cells k it S Q) QP (jinv-step cells k it J))))
-  (case [fork cells pubs k m owner r hl hf hr0 ih]
+  (case [fork cells pubs k m owner r hl hf hr0 hnr ih]
     (have S := (sysinv-s _ _ ih)) (have Pp := (sysinv-p _ _ ih)) (have Cc := (sysinv-c _ _ ih))
     (have Q := (sysinv-q _ _ ih)) (have QP := (sysinv-qp _ _ ih)) (have J := (sysinv-j _ _ ih))
     (exact (sysinv-mk _ _ (sinv-fork cells k m owner S hl) Pp (cinv-fork cells k m owner Cc hf) (qsinv-fork cells k m owner Q hl) QP (jinv-fork cells k m owner J))))
@@ -116,7 +118,7 @@
     (have S := (sysinv-s _ _ ih)) (have Pp := (sysinv-p _ _ ih)) (have Cc := (sysinv-c _ _ ih))
     (have Q := (sysinv-q _ _ ih)) (have QP := (sysinv-qp _ _ ih)) (have J := (sysinv-j _ _ ih))
     (exact (sysinv-mk _ _ (sinv-drop cells k S) Pp (cinv-drop cells k Cc) (qsinv-drop cells k Q) QP (jinv-drop cells k J))))
-  (case [fork-effect cells pubs k m owner st kont v r hl hf hr0 ih]
+  (case [fork-effect cells pubs k m owner st kont v r hl hf hr0 hnr ih]
     (have S := (sysinv-s _ _ ih)) (have Pp := (sysinv-p _ _ ih)) (have Cc := (sysinv-c _ _ ih))
     (have Q := (sysinv-q _ _ ih)) (have QP := (sysinv-qp _ _ ih)) (have J := (sysinv-j _ _ ih))
     (exact (sysinv-mk _ _ (sinv-fork-effect-g cells k m owner st kont v S hl) Pp (cinv-fork-effect-g cells k m owner st kont v Cc hf) (qsinv-fork-effect-g cells k m owner st kont v Q hl) QP (jinv-fork-effect-g cells k m owner st kont v J))))
@@ -217,12 +219,12 @@
   (induction hr)
   (case [init cells pubs h0 hc hj hp hr0] (exact (rinv-init cells hr0)))
   (case [step cells pubs k it r hr0 ih] (exact (rinv-step cells k it ih hr0)))
-  (case [fork cells pubs k m owner r hl hf hr0 ih] (exact (rinv-fork cells k m owner ih)))
+  (case [fork cells pubs k m owner r hl hf hr0 hnr ih] (exact (rinv-fork cells k m owner ih)))
   (case [wake cells pubs k r hr0 ih] (exact (rinv-wake cells k ih hr0)))
   (case [accept cells pubs k m r ih] (exact (rinv-accept cells k m ih)))
   (case [complete cells pubs k r ih] (exact (rinv-complete cells k ih)))
   (case [drop cells pubs k r ih] (exact (rinv-drop cells k ih)))
-  (case [fork-effect cells pubs k m owner st kont v r hl hf hr0 ih] (exact (rinv-fork-effect-g cells k m owner st kont v ih)))
+  (case [fork-effect cells pubs k m owner st kont v r hl hf hr0 hnr ih] (exact (rinv-fork-effect-g cells k m owner st kont v ih)))
   (case [publish cells pubs k p st kont fresh r hl hr0 ih] (simp only [sys-publish]) (exact (rinv-step cells k _ ih hr0)))
   (case [resume cells pubs p v r hr0 ih] (exact (rinv-resume cells pubs p v ih hr0)))
   (case [instantiate cells pubs p m owner r hlp hf ih] (exact (rinv-instantiate-g cells pubs p m owner ih)))
