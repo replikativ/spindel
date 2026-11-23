@@ -3003,6 +3003,16 @@
 
 (defn released-ex [] (control-ex "world released" {:spindel/released true}))
 
+(defn- shut-ex
+  "The refusal of a host admission to `w`, whose admission is shut
+   (`W-SHUT`): a savepoint basis is frozen (S1), an unpublished fork-effect
+   child is released (§8.1 F7)."
+  [w]
+  (if (= :frozen (g w rw/W-SHUT))
+    (ex-info "a savepoint basis is frozen: it is only forked (instantiate, consume)"
+             {:spindel/invalid :frozen})
+    (released-ex)))
+
 (defn sealed-ex [] (control-ex "world sealed" {:spindel/sealed true}))
 
 (defn- host-sealed?
@@ -3116,11 +3126,15 @@
             ~@(cond
                 (true? admit?)
                 [`(and (g ~w' rw/W-RELEASED) (not (and (identical? ~w' (cw)) (active-run))))
-                 `(throw (released-ex))]
+                 `(throw (released-ex))
+                 `(and (g ~w' rw/W-SHUT) (not (and (identical? ~w' (cw)) (active-run))))
+                 `(throw (shut-ex ~w'))]
                 (false? admit?) []
                 :else
                 [`(and ~admit? (g ~w' rw/W-RELEASED) (not (and (identical? ~w' (cw)) (active-run))))
-                 `(throw (released-ex))])
+                 `(throw (released-ex))
+                 `(and ~admit? (g ~w' rw/W-SHUT) (not (and (identical? ~w' (cw)) (active-run))))
+                 `(throw (shut-ex ~w'))])
             (hs/held? ~lk) (if (identical? ~w' (cw))
                              (~f')
                              (let [~prev (enter-world! ~w')]
@@ -3913,6 +3927,7 @@
    current gate is left, so no thread processes two worlds at once."
   [w f]
   (when (g w rw/W-RELEASED) (throw (released-ex)))
+  (when (g w rw/W-SHUT) (throw (shut-ex w)))
   (hs/mpsc-add! (g w rw/W-INGRESS) f)
   (if (holding-gate?)
     (when-not (identical? w (cw)) (aadd! (g (cw) rw/W-AFTER) w))
@@ -5083,6 +5098,7 @@
      (s! c rw/W-HOLDER nil)
      (s! c rw/W-AFTER (alist))
      (s! c rw/W-UNBORN false)
+     (s! c rw/W-SHUT nil)
      (s! c rw/W-PUB-WORLD nil)
      (s! c rw/W-WATCHES (lt/index))
      (s! c rw/W-SWEEP-PENDING (hs/flag false))
@@ -5157,6 +5173,7 @@
     ;; and dormant resources wait; dropped unactivated, it is collected
     ;; without running anything (it never ran)
     (s! c rw/W-UNBORN true)
+    (s! c rw/W-SHUT nil)                ; a basis is frozen, its instances are not
     (s! c rw/W-PUB-WORLD owner)
     (s! c rw/W-STATE state)
     (s! c rw/W-WATCHES (lt/index))
@@ -5664,9 +5681,12 @@
                          ;; its run continues with the frame live at the effect
                                  (s! (rv w r) rw/R-BIND (thread-frame))
                                  (let [basis (fork-world* w)
-                                       ;; S1: never run. Unborn (E4) before it is published, so
-                                       ;; neither maintenance nor any handoff runs its copied work
+                                       ;; S1: never run, never changed. Unborn (E4) before it is
+                                       ;; published, so neither maintenance nor any handoff runs its
+                                       ;; copied work; frozen, so no host operation reaches it
+                                       ;; (activate!, swap-world!, send-world!, ...)
                                        _ (s! basis rw/W-UNBORN true)
+                                       _ (s! basis rw/W-SHUT :frozen)
                                        _ (publish-world! basis)
                                        pub (publication w (id-of z) site payload basis
                                                         (boolean (g (rv w (g (rv w r) rw/R-OF)) rw/K-LOCAL)))]

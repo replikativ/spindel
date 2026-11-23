@@ -455,3 +455,31 @@
      (let [[_ logged? thread] (first @seen)]
        (is (= "test-maintenance" thread) "maintenance entered the child at its publication")
        (is (true? logged?) "after the parent logged [:fork r c]")))))
+
+(deftest a-savepoint-basis-is-frozen
+  ;; S1: no host operation reaches a basis; its instances keep the inherited
+  ;; work and the publication-time state
+  (checked
+   (let [w (vworld {:executor caller-runs})
+         pubs (atom [])
+         seen (atom [])
+         frozen? (fn [f] (= :frozen (:spindel/invalid (ex-data (try (f) nil (catch clojure.lang.ExceptionInfo e e))))))]
+     (v2/install-handlers! w {:s (fn [p] (swap! pubs conj p))})
+     (v2/host-call! w (fn []
+                        (binding [v2/*world* w]
+                          (task (v2/savepoint :s nil) :after)
+                          (task (swap! seen conj (recorder))))))
+     (let [p (first @pubs)
+           b (:basis p)
+           bid (v2/world-id b)]
+       (is (frozen? #(v2/activate! b :go)) "activate! is refused")
+       (is (frozen? #(v2/swap-world! b assoc :k 1)) "a world-state change is refused")
+       (is (frozen? #(v2/send-world! b (fn [] nil))) "a sent item is refused")
+       (is (frozen? #(binding [v2/*world* b] (task :spawned))) "a spawn is refused")
+       (is (= [] (filterv #(= bid (first %)) @seen)) "nothing ran in the basis")
+       (let [i (doto (v2/instantiate p) (v2/activate! :go))
+             iid (v2/world-id i)]
+         (is (wait-until #(some (fn [[id]] (= iid id)) @seen)) "an instance runs the inherited sibling")
+         (is (= [[iid {}]] (mapv #(subvec % 0 2) (filterv #(= iid (first %)) @seen)))
+             "with the basis's unchanged state"))
+       (v2/abandon! p)))))
