@@ -469,8 +469,10 @@ replayed engine states, no theorem; **open**: neither; **out of scope**: not mod
 world satisfies `inv`), `pinv` (every live publication's basis does), `cinv` (completion soundness),
 `qsinv`/`qpinv` (quiet-compatible), `jinv` (host joins). Caveats: the merge takes its basis as a free
 argument (there is no `Cell.mbase`), so `SysReach`'s merge admits any basis; guards that layer 2 does
-not have (a fork of a released world, a merge without a parent relation, a join on any id) are not
-premises either. `layer2.mvcc`'s refinement is to its own ghost value-copy tables, not to
+not have (a merge without a parent relation, a join on any id) are not premises either. A fork and a
+fork effect of a released world are excluded by a premise of `SysReach`'s `fork` and `fork-effect`
+(`(:released (:world (cells k)))` is false); `MReach`'s fork has no such premise (`MSt` has no
+released flag). `layer2.mvcc`'s refinement is to its own ghost value-copy tables, not to
 `layer2.sys`'s cells.
 
 ### Progress obligations
