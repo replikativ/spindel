@@ -167,7 +167,7 @@
                (closed/type-form (.-type d))))
         (is (tc/is-def-eq (tc/mk-tc-state @a/ansatz-env) (.value d) expected-value))))
     (is (= expected-t6 (get engine-forms 't6-await)))
-    (let [raw0-body (nth (get engine-forms 'transition) 4), branch (first (filter #(= 'await (ffirst %)) (drop 2 raw0-body)))]
+    (let [raw0-body (nth (get engine-forms 'transition) 4), branch (first (filter #(= 'await (ffirst %)) (partition 2 (drop 2 raw0-body))))]
       (is (= expected-raw0-await-branch branch)))))
 
 (defn row [w table id] (fixture/row w table id))
@@ -182,7 +182,7 @@
         acc (engine/await-acc w r ds mode k mine), raw (engine/await-raw w r ds mode k mine)
         direct (engine/t6-await w st ds mode k fresh mine), outer (engine/transition w [18 st ds mode k fresh mine])]
     (check-input f xm)
-    (is (= [r] (step/tok-run w st)))
+    (is (= r (step/tok-run w st)))
     (is (true? (engine/await-ok w r ds mode fresh)))
     (is (true? (:ok acc)))
     (is (= (:final staged) raw))
@@ -238,7 +238,7 @@
         w (fixture/accepted-step w [2 signal 56]), r (row w :runs rid)
         out (positive-outcomes (assoc f :w w) [ready-resource delivered pending-task] s/am-all 4004 [signal] [])]
     (is (false? (fill/current-run? w rid)))
-    (is (= [r] (step/tok-run w (:stamp r))))
+    (is (= r (step/tok-run w (:stamp r))))
     (is (true? (:accepted (:direct out))) "currency alone is not a T6 refusal guard")
     (is (not= w (:world (:direct out))))
     (is (empty? (get-in out [:staged :deliveries])))))
@@ -266,7 +266,7 @@
         w4 (fixture/accepted-step w3 [29 rid]), cleanup (row w4 :runs rid)]
     (is (= s/mode-unwinding (:mode cleanup)))
     (is (true? (:slice cleanup)))
-    (is (= [cleanup] (step/tok-run w4 st)))
+    (is (= cleanup (step/tok-run w4 st)))
     (is (false? (engine/run-normal cleanup)))
     (is (false? (engine/await-ok w4 cleanup [deferred] s/am-one (:next-id w4))))
     (refused-outcomes w4 st [deferred] s/am-one 4009 (:next-id w4) [] [])
@@ -283,7 +283,7 @@
               direct (engine/t6-await w st ds mode 4010 fresh mine)
               outer (engine/transition w [18 st ds mode 4010 fresh mine])]
           (check-input f [])
-          (is (= [r] (step/tok-run w st)))
+          (is (= r (step/tok-run w st)))
           (is (true? (engine/await-ok w r ds mode fresh)))
           (is (true? (:ok acc)))
           (is (true? (engine/await-kind-refused w ds)))
@@ -301,7 +301,7 @@
   (let [{:keys [w rid owner leaf] :as f} (fixture/fixture :comp), r (row w :runs rid), ds [owner leaf]
         acc (engine/await-acc w r ds s/am-all 4011 [leaf])]
     (check-input f [])
-    (is (= [r] (step/tok-run w (:stamp r))))
+    (is (= r (step/tok-run w (:stamp r))))
     (is (true? (engine/await-cycle w r ds)))
     (is (false? (engine/await-ok w r ds s/am-all (:next-id w))))
     (is (false? (:ok acc)))

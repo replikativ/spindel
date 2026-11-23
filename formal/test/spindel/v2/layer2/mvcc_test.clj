@@ -34,7 +34,7 @@
   "Every (world, id, read, table) where an active world does not read its table."
   [s]
   (vec (for [w worlds :when ((:act s) w) i ids :when (((:dom s) w) i)
-             :let [r (rd s w i) t [(((:tab s) w) i)]] :when (not= r t)]
+             :let [r (rd s w i) t (((:tab s) w) i)] :when (not= r t)]
          [w i r t])))
 
 (defn- prune-all [s] (reduce m/mv-prune s (range 1 (:n s))))
@@ -44,7 +44,7 @@
 ;; `resolve-row` then the change: own-copy! first when the world has neither the row nor a copy
 (defn- wr [s w i y]
   (let [own? (= w (:ow ((:h s) ((:home s) i))))
-        s (if (or own? (not= 0 ((:fwd ((:fam s) w)) i))) s (m/mv-copy s w i (first (rd s w i))))]
+        s (if (or own? (not= 0 ((:fwd ((:fam s) w)) i))) s (m/mv-copy s w i (rd s w i)))]
     (m/mv-write s w i y)))
 
 (def ^:private s0 m/mv-init)
@@ -61,7 +61,7 @@
                            ["fork" #(m/mv-fork % 0 1 100 false)]
                            ["parent writes 1" #(wr % 0 1 11)] ["child writes 2" #(wr % 1 2 21)]
                            ["parent writes 2" #(wr % 0 2 22)] ["parent writes 1 again" #(wr % 0 1 12)]])]
-    (is (= [[10] [21] [12] [22]] [(rd s 1 1) (rd s 1 2) (rd s 0 1) (rd s 0 2)]))))
+    (is (= [10 21 12 22] [(rd s 1 1) (rd s 1 2) (rd s 0 1) (rd s 0 2)]))))
 
 (deftest nested-fork-with-a-released-intermediate
   (let [s (run-checked s0 [["create" #(-> % (m/mv-create 0 1 10) (m/mv-create 0 2 20) (m/mv-create 0 3 30))]
@@ -70,7 +70,7 @@
                            ["B finishes (its token is shared: C reads through it)" #(m/mv-finish % 1)]
                            ["root writes 2" #(wr % 0 2 22)] ["root writes 1" #(wr % 0 1 13)]
                            ["B collected" #(m/mv-drop % 1)] ["C writes 3" #(wr % 2 3 33)]])]
-    (is (= [[11] [20] [33]] [(rd s 2 1) (rd s 2 2) (rd s 2 3)]))
+    (is (= [11 20 33] [(rd s 2 1) (rd s 2 2) (rd s 2 3)]))
     (is (= 1 ((:ts s) 100)) "B's token stays shared (sticky)")))
 
 (deftest savepoint-instances-after-the-owner-writes
@@ -79,7 +79,7 @@
                            ["instance 2" #(m/mv-inst % 1 2)] ["instance writes 1" #(wr % 2 1 12)]
                            ["owner writes 2" #(wr % 0 2 21)] ["instance 3" #(m/mv-inst % 1 3)]
                            ["dispose the basis" #(m/mv-drop % 1)] ["owner writes 2 again" #(wr % 0 2 23)]])]
-    (is (= [[12] [20] [10] [20]] [(rd s 2 1) (rd s 2 2) (rd s 3 1) (rd s 3 2)]))))
+    (is (= [12 20 10 20] [(rd s 2 1) (rd s 2 2) (rd s 3 1) (rd s 3 2)]))))
 
 (deftest a-finished-unshared-fork-keeps-no-version
   (let [s (run-checked s0 [["create" #(m/mv-create % 0 1 10)] ["fork" #(m/mv-fork % 0 1 100 false)]
@@ -92,8 +92,8 @@
     (with-redefs [m/mv-fin (fn [ts l] (if (seq l) (m/mv-upd ts (:tok (first l)) 2) ts))]
       (let [s (-> s0 (m/mv-create 0 1 10) (m/mv-create 0 2 20) (m/mv-fork 0 1 100 false)
                   (m/mv-fork 1 2 101 false) (m/mv-finish 1) (wr 0 2 22))]
-        (is (= [[2 2 nil [20]]] (ref-bad s)) "no version for a live fork"))))
+        (is (= [[2 2 nil 20]] (ref-bad s)) "no version for a live fork"))))
   (testing "a write without the barrier shows the child the parent's newer value"
     (with-redefs [m/mv-pres (fn [cs ts o x] x)]
       (let [s (-> s0 (m/mv-create 0 1 10) (m/mv-fork 0 1 100 false) (wr 0 1 11))]
-        (is (= [[1 1 [11] [10]]] (ref-bad s)))))))
+        (is (= [[1 1 11 10]] (ref-bad s)))))))

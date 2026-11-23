@@ -62,7 +62,7 @@
         w0 (:world (en/world-step s/empty-world (it :spawn-top s/root-scope-id 0 (:next-id s/empty-world) [] false)))
         r (first (:runs w0))
         w1 (:world (en/world-step w0 (it :schedule (:id r))))
-        run (fn [w] ((juxt :act :slice :resources) (first (s/run-find w (:id r)))))
+        run (fn [w] ((juxt :act :slice :resources) (s/run-find w (:id r))))
         z (:next-id w1)
         p (en/world-step w1 (sys/publish-item (:stamp r) 0 z))
         w2 (:world p)]
@@ -94,7 +94,7 @@
 (deftest merge-is-not-refused-and-refuses-a-conflict
   (let [{:keys [basis parent child]} (fork-worlds)
         it (fn [tag & fs] (into [(o/ctor-idx tag)] fs))
-        src (fn [w x] ((juxt :state :version) (first (s/source-find w x))))
+        src (fn [w x] ((juxt :state :version) (s/source-find w x)))
         merged (sys/merge-world parent child basis sys/refuse-all true)]
     (is (= [3] (sys/diff child basis)) "the child changed signal 3")
     (is (empty? (sys/diff basis basis)))
@@ -114,9 +114,9 @@
 (deftest c2-resolver
   (let [{:keys [basis parent child]} (fork-worlds)
         it (fn [tag & fs] (into [(o/ctor-idx tag)] fs))
-        src (fn [w x] ((juxt :state :version) (first (s/source-find w x))))
+        src (fn [w x] ((juxt :state :version) (s/source-find w x)))
         calls (atom [])
-        rv (cur4 (fn [x b pv cv] (swap! calls conj [x b pv cv]) [(+ pv cv)]))
+        rv (cur4 (fn [x b pv cv] (swap! calls conj [x b pv cv]) (+ pv cv)))
         p2 (:world (en/world-step parent (it :write 3 99)))]
     (is (false? (sys/merge-ok parent child basis sys/refuse-all false)) "unsealed: refused")
     (is (= parent (sys/merge-world parent child basis rv false)))
@@ -211,10 +211,10 @@
         b1 (step s/empty-world (it :create-link-top root l))
         sx (:next-id b1)
         basis (step b1 (it :create-source-top root s/sk-stream 0 sx))
-        tail (:tail (first (s/source-find basis sx)))
+        tail (:tail (s/source-find basis sx))
         child (step basis (it :link-realize l 0 0 0))
         child2 (step basis (it :append sx 5 (:next-id basis)))]
-    (is (pos? (:version (first (s/source-find child l)))) "the child realized the link")
+    (is (pos? (:version (s/source-find child l))) "the child realized the link")
     (is (empty? (sys/diff child basis)) "a realized link is not in the diff")
     (is (true? (sys/merge-ok basis child basis sys/refuse-all true)))
     (is (= basis (sys/merge-world basis child basis sys/refuse-all true)) "nothing to adopt")
