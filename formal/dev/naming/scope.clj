@@ -133,13 +133,24 @@
                   (= 'catch h)
                   (let [[_ cls e & body] x] (when (symbol? e) (bind! e)) (walk-seq body (if (symbol? e) (add env [e]) env)) env)
 
-                  ;; (match x [pattern body] ...)
+                  ;; (match x pattern body ...)   (ansatz >= 0.2.654: flat arms)
                   (= 'match h)
-                  (let [[_ scrut & clauses] x]
+                  (let [[_ scrut & arms] x]
                     (walk scrut env)
-                    (doseq [c clauses]
-                      (if (and (vector? c) (= 2 (count c)))
-                        (walk (second c) (walk-pattern (first c) env))
+                    (doseq [[pat body] (partition-all 2 arms)]
+                      (walk body (walk-pattern pat env)))
+                    env)
+
+                  ;; (match-as x T R (ctor body) (ctor [fields] body) ...)
+                  (= 'match-as h)
+                  (let [[_ scrut & more] x]
+                    (walk-seq (cons scrut (take 2 more)) env)
+                    (doseq [c (drop 2 more)]
+                      (if (and (seq? c) (symbol? (first c)))
+                        (do (emit (first c) :constructor)
+                            (let [[fs body] (if (vector? (second c)) [(filter symbol? (second c)) (nth c 2 nil)] [[] (second c)])]
+                              (doseq [y fs] (bind! y))
+                              (walk body (add env fs))))
                         (walk c env)))
                     env)
 
