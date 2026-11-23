@@ -1,4 +1,4 @@
-(ns spindel.v2.top
+(ns ^:ansatz/lean spindel.v2.top
   "Reading map: `inv` below is the top invariant; `chain` is the last of the nested conjunctions
   chain-start ⊂ … ⊂ chain, each adding one part (README.md, \"The invariant: bundles and the chain\");
   a part `<part>` has its step lemma `step-<part>` in its own namespace under inv/.

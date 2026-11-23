@@ -51,8 +51,8 @@
     (AwAcc.mk (await-pre w r ds mode k mine) (List.nil DE) true) pre))
 
 (a/defn current-members-debtors [ps :- (List DE)] (List Nat)
-  (match ps [nil (List.nil Nat)]
-    [(cons p t) (List.cons Nat (:deb p) (current-members-debtors t))]))
+  (match ps nil (List.nil Nat)
+    (cons p t) (List.cons Nat (:deb p) (current-members-debtors t))))
 
 (a/defn current-members-pairs [pre :- (List Nat), tail :- (List Nat), ps :- (List DE)] Prop
   (And (forall [d :- Nat]
@@ -306,7 +306,7 @@
           (is (= (closed/type-form (elab/elaborate @a/ansatz-env (list 'forall parameters result)))
                  (closed/type-form (.-type d))) (str name " exact safe definition signature"))
           (if (= name 'current-members-debtors)
-            (is (= '(match ps [nil (List.nil Nat)] [(cons p t) (List.cons Nat (:deb p) (current-members-debtors t))]) body)
+            (is (= '(match ps nil (List.nil Nat) (cons p t) (List.cons Nat (:deb p) (current-members-debtors t))) body)
                 "recursive body pinned without claiming evaluation of a symbolic list")
             (let [expected (elab/elaborate @a/ansatz-env (list 'fn parameters body) (.-type d))]
               (is (tc/is-def-eq (tc/mk-tc-state @a/ansatz-env) (.value d) expected)
@@ -317,7 +317,7 @@
 (defn check-entry [f ds mode]
   (let [{:keys [w rid]} f, r (row w :runs rid)]
     (fixture/check-input f)
-    (is (= [r] (step/tok-run w (:stamp r))))
+    (is (= r (step/tok-run w (:stamp r))))
     (is (true? (engine/await-ok w r ds mode (:next-id w))))
     (is (true? (idle/comp-awake-owns-run (:of r) (:id r) w)))
     (is (true? (i8/awaiting-run-alive (:id r) w)))
@@ -379,7 +379,7 @@
         (is (not-any? #(some (fn [m] (= eid (:edge m))) (:members %)) (:acts W)))))
     (doseq [d tail]
       (is (not (contains? by-debtor d)))
-      (when-let [e (first (step/site-edge (:edges W) (:of r) (:effect-index r) d))]
+      (when-let [e (step/site-edge (:edges W) (:of r) (:effect-index r) d)]
         (is (not-any? #(some (fn [m] (= (:id e) (:edge m))) (:members %)) (:acts W)))))
     by-debtor))
 
@@ -391,7 +391,7 @@
         (is (= expected (check-prefix f r ds mode k mine pre tail acc)))
         (if-let [d (first tail)]
           (let [W (:world acc), old (when (= s/ek-dep (:kind (engine/await-edge W r (:next-id w) mode k d)))
-                                    (first (step/site-edge (:edges W) (:of r) (:effect-index r) d)))
+                                    (step/site-edge (:edges W) (:of r) (:effect-index r) d))
                 eid (if old (:id old) (:next-id W)), out (engine/await-step r (:next-id w) mode k acc d)]
             (is (true? (edits/edge-ok-in W (engine/await-edge W r (:next-id w) mode k d))))
             (is (= (if old (:next-id W) (inc (:next-id W))) (:next-id (:world out))))

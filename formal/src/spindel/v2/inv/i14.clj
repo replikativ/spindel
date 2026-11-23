@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.i14
+(ns ^:ansatz/lean spindel.v2.inv.i14
   "I14 (engine-v2 spec, Z#60): the validity graph over idle computations (edges from each idle
   computation to the computation debtors of its validity entries) has no cycle, kernel-checked
   through `world-step` (Init only).
@@ -1161,7 +1161,7 @@
       (= (react-run8 (List.cons Nat u f) w (List.cons Nat d (List.nil Nat)))
          (react-run8 f (react-one w c) (List.append Nat (List.nil Nat) (valid-debtors (:validity c))))))
   (intros hc hi) (simp only [react-run8 hc hi]))
-(a/theorem rest-nil [r :- FinRes] (=> (= (match (:rest r) [nil true] [(cons h t) false]) true) (= (:rest r) (List.nil Nat)))
+(a/theorem rest-nil [r :- FinRes] (=> (= (match (:rest r) nil true (cons h t) false) true) (= (:rest r) (List.nil Nat)))
   (intro h) (cases hr (:rest r)) (case [nil] (rfl)) (case [cons a b] (rw [hr] at h) (cases h)))
 
 (a/theorem i14-validity-raw-demand [xq :- (List Nat), xw :- (List Nat), w :- World, d :- Nat]
@@ -1319,9 +1319,9 @@
   (have hn (= (i14-idle-dep-queued zq9 (:comps w) (track-edge r x s k)) true))
   (simp only [i14-idle-dep-queued track-edge aw Bool.or_true])
   (have h2 (= (i14-validity-raw zq9 zw9 zs9 (match (site-edge (:edges w) (:of r) (:effect-index r) x)
-                               [none (track-new w r x s k)]
-                               [(some e) (comp-upd (track-fin s (:id e) (edge-upd w (:id e) (edge-reread (track-cont r k) s)))
-                                                   (:of r) (comp-consume-adopt (:effect-index r) x))])) true))
+                               none (track-new w r x s k)
+                               (some e) (comp-upd (track-fin s (:id e) (edge-upd w (:id e) (edge-reread (track-cont r k) s)))
+                                                  (:of r) (comp-consume-adopt (:effect-index r) x)))) true))
   (cases he (site-edge (:edges w) (:of r) (:effect-index r) x)) (case' [some e]) (case' [none])
   (simp only [track-new])
   (exact (i14-validity-raw-comp-upd zq9 zw9 zs9 _ (:of r) (comp-consume-adopt (:effect-index r) x)
@@ -2357,13 +2357,13 @@
   (simp only [chain-to-i14-ordered a1 a2 Bool.and_self]))
 
 ;; ---- I14: the validity graph over idle computations has no cycle
-(a/defn idle-row [w :- World, d :- Nat] Bool (match (comp-find w d) [none false] [(some c) (:idle c)]))
-(a/defn vrow [w :- World, d :- Nat] (List Valid) (match (comp-find w d) [none (List.nil Valid)] [(some c) (:validity c)]))
+(a/defn idle-row [w :- World, d :- Nat] Bool (match (comp-find w d) none false (some c) (:idle c)))
+(a/defn vrow [w :- World, d :- Nat] (List Valid) (match (comp-find w d) none (List.nil Valid) (some c) (:validity c)))
 ;; the validity graph: an idle computation's successors are its idle computation debtors
 (a/defn vsucc14 [w :- World, x :- Nat] (List Nat)
   (match (comp-find w x)
-    [none (List.nil Nat)]
-    [(some c) (if (:idle c) (tbl-filter (idle-row w) (valid-debtors (:validity c))) (List.nil Nat))]))
+    none (List.nil Nat)
+    (some c) (if (:idle c) (tbl-filter (idle-row w) (valid-debtors (:validity c))) (List.nil Nat))))
 (a/defn above-all [us :- (List Valid), v :- Valid] Bool (tbl-all (prec14 v) us))
 
 (a/theorem prec-trans [v :- Valid, u :- Valid, t :- Valid]

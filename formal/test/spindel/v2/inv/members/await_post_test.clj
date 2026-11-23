@@ -261,7 +261,7 @@
     (let [w (fixture/accepted-step w [3 rid signal 3004 (:next-id w)])
           w (fixture/accepted-step w [2 signal 55]), r (row w :runs rid)
           out (await-final-prefixes (assoc f :w w) [delivered signal deferred] s/am-all 3005 [signal] [])]
-      (is (= [r] (step/tok-run w (:stamp r))))
+      (is (= r (step/tok-run w (:stamp r))))
       (is (false? (fill/current-run? w rid)))
       (is (empty? (:deliveries out)))
       (is (some? (row (:final out) :acts (:next-id w)))))))

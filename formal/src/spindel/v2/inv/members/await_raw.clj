@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.members.await-raw
+(ns ^:ansatz/lean spindel.v2.inv.members.await-raw
   "Raw await H3 through post/cancel-losers, before finish/Rule R."
   (:require [ansatz.core :as a]
             [spindel.v2.state :refer :all]

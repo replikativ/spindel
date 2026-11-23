@@ -337,7 +337,7 @@
         pr (o/replay pl :family? true :worlds? true)
         at (first (keep-indexed (fn [i x] (when (= :fork-host (first (:item x))) i)) pl))]
     {:pl pl :cl cl :pr pr :at at :cr (o/replay cl :family? true :init (nth (:worlds pr) at) :worlds? true)}))
-(defn- src [w x] (first (s/source-find w x)))
+(defn- src [w x] (s/source-find w x))
 
 ;; sample 18: a pull sequence of two elements read by a task: each `await` on an unrealized link is
 ;; followed by `[:link-demand L K]` (realizer task K in the root scope, handles 0), the realizer's
@@ -349,7 +349,7 @@
     (is (= [[:link-demand 3 9] [:link-realize 3 1 6 12] [:link-realize 18 0 0 0]] (map (comp :item (partial nth l)) [4 7 19])))
     (let [w (nth ws 4)]
       (is (= 9 (:rtask (src w 3))) "the demand sets the realizer")
-      (is (= [s/root-scope-id 0] ((juxt :owner :handles) (first (s/task-find w 9)))) "a root task without handles"))
+      (is (= [s/root-scope-id 0] ((juxt :owner :handles) (s/task-find w 9))) "a root task without handles"))
     (let [w (nth ws 7)]
       (is (= [1 6 12 0] ((juxt :version :state :next :rtask) (src w 3))) "realized with [6 12]")
       (is (= [s/sk-link 0 0] ((juxt :kind :version :tail) (src w 12))) "the next pull link"))
@@ -579,7 +579,7 @@
         before (nth (:worlds pr) (+ at 1))
         after (nth (:worlds pr) (+ at 3))
         refuse (cur4 (fn [_ _ _ _] nil))
-        value (cur4 (fn [_ b pv cv] (some-> (c2-id (+ (c2-val pv) (- (c2-val cv) (c2-val b)))) vector)))]
+        value (cur4 (fn [_ b pv cv] (c2-id (+ (c2-val pv) (- (c2-val cv) (c2-val b))))))]
     (is (= [(count pl) 0 0] ((juxt :checked :n-divergences :resyncs) pr)) "the parent")
     (is (= [(count cl) 0 0] ((juxt :checked :n-divergences :resyncs) cr)) "the child")
     (is (= [[:write 4 7] [:write 3 5] [:write 4 8]] (map :item (subvec pl (inc at) (+ at 4)))) "the parent's write, then the merge's")

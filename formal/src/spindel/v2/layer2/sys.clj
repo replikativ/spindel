@@ -1,4 +1,4 @@
-(ns spindel.v2.layer2.sys
+(ns ^:ansatz/lean spindel.v2.layer2.sys
   "Layer 2, semantic: a system of worlds (notes/LAYER2.md §3-§5), kernel-checked.
 
   A cell holds one layer-1 `World`. A fork is a value copy of the parent's world; the child's
@@ -104,7 +104,7 @@
 (a/defn hj-done [j :- Join] Join (if (jpend j) (Join.mk (:id j) (:target j) js-delivered) j))
 (a/defn hj-drop [j :- Join] Join (if (jpend j) (Join.mk (:id j) (:target j) js-withdrawn) j))
 (a/defn joins-map [f :- (=> Join Join), js :- (List Join)] (List Join)
-  (match js [nil (List.nil Join)] [(cons h t) (List.cons Join (f h) (joins-map f t))]))
+  (match js nil (List.nil Join) (cons h t) (List.cons Join (f h) (joins-map f t))))
 ;; the live (pending) joins: the sidecar's `:pending-joins`
 (a/defn pending-joins [js :- (List Join)] Nat (tbl-count jpend js))
 
@@ -162,55 +162,55 @@
 ;; `host-item-refused`) and the internal items are not refused, nor are withdrawals, handles, pins, cancel and release.
 (a/defn seal-item [it :- Item] Bool
   (match it
-    [(create-source st kind v fresh) false]
-    [(create-source-top scope kind v fresh) false]
-    [(write x v) true]
-    [(track st x k fresh) false]
-    [(observe d cb fresh) false]
-    [(unobserve e) false]
-    [(fire e tag val) false]
-    [(resource-ack z) false]
-    [(arm st kind k fresh) false]
-    [(resource-fire z tag val) false]
-    [(handle-drop x) false]
-    [(pin x) false]
-    [(unpin x) false]
-    [(create-comp st c i b) false]
-    [(create-comp-top sc c i b) false]
-    [(spawn st b fresh ins loc) false]
-    [(spawn-top sc b fresh ins loc) false]
-    [(start c fresh) false]
-    [(await st ds m k fresh mine) false]
-    [(dispatch-comp c fresh) false]
-    [(complete st tag val) false]
-    [(schedule r) false]
-    [(host-await d fresh) false]
-    [(host-unawait e) false]
-    [(handle-new x) false]
-    [(deliver x v) true]
-    [(post x v) true]
-    [(take st x k fresh) false]
-    [(release x) true]
-    [(finalize r) false]
-    [(cancel r) false]
-    [(release-world) false]
-    [(open-scope st s) false]
-    [(close-scope s) false]
-    [(detach k s) false]
-    [(finally-enter st) false]
-    [(finally-exit st) false]
-    [(slice-exit r) false]
-    [(create-link st l) false]
-    [(create-link-top sc l) false]
-    [(link-demand l k) false]
-    [(link-realize l tag v n) false]
-    [(append x v t) true]
-    [(close x tag v) true]
-    [(finally-leave st) false]
-    [(own s m) false]
-    [(owned-done s c) false]
-    [(drain ids) false]
-    [(retire-local v) false]))
+    (create-source st kind v fresh) false
+    (create-source-top scope kind v fresh) false
+    (write x v) true
+    (track st x k fresh) false
+    (observe d cb fresh) false
+    (unobserve e) false
+    (fire e tag val) false
+    (resource-ack z) false
+    (arm st kind k fresh) false
+    (resource-fire z tag val) false
+    (handle-drop x) false
+    (pin x) false
+    (unpin x) false
+    (create-comp st c i b) false
+    (create-comp-top sc c i b) false
+    (spawn st b fresh ins loc) false
+    (spawn-top sc b fresh ins loc) false
+    (start c fresh) false
+    (await st ds m k fresh mine) false
+    (dispatch-comp c fresh) false
+    (complete st tag val) false
+    (schedule r) false
+    (host-await d fresh) false
+    (host-unawait e) false
+    (handle-new x) false
+    (deliver x v) true
+    (post x v) true
+    (take st x k fresh) false
+    (release x) true
+    (finalize r) false
+    (cancel r) false
+    (release-world) false
+    (open-scope st s) false
+    (close-scope s) false
+    (detach k s) false
+    (finally-enter st) false
+    (finally-exit st) false
+    (slice-exit r) false
+    (create-link st l) false
+    (create-link-top sc l) false
+    (link-demand l k) false
+    (link-realize l tag v n) false
+    (append x v t) true
+    (close x tag v) true
+    (finally-leave st) false
+    (own s m) false
+    (owned-done s c) false
+    (drain ids) false
+    (retire-local v) false))
 (a/defn seal-shut [sealed :- Bool, w :- World, it :- Item] Bool
   (Bool.and sealed (Bool.and (seal-item it) (Bool.not (slice-held w)))))
 ;; the world after item `it` in a cell sealed or not: a refused item changes nothing
@@ -263,13 +263,13 @@
 ;; item, the system unchanged (`fork-refused`, `fork-effect-refused`).
 
 (a/defn armed-ids [rs :- (List ResRow)] (List Nat)
-  (match rs [nil (List.nil Nat)]
-         [(cons r t) (if (Nat.beq (:phase r) rp-armed) (List.cons Nat (:id r) (armed-ids t)) (armed-ids t))]))
+  (match rs nil (List.nil Nat)
+         (cons r t) (if (Nat.beq (:phase r) rp-armed) (List.cons Nat (:id r) (armed-ids t)) (armed-ids t))))
 
 ;; C1 R1: every outstanding resource is inherited (armed ones are dormant; cancelling or fired but
 ;; unacknowledged ones are discharged at the first turn, `wake-one`)
 (a/defn res-ids [rs :- (List ResRow)] (List Nat)
-  (match rs [nil (List.nil Nat)] [(cons r t) (List.cons Nat (:id r) (res-ids t))]))
+  (match rs nil (List.nil Nat) (cons r t) (List.cons Nat (:id r) (res-ids t))))
 
 (a/defn fork-cell [c :- Cell, k :- Nat, owner :- Nat] Cell
   (Cell.mk (:world c) true k owner (nat-app (res-ids (:res (:world c))) (:dormant c)) false 0 (List.nil Nat) false (List.nil Join) (marker-ids (:world c)) false (has-local (:world c)) (:world c)))
@@ -330,11 +330,11 @@
 (a/defn timer-kept [r :- ResRow] Bool (Bool.and (Nat.beq (:kind r) rk-timer) (Nat.beq (:phase r) rp-armed)))
 (a/defn wake-one [w :- World, z :- Nat] World
   (match (resource-find w z)
-    [none w]
-    [(some r) (if (timer-kept r) w (fire-ack w z res-err err-forked))]))
+    none w
+    (some r) (if (timer-kept r) w (fire-ack w z res-err err-forked))))
 
 (a/defn wake-all [w :- World, zs :- (List Nat)] World
-  (match zs [nil w] [(cons z t) (wake-all (wake-one w z) t)]))
+  (match zs nil w (cons z t) (wake-all (wake-one w z) t)))
 
 (a/theorem chain-to-marks-waiting-wake-one [w :- World, z :- Nat]
   (=> (= (chain-to-marks-waiting w) true) (= (chain-to-marks-waiting (wake-one w z)) true))
@@ -761,15 +761,15 @@
 ;; has not written any of those sources since the fork, and every write is accepted.
 
 (a/defn version-of [w :- World, x :- Nat] Nat
-  (match (source-find w x) [none 0] [(some s) (:version s)]))
+  (match (source-find w x) none 0 (some s) (:version s)))
 
 (a/defn state-of [w :- World, x :- Nat] Nat
-  (match (source-find w x) [none 0] [(some s) (:state s)]))
+  (match (source-find w x) none 0 (some s) (:state s)))
 
 (a/defn diff-ids [c :- World, b :- World, xs :- (List Nat)] (List Nat)
-  (match xs [nil (List.nil Nat)]
-         [(cons x t) (if (Nat.beq (version-of c x) (version-of b x)) (diff-ids c b t)
-                         (List.cons Nat x (diff-ids c b t)))]))
+  (match xs nil (List.nil Nat)
+         (cons x t) (if (Nat.beq (version-of c x) (version-of b x)) (diff-ids c b t)
+                        (List.cons Nat x (diff-ids c b t)))))
 
 ;; C0 (spec §4.3 Links and forks): links are not part of a mergeable fork's basis (each world
 ;; realizes its own elements); a stream the fork appended to is (its version changed: the write is
@@ -779,14 +779,14 @@
 
 ;; today's L12 (no resolver): every changed source must be one the parent has not written since the fork
 (a/defn no-conflict [p :- World, b :- World, ds :- (List Nat)] Bool
-  (match ds [nil true]
-         [(cons x t) (Bool.and (Nat.beq (version-of p x) (version-of b x)) (no-conflict p b t))]))
+  (match ds nil true
+         (cons x t) (Bool.and (Nat.beq (version-of p x) (version-of b x)) (no-conflict p b t))))
 
 (a/defn apply-diff [p :- World, c :- World, ds :- (List Nat)] Outcome
-  (match ds [nil (Outcome.mk p true)]
-         [(cons x t) (if (:accepted (world-step p (Item.write x (state-of c x))))
-                         (apply-diff (:world (world-step p (Item.write x (state-of c x)))) c t)
-                         (Outcome.mk p false))]))
+  (match ds nil (Outcome.mk p true)
+         (cons x t) (if (:accepted (world-step p (Item.write x (state-of c x))))
+                        (apply-diff (:world (world-step p (Item.write x (state-of c x)))) c t)
+                        (Outcome.mk p false))))
 
 ;; C2 (option C, decided): the engine owns the mechanism, not the policy. `merge!` takes a per-source
 ;; resolver `(rv source base parent-value child-value)`, a value or a refusal (none), opaque to the engine.
@@ -804,16 +804,16 @@
 
 (a/defn merge-writes [rv :- (=> Nat Nat Nat Nat (Option Nat)), p :- World, c :- World, b :- World, ds :- (List Nat)]
   (Option (List Item))
-  (match ds [nil (Option.some (List Item) (List.nil Item))]
-         [(cons x t) (match (pick rv p c b x)
-                       [none (Option.none (List Item))]
-                       [(some v) (match (merge-writes rv p c b t)
-                                   [none (Option.none (List Item))]
-                                   [(some its) (Option.some (List Item) (List.cons Item (Item.write x v) its))])])]))
+  (match ds nil (Option.some (List Item) (List.nil Item))
+         (cons x t) (match (pick rv p c b x)
+                      none (Option.none (List Item))
+                      (some v) (match (merge-writes rv p c b t)
+                                 none (Option.none (List Item))
+                                 (some its) (Option.some (List Item) (List.cons Item (Item.write x v) its))))))
 
 (a/defn items-run [p :- World, its :- (List Item)] Outcome
-  (match its [nil (Outcome.mk p true)]
-         [(cons it t) (if (:accepted (world-step p it)) (items-run (:world (world-step p it)) t) (Outcome.mk p false))]))
+  (match its nil (Outcome.mk p true)
+         (cons it t) (if (:accepted (world-step p it)) (items-run (:world (world-step p it)) t) (Outcome.mk p false))))
 
 ;; C2 (spec §9, Z#74): the child is settled: no unretired run (W-RUNS 0), no cleanup entry, no outstanding
 ;; resource (an item is atomic here: the empty ingress is the engine's)
@@ -829,13 +829,13 @@
 
 (a/defn merge-out [rv :- (=> Nat Nat Nat Nat (Option Nat)), p :- World, c :- World, b :- World, sealed :- Bool] Outcome
   (if (merge-guard c sealed)
-      (match (merge-writes rv p c b (diff c b)) [none (Outcome.mk p false)] [(some its) (items-run p its)])
+      (match (merge-writes rv p c b (diff c b)) none (Outcome.mk p false) (some its) (items-run p its))
       (Outcome.mk p false)))
 
 ;; the items a merge runs in the parent (none when refused before any write)
 (a/defn merge-its [rv :- (=> Nat Nat Nat Nat (Option Nat)), p :- World, c :- World, b :- World, sealed :- Bool] (List Item)
   (if (merge-guard c sealed)
-      (match (merge-writes rv p c b (diff c b)) [none (List.nil Item)] [(some its) its])
+      (match (merge-writes rv p c b (diff c b)) none (List.nil Item) (some its) its)
       (List.nil Item)))
 
 (a/defn merge-ok [p :- World, c :- World, b :- World, rv :- (=> Nat Nat Nat Nat (Option Nat)), sealed :- Bool] Bool
@@ -916,7 +916,7 @@
 
 ;; ---- the default resolver is today's L12: no conflict, and every write accepted
 (a/defn wr [c :- World, ds :- (List Nat)] (List Item)
-  (match ds [nil (List.nil Item)] [(cons x t) (List.cons Item (Item.write x (state-of c x)) (wr c t))]))
+  (match ds nil (List.nil Item) (cons x t) (List.cons Item (Item.write x (state-of c x)) (wr c t))))
 
 (a/theorem writes-default-ok [p :- World, c :- World, b :- World, ds :- (List Nat)]
   (=> (= (no-conflict p b ds) true) (= (merge-writes refuse-all p c b ds) (Option.some (List Item) (wr c ds))))
@@ -2162,7 +2162,7 @@
   (case [none]
     (have z := (tbl-find-none-has Join join-id (:id j) js hf))
     (have hh := (mem-ids-has Join join-id j js m))
-    (rw [(nat-mem-ids Join join-id (:id j) js)] at hh)
+    (rw [(nat-mem-ids Join join-id (join-id j) js)] at hh)
     (have hh2 (= (tbl-has join-id (:id j) js) true)) (exact hh)
     (rw [z] at hh2) (cases hh2))
   (case [some r]
@@ -2428,8 +2428,8 @@
 
 ;; x is m or owned by m within the fuel (one step per element)
 (a/defn owned-under [cells :- (=> Nat Cell), m :- Nat, x :- Nat, n :- (List Nat)] Bool
-  (match n [nil (Nat.beq x m)]
-         [(cons h t) (Bool.or (Nat.beq x m) (owned-under cells m (:owner (cells x)) t))]))
+  (match n nil (Nat.beq x m)
+         (cons h t) (Bool.or (Nat.beq x m) (owned-under cells m (:owner (cells x)) t))))
 
 (a/defn live-open [c :- Cell] Bool
   (Bool.and (:live c) (Bool.and (Bool.not (:complete c)) (Bool.not (:released (:world c))))))
@@ -2477,8 +2477,8 @@
 ;; C2 R2: `descendant?` over lineage: d is a or a fork (transitively) of a, within the fuel (one parent
 ;; step per element). Ownership is not lineage: a transfer changes no `parent`, so no answer.
 (a/defn descendant [cells :- (=> Nat Cell), a :- Nat, d :- Nat, n :- (List Nat)] Bool
-  (match n [nil (Nat.beq d a)]
-         [(cons h t) (Bool.or (Nat.beq d a) (descendant cells a (:parent (cells d)) t))]))
+  (match n nil (Nat.beq d a)
+         (cons h t) (Bool.or (Nat.beq d a) (descendant cells a (:parent (cells d)) t))))
 
 (a/theorem descendant-refl [cells :- (=> Nat Cell), a :- Nat, n :- (List Nat)] (= (descendant cells a a n) true)
   (cases n)
@@ -2810,11 +2810,11 @@
   (case [true] (simp only [sys-retire hr]) (exact (jinv-same cells k (retire-cell (cells k) v) h (rfl) (rfl) (rfl)))))
 
 ;; ---- refusals: the `(fork)` effect of a fork-local run; instantiate of a fork-local run's publication
-(a/defn fe-local [w :- World, st :- Nat] Bool (match (tok-run w st) [none false] [(some r) (run-of-local w r)]))
+(a/defn fe-local [w :- World, st :- Nat] Bool (match (tok-run w st) none false (some r) (run-of-local w r)))
 (a/defn sys-fork-effect-g [cells :- (=> Nat Cell), k :- Nat, m :- Nat, owner :- Nat, st :- Nat, kont :- Nat, v :- Nat]
   (=> Nat Cell)
   (if (fe-local (:world (cells k)) st) cells (sys-fork-effect cells k m owner st kont v)))
-(a/defn pub-local [b :- Pub] Bool (match (run-find (:basis b) (:run b)) [none false] [(some r) (run-of-local (:basis b) r)]))
+(a/defn pub-local [b :- Pub] Bool (match (run-find (:basis b) (:run b)) none false (some r) (run-of-local (:basis b) r)))
 (a/defn sys-instantiate-g [cells :- (=> Nat Cell), pubs :- (=> Nat Pub), p :- Nat, m :- Nat, owner :- Nat] (=> Nat Cell)
   (if (pub-local (pubs p)) cells (sys-instantiate cells pubs p m owner)))
 

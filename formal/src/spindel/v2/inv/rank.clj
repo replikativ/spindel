@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.rank
+(ns ^:ansatz/lean spindel.v2.inv.rank
   "I12 (A#6) ranks, kernel-checked (Init only): the height adjustment of spindel.v2.engine
   (`raise-loop`) establishes `ranks-ok` (rank(creditor) > rank(debtor) on every dep edge between
   computations) whenever it reports `ok`.
@@ -87,7 +87,7 @@
     )
   (rw [(tbl-find-upd-ne CompRow comp-id n y (comp-set-rank k) (comp-set-rank-id k) (:comps w) hne)]))
 
-(a/defn crank [cs :- (List CompRow), x :- Nat] Nat (match (tbl-find comp-id x cs) [none 0] [(some c) (:rank c)]))
+(a/defn crank [cs :- (List CompRow), x :- Nat] Nat (match (tbl-find comp-id x cs) none 0 (some c) (:rank c)))
 
 (a/theorem crank-upd-eq [n :- Nat, k :- Nat, cs :- (List CompRow)]
   (=> (= (tbl-has comp-id n cs) true) (= (crank (tbl-upd comp-id n (comp-set-rank k) cs) n) k))

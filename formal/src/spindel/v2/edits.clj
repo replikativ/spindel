@@ -1,4 +1,4 @@
-(ns spindel.v2.edits
+(ns ^:ansatz/lean spindel.v2.edits
   "Primitive table edits and their first invariant lemmas (spec v1.5).
 
   - Exact pending (§2, X#1): `C.pending = #{existing e | e.creditor = C ∧ e.marked}`.
@@ -72,23 +72,23 @@
 ;; Primitive edge edits. Each adjusts the creditor's pending in the same edit.
 (a/defn mark-edge [w :- World, x :- Nat] World
   (match (edge-find w x)
-    [none w]
-    [(some e) (if (:marked e) w
-                  (comp-upd (edge-upd w x (edge-set-marked true)) (:creditor e) comp-inc-pending))]))
+    none w
+    (some e) (if (:marked e) w
+                 (comp-upd (edge-upd w x (edge-set-marked true)) (:creditor e) comp-inc-pending))))
 
 (a/defn unmark-edge [w :- World, x :- Nat] World
   (match (edge-find w x)
-    [none w]
-    [(some e) (if (:marked e)
-                  (comp-upd (edge-upd w x (edge-set-marked false)) (:creditor e) comp-dec-pending)
-                  w)]))
+    none w
+    (some e) (if (:marked e)
+                 (comp-upd (edge-upd w x (edge-set-marked false)) (:creditor e) comp-dec-pending)
+                 w)))
 
 (a/defn remove-edge [w :- World, x :- Nat] World
   (match (edge-find w x)
-    [none w]
-    [(some e) (if (:marked e)
-                  (comp-upd (edge-del w x) (:creditor e) comp-dec-pending)
-                  (edge-del w x))]))
+    none w
+    (some e) (if (:marked e)
+                 (comp-upd (edge-del w x) (:creditor e) comp-dec-pending)
+                 (edge-del w x))))
 
 ;; inserted unmarked
 (a/defn insert-edge [w :- World, e :- EdgeRow] World
@@ -631,7 +631,7 @@
                        (~'And.right (~'And.right ~'h))))
             (~'simp ~'only [~'ids-ok ~'ids-unique ~'ids-below ~'Bool.and_eq_true ~'hnew ~'bump ~'set-next-id
                             ~'Nat.blt_eq])
-            (~'exact (~'And.intro (~'And.left ~'hf) (~'And.intro ~'True.intro (~'And.right ~'hf))))))))
+            (~'exact (~'And.intro (~'And.left ~'hf) (~'And.intro (~'Nat.zero_lt_succ (:next-id ~'w)) (~'And.right ~'hf))))))))
 
 (deffresh)
 
@@ -742,12 +742,12 @@
 ;; ===========================================================================
 
 (a/defn tbl-filter [A :- Type :implicit, p :- (=> A Bool), xs :- (List A)] (List A)
-  (match xs [nil (List.nil A)]
-         [(cons h t) (if (p h) (List.cons A h (tbl-filter p t)) (tbl-filter p t))]))
+  (match xs nil (List.nil A)
+         (cons h t) (if (p h) (List.cons A h (tbl-filter p t)) (tbl-filter p t))))
 
 (a/defn nat-del [x :- Nat, xs :- (List Nat)] (List Nat)
-  (match xs [nil (List.nil Nat)]
-         [(cons h t) (if (Nat.beq h x) (nat-del x t) (List.cons Nat h (nat-del x t)))]))
+  (match xs nil (List.nil Nat)
+         (cons h t) (if (Nat.beq h x) (nat-del x t) (List.cons Nat h (nat-del x t)))))
 
 (a/defn id-ne [A :- Type :implicit, idf :- (=> A Nat), x :- Nat, r :- A] Bool
   (Bool.not (Nat.beq (idf r) x)))
@@ -1432,7 +1432,7 @@
 ;; ---- folds of an edit over a list of ids
 
 (a/defn nat-fold [f :- (=> World Nat World), w :- World, xs :- (List Nat)] World
-  (match xs [nil w] [(cons h t) (nat-fold f (f w h) t)]))
+  (match xs nil w (cons h t) (nat-fold f (f w h) t)))
 
 (a/theorem well-formed-nat-fold [f :- (=> World Nat World),
                          hf :- (forall [w :- World, x :- Nat] (=> (= (well-formed w) true) (= (well-formed (f w x)) true))),

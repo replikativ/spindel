@@ -483,12 +483,12 @@
    ;; [:await r ds mode a]: cont from the committed activation (0 when the fast path removed
    ;; it); `mine` = the task debtors owned by r's scope (the engine's loser rule)
    :await (fn [{:keys [w post]} [rid ds mode aid]]
-            (let [scope (:scope (first (s/run-find w rid)))
-                  mine (vec (distinct (filter #(= scope (:owner (first (s/task-find w %)))) ds)))]
+            (let [scope (:scope (s/run-find w rid))
+                  mine (vec (distinct (filter #(= scope (:owner (s/task-find w %))) ds)))]
               {:item (item :await rid (vec ds) (item-codes mode) (nil0 (get-in post [:acts aid :cont])) aid mine)}))
    ;; [:dispatch c r]: T5 for a fresh or invalid idle computation, T11 otherwise
    :dispatch (fn [{:keys [w]} [c rid]]
-               (let [row (first (s/comp-find w c))]
+               (let [row (s/comp-find w c)]
                  {:item (if (and row (en/startable w row)) (item :start c rid) (item :dispatch-comp c rid))}))
    ;; [:start r]: a task run's first slice = the scheduling choice (applied before r's next
    ;; body effect, where the engine's slice begins)
@@ -594,7 +594,7 @@
   {:world :accepted}."
   [w-pre r]
   (let [z (:next-id w-pre)
-        st (:stamp (first (s/run-find w-pre r)))
+        st (:stamp (s/run-find w-pre r))
         steps (reductions (fn [o it] (en/world-step (:world o) it)) {:world w-pre :accepted true}
                           [(item :arm st s/rk-offload 0 z) (item :resource-fire z 1 0) (item :resource-ack z)])]
     {:world (:world (last steps)) :accepted (every? :accepted steps)}))
@@ -802,7 +802,7 @@
                                                      :n-diffs (count ds) :diffs (vec (take max-diffs ds)) :diffs-all ds}))))
           (:bump a)
           (let [c (:bump a)
-                rr (when-let [r (:fork-run a)] (first (s/run-find w r)))
+                rr (when-let [r (:fork-run a)] (s/run-find w r))
                 sc (when rr (en/cur-scope w rr))
                 wc (skip-to w c)
                 w1 (if (and owned? rr (en/own-ok wc sc)) (ow/own-world wc sc c) (skip-to w (inc c)))
@@ -935,13 +935,13 @@
   "The model's ledger observation of world `w` given `mat` (run scopes materialized so far) and the ids seen
   at earlier checkpoints `{:tasks #{} :scopes #{}}`: [obs seen']."
   [w mat seen]
-  (let [scope-row (fn [s] (first (s/scope-find w s)))
+  (let [scope-row (fn [s] (s/scope-find w s))
         shown? (fn [x] (or (not= 1 (:kind x)) (contains? mat (:id x))))
         seen {:tasks (into (:tasks seen) (map :id (:tasks w)))
               :scopes (into (:scopes seen) (map :id (filter shown? (:scopes w))))
               ;; Z#77: the mark of every task seen so far (a removed task keeps the one it had)
               :local-of (into (or (:local-of seen) {}) (map (juxt :id #(boolean (:local %))) (:tasks w)))}
-        task (fn [k] (let [t (first (s/task-find w k))
+        task (fn [k] (let [t (s/task-find w k)
                            sr (scope-row (lg/task-srow k))]
                        {:done? (if t (not= s/res-none (:tag (:result t))) true)
                         :retired? (if t (zero? (:run t)) true)

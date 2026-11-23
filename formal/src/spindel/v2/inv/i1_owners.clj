@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.i1-owners
+(ns ^:ansatz/lean spindel.v2.inv.i1-owners
   "Literal I1, owner clauses for tasks, computations and sources, through `world-step`, kernel-checked
   (Init only). §6 I1: a task's or computation's owner is 0 (detached) or an existing scope or
   computation; a source's owner exists, or it is detached (owner 0) and closed.
@@ -323,7 +323,7 @@
 ;; ---- the owner view of a world: sources, tasks, computation (id, has-owner) keys
 (a/structure CK1 [] (id Nat) (nz Bool))
 (a/defn ck1 [c :- CompRow] CK1 (CK1.mk (:id c) (nzc c)))
-(a/defn ck1s [cs :- (List CompRow)] (List CK1) (match cs [nil (List.nil CK1)] [(cons h t) (List.cons CK1 (ck1 h) (ck1s t))]))
+(a/defn ck1s [cs :- (List CompRow)] (List CK1) (match cs nil (List.nil CK1) (cons h t) (List.cons CK1 (ck1 h) (ck1s t))))
 (a/structure OW [] (srcs (List SourceRow)) (tsks (List TaskRow)) (cks (List CK1)))
 (a/defn ow [w :- World] OW (OW.mk (:sources w) (:tasks w) (ck1s (:comps w))))
 

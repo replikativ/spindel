@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.members.await-prep
+(ns ^:ansatz/lean spindel.v2.inv.members.await-prep
   "Bounded await preparation preserves H3 and exports its reachable supports.
    Wiring, post-processing and full T6/P11 remain separate obligations."
   (:require [ansatz.core :as a]

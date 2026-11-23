@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.marks-step
+(ns ^:ansatz/lean spindel.v2.inv.marks-step
   "h-mark through `world-step` (P11), continued from spindel.v2.inv.marks: T2 write, T12 complete + settle,
   Rule R's demote, and the step. Kernel-checked, Init only.
 

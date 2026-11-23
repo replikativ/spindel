@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.i10
+(ns ^:ansatz/lean spindel.v2.inv.i10
   "Literal I10, computation part (`lit-i10-current`: a computation has at most one current run,
   R.epoch = C.epoch) through the step, kernel-checked (Init only).
 
@@ -65,11 +65,11 @@
 (a/defn i10-current-task-key [t :- TaskRow] I10CurrentTaskKey (I10CurrentTaskKey.mk (:id t) (:run t)))
 (a/defn i10-current-task-key-id [k :- I10CurrentTaskKey] Nat (:id k))
 (a/defn i10-current-run-keys [rs :- (List RunRow)] (List I10CurrentRunKey)
-  (match rs [nil (List.nil I10CurrentRunKey)] [(cons h t) (List.cons I10CurrentRunKey (i10-current-run-key h) (i10-current-run-keys t))]))
+  (match rs nil (List.nil I10CurrentRunKey) (cons h t) (List.cons I10CurrentRunKey (i10-current-run-key h) (i10-current-run-keys t))))
 (a/defn i10-current-comp-keys [cs :- (List CompRow)] (List I10CurrentCompKey)
-  (match cs [nil (List.nil I10CurrentCompKey)] [(cons h t) (List.cons I10CurrentCompKey (i10-current-comp-key h) (i10-current-comp-keys t))]))
+  (match cs nil (List.nil I10CurrentCompKey) (cons h t) (List.cons I10CurrentCompKey (i10-current-comp-key h) (i10-current-comp-keys t))))
 (a/defn i10-current-task-keys [ts :- (List TaskRow)] (List I10CurrentTaskKey)
-  (match ts [nil (List.nil I10CurrentTaskKey)] [(cons h t) (List.cons I10CurrentTaskKey (i10-current-task-key h) (i10-current-task-keys t))]))
+  (match ts nil (List.nil I10CurrentTaskKey) (cons h t) (List.cons I10CurrentTaskKey (i10-current-task-key h) (i10-current-task-keys t))))
 
 ;; a run r of computation c: its epoch is at most C.epoch; a current run (R.epoch = C.epoch) is
 ;; C.run, C is not idle, and (`cur-fin`) the run is alive or C's result is of this epoch, unless C
@@ -916,9 +916,9 @@
 (a/defn cs10 [c :- CompRow] CS10 (CS10.mk (:id c) (:epoch c) (:idle c)))
 (a/defn cs10-id [k :- CS10] Nat (:id k))
 (a/defn rs10s [rs :- (List RunRow)] (List RS10)
-  (match rs [nil (List.nil RS10)] [(cons h t) (List.cons RS10 (rs10 h) (rs10s t))]))
+  (match rs nil (List.nil RS10) (cons h t) (List.cons RS10 (rs10 h) (rs10s t))))
 (a/defn cs10s [cs :- (List CompRow)] (List CS10)
-  (match cs [nil (List.nil CS10)] [(cons h t) (List.cons CS10 (cs10 h) (cs10s t))]))
+  (match cs nil (List.nil CS10) (cons h t) (List.cons CS10 (cs10 h) (cs10s t))))
 
 (a/defn cs-step [c :- CS10] CS10 (CS10.mk (:id c) (+ (:epoch c) 1) (:idle c)))
 (a/defn i10-current-transport-row [nqr :- (=> RS10 CS10 Bool), cks :- (List CS10), r :- RS10] Bool (tbl-all (nqr r) cks))
@@ -1381,7 +1381,7 @@
 ;; ---- the job list condition
 
 (a/defn job-ok [gxz :- (List Nat), gkz :- (List Nat), w :- World, j :- Job] Bool
-  (match j [(jcancel x rep) (ncw gxz gkz x w)] [(jretire x) true] [(jclose s) true]))
+  (match j (jcancel x rep) (ncw gxz gkz x w) (jretire x) true (jclose s) true))
 
 (a/theorem all-append [A :- Type, P :- (=> A Bool), a :- (List A), b :- (List A)]
   (= (tbl-all P (List.append A a b)) (Bool.and (tbl-all P a) (tbl-all P b)))
@@ -2249,7 +2249,7 @@
     (case [true]
       (have ho2 (= (Nat.beq (:of (rs10 q)) cid) true)) (exact ho)
       (have ho3 (= (Nat.beq (:of (i10-current-run-key q)) cid) true)) (exact ho)
-      (simp only [ho2 Bool.not_true Bool.false_or Nat.blt_eq] at hr)
+      (simp only [ho Bool.not_true Bool.false_or Nat.blt_eq] at hr)
       (have lt (= (Nat.blt (:epoch (i10-current-run-key q)) (:epoch (ck-set-run n (i10-current-comp-key k)))) true))
       (simp only [Nat.blt_eq i10-current-run-key ck-set-run i10-current-comp-key]) (have z1 := (And.left hc)) (try (simp only [rs10] at hr)) (try (simp only [cs10] at z1)) (omega)
       (simp only [old-below ho3 lt Bool.not_true Bool.false_or]))

@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.acyclic
+(ns ^:ansatz/lean spindel.v2.inv.acyclic
   "Z#69 (engine PR #272): scope parents are acyclic, through every step, kernel-checked (Init only).
 
   detach k s re-parents k's run scope rs under s. Without the guard (`detach-ok`: rs is neither s
@@ -178,7 +178,7 @@
 ;; ===========================================================================
 
 ;; the parent list of a found scope row (scope-up, unfolded)
-(a/defn cy-par [o :- (Option ScopeRow)] (List Nat) (match o [none (List.nil Nat)] [(some s) (nz (:parent s))]))
+(a/defn cy-par [o :- (Option ScopeRow)] (List Nat) (match o none (List.nil Nat) (some s) (nz (:parent s))))
 (a/theorem cy-up [w :- World, y :- Nat] (= (scope-up w y) (cy-par (tbl-find scope-id y (:scopes w))))
   (cases hf (scope-find w y))
   (case [none] (simp only [scope-find] at hf) (simp only [scope-up scope-find hf cy-par]))

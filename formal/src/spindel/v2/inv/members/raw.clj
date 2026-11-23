@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.members.raw
+(ns ^:ansatz/lean spindel.v2.inv.members.raw
   "release-world for the h-mem2 bundle current-members (P11): the dropped host edges are no member edges; and the
   assembly over the 38 items: transition, host-guarded-transition and raw keep current-members on a world that satisfies chain-to-edge-kinds (current-members-raw)."
   (:require [ansatz.core :as a]

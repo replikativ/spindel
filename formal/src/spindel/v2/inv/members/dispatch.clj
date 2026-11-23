@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.members.dispatch
+(ns ^:ansatz/lean spindel.v2.inv.members.dispatch
   "T11 dispatch keeps the h-mem2 bundle `current-members` (P11): through cancel-pred, the cut, the consumed entry edge,
   the new run and post; before finish/Rule R. Contracts: notes/hm14-contracts.edn."
   (:require [ansatz.core :as a]

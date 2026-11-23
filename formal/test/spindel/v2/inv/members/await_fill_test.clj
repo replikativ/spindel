@@ -37,9 +37,9 @@
 (a/defn current-members-pending-exempt [ps :- (List DE), tail :- (List Nat),
                           xm :- (List Nat)] (List Nat)
   (match tail
-    [nil xm]
-    [(cons d t) (List.cons Nat (pair-edge d ps)
-                         (current-members-pending-exempt ps t xm))]))
+    nil xm
+    (cons d t) (List.cons Nat (pair-edge d ps)
+                        (current-members-pending-exempt ps t xm))))
 ])
 
 (def public-contracts
@@ -155,7 +155,7 @@
           (is (= (closed/type-form (elab/elaborate @a/ansatz-env (list 'forall parameters result)))
                  (closed/type-form (.-type d))) (str name " exact safe definition signature"))
           (if (= name 'current-members-pending-exempt)
-            (is (= '(match tail [nil xm] [(cons d t) (List.cons Nat (pair-edge d ps) (current-members-pending-exempt ps t xm))]) body)
+            (is (= '(match tail nil xm (cons d t) (List.cons Nat (pair-edge d ps) (current-members-pending-exempt ps t xm))) body)
                 "recursive body pinned without claiming evaluation of a symbolic list")
             (let [expected (elab/elaborate @a/ansatz-env (list 'fn parameters body) (.-type d))]
               (is (tc/is-def-eq (tc/mk-tc-state @a/ansatz-env) (.value d) expected)
@@ -276,7 +276,7 @@
   [f ds mode k mine xm]
   (let [{:keys [w rid owner]} f, r (row w :runs rid), aid (:next-id w)
         _ (is (true? (base/chain-to-edge-kinds w))), _ (is (true? (hm3/current-members xm w)))
-        _ (is (true? (closed/member-fields? xm w))), _ (is (= [r] (step/tok-run w (:stamp r))))
+        _ (is (true? (closed/member-fields? xm w))), _ (is (= r (step/tok-run w (:stamp r))))
         _ (is (true? (engine/run-normal r))), _ (is (true? (engine/await-ok w r ds mode aid)))
         _ (is (false? (engine/await-kind-refused w ds)))
         acc (engine/await-acc w r ds mode k mine), pairs (into {} (map (juxt :deb :edge) (:pairs acc)))
@@ -488,7 +488,7 @@
           filled (:filled out), a (row filled :acts (:next-id stale-world))]
       (is (false? (current-run? stale-world rid)))
       (is (true? (:slice stale)))
-      (is (= [stale] (step/tok-run stale-world (:stamp stale))))
+      (is (= stale (step/tok-run stale-world (:stamp stale))))
       (is (empty? (:deliveries out)))
       (is (some? a))
       (is (= 3 (:remaining a)))
@@ -502,7 +502,7 @@
         out (checkpoint (assoc f :w w) [pending-resource ready-resource delivered] s/am-all 2010 [signal] [])
         filled (:filled out), resource-edge (row filled :edges (get (:pairs out) ready-resource))]
     (is (false? (current-run? w rid)))
-    (is (= [r] (step/tok-run w (:stamp r))))
+    (is (= r (step/tok-run w (:stamp r))))
     (is (empty? (:deliveries out)))
     (is (= [s/ek-wait s/ph-fired] ((juxt :kind :phase) resource-edge)))
     (is (= 3 (:remaining (row filled :acts (:next-id w)))))

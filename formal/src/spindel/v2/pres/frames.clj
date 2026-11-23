@@ -1,4 +1,4 @@
-(ns spindel.v2.pres.frames
+(ns ^:ansatz/lean spindel.v2.pres.frames
   "Frames from views (formal/notes/proof-layout.md, option B), kernel-checked (Init only).
 
   A part of the invariant survives a primitive edit as a *frame* when the edit writes no World field

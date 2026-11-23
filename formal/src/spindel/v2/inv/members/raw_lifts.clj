@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.members.raw-lifts
+(ns ^:ansatz/lean spindel.v2.inv.members.raw-lifts
   "h-mem2 bundle current-members through raw (P11): the lifts from transition to host-guarded-transition and raw, T22 host await, T8 observe."
   (:require [ansatz.core :as a]
             [spindel.v2.state :refer :all]

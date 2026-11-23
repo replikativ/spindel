@@ -1,4 +1,4 @@
-(ns spindel.v2.inv
+(ns ^:ansatz/lean spindel.v2.inv
   "Layer-1 safety invariants of spec v1.5.1 §6 over the model's step `world-step`
   (spindel.v2.engine), kernel-checked (Init only).
 
@@ -119,8 +119,8 @@
 (a/defn lit-i5-dep-final [w :- World] Bool (tbl-all (dep-final-ok w) (:edges w)))
 
 ;; ---- I7
-(a/defn created-empty [xs :- (List Created)] Bool (match xs [nil true] [(cons h t) false]))
-(a/defn bases-empty [xs :- (List AdoptBase)] Bool (match xs [nil true] [(cons h t) false]))
+(a/defn created-empty [xs :- (List Created)] Bool (match xs nil true (cons h t) false))
+(a/defn bases-empty [xs :- (List AdoptBase)] Bool (match xs nil true (cons h t) false))
 (a/defn idle-shape [w :- World, c :- CompRow] Bool
   (Bool.or (Bool.not (:idle c))
    (Bool.and (Nat.beq (:run c) 0)
@@ -156,20 +156,20 @@
 ;; ---- I10
 (a/defn slice-only [x :- Nat, r :- RunRow] Bool (Bool.or (Bool.not (:slice r)) (Nat.beq (:id r) x)))
 (a/defn slice-holder [rs :- (List RunRow)] Nat
-  (match rs [nil 0] [(cons h t) (if (:slice h) (:id h) (slice-holder t))]))
+  (match rs nil 0 (cons h t) (if (:slice h) (:id h) (slice-holder t))))
 ;; every run holding the slice has id x
 (a/defn i10-slice-at [x :- Nat, w :- World] Bool (tbl-all (slice-only x) (:runs w)))
 (a/defn inv-i10-slice [w :- World] Bool (i10-slice-at (slice-holder (:runs w)) w))
 (a/defn comp-run-is [w :- World, r :- RunRow] Bool
   (Bool.or (Bool.not (run-alive r))
-           (match (comp-find w (:of r)) [none true] [(some c) (Nat.beq (:run c) (:id r))])))
+           (match (comp-find w (:of r)) none true (some c) (Nat.beq (:run c) (:id r)))))
 (a/defn inv-i10-comp [w :- World] Bool (tbl-all (comp-run-is w) (:runs w)))
 (a/defn task-run-is [w :- World, r :- RunRow] Bool
-  (match (task-find w (:of r)) [none true] [(some t) (Nat.beq (:run t) (:id r))]))
+  (match (task-find w (:of r)) none true (some t) (Nat.beq (:run t) (:id r))))
 (a/defn task-has-run [w :- World, t :- TaskRow] Bool
   (Bool.or (Bool.not (Nat.beq (:tag (:result t)) res-none))
-           (match (run-find w (:run t)) [none false]
-                  [(some r) (Bool.and (Nat.beq (:of r) (:id t)) (run-alive r))])))
+           (match (run-find w (:run t)) none false
+                  (some r) (Bool.and (Nat.beq (:of r) (:id t)) (run-alive r)))))
 (a/defn inv-i10-task [w :- World] Bool
   (Bool.and (tbl-all (task-run-is w) (:runs w)) (tbl-all (task-has-run w) (:tasks w))))
 (a/defn inv-i10 [w :- World] Bool

@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.members.await-wire
+(ns ^:ansatz/lean spindel.v2.inv.members.await-wire
   "Bounded await wiring certificate before member installation.
    Guarded structural outputs remain separate from general H3 transport."
   (:require [ansatz.core :as a]
@@ -53,8 +53,8 @@
     (AwAcc.mk (await-pre w r ds mode k mine) (List.nil DE) true) pre))
 
 (a/defn current-members-debtors [ps :- (List DE)] (List Nat)
-  (match ps [nil (List.nil Nat)]
-    [(cons p t) (List.cons Nat (:deb p) (current-members-debtors t))]))
+  (match ps nil (List.nil Nat)
+    (cons p t) (List.cons Nat (:deb p) (current-members-debtors t))))
 
 (a/defn current-members-pairs [pre :- (List Nat), tail :- (List Nat), ps :- (List DE)] Prop
   (And (forall [d :- Nat]

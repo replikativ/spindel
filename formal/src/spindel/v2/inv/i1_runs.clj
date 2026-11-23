@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.i1-runs
+(ns ^:ansatz/lean spindel.v2.inv.i1-runs
   "Literal I1, the remaining clauses (resource owners; run entities and scopes) through `world-step`,
   kernel-checked (Init only), and with spindel.v2.inv.i1-scopes / spindel.v2.inv.i1-owners all of literal I1 (`inv-i1`).
 
@@ -267,7 +267,7 @@
               (tbl-all-upd-same RunRow run-id x f (listed-in z) (fn [q :- RunRow] (rkr-listed z q (f q) (hk q))) (:runs w))
               (And.left hz) (And.right hz) Bool.and_self])
   (simp only [run-upd set-runs])
-  (rw [(tbl-all-upd-same RunRow run-id x f (r2-ok (run-upd w x f)) (fn [q :- RunRow] (rkr-r2 (run-upd w x f) q (f q) (hk q))) (:runs w))])
+  (refine' (Eq.trans (tbl-all-upd-same RunRow run-id x f (r2-ok (run-upd w x f)) (fn [q :- RunRow] (rkr-r2 (run-upd w x f) q (f q) (hk q))) (:runs w)) _))
   (exact a2)
   (simp only [run-upd set-runs])
   (rw [(tbl-all-upd-same RunRow run-id x f (r3-ok (:cleanup w) xr) (fn [q :- RunRow] (rkr-r3 (:cleanup w) xr q (f q) (hk q))) (:runs w))])
@@ -397,7 +397,7 @@
               (And.left hz) (And.right hz) Bool.and_self])
   (have b2 (= (tbl-all (r2-ok (run-upd w x f)) (:runs (run-upd w x f))) true))
   (have e3 (forall [q :- RunRow] (= (r2-ok (run-upd w x f) (f q)) (r2-ok (run-upd w x f) q)))) (intro q) (simp only [r2-ok (k2 q) (k3 q)])
-  (simp only [run-upd set-runs]) (rw [(tbl-all-upd-same RunRow run-id x f (r2-ok (run-upd w x f)) e3 (:runs w))]) (exact a2)
+  (simp only [run-upd set-runs]) (refine' (Eq.trans (tbl-all-upd-same RunRow run-id x f (r2-ok (run-upd w x f)) e3 (:runs w)) _)) (exact a2)
   (have b3 (= (tbl-all (r3-ok (:cleanup (run-upd w x f)) xr) (:runs (run-upd w x f))) true))
   (simp only [run-upd set-runs])
   (apply (tbl-all-upd RunRow run-id x f (r3-ok (:cleanup w) xr) (r3-ok (:cleanup w) xr) _ _ (:runs w) a3))
@@ -698,7 +698,7 @@
               (And.left hz) (And.right hz) Bool.and_self])
   (have b2 (= (tbl-all (r2-ok (run-upd w x f)) (:runs (run-upd w x f))) true))
   (have e3 (forall [q :- RunRow] (= (r2-ok (run-upd w x f) (f q)) (r2-ok (run-upd w x f) q)))) (intro q) (simp only [r2-ok (k2 q) (k3 q)])
-  (simp only [run-upd set-runs]) (rw [(tbl-all-upd-same RunRow run-id x f (r2-ok (run-upd w x f)) e3 (:runs w))]) (exact a2)
+  (simp only [run-upd set-runs]) (refine' (Eq.trans (tbl-all-upd-same RunRow run-id x f (r2-ok (run-upd w x f)) e3 (:runs w)) _)) (exact a2)
   (have b3 (= (tbl-all (r3-ok (:cleanup (run-upd w x f)) (List.cons Nat x xr)) (:runs (run-upd w x f))) true))
   (simp only [run-upd set-runs])
   (apply (tbl-all-upd RunRow run-id x f (r3-ok (:cleanup w) xr) (r3-ok (:cleanup w) (List.cons Nat x xr)) _ _ (:runs w) a3))
@@ -862,7 +862,7 @@
       (= (tbl-all (r2-ok (add-run-scope w of epoch parent ei)) (:runs (add-run-scope w of epoch parent ei))) true))
   (intros he h2)
   (have sc (= (scope-has (add-run-scope w of epoch parent ei) (+ (:next-id w) 1)) true))
-  (simp only [add-run-scope bump set-next-id scope-ins set-scopes run-ins set-runs scope-has tbl-ins tbl-has-ins new-scope-row scope-id Nat.beq_refl Bool.true_or])
+  (simp only [add-run-scope bump set-next-id scope-ins set-scopes run-ins set-runs scope-has tbl-has-ins new-scope-row scope-id Nat.beq_refl Bool.true_or])
   (have mono (forall [q :- RunRow] (=> (= (r2-ok w q) true) (= (r2-ok (add-run-scope w of epoch parent ei) q) true))))
   (intros q hq)
   (simp only [r2-ok Bool.and_eq_true] at hq)
@@ -917,7 +917,7 @@
   (have h1 := (i1-runs-exempt-task-ins (List.nil Nat) w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc) (rfl) h))
   (have th (= (Bool.or (comp-has (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc))) (:next-id w))
                        (task-has (bump (task-ins w (new-task-row (:next-id w) owner (+ (:next-id w) 1) inputs loc))) (:next-id w))) true))
-  (simp only [task-has bump task-ins set-next-id set-tasks tbl-ins tbl-has-ins new-task-row task-id Nat.beq_refl Bool.true_or Bool.or_true])
+  (simp only [task-has bump task-ins set-next-id set-tasks tbl-has-ins new-task-row task-id Nat.beq_refl Bool.true_or Bool.or_true])
   (exact (i1-runs-add-run-scope _ (:next-id w) 0 (task-scope-parent w owner) 0 th h1)))
 (a/theorem i1-runs-start-raw [w :- World, c :- CompRow]
   (=> (= (comp-has w (:id c)) true) (= (i1-runs w) true) (= (i1-runs (start-raw w c)) true))
@@ -991,7 +991,7 @@
   (simp only [hz0 rest Bool.and_self])
   (have b2 (= (tbl-all (r2-ok (arm-raw w r kind)) (:runs (arm-raw w r kind))) true))
   (simp only [arm-raw run-upd set-runs])
-  (rw [(tbl-all-upd-same RunRow run-id (:id r) (run-arm (:next-id w)) (r2-ok (arm-raw w r kind)) (fn [q :- RunRow] (Eq.refl (r2-ok (arm-raw w r kind) q))) (:runs w))])
+  (refine' (Eq.trans (tbl-all-upd-same RunRow run-id (:id r) (run-arm (:next-id w)) (r2-ok (arm-raw w r kind)) (fn [q :- RunRow] (Eq.refl (r2-ok (arm-raw w r kind) q))) (:runs w)) _))
   (exact (grk-2 _ w rr))
   (have b3 (= (tbl-all (r3-ok (:cleanup (arm-raw w r kind)) (List.nil Nat)) (:runs (arm-raw w r kind))) true))
   (simp only [arm-raw run-upd set-runs])
@@ -1142,7 +1142,7 @@
 (tree/restate! KRB '[well-formed-job-apply])
 (tree/restate! NEB '[well-formed-job-apply])
 
-(a/defn is-jr [k :- Nat, j :- Job] Bool (match j [(jcancel a b) false] [(jretire x) (Nat.beq x k)] [(jclose s) false]))
+(a/defn is-jr [k :- Nat, j :- Job] Bool (match j (jcancel a b) false (jretire x) (Nat.beq x k) (jclose s) false))
 (a/defn jr-in [k :- Nat, ks :- (List Job)] Bool (tbl-any (is-jr k) ks))
 
 (a/theorem runs-rie [w :- World, sub :- (List Nat)] (= (:runs (remove-if-empty w sub)) (:runs w))

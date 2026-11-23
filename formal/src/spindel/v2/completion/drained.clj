@@ -1,4 +1,4 @@
-(ns spindel.v2.completion.drained
+(ns ^:ansatz/lean spindel.v2.completion.drained
   "C1c stage B, proof stage, step 3: normalization. After `[:normalize]` (the layer-1 item `drain ids`, ids the
   cell's inherited markers W-NORMALIZE) the world holds none of them: `drain-clean`. The drain deletes them
   (`fold-del-out`); Z#18's removal (`remove-empty-at`), the any-loser cancel and Rule R add no marker (the bundle

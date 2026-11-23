@@ -1,4 +1,4 @@
-(ns spindel.v2.retain
+(ns ^:ansatz/lean spindel.v2.retain
   "Retention (spec v1.5.1 §3): roots, retention edges, `live`, storage, the cleanup table's
   rows, §3.4 admissions and the Rule R filter (§3.3 step 3), kernel-checked (Init only).
 
@@ -97,24 +97,24 @@
 
 ;; keep the rows whose id passes K
 (a/defn tbl-keep [A :- Type :implicit, K :- (=> Nat Bool), idf :- (=> A Nat), xs :- (List A)] (List A)
-  (match xs [nil (List.nil A)]
-         [(cons h t) (if (K (idf h)) (List.cons A h (tbl-keep K idf t)) (tbl-keep K idf t))]))
+  (match xs nil (List.nil A)
+         (cons h t) (if (K (idf h)) (List.cons A h (tbl-keep K idf t)) (tbl-keep K idf t))))
 
 ;; concatenate f r over the rows r with p r
 (a/defn tbl-gather [A :- Type :implicit, p :- (=> A Bool), f :- (=> A (List Nat)), xs :- (List A)] (List Nat)
-  (match xs [nil (List.nil Nat)]
-         [(cons h t) (if (p h) (List.append Nat (f h) (tbl-gather p f t)) (tbl-gather p f t))]))
+  (match xs nil (List.nil Nat)
+         (cons h t) (if (p h) (List.append Nat (f h) (tbl-gather p f t)) (tbl-gather p f t))))
 
 ;; ids of the rows with p r
 (a/defn tbl-scan [A :- Type :implicit, idf :- (=> A Nat), p :- (=> A Bool), xs :- (List A)] (List Nat)
-  (match xs [nil (List.nil Nat)]
-         [(cons h t) (if (p h) (List.cons Nat (idf h) (tbl-scan idf p t)) (tbl-scan idf p t))]))
+  (match xs nil (List.nil Nat)
+         (cons h t) (if (p h) (List.cons Nat (idf h) (tbl-scan idf p t)) (tbl-scan idf p t))))
 
 (a/defn tbl-any [A :- Type :implicit, p :- (=> A Bool), xs :- (List A)] Bool
-  (match xs [nil false] [(cons h t) (Bool.or (p h) (tbl-any p t))]))
+  (match xs nil false (cons h t) (Bool.or (p h) (tbl-any p t))))
 
 (a/defn opt-test [A :- Type :implicit, g :- (=> A Bool), o :- (Option A)] Bool
-  (match o [none false] [(some r) (g r)]))
+  (match o none false (some r) (g r)))
 
 (a/defn id-is [A :- Type :implicit, idf :- (=> A Nat), x :- Nat, r :- A] Bool (Nat.beq (idf r) x))
 
@@ -122,10 +122,10 @@
   (if (Nat.beq n 0) (List.nil Nat) (List.cons Nat n (List.nil Nat))))
 
 (a/defn created-ids [xs :- (List Created)] (List Nat)
-  (match xs [nil (List.nil Nat)] [(cons h t) (List.cons Nat (:id h) (created-ids t))]))
+  (match xs nil (List.nil Nat) (cons h t) (List.cons Nat (:id h) (created-ids t))))
 
 (a/defn fin-refs [fs :- (List Finalizer)] (List Nat)
-  (match fs [nil (List.nil Nat)] [(cons h t) (List.append Nat (:refs h) (fin-refs t))]))
+  (match fs nil (List.nil Nat) (cons h t) (List.append Nat (:refs h) (fin-refs t))))
 
 ;; ---------------------------------------------------------------------------
 ;; §3.2 retention edges
@@ -170,7 +170,7 @@
 
 ;; the debtors of the adoption baselines (Z#21)
 (a/defn base-debtors [xs :- (List AdoptBase)] (List Nat)
-  (match xs [nil (List.nil Nat)] [(cons h t) (List.cons Nat (:source h) (base-debtors t))]))
+  (match xs nil (List.nil Nat) (cons h t) (List.cons Nat (:source h) (base-debtors t))))
 
 (a/defn comp-contrib [w :- World, c :- CompRow] (List Nat)
   (if (:idle c)
@@ -216,7 +216,7 @@
                    (tbl-scan pub-id (armed-pub w) (:pubs w))))))))
 
 (a/defn succ-all [w :- World, ys :- (List Nat)] (List Nat)
-  (match ys [nil (List.nil Nat)] [(cons h t) (List.append Nat (retain-succ w h) (succ-all w t))]))
+  (match ys nil (List.nil Nat) (cons h t) (List.append Nat (retain-succ w h) (succ-all w t))))
 
 ;; One list cell per unit of fuel: 1 + |roots| + the sum of |retain-succ w y| over all ids.
 ;; A list, not a Nat: the compiled Nat-fuel worklist is too slow (reach-closure-l).
@@ -240,7 +240,7 @@
 ;; entry, so a detach that re-parents a scope of the chain moves the retention to the new parent.
 ;; Worklist over the parent links with fuel 2 + #scopes (one successor per scope).
 (a/defn scope-up [w :- World, x :- Nat] (List Nat)
-  (match (scope-find w x) [none (List.nil Nat)] [(some s) (nz (:parent s))]))
+  (match (scope-find w x) none (List.nil Nat) (some s) (nz (:parent s))))
 (a/defn scope-anc-fuel [w :- World] (List Nat)
   (List.cons Nat 0 (List.cons Nat 0 (tbl-ids scope-id (:scopes w)))))
 (a/defn scope-ancestors [w :- World, s :- Nat] (List Nat)
@@ -249,16 +249,16 @@
 ;; run scope's chain of Z#52; a scope of the stored subtree has its parent in the subtree or is the
 ;; run scope, so in reachable worlds this adds nothing else; ids that are not scopes add nothing)
 (a/defn anc-all [w :- World, xs :- (List Nat)] (List Nat)
-  (match xs [nil (List.nil Nat)] [(cons h t) (List.append Nat (scope-ancestors w h) (anc-all w t))]))
+  (match xs nil (List.nil Nat) (cons h t) (List.append Nat (scope-ancestors w h) (anc-all w t))))
 (a/defn anc-close [w :- World, xs :- (List Nat)] (List Nat) (List.append Nat xs (anc-all w xs)))
 (a/defn opt-rows [o :- (Option RunRow)] (List Nat)
-  (match o [none (List.nil Nat)] [(some r) (run-stored r)]))
+  (match o none (List.nil Nat) (some r) (run-stored r)))
 (a/defn cleanup-base [w :- World, c :- CleanupRow] (List Nat)
   (List.cons Nat (:run c) (List.append Nat (:rows c) (opt-rows (run-find w (:run c))))))
 (a/defn cleanup-contrib [w :- World, c :- CleanupRow] (List Nat) (anc-close w (cleanup-base w c)))
 (a/defn cleanup-rows-in [w :- World, cs :- (List CleanupRow)] (List Nat)
-  (match cs [nil (List.nil Nat)]
-         [(cons h t) (List.append Nat (cleanup-contrib w h) (cleanup-rows-in w t))]))
+  (match cs nil (List.nil Nat)
+         (cons h t) (List.append Nat (cleanup-contrib w h) (cleanup-rows-in w t))))
 (a/defn cleanup-rows [w :- World] (List Nat) (cleanup-rows-in w (:cleanup w)))
 
 ;; storage (X#7, Z#3): the finalizer refs of the runs in live
@@ -271,8 +271,8 @@
 ;; yet, an inherited one (W-NORMALIZE). Both are keep reasons of the engine's remove-scope-if-empty!; the engine
 ;; has no filter over scope rows (question 17), so in the model they are storage, not reachability.
 (a/defn fork-keep [fs :- (List ForkRow)] (List Nat)
-  (match fs [nil (List.nil Nat)]
-         [(cons h t) (List.cons Nat (:id h) (List.cons Nat (:owner h) (fork-keep t)))]))
+  (match fs nil (List.nil Nat)
+         (cons h t) (List.cons Nat (:id h) (List.cons Nat (:owner h) (fork-keep t)))))
 (a/defn storage-gather [w :- World, lv :- (List Nat)] (List Nat)
   (List.append Nat (storage-seeds w lv) (fork-keep (:forks w))))
 ;; closed upward like the cleanup rows (refs are sources by Z#3 and layer 1 registers none, so

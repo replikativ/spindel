@@ -1,4 +1,4 @@
-(ns spindel.v2.owned
+(ns ^:ansatz/lean spindel.v2.owned
   "C1c stage B (c1c design v4 L2, questions 15-18): owned forks, as layer-1 world operations.
 
   The count. Engine `W-OWNED-N` {scope -> n}: +1 in own-child!'s counting branch of the `(fork)` effect

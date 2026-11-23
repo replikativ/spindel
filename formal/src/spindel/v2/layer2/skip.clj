@@ -1,4 +1,4 @@
-(ns spindel.v2.layer2.skip
+(ns ^:ansatz/lean spindel.v2.layer2.skip
   "Skipping an id keeps the layer-1 bundle: `chain-to-marks-waiting w` gives `chain-to-marks-waiting (bump w)`.
 
   The worlds of one family draw their ids from one allocator (engine `fork-world*`), so a world
@@ -128,7 +128,7 @@
   (exact (And.intro (chain-to-i14-ordered-skip w (And.left p)) (marks-waiting-skip w (And.right p)))))
 
 (a/defn skip-ids [n :- Nat, w :- World] World
-  (match n [zero w] [(succ k) (bump (skip-ids k w))]))
+  (match n zero w (succ k) (bump (skip-ids k w))))
 (a/theorem chain-to-marks-waiting-skip-ids [n :- Nat, w :- World] (=> (= (chain-to-marks-waiting w) true) (= (chain-to-marks-waiting (skip-ids n w)) true))
   (induction n)
   (case [zero] (intro h) (simp only [skip-ids]) (exact h))

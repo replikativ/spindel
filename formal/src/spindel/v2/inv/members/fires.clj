@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.members.fires
+(ns ^:ansatz/lean spindel.v2.inv.members.fires
   "h-mem2 through `world-step` (P11, second half), continued from spindel.v2.inv.members.bundle (the bundle `current-members xm`, its
   transfer machinery and the bundle `H3`), kernel-checked (Init only): the fires.
 

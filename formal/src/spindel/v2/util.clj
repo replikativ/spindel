@@ -1,4 +1,4 @@
-(ns spindel.v2.util
+(ns ^:ansatz/lean spindel.v2.util
   "Small generic definitions shared by layer 2 (kernel-checked, Init only).
 
     fupd f k v    function update at a Nat key: (fupd f k v) x = v if x = k, else f x

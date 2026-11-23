@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.base
+(ns ^:ansatz/lean spindel.v2.inv.base
   "P3 complete: the reference invariants of `filter-safe-of-refs` (spindel.v2.inv.copier) through the step,
   and with them the step theorems with no honest hypothesis. Bundles (well-formed plus a rest
   part; each goes through the generic step tree, spindel.v2.pres.tree, by its table `tree/part!`):
@@ -1709,7 +1709,7 @@
            (fn [a :- ActRow, ha :- (= (act-run-has (:runs w) a) true)]
              (Eq.trans (tbl-has-upd RunRow run-id x (:run a) run-cancel-row run-cancel-row-id (:runs w)) ha))
            (:acts w) (act-runs-alive-has w h)))
-  (have p := (acts-drop-fold (act-run-has (tbl-upd run-id x run-cancel-row (:runs w))) (tbl-scan act-id (act-of-run x) (:acts (run-upd w x run-cancel-row)))
+  (have p := (acts-drop-fold (act-run-has (tbl-upd run-id x run-cancel-row (:runs w))) (tbl-scan act-id (act-of-run x) (:acts w))
                (run-upd w x run-cancel-row) hh))
   (have hh2 (= (tbl-all (act-run-has (:runs (cancel-acts (run-upd w x run-cancel-row) x))) (:acts (cancel-acts (run-upd w x run-cancel-row) x))) true))
   (simp only [cancel-acts (And.right p)]) (exact (And.left p))
@@ -2085,7 +2085,7 @@
 ;; ===========================================================================
 
 (a/defn fv [A :- Type :implicit, idf :- (=> A Nat), m :- (=> A Nat), d :- Nat, xs :- (List A)] Nat
-  (match (tbl-find idf d xs) [none 0] [(some r) (m r)]))
+  (match (tbl-find idf d xs) none 0 (some r) (m r)))
 (a/defn sver [s :- SourceRow] Nat (:version s))
 (a/defn cver [c :- CompRow] Nat (:version c))
 (a/defn dvk [ss :- (List SourceRow), cs :- (List CompRow), d :- Nat] Nat
@@ -2873,9 +2873,9 @@
       (= (i5-seen w) true) (= (i5-seen (track-raw w r x s k)) true))
   (intros hc hs h)
   (have h2 (= (i5-seen (match (site-edge (:edges w) (:of r) (:effect-index r) x)
-                      [none (track-new w r x s k)]
-                      [(some e) (comp-upd (track-fin s (:id e) (edge-upd w (:id e) (edge-reread (track-cont r k) s)))
-                                          (:of r) (comp-consume-adopt (:effect-index r) x))])) true))
+                      none (track-new w r x s k)
+                      (some e) (comp-upd (track-fin s (:id e) (edge-upd w (:id e) (edge-reread (track-cont r k) s)))
+                                         (:of r) (comp-consume-adopt (:effect-index r) x)))) true))
   (cases he (site-edge (:edges w) (:of r) (:effect-index r) x)) (case' [some e]) (case' [none])
   (simp only [track-new])
   (exact (i5-seen-comp-upd _ (:of r) (comp-consume-adopt (:effect-index r) x)

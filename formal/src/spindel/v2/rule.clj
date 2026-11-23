@@ -1,4 +1,4 @@
-(ns spindel.v2.rule
+(ns ^:ansatz/lean spindel.v2.rule
   "Rule R normalization and the cancel family (spec v1.5.1 §3.3, T13 with Z#18, T14, T15 with
   Z#6, T16, T10 one level), and the model's step `world-step w item = Rule R ∘ raw`,
   kernel-checked (Init only).
@@ -139,8 +139,8 @@
 (a/defn comp-resync [es :- (List EdgeRow), c :- CompRow] CompRow
   (comp-set-pending (marked-in (:id c) es) c))
 (a/defn comps-resync [es :- (List EdgeRow), cs :- (List CompRow)] (List CompRow)
-  (match cs [nil (List.nil CompRow)]
-         [(cons h t) (List.cons CompRow (comp-resync es h) (comps-resync es t))]))
+  (match cs nil (List.nil CompRow)
+         (cons h t) (List.cons CompRow (comp-resync es h) (comps-resync es t))))
 
 ;; keep the edges with p; every computation's pending is the count of its marked in-edges
 ;; that remain (= the old count minus the removed marked ones, under pending-exact)
@@ -351,17 +351,17 @@
 (a/structure FinRes [] (world World) (rest (List Nat)))
 (a/defn finalize-loop [fuel :- (List Nat), w :- World, ds :- (List Nat)] FinRes
   (match fuel
-    [nil (FinRes.mk w ds)]
-    [(cons h f) (match ds
-                  [nil (FinRes.mk w (List.nil Nat))]
-                  [(cons d t) (finalize-loop f (finalize-one w d)
-                                (List.append Nat t (tbl-filter (final-comp-id (finalize-one w d))
-                                                     (tbl-scan edge-cred (finalize-drops (:acts w) d) (:edges w)))))])]))
+    nil (FinRes.mk w ds)
+    (cons h f) (match ds
+                 nil (FinRes.mk w (List.nil Nat))
+                 (cons d t) (finalize-loop f (finalize-one w d)
+                              (List.append Nat t (tbl-filter (final-comp-id (finalize-one w d))
+                                                   (tbl-scan edge-cred (finalize-drops (:acts w) d) (:edges w))))))))
 (a/defn finalize-fuel [w :- World] (List Nat) (List.cons Nat 0 (List.cons Nat 0 (tbl-ids comp-id (:comps w)))))
 (a/defn t10-finalize-debtor [w :- World, d :- Nat] World
   (:world (finalize-loop (finalize-fuel w) w (List.cons Nat d (List.nil Nat)))))
 (a/defn finalize-done [w :- World, d :- Nat] Bool
-  (match (:rest (finalize-loop (finalize-fuel w) w (List.cons Nat d (List.nil Nat)))) [nil true] [(cons h t) false]))
+  (match (:rest (finalize-loop (finalize-fuel w) w (List.cons Nat d (List.nil Nat)))) nil true (cons h t) false))
 
 ;; Z#53: closing a source wakes what waits on it, before T10: its armed wait edges (takes,
 ;; acquires, task awaits, host waits) and its armed dep edges that are activation members fire
@@ -396,8 +396,8 @@
 ;; a stream ends its tail first (C0: T16 and every other close of a stream, close item, demotion)
 (a/defn end-stream [w :- World, x :- Nat] World
   (match (source-find w x)
-    [none w]
-    [(some s) (if (Nat.beq (:kind s) sk-stream) (end-link w (:tail s) false 0) w)]))
+    none w
+    (some s) (if (Nat.beq (:kind s) sk-stream) (end-link w (:tail s) false 0) w)))
 ;; closing a source makes it final (D1): wake (Z#53), then T10
 (a/defn close-source-ended [w :- World, x :- Nat] World (t10-finalize-debtor (wake-closed (source-upd w x source-close-row) x) x))
 (a/defn close-source [w :- World, x :- Nat] World (close-source-ended (end-stream w x) x))
@@ -447,8 +447,8 @@
   (Bool.and (Nat.beq (:kind e) ek-dep) (Bool.and (Nat.beq (:debtor e) d) (Nat.beq (:phase e) ph-armed))))
 (a/defn invalidate-id [w :- World, x :- Nat] World
   (match (edge-find w x)
-    [none w]
-    [(some e) (if (Nat.beq (:phase e) ph-armed) (invalidate w e) w)]))
+    none w
+    (some e) (if (Nat.beq (:phase e) ph-armed) (invalidate w e) w)))
 (a/defn invalidate-dependents [w :- World, d :- Nat] World
   (nat-fold invalidate-id w (tbl-scan edge-id (armed-dep-on d) (:edges w))))
 ;; Z#39: a cancelled task is final: like a completion (T12), its wait creditors AND the dep
@@ -466,10 +466,10 @@
   (nat-fold clear-rtask w (tbl-scan source-id (rtask-is k) (:sources w))))
 (a/defn debtor-side [w :- World, r :- RunRow] World
   (match (comp-find w (:of r))
-    [none (clear-rtasks (fire-task-cancelled (task-upd w (:of r) task-cancel-result) (:of r)) (:of r))]
-    [(some c) (if (Nat.beq (:epoch r) (:epoch c))
-                  (invalidate-dependents (fire-waits-cancelled w (:of r)) (:of r))
-                  w)]))
+    none (clear-rtasks (fire-task-cancelled (task-upd w (:of r) task-cancel-result) (:of r)) (:of r))
+    (some c) (if (Nat.beq (:epoch r) (:epoch c))
+                 (invalidate-dependents (fire-waits-cancelled w (:of r)) (:of r))
+                 w)))
 
 ;; cleanup[R] (§3.2 table, A#2): its run scope's subtree and the tasks and sources owned
 ;; there; the run row, run scope, body entity, resources, finalizer refs and the run scope's
@@ -511,12 +511,12 @@
 (a/defn task-clear-run [t :- TaskRow] TaskRow (TaskRow.mk (:id t) (:owner t) 0 (:result t) (:handles t) (:inputs t) (:local t)))
 (a/defn clear-task-run [w :- World, r :- RunRow] World
   (match (task-find w (:of r))
-    [none w]
-    [(some t) (if (Nat.beq (:run t) (:id r)) (task-upd w (:of r) task-clear-run) w)]))
+    none w
+    (some t) (if (Nat.beq (:run t) (:id r)) (task-upd w (:of r) task-clear-run) w)))
 (a/defn clear-comp-run [w :- World, r :- RunRow] World
   (match (comp-find w (:of r))
-    [none (clear-task-run w r)]
-    [(some c) (if (Nat.beq (:run c) (:id r)) (comp-upd w (:of r) comp-clear-run) w)]))
+    none (clear-task-run w r)
+    (some c) (if (Nat.beq (:run c) (:id r)) (comp-upd w (:of r) comp-clear-run) w)))
 (a/defn t13-retire-with-subtree [w :- World, r :- RunRow, sub :- (List Nat)] World
   (remove-if-empty (cleanup-del (run-del (close-local (clear-comp-run w r) sub) (:id r)) (:id r)) sub))
 (a/defn retire-run [w :- World, r :- RunRow] World (t13-retire-with-subtree w r (scope-subtree w (:scope r))))
@@ -746,50 +746,50 @@
   (jclose [s Nat]))              ; T16 close-scope(s)
 
 (a/defn cancel-jobs [xs :- (List Nat)] (List Job)
-  (match xs [nil (List.nil Job)] [(cons h t) (List.cons Job (Job.jcancel h false) (cancel-jobs t))]))
+  (match xs nil (List.nil Job) (cons h t) (List.cons Job (Job.jcancel h false) (cancel-jobs t))))
 
 (a/defn job-apply [w :- World, j :- Job] World
   (match j
-    [(jcancel rid rep) (match (run-find w rid)
-                         [none w]
-                         [(some r) (if (run-alive r) (cancel-run-local w r rep) w)])]
-    [(jretire rid) (match (run-find w rid)
-                     [none w]
-                     [(some r) (if (retirable r) (retire-run w r) w)])]
-    [(jclose s) (if (scope-has w s) (close-scope-local w s) w)]))
+    (jcancel rid rep) (match (run-find w rid)
+                        none w
+                        (some r) (if (run-alive r) (cancel-run-local w r rep) w))
+    (jretire rid) (match (run-find w rid)
+                    none w
+                    (some r) (if (retirable r) (retire-run w r) w))
+    (jclose s) (if (scope-has w s) (close-scope-local w s) w)))
 
 ;; follow-up jobs, read from the world before the job: cancel's children (the work owned by
 ;; R.scope's subtree) then T13 on R; retire's and close's T16 cancels
 (a/defn job-next [w :- World, j :- Job] (List Job)
   (match j
-    [(jcancel rid rep) (match (run-find w rid)
-                         [none (List.nil Job)]
-                         [(some r) (if (run-alive r)
-                                       (List.append Job (cancel-jobs (owned-runs w (scope-subtree w (:scope r))))
-                                                    (List.cons Job (Job.jretire rid) (List.nil Job)))
-                                       (List.nil Job))])]
-    [(jretire rid) (match (run-find w rid)
-                     [none (List.nil Job)]
-                     [(some r) (if (retirable r) (cancel-jobs (owned-runs w (scope-subtree w (:scope r))))
-                                   (List.nil Job))])]
-    [(jclose s) (if (scope-has w s) (cancel-jobs (owned-runs w (scope-subtree w s))) (List.nil Job))]))
+    (jcancel rid rep) (match (run-find w rid)
+                        none (List.nil Job)
+                        (some r) (if (run-alive r)
+                                     (List.append Job (cancel-jobs (owned-runs w (scope-subtree w (:scope r))))
+                                                  (List.cons Job (Job.jretire rid) (List.nil Job)))
+                                     (List.nil Job)))
+    (jretire rid) (match (run-find w rid)
+                    none (List.nil Job)
+                    (some r) (if (retirable r) (cancel-jobs (owned-runs w (scope-subtree w (:scope r))))
+                                 (List.nil Job)))
+    (jclose s) (if (scope-has w s) (cancel-jobs (owned-runs w (scope-subtree w s))) (List.nil Job))))
 
 (a/structure Casc [] (world World) (rest (List Job)))
 
 (a/defn cascade [fuel :- (List Nat), w :- World, js :- (List Job)] Casc
   (match fuel
-    [nil (Casc.mk w js)]
-    [(cons h f) (match js
-                  [nil (Casc.mk w (List.nil Job))]
-                  [(cons j t) (cascade f (job-apply w j) (List.append Job t (job-next w j)))])]))
+    nil (Casc.mk w js)
+    (cons h f) (match js
+                 nil (Casc.mk w (List.nil Job))
+                 (cons j t) (cascade f (job-apply w j) (List.append Job t (job-next w j))))))
 
 ;; fuel: a cancel or retire acts once per run (the guards); each acting job queues at most
 ;; #runs + 1 jobs, and each initial job at most #runs. `cascade-done` is the flag; that it holds is
 ;; P4 (spindel.v2.progress.casc `cascade-done-ok`).
 (a/defn rep-list [xs :- (List Nat), unit :- (List Nat)] (List Nat)
-  (match xs [nil (List.nil Nat)] [(cons h t) (List.append Nat unit (rep-list t unit))]))
+  (match xs nil (List.nil Nat) (cons h t) (List.append Nat unit (rep-list t unit))))
 (a/defn job-zeros [js :- (List Job)] (List Nat)
-  (match js [nil (List.nil Nat)] [(cons h t) (List.cons Nat 0 (job-zeros t))]))
+  (match js nil (List.nil Nat) (cons h t) (List.cons Nat 0 (job-zeros t))))
 (a/defn cascade-fuel [w :- World, js :- (List Job)] (List Nat)
   (List.cons Nat 0
     (List.append Nat (rep-list (job-zeros js) (List.cons Nat 0 (tbl-ids run-id (:runs w))))
@@ -798,7 +798,7 @@
 
 (a/defn cascade-run [w :- World, js :- (List Job)] Casc (cascade (cascade-fuel w js) w js))
 (a/defn run-cascade [w :- World, js :- (List Job)] World (:world (cascade-run w js)))
-(a/defn jobs-empty [js :- (List Job)] Bool (match js [nil true] [(cons h t) false]))
+(a/defn jobs-empty [js :- (List Job)] Bool (match js nil true (cons h t) false))
 (a/defn cascade-done [w :- World, js :- (List Job)] Bool (jobs-empty (:rest (cascade-run w js))))
 
 (a/theorem well-formed-job-apply [w :- World, j :- Job]
@@ -851,10 +851,10 @@
 ;; T14 as a transition: the run must exist and not be done
 (a/defn t14-cancel [w :- World, rid :- Nat, rep :- Bool] Outcome
   (match (run-find w rid)
-    [none (refuse w)]
-    [(some r) (if (run-alive r)
-                  (accept (run-cascade w (List.cons Job (Job.jcancel rid rep) (List.nil Job))))
-                  (refuse w))]))
+    none (refuse w)
+    (some r) (if (run-alive r)
+                 (accept (run-cascade w (List.cons Job (Job.jcancel rid rep) (List.nil Job))))
+                 (refuse w))))
 
 ;; T16 close-scope(S): the scope must exist
 (a/defn t16-close-scope [w :- World, s :- Nat] Outcome
@@ -868,8 +868,8 @@
 (a/defn t15-resource-ack [w :- World, z :- Nat] Outcome
   (if (ack-tok-ok w z)
       (match (resource-find w z)
-        [none (refuse w)]
-        [(some zr) (accept (t13-retire (ack-raw w z (:owner zr)) (:owner zr)))])
+        none (refuse w)
+        (some zr) (accept (t13-retire (ack-raw w z (:owner zr)) (:owner zr))))
       (refuse w)))
 
 (a/theorem well-formed-t14-cancel [w :- World, rid :- Nat, rep :- Bool]
@@ -946,13 +946,13 @@
 ;; validity entry of a removed dep edge (Z#24): (debtor, the version the edge last consumed),
 ;; i.e. its `seen`; an edge that never consumed a version gives the entry (0, 0), whose debtor
 ;; 0 never exists, so the validity fails and the computation must re-run (reading 7)
-(a/defn comp-rank-of [w :- World, x :- Nat] Nat (match (comp-find w x) [none 0] [(some c) (:rank c)]))
+(a/defn comp-rank-of [w :- World, x :- Nat] Nat (match (comp-find w x) none 0 (some c) (:rank c)))
 ;; I14 (model-only fields): each entry carries the allocator and the creditor's rank at the demotion
 (a/defn edge-valid [w :- World, e :- EdgeRow] Valid
   (if (:has-seen e) (Valid.mk (:debtor e) (:seen e) (:next-id w) (comp-rank-of w (:creditor e)))
       (Valid.mk 0 0 (:next-id w) (comp-rank-of w (:creditor e)))))
 (a/defn valid-list [w :- World, es :- (List EdgeRow)] (List Valid)
-  (match es [nil (List.nil Valid)] [(cons h t) (List.cons Valid (edge-valid w h) (valid-list w t))]))
+  (match es nil (List.nil Valid) (cons h t) (List.cons Valid (edge-valid w h) (valid-list w t))))
 (a/defn validity-of [w :- World, c :- Nat] (List Valid) (valid-list w (tbl-filter (dep-of c) (:edges w))))
 (a/defn not-dep-of [c :- Nat, e :- EdgeRow] Bool (Bool.not (dep-of c e)))
 
@@ -963,17 +963,17 @@
            (Bool.or (Nat.blt 0 (:handles c)) (reach-mem (:id c) (cleanup-rows w)))))
 (a/defn demote-finish [w :- World, cid :- Nat, vs :- (List Valid)] World
   (match (comp-find w cid)
-    [none w]
-    [(some c) (if (demote-keep w c)
-                  (comp-upd w cid (comp-demote-row vs))
-                  (comp-del (drop-edges w (edge-avoids cid)) cid))]))
+    none w
+    (some c) (if (demote-keep w c)
+                 (comp-upd w cid (comp-demote-row vs))
+                 (comp-del (drop-edges w (edge-avoids cid)) cid))))
 ;; C0: the streams in C's basis end with the demotion (close-source realizes the tail as the end),
 ;; after C's dep edges are gone, as the engine's demote! (like its basis tasks, cancelled above)
 (a/defn source-kind-at [w :- World, k :- Nat, x :- Nat] Bool
-  (match (source-find w x) [none false] [(some s) (Nat.beq (:kind s) k)]))
+  (match (source-find w x) none false (some s) (Nat.beq (:kind s) k)))
 (a/defn basis-streams [w :- World, c :- CompRow] (List Nat) (tbl-filter (source-kind-at w sk-stream) (created-ids (:basis c))))
 (a/defn end-basis [w :- World, cid :- Nat] World
-  (match (comp-find w cid) [none w] [(some c) (nat-fold close-source w (basis-streams w c))]))
+  (match (comp-find w cid) none w (some c) (nat-fold close-source w (basis-streams w c))))
 (a/defn demote-edges [w :- World, cid :- Nat] World
   (demote-finish (end-basis (drop-edges w (not-dep-of cid)) cid) cid (validity-of w cid)))
 ;; Z#42: demotion steps the epoch when C.run is current (R.epoch = C.epoch; normalization may
@@ -981,13 +981,13 @@
 ;; a run kept in cleanup is stale (I10)
 (a/defn demote-cur [w :- World, c :- CompRow] Bool
   (match (run-find w (:run c))
-    [none false]
-    [(some r) (Nat.beq (:epoch r) (:epoch c))]))
+    none false
+    (some r) (Nat.beq (:epoch r) (:epoch c))))
 (a/defn demote-epoch [w :- World, cid :- Nat, b :- Bool] World (if b (comp-upd w cid comp-inc-epoch) w))
 (a/defn demote [w :- World, cid :- Nat] World
   (match (comp-find w cid)
-    [none w]
-    [(some c) (if (:idle c) w (demote-edges (demote-epoch (run-cascade w (cancel-jobs (demote-cancels w c))) cid (demote-cur w c)) cid))]))
+    none w
+    (some c) (if (:idle c) w (demote-edges (demote-epoch (run-cascade w (cancel-jobs (demote-cancels w c))) cid (demote-cur w c)) cid))))
 
 (a/theorem well-formed-demote-finish [w :- World, cid :- Nat, vs :- (List Valid)]
   (=> (= (well-formed w) true) (= (well-formed (demote-finish w cid vs)) true))
@@ -1088,7 +1088,7 @@
 (a/defn normalize-round [w :- World] World (normalize-round-with-live w (live-list w)))
 
 (a/defn normalize-loop [fuel :- (List Nat), w :- World] World
-  (match fuel [nil w] [(cons h f) (if (normalized w) w (normalize-loop f (normalize-round w)))]))
+  (match fuel nil w (cons h f) (if (normalized w) w (normalize-loop f (normalize-round w)))))
 
 (a/defn comp-active [c :- CompRow] Bool (Bool.not (Bool.or (:idle c) (:tomb c))))
 ;; the measure #non-done runs + #non-idle computations, plus 1
@@ -1363,22 +1363,22 @@
 ;; w1 is the output of the previous round
 (a/defn rule-r-loop [fuel :- (List Nat), w1 :- World] World
   (match fuel
-    [nil w1]
-    [(cons h f) (if (no-orphans w1) w1 (rule-r-loop f (rule-r-round w1)))]))
+    nil w1
+    (cons h f) (if (no-orphans w1) w1 (rule-r-loop f (rule-r-round w1)))))
 (a/defn rule-r-fuel [w :- World] (List Nat) (List.cons Nat 0 (all-ids w)))
 (a/defn rule-r [w :- World] World (rule-r-loop (rule-r-fuel w) (rule-r-round w)))
 ;; the input of the last round
 (a/defn last-input-loop [fuel :- (List Nat), w0 :- World] World
   (match fuel
-    [nil w0]
-    [(cons h f) (if (no-orphans (rule-r-round w0)) w0 (last-input-loop f (rule-r-round w0)))]))
+    nil w0
+    (cons h f) (if (no-orphans (rule-r-round w0)) w0 (last-input-loop f (rule-r-round w0)))))
 (a/defn rule-r-last-input [w :- World] World (last-input-loop (rule-r-fuel w) w))
 ;; filter-safe for every round
 (a/defn rounds-safe-loop [fuel :- (List Nat), w0 :- World] Bool
   (match fuel
-    [nil (filter-safe (normalize w0))]
-    [(cons h f) (Bool.and (filter-safe (normalize w0))
-                          (if (no-orphans (rule-r-round w0)) true (rounds-safe-loop f (rule-r-round w0))))]))
+    nil (filter-safe (normalize w0))
+    (cons h f) (Bool.and (filter-safe (normalize w0))
+                         (if (no-orphans (rule-r-round w0)) true (rounds-safe-loop f (rule-r-round w0))))))
 (a/defn rule-r-safe [w :- World] Bool (rounds-safe-loop (rule-r-fuel w) w))
 
 ;; ===========================================================================

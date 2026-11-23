@@ -1,4 +1,4 @@
-(ns spindel.v2.pres.exempt
+(ns ^:ansatz/lean spindel.v2.pres.exempt
   "Exemption forms: violations deferred within a step (formal/notes/proof-layout.md, option D).
 
   One world-step is a transaction: `inv` holds at commit, before and after the step. Inside the step a

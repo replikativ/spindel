@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.members.await-post
+(ns ^:ansatz/lean spindel.v2.inv.members.await-post
   "Compose accepted fast-fill/park support with finalization to actual await-post H3."
   (:require [ansatz.core :as a]
             [spindel.v2.state :refer :all]

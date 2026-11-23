@@ -1,4 +1,4 @@
-(ns spindel.v2.completion.stable
+(ns ^:ansatz/lean spindel.v2.completion.stable
   "C1c stage A (Z#70), the proof stage, layer 1: completion is stable. Once task k is complete
   (spindel.v2.ledger `task-complete`: not held, no scope row k + 2) or scope s is (`scope-complete`:
   no row), it stays so through every step, kernel-checked (Init only).
@@ -50,7 +50,7 @@
 
 ;; a task row holds its owner (ledger `task-held`, per row)
 (a/defn th-row [t :- TaskRow] Bool (Bool.or (Nat.beq (:tag (:result t)) res-none) (Bool.not (Nat.beq (:run t) 0))))
-(a/defn th-opt [o :- (Option TaskRow)] Bool (match o [none false] [(some t) (th-row t)]))
+(a/defn th-opt [o :- (Option TaskRow)] Bool (match o none false (some t) (th-row t)))
 
 (a/defn task-unheld-scope-absent-rest [tk9 :- Nat, sc9 :- Nat, w :- World] Bool
   (Bool.and (Nat.blt tk9 (:next-id w))

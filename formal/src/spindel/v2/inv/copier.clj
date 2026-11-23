@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.copier
+(ns ^:ansatz/lean spindel.v2.inv.copier
   "The spec's literal layer-1 invariants (§6) as theorems through the model's step `world-step`,
   kernel-checked (Init only). Predicates: spindel.v2.inv's `lit-*` and `inv-i10-task`.
 
@@ -62,9 +62,9 @@
 (a/defn task-key [t :- TaskRow] TaskKey (TaskKey.mk (:id t) (:run t) (task-done t)))
 (a/defn task-key-id [k :- TaskKey] Nat (:id k))
 (a/defn run-keys [rs :- (List RunRow)] (List RunKey)
-  (match rs [nil (List.nil RunKey)] [(cons h t) (List.cons RunKey (run-key h) (run-keys t))]))
+  (match rs nil (List.nil RunKey) (cons h t) (List.cons RunKey (run-key h) (run-keys t))))
 (a/defn task-keys [ts :- (List TaskRow)] (List TaskKey)
-  (match ts [nil (List.nil TaskKey)] [(cons h t) (List.cons TaskKey (task-key h) (task-keys t))]))
+  (match ts nil (List.nil TaskKey) (cons h t) (List.cons TaskKey (task-key h) (task-keys t))))
 
 (a/defn of-below-k [n :- Nat, r :- RunKey] Bool (Nat.blt (:of r) n))
 ;; every task with id r.of has run r.id
@@ -1884,7 +1884,7 @@
     (case [false] (simp only [hf Bool.false_or] at h) (simp only [h Bool.true_or]))))
 
 (a/defn rcl [L :- (List Nat), rs :- (List ResRow)] (List ResRow)
-  (match L [nil rs] [(cons x t) (rcl t (tbl-upd resource-id x res-cancel-row rs))]))
+  (match L nil rs (cons x t) (rcl t (tbl-upd resource-id x res-cancel-row rs))))
 
 (a/theorem res-cancel-fold [L :- (List Nat)]
   (forall [V :- World] (= (:res (nat-fold res-cancel V L)) (rcl L (:res V))))
@@ -1991,7 +1991,7 @@
   (have hs := (i9-res-well-formed w h))
   (have hr := (i9-res-rest-of w h))
   (simp only [i9-res-rest lit-i9-res Bool.and_eq_true] at hr)
-  (have fa := (runs-acts-fold (tbl-scan act-id (act-of-run (:id r)) (:acts (run-upd w (:id r) run-cancel-row)))
+  (have fa := (runs-acts-fold (tbl-scan act-id (act-of-run (:id r)) (:acts w))
                 (run-upd w (:id r) run-cancel-row)))
   (have e-runs (= (:runs (cancel-mid w r)) (tbl-upd run-id (:id r) run-cancel-row (:runs w))))
   (simp only [cancel-mid cleanup-set cleanup-ins cleanup-del set-cleanup cancel-res cancel-acts runs-cancel-fold])

@@ -1,4 +1,4 @@
-(ns spindel.v2.completion.quiet-world
+(ns ^:ansatz/lean spindel.v2.completion.quiet-world
   "C1 completion stability, layer 1, the quiet half (notes/history/PLAN.md C1, `hq`): a quiet world (released,
   no run) holds only scopes, and every item is refused there, so a quiet world stays quiet.
 
@@ -486,11 +486,11 @@
     (intro h) (simp only [tbl-all Bool.and_eq_true] at h)
     (simp only [tbl-any (hpq a (And.left h)) (ih (And.right h)) Bool.or_self])))
 (a/theorem adm-comp-h0 [y :- Nat, c :- CompRow] (=> (= (h0-c c) true) (= (adm-comp y c) false))
-  (intro z) (have e := (beq0-eq _ z)) (simp [adm-comp e]))
+  (intro z) (have e := (beq0-eq _ z)) (simp [adm-comp e]) (intros) (rfl))
 (a/theorem adm-task-h0 [y :- Nat, t :- TaskRow] (=> (= (h0-t t) true) (= (adm-task y t) false))
-  (intro z) (have e := (beq0-eq _ z)) (simp [adm-task e]))
+  (intro z) (have e := (beq0-eq _ z)) (simp [adm-task e]) (intros) (rfl))
 (a/theorem adm-source-h0 [y :- Nat, s :- SourceRow] (=> (= (h0-s s) true) (= (adm-source y s) false))
-  (intro z) (have e := (beq0-eq _ z)) (simp [adm-source e]))
+  (intro z) (have e := (beq0-eq _ z)) (simp [adm-source e]) (intros) (rfl))
 (a/theorem keep-scope [w :- World, y :- Nat]
   (=> (= (qh w) true) (= (keep-fn w y) true) (= (scope-has w y) true))
   (intros h hk)

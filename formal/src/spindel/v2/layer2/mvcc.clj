@@ -1,4 +1,4 @@
-(ns spindel.v2.layer2.mvcc
+(ns ^:ansatz/lean spindel.v2.layer2.mvcc
   "Layer 2, physical, MVCC representation (spec §8.1 \"Representation (MVCC, 2026-11-15)\",
   `v2-fork-memory-design` §2, §7; engine `core.cljc` `preserve!`, `version-of`, `view`, `resolve-row`,
   `peek-row`, `own-copy!`, `fork-world*`, `instance-world*`, `register-token!`, `prune-cell!`,
@@ -49,10 +49,10 @@
 ;; the first version whose range holds ordinal f
 (a/defn mv-look [vs :- (List MVer), f :- Nat] (Option Nat)
   (match vs
-    [nil (Option.none Nat)]
-    [(cons v t) (if (Bool.and (Nat.ble (:k v) f) (Nat.ble f (:m v)))
-                  (Option.some Nat (:img v))
-                  (mv-look t f))]))
+    nil (Option.none Nat)
+    (cons v t) (if (Bool.and (Nat.ble (:k v) f) (Nat.ble f (:m v)))
+                 (Option.some Nat (:img v))
+                 (mv-look t f))))
 
 ;; `version-of`: row x as forks at ordinal f see it
 (a/defn mv-vat [x :- MRow, f :- Nat] (Option Nat)
@@ -61,10 +61,10 @@
 ;; `view`: the lineage, nearest first, for id i whose reference is the row at address r
 (a/defn mv-scan [h :- (=> Nat MRow), r :- Nat, i :- Nat, l :- (List MEnt)] (Option Nat)
   (match l
-    [nil (Option.none Nat)]
-    [(cons e t) (if (Nat.beq (MEnt.mp e i) 0)
-                  (if (Nat.beq (:ow (h r)) (:own e)) (mv-vat (h r) (:f e)) (mv-scan h r i t))
-                  (mv-vat (h (MEnt.mp e i)) (:f e)))]))
+    nil (Option.none Nat)
+    (cons e t) (if (Nat.beq (MEnt.mp e i) 0)
+                 (if (Nat.beq (:ow (h r)) (:own e)) (mv-vat (h r) (:f e)) (mv-scan h r i t))
+                 (mv-vat (h (MEnt.mp e i)) (:f e)))))
 
 ;; `peek-row`/`resolve-row` read side: world w (state W) reads id i
 (a/defn mv-res [h :- (=> Nat MRow), home :- (=> Nat Nat), w :- Nat, W :- MW, i :- Nat] (Option Nat)
@@ -80,18 +80,18 @@
 ;; a fork with ordinal in [k, m] whose token has not ended (`live-token-in?`)
 (a/defn mv-live-in [cs :- (List MCell), ts :- (=> Nat Nat), k :- Nat, m :- Nat] Bool
   (match cs
-    [nil false]
-    [(cons c t) (Bool.or (Bool.and (Nat.ble k (:o c))
-                                   (Bool.and (Nat.ble (:o c) m) (Bool.not (Nat.beq (ts (:tok c)) 2))))
-                         (mv-live-in t ts k m))]))
+    nil false
+    (cons c t) (Bool.or (Bool.and (Nat.ble k (:o c))
+                                  (Bool.and (Nat.ble (:o c) m) (Bool.not (Nat.beq (ts (:tok c)) 2))))
+                        (mv-live-in t ts k m))))
 
 ;; `prune-versions`: the versions some live fork can still read
 (a/defn mv-prune-vs [cs :- (List MCell), ts :- (=> Nat Nat), vs :- (List MVer)] (List MVer)
   (match vs
-    [nil (List.nil MVer)]
-    [(cons v t) (if (mv-live-in cs ts (:k v) (:m v))
-                  (List.cons MVer v (mv-prune-vs cs ts t))
-                  (mv-prune-vs cs ts t))]))
+    nil (List.nil MVer)
+    (cons v t) (if (mv-live-in cs ts (:k v) (:m v))
+                 (List.cons MVer v (mv-prune-vs cs ts t))
+                 (mv-prune-vs cs ts t))))
 
 ;; `preserve!` on a row stamped before the owner's ordinal o: save its state for the forks
 ;; [so, o-1] if one of them is live, prune, restamp
@@ -148,14 +148,14 @@
 ;; `share-token!`: the token a world got at its fork (the head of its lineage) is shared (sticky)
 (a/defn mv-share [ts :- (=> Nat Nat), l :- (List MEnt)] (=> Nat Nat)
   (match l
-    [nil ts]
-    [(cons e t) (mv-upd ts (:tok e) (mv-shr (ts (:tok e))))]))
+    nil ts
+    (cons e t) (mv-upd ts (:tok e) (mv-shr (ts (:tok e))))))
 
 ;; `finish-token!`: it ends unless shared
 (a/defn mv-fin [ts :- (=> Nat Nat), l :- (List MEnt)] (=> Nat Nat)
   (match l
-    [nil ts]
-    [(cons e t) (mv-upd ts (:tok e) (if (Nat.beq (ts (:tok e)) 0) 2 (ts (:tok e))))]))
+    nil ts
+    (cons e t) (mv-upd ts (:tok e) (if (Nat.beq (ts (:tok e)) 0) 2 (ts (:tok e))))))
 
 ;; `fork-world*` of w: child c (a savepoint basis when b), token t at w's ordinal o; w advances
 (a/defn mv-fork [s :- MSt, w :- Nat, c :- Nat, t :- Nat, b :- Bool] MSt
@@ -221,11 +221,11 @@
 
 ;; every saved range ends before s (versions are older than the stamp)
 (a/defn mv-vlt [s :- Nat, vs :- (List MVer)] Bool
-  (match vs [nil true] [(cons v t) (Bool.and (Nat.blt (:m v) s) (mv-vlt s t))]))
+  (match vs nil true (cons v t) (Bool.and (Nat.blt (:m v) s) (mv-vlt s t))))
 
 ;; a token cell at ordinal o with token t
 (a/defn mv-has-cell [cs :- (List MCell), o :- Nat, t :- Nat] Bool
-  (match cs [nil false] [(cons c r) (Bool.or (Bool.and (Nat.beq (:o c) o) (Nat.beq (:tok c) t)) (mv-has-cell r o t))]))
+  (match cs nil false (cons c r) (Bool.or (Bool.and (Nat.beq (:o c) o) (Nat.beq (:tok c) t)) (mv-has-cell r o t))))
 
 (a/theorem mv-look-app-some [l1 :- (List MVer), l2 :- (List MVer), f :- Nat, y :- Nat]
   (=> (= (mv-look l1 f) (Option.some Nat y)) (= (mv-look (List.append l1 l2) f) (Option.some Nat y)))
@@ -419,7 +419,7 @@
 
 ;; every lineage entry satisfies P
 (a/defn mv-allE [P :- (=> MEnt Prop), l :- (List MEnt)] Prop
-  (match l [nil True] [(cons e t) (And (P e) (mv-allE P t))]))
+  (match l nil True (cons e t) (And (P e) (mv-allE P t))))
 
 (a/theorem mv-allE-mono [P :- (=> MEnt Prop), Q :- (=> MEnt Prop), l :- (List MEnt)]
   (=> (forall [e :- MEnt] (=> (P e) (Q e))) (mv-allE P l) (mv-allE Q l))
@@ -510,8 +510,8 @@
   (forall [u :- Nat, i :- Nat] (=> (= ((:act s) u) true) (= (((:dom s) u) i) true)
     (And (< ((:home s) i) (:n s)) (= (:id ((:h s) ((:home s) i))) i)))))
 
-(a/defn mv-tl [l :- (List MEnt)] (List MEnt) (match l [nil (List.nil MEnt)] [(cons e t) t]))
-(a/defn mv-ht [l :- (List MEnt)] (Option Nat) (match l [nil (Option.none Nat)] [(cons e t) (Option.some Nat (:tok e))]))
+(a/defn mv-tl [l :- (List MEnt)] (List MEnt) (match l nil (List.nil MEnt) (cons e t) t))
+(a/defn mv-ht [l :- (List MEnt)] (Option Nat) (match l nil (Option.none Nat) (cons e t) (Option.some Nat (:tok e))))
 
 ;; sharing: a token below the head of a lineage is shared (something was derived from its fork);
 ;; two active worlds with the same head token (instances of one basis) share it
@@ -890,7 +890,7 @@
 ;; RECLAMATION, safety form: after pruning, every version left on a row is covered by a live
 ;; fork of the row's owner
 (a/defn mv-covered [cs :- (List MCell), ts :- (=> Nat Nat), vs :- (List MVer)] Bool
-  (match vs [nil true] [(cons v t) (Bool.and (mv-live-in cs ts (:k v) (:m v)) (mv-covered cs ts t))]))
+  (match vs nil true (cons v t) (Bool.and (mv-live-in cs ts (:k v) (:m v)) (mv-covered cs ts t))))
 
 (a/theorem mv-prune-covered [cs :- (List MCell), ts :- (=> Nat Nat), vs :- (List MVer)]
   (= (mv-covered cs ts (mv-prune-vs cs ts vs)) true)
@@ -2762,6 +2762,7 @@
   (have hpo := (mi-pres-so cs ts o x hso))
   (have hb (= (Nat.ble (:so (mv-setv (mv-pres cs ts o x) (:val x))) f) false))
   (simp only [mv-setv]) (rw [hpo]) (exact (mv-ble-of-lt o f hfo))
+  (simp only [mv-setv] at hb)
   (simp only [mv-vat hb] at hp)
   (exact hp))
 
