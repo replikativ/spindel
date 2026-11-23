@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.i5
+(ns ^:ansatz/lean spindel.v2.inv.i5
   "Literal I5, dep-final clause (§6: no armed dep edge has a final debtor, `lit-i5-dep-final`)
   through `world-step`, kernel-checked (Init only).
 

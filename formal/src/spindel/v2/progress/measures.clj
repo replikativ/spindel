@@ -1,4 +1,4 @@
-(ns spindel.v2.progress.measures
+(ns ^:ansatz/lean spindel.v2.progress.measures
   "Progress (spec §6 L2, L5 safety half) as kernel-checked measure lemmas over the model's step
   `world-step` (Init only).
 

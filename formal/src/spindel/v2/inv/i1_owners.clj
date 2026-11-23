@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.i1-owners
+(ns ^:ansatz/lean spindel.v2.inv.i1-owners
   "Literal I1, owner clauses for tasks, computations and sources, through `world-step`, kernel-checked
   (Init only). §6 I1: a task's or computation's owner is 0 (detached) or an existing scope or
   computation; a source's owner exists, or it is detached (owner 0) and closed.

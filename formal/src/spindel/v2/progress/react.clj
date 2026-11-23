@@ -1,4 +1,4 @@
-(ns spindel.v2.progress.react
+(ns ^:ansatz/lean spindel.v2.progress.react
   "Obligations P8 and P6. P8: the reactivation worklist (§3.4 step 3, `react-loop` in spindel.v2.engine) empties within
   its fuel `react-fuel` (2 + the number of validity entries), kernel-checked (Init only).
 

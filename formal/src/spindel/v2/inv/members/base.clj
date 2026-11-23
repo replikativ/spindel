@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.members.base
+(ns ^:ansatz/lean spindel.v2.inv.members.base
   "The chain link chain-to-edge-kinds = chain-to-marks-waiting && alive-run-latest && edge-kinds: the AR (spindel.v2.inv.alive-runs) and edge-kind (spindel.v2.inv.members.cascade)
    invariants attached to chain-to-marks-waiting, with `step-chain-to-edge-kinds`. It is the premise world of the current-members (h-mem2) stages
    spindel.v2.inv.members.* from react on (README order), up to spindel.v2.inv.members.step, where chain = chain-to-edge-kinds && current-members [] and `step-chain` close P11."

@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.idle
+(ns ^:ansatz/lean spindel.v2.inv.idle
   "I7 (the idle shape of a computation) through the model's step `world-step`, kernel-checked
   (Init only). Bundle `i7-idle` = well-formed and:
     a7     an alive run's computation (if any) is not idle

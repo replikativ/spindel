@@ -1,4 +1,4 @@
-(ns spindel.v2.rule
+(ns ^:ansatz/lean spindel.v2.rule
   "Rule R normalization and the cancel family (spec v1.5.1 §3.3, T13 with Z#18, T14, T15 with
   Z#6, T16, T10 one level), and the model's step `world-step w item = Rule R ∘ raw`,
   kernel-checked (Init only).

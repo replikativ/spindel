@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.members.complete
+(ns ^:ansatz/lean spindel.v2.inv.members.complete
   "T12 complete and settle for the h-mem2 bundle current-members (P11).
 
   Task half: the task is exempt while its run is made done; its result row is final, so every on-task edge

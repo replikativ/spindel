@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.copier
+(ns ^:ansatz/lean spindel.v2.inv.copier
   "The spec's literal layer-1 invariants (§6) as theorems through the model's step `world-step`,
   kernel-checked (Init only). Predicates: spindel.v2.inv's `lit-*` and `inv-i10-task`.
 

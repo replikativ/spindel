@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.i1-runs
+(ns ^:ansatz/lean spindel.v2.inv.i1-runs
   "Literal I1, the remaining clauses (resource owners; run entities and scopes) through `world-step`,
   kernel-checked (Init only), and with spindel.v2.inv.i1-scopes / spindel.v2.inv.i1-owners all of literal I1 (`inv-i1`).
 

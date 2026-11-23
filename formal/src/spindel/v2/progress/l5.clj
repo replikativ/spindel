@@ -1,4 +1,4 @@
-(ns spindel.v2.progress.l5
+(ns ^:ansatz/lean spindel.v2.progress.l5
   "L5 (safety half) without hypotheses on the step's worlds, kernel-checked (Init only).
 
   spindel.v2.progress.measures proves `l5-safety` under three state facts (h-cur, h-mark, h-mem).

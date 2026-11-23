@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.members.await-wire
+(ns ^:ansatz/lean spindel.v2.inv.members.await-wire
   "Bounded await wiring certificate before member installation.
    Guarded structural outputs remain separate from general H3 transport."
   (:require [ansatz.core :as a]

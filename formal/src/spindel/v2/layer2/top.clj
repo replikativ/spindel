@@ -1,4 +1,4 @@
-(ns spindel.v2.layer2.top
+(ns ^:ansatz/lean spindel.v2.layer2.top
   "Headline statement of layer 2 (correctness stage 1; the namespace's final home is decided by the
   restructure; layer 1's is spindel.v2.top, which spindel.v2.layer2.sys builds on):
 

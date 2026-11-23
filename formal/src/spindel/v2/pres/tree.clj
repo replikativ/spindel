@@ -1,4 +1,4 @@
-(ns spindel.v2.pres.tree
+(ns ^:ansatz/lean spindel.v2.pres.tree
   "The generic step tree (formal/notes/proof-layout.md §5c, §5d), kernel-checked (Init only).
 
   Every composite lemma x of the base proof is checked once, over an abstract rest part Q, by open

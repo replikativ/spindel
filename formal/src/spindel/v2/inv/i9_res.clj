@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.i9-res
+(ns ^:ansatz/lean spindel.v2.inv.i9-res
   "The part i9-res, I9 resource part (spec §6 I9), through the step on the generic tree
   (spindel.v2.pres.tree; formal/notes/proof-layout.md §5c), kernel-checked (Init only).
 

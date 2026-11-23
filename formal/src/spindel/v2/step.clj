@@ -1,4 +1,4 @@
-(ns spindel.v2.step
+(ns ^:ansatz/lean spindel.v2.step
   "Raw transitions of spindel engine v2 (spec v1.5.1 §5.1): the effect of each modelled
   host/slice operation BEFORE Rule R, and the Item type. Here are the transitions T2, T7, T9,
   T18-T20, T8's unobserve and T1 at top level (the kinds without a stream), and the parts of

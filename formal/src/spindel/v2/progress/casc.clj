@@ -1,4 +1,4 @@
-(ns spindel.v2.progress.casc
+(ns ^:ansatz/lean spindel.v2.progress.casc
   "Obligations P4 (cascade completion) and P2 (normalization terminates), kernel-checked (Init only).
 
   Hypothesis of both: `acts-alive w` (every run row whose id is an activation's run is not done).

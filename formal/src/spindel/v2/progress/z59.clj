@@ -1,4 +1,4 @@
-(ns spindel.v2.progress.z59
+(ns ^:ansatz/lean spindel.v2.progress.z59
   "Z#59 (§4.5.1, T11, L5) as theorems, kernel-checked (Init only).
 
   Z#59 settles the former h-mark counterexample (l5_test `h-mark-fired-sibling-resolved`):

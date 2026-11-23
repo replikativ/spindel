@@ -1,4 +1,4 @@
-(ns spindel.v2.layer2.sys
+(ns ^:ansatz/lean spindel.v2.layer2.sys
   "Layer 2, semantic: a system of worlds (notes/LAYER2.md §3-§5), kernel-checked.
 
   A cell holds one layer-1 `World`. A fork is a value copy of the parent's world; the child's

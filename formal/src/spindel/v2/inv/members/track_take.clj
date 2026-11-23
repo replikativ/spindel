@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.members.track-take
+(ns ^:ansatz/lean spindel.v2.inv.members.track-take
   "h-mem2 through `world-step` (P11, second half), continued from spindel.v2.inv.members.fires, kernel-checked (Init only):
   further own proofs of current-members (T7 track, new activations, take / T17 arm, the first cascade pieces)."
   (:require [ansatz.core :as a]

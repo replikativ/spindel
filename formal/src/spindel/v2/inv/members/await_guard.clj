@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.members.await-guard
+(ns ^:ansatz/lean spindel.v2.inv.members.await-guard
   "Guarded T6 and transition await H3, before post/cancel-losers and Rule R."
   (:require [ansatz.core :as a]
             [spindel.v2.state :refer :all]

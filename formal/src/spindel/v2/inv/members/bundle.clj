@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.members.bundle
+(ns ^:ansatz/lean spindel.v2.inv.members.bundle
   "h-mem2 through `world-step` (P11, second half), kernel-checked (Init only), first stage: the bundle, its
   transfer and primitive lemmas, its table in the generic step tree, the first fire proofs and the derivation of h-mem2.
   The later stages are the other spindel.v2.inv.members.* namespaces (formal/README.md lists them in

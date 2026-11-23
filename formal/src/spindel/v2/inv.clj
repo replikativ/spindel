@@ -1,4 +1,4 @@
-(ns spindel.v2.inv
+(ns ^:ansatz/lean spindel.v2.inv
   "Layer-1 safety invariants of spec v1.5.1 §6 over the model's step `world-step`
   (spindel.v2.engine), kernel-checked (Init only).
 

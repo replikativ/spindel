@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.i10
+(ns ^:ansatz/lean spindel.v2.inv.i10
   "Literal I10, computation part (`lit-i10-current`: a computation has at most one current run,
   R.epoch = C.epoch) through the step, kernel-checked (Init only).
 

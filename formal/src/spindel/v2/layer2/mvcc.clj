@@ -1,4 +1,4 @@
-(ns spindel.v2.layer2.mvcc
+(ns ^:ansatz/lean spindel.v2.layer2.mvcc
   "Layer 2, physical, MVCC representation (spec §8.1 \"Representation (MVCC, 2026-11-15)\",
   `v2-fork-memory-design` §2, §7; engine `core.cljc` `preserve!`, `version-of`, `view`, `resolve-row`,
   `peek-row`, `own-copy!`, `fork-world*`, `instance-world*`, `register-token!`, `prune-cell!`,

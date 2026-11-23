@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.marks
+(ns ^:ansatz/lean spindel.v2.inv.marks
   "h-mark through `world-step` (P11), kernel-checked (Init only). Bundle `marks-waiting hxm`: every marked
   edge is a dep edge whose debtor is a computation row that is waiting in the strong form `waiting-strongly`
   (not idle, and done-epoch < epoch or pending /= 0), or is in the exemption list hxm. The strict

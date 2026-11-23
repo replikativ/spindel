@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.base
+(ns ^:ansatz/lean spindel.v2.inv.base
   "P3 complete: the reference invariants of `filter-safe-of-refs` (spindel.v2.inv.copier) through the step,
   and with them the step theorems with no honest hypothesis. Bundles (well-formed plus a rest
   part; each goes through the generic step tree, spindel.v2.pres.tree, by its table `tree/part!`):

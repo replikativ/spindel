@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.comp-facts
+(ns ^:ansatz/lean spindel.v2.inv.comp-facts
   "L5's state facts through `world-step` (P11), kernel-checked (Init only). Part A-C: the auxiliary
   bundle `comp-facts` (notes/history/PLAN.md, branch z59 (0)), the per-computation facts an h-mark proof needs:
     dle   done-epoch <= epoch, and 0 < epoch

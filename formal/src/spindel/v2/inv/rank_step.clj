@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.rank-step
+(ns ^:ansatz/lean spindel.v2.inv.rank-step
   "Obligation P5: I12 ranks (`ranks-ok`) are preserved by EVERY transition, kernel-checked
   (Init only). The bundle is `i12-ranks w = well-formed w && ranks-ok w`.
 

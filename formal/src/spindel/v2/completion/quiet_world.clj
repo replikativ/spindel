@@ -1,4 +1,4 @@
-(ns spindel.v2.completion.quiet-world
+(ns ^:ansatz/lean spindel.v2.completion.quiet-world
   "C1 completion stability, layer 1, the quiet half (notes/history/PLAN.md C1, `hq`): a quiet world (released,
   no run) holds only scopes, and every item is refused there, so a quiet world stays quiet.
 

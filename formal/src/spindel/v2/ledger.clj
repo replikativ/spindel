@@ -1,4 +1,4 @@
-(ns spindel.v2.ledger
+(ns ^:ansatz/lean spindel.v2.ledger
   "C1c stage A (spec Z#70, engine 1aac850): the task/scope completion ledger, derived from the scope tree.
 
   A task is complete when it is done, its run has retired (T13) and its run scope was removed (Z#18) or never

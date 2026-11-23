@@ -1,4 +1,4 @@
-(ns spindel.v2.state
+(ns ^:ansatz/lean spindel.v2.state
   "Engine v2 layer-1 state (spec §2) as kernel-checked ansatz structures, plus generic
   table operations.
 

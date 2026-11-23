@@ -1,4 +1,4 @@
-(ns spindel.v2.completion.quiet
+(ns ^:ansatz/lean spindel.v2.completion.quiet
   "C1 completion stability, layer 1 (notes/history/PLAN.md C1, `hq`): a step keeps a released world released
   (`step-released`) and a quiet world (released, no run) quiet.
 

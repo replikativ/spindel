@@ -1,4 +1,4 @@
-(ns spindel.v2.local
+(ns ^:ansatz/lean spindel.v2.local
   "Z#77 fork-local tasks: the closure invariants of `.internal/fork-local-design.md` §7 as executable predicates.
 
     loc1  LOC1, fork-local closure: every task owned by a fork-local scope is fork-local (`loc1-task`), and every run

@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.i10-task
+(ns ^:ansatz/lean spindel.v2.inv.i10-task
   "The part i10-task, I10 task part (spec §6 I10), through the step on the generic tree
   (spindel.v2.pres.tree; formal/notes/proof-layout.md §4.5, §5c), kernel-checked (Init only).
 

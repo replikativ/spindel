@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.i14
+(ns ^:ansatz/lean spindel.v2.inv.i14
   "I14 (engine-v2 spec, Z#60): the validity graph over idle computations (edges from each idle
   computation to the computation debtors of its validity entries) has no cycle, kernel-checked
   through `world-step` (Init only).

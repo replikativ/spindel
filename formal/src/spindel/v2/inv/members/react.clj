@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.members.react
+(ns ^:ansatz/lean spindel.v2.inv.members.react
   "Bounded P11 reactivation preserves explicit H3 obligations. Arbitrary fuel
    proves safety of the returned world, without a queue-completion claim."
   (:require [ansatz.core :as a]

@@ -1,4 +1,4 @@
-(ns spindel.v2.pres.part
+(ns ^:ansatz/lean spindel.v2.pres.part
   "Part definitions: what a part of the invariant is made of, for the generic step tree
   (spindel.v2.pres.tree).
 

@@ -1,4 +1,4 @@
-(ns spindel.v2.retain
+(ns ^:ansatz/lean spindel.v2.retain
   "Retention (spec v1.5.1 §3): roots, retention edges, `live`, storage, the cleanup table's
   rows, §3.4 admissions and the Rule R filter (§3.3 step 3), kernel-checked (Init only).
 

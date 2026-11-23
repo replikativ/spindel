@@ -1,4 +1,4 @@
-(ns spindel.v2.completion.open-scopes
+(ns ^:ansatz/lean spindel.v2.completion.open-scopes
   "C1c stage A, the proof stage (questions 10 and 14): every open non-root scope lies in the run-scope subtree
   of a run row, through every step, kernel-checked (Init only). So a world with no run has no open non-root
   scope (spindel.v2.completion.quiet-world `quiet-root-only`: a quiet world holds the root scope only).

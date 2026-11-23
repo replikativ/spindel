@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.rank
+(ns ^:ansatz/lean spindel.v2.inv.rank
   "I12 (A#6) ranks, kernel-checked (Init only): the height adjustment of spindel.v2.engine
   (`raise-loop`) establishes `ranks-ok` (rank(creditor) > rank(debtor) on every dep edge between
   computations) whenever it reports `ok`.

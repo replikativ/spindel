@@ -1,4 +1,4 @@
-(ns spindel.v2.completion.stable
+(ns ^:ansatz/lean spindel.v2.completion.stable
   "C1c stage A (Z#70), the proof stage, layer 1: completion is stable. Once task k is complete
   (spindel.v2.ledger `task-complete`: not held, no scope row k + 2) or scope s is (`scope-complete`:
   no row), it stays so through every step, kernel-checked (Init only).

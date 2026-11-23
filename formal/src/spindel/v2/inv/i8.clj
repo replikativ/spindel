@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.i8
+(ns ^:ansatz/lean spindel.v2.inv.i8
   "I8 (closed scopes: a closed scope owns no run with act /= done and no open source) through the
   model's step `world-step`, kernel-checked (Init only).
 

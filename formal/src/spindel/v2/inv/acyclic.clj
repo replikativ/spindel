@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.acyclic
+(ns ^:ansatz/lean spindel.v2.inv.acyclic
   "Z#69 (engine PR #272): scope parents are acyclic, through every step, kernel-checked (Init only).
 
   detach k s re-parents k's run scope rs under s. Without the guard (`detach-ok`: rs is neither s

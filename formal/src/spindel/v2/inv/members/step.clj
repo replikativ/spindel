@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.members.step
+(ns ^:ansatz/lean spindel.v2.inv.members.step
   "Rule R for the h-mem2 bundle current-members (P11): detach, the normalization pass (demote), the filter."
   (:require [ansatz.core :as a]
             [spindel.v2.pres.tree :as tree]

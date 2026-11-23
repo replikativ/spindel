@@ -1,4 +1,4 @@
-(ns spindel.v2.reach
+(ns ^:ansatz/lean spindel.v2.reach
   "Generic least fixpoints over Nat nodes, kernel-checked (Init only).
 
   Reach (retention, spec §3.2): `Reach succ roots x` is the least set that

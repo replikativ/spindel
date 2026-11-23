@@ -1,4 +1,4 @@
-(ns spindel.v2.engine
+(ns ^:ansatz/lean spindel.v2.engine
   "Layer-1 transitions that create runs and wire activations (spec v1.5.1 §5.1) and the
   model's step `world-step w item = then-rule-r (raw w item)`: an accepted raw outcome is followed
   by Rule R (`rule/rule-r`), a refusal is the input world. Kernel-checked, Init only.

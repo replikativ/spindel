@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.tomb
+(ns ^:ansatz/lean spindel.v2.inv.tomb
   "C1 Q6: tombstones are dormant. A tombstone (`CompRow.tomb`, made by Rule R's demotion of a
   computation with neither a result nor a handle whose run is in cleanup, spec §3.2) is no
   computation of an alive run and no creditor of a dep edge. With it a normalized world keeps the

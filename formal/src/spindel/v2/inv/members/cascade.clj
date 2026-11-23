@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.members.cascade
+(ns ^:ansatz/lean spindel.v2.inv.members.cascade
   "h-mem2 through `world-step` (P11, second half), continued from spindel.v2.inv.members.track-take, kernel-checked (Init only).
   Part A: the edge-kind bundle `edge-kinds` (every edge is a wait or dep edge,
   or an observe edge of the host: no savepoint edge exists in layer 1) through the step. Part B: freeness

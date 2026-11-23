@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.acts
+(ns ^:ansatz/lean spindel.v2.inv.acts
   "The activation invariant behind P2/P4, preserved by every step, kernel-checked (Init only).
 
   `acts-parked w` = well-formed w and, for every activation A: every run row with id A.run is parked and

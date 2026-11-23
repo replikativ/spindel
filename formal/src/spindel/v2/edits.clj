@@ -1,4 +1,4 @@
-(ns spindel.v2.edits
+(ns ^:ansatz/lean spindel.v2.edits
   "Primitive table edits and their first invariant lemmas (spec v1.5).
 
   - Exact pending (§2, X#1): `C.pending = #{existing e | e.creditor = C ∧ e.marked}`.

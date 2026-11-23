@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.alive-runs
+(ns ^:ansatz/lean spindel.v2.inv.alive-runs
   "AR through `world-step` (I10's computation part, `inv-i10-comp`: every alive run of a computation is
   that computation's C.run), kernel-checked (Init only). The h-mem2 proof (spindel.v2.inv.members.fires) needs it at T6
   (a re-awaited site edge is held by no current activation).

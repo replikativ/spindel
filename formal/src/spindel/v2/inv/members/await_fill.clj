@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.members.await-fill
+(ns ^:ansatz/lean spindel.v2.inv.members.await-fill
   "Bounded H3 restoration through member installation, fast fills and park.
    Stops before finalize-if-final in await-post."
   (:require [ansatz.core :as a]

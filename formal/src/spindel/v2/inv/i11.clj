@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.i11
+(ns ^:ansatz/lean spindel.v2.inv.i11
   "I11a (every row is the root scope or the world record, reached by §3.2 from an obligation, a
   cleanup row, admitted by §3.4, or a finalizer ref of a reached run) through the step,
   kernel-checked (Init only).

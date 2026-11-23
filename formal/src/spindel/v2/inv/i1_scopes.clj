@@ -1,4 +1,4 @@
-(ns spindel.v2.inv.i1-scopes
+(ns ^:ansatz/lean spindel.v2.inv.i1-scopes
   "Literal I1, scope parents (Z#38, Z#52): the crux of the step, kernel-checked (Init only).
 
   Rule R's filter keeps the parent of every scope it keeps (`filter-lit-i1-scope`): a scope is kept
