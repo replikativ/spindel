@@ -84,15 +84,24 @@
       (deliver release :done)
       (is (= :done (v2/value slow 5000 ::timeout))))))
 
+(defn- many [n]
+  (apply comb/parallel (for [i (range n)]
+                         (comb/blocking (fn [] (Thread/sleep 50) i)))))
+
 (deftest many-at-once
-  (do
-    (let [n 200
-          s (apply comb/parallel (for [i (range n)]
-                                   (comb/blocking (fn [] (Thread/sleep 50) i))))
-          t0 (System/currentTimeMillis)
-          r (v2/value s 10000 ::timeout)]
-      (is (= (vec (range n)) r))
-      (is (< (- (System/currentTimeMillis) t0) 5000) "they block concurrently, not one by one"))))
+  (let [n 200]
+    (is (= (vec (range n)) (v2/value (many n) 10000 ::timeout)))
+    ;; the timing is the engine's, measured in a plain world: the checked
+    ;; world's Rule R check walks the whole world at every commit, so its
+    ;; cost grows with n^2 and is not the engine's
+    (let [w (v2/world {})]
+      (try
+        (binding [v2/*world* w]
+          (let [t0 (System/currentTimeMillis)
+                r (v2/value (many n) 10000 ::timeout)]
+            (is (= (vec (range n)) r))
+            (is (< (- (System/currentTimeMillis) t0) 5000) "they block concurrently, not one by one")))
+        (finally (v2/release-world! w))))))
 
 (deftest losing-a-race-interrupts-the-worker
   (let [started (v2/deferred) interrupted (promise)
