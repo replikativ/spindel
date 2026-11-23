@@ -3003,6 +3003,16 @@
 
 (defn released-ex [] (control-ex "world released" {:spindel/released true}))
 
+(defn- shut-ex
+  "The refusal of a host admission to `w`, whose admission is shut
+   (`W-SHUT`): a savepoint basis is frozen (S1), an unpublished fork-effect
+   child is released (§8.1 F7)."
+  [w]
+  (if (= :frozen (g w rw/W-SHUT))
+    (ex-info "a savepoint basis is frozen: it is only forked (instantiate, consume)"
+             {:spindel/invalid :frozen})
+    (released-ex)))
+
 (defn sealed-ex [] (control-ex "world sealed" {:spindel/sealed true}))
 
 (defn- host-sealed?
@@ -3116,11 +3126,15 @@
             ~@(cond
                 (true? admit?)
                 [`(and (g ~w' rw/W-RELEASED) (not (and (identical? ~w' (cw)) (active-run))))
-                 `(throw (released-ex))]
+                 `(throw (released-ex))
+                 `(and (g ~w' rw/W-SHUT) (not (and (identical? ~w' (cw)) (active-run))))
+                 `(throw (shut-ex ~w'))]
                 (false? admit?) []
                 :else
                 [`(and ~admit? (g ~w' rw/W-RELEASED) (not (and (identical? ~w' (cw)) (active-run))))
-                 `(throw (released-ex))])
+                 `(throw (released-ex))
+                 `(and ~admit? (g ~w' rw/W-SHUT) (not (and (identical? ~w' (cw)) (active-run))))
+                 `(throw (shut-ex ~w'))])
             (hs/held? ~lk) (if (identical? ~w' (cw))
                              (~f')
                              (let [~prev (enter-world! ~w')]
@@ -3913,6 +3927,7 @@
    current gate is left, so no thread processes two worlds at once."
   [w f]
   (when (g w rw/W-RELEASED) (throw (released-ex)))
+  (when (g w rw/W-SHUT) (throw (shut-ex w)))
   (hs/mpsc-add! (g w rw/W-INGRESS) f)
   (if (holding-gate?)
     (when-not (identical? w (cw)) (aadd! (g (cw) rw/W-AFTER) w))
@@ -5083,6 +5098,7 @@
      (s! c rw/W-HOLDER nil)
      (s! c rw/W-AFTER (alist))
      (s! c rw/W-UNBORN false)
+     (s! c rw/W-SHUT nil)
      (s! c rw/W-PUB-WORLD nil)
      (s! c rw/W-WATCHES (lt/index))
      (s! c rw/W-SWEEP-PENDING (hs/flag false))
@@ -5157,6 +5173,7 @@
     ;; and dormant resources wait; dropped unactivated, it is collected
     ;; without running anything (it never ran)
     (s! c rw/W-UNBORN true)
+    (s! c rw/W-SHUT nil)                ; a basis is frozen, its instances are not
     (s! c rw/W-PUB-WORLD owner)
     (s! c rw/W-STATE state)
     (s! c rw/W-WATCHES (lt/index))
@@ -5223,8 +5240,9 @@
       child (on its own thread, also before `w`'s gate is released); a
       failure after the insertion (the sweep request) is the published
       child's, reported, and the child stays published and owned. A failure
-      before it leaves the child unpublished: it is released through its
-      ingress (processed after `w`'s gate) and the fork throws
+      before it leaves the child unpublished: its host admission is shut at
+      once, it is released through its ingress (processed after `w`'s gate)
+      and the fork throws
       `{:spindel/unpublished true :child c}`;
    7. `W-AFTER`: the child is handed off after `w`'s gate is released. This
       is the fork's only handoff of the child (`fork!` adds none).
@@ -5241,6 +5259,8 @@
     (commit! w [:fork-host (g c rw/ID)])
     (try (publish-world! c #(report! "fork publication" %))
          (catch #?(:clj Throwable :cljs :default) t
+           ;; no host work is admitted to it after this decision
+           (s! c rw/W-SHUT :released)
            (release-child! w c)
            (throw (ex-info "fork!: the accepted child could not be published to its family; it is released"
                            {:spindel/unpublished true :child c} t))))
@@ -5563,7 +5583,9 @@
                 (s! r rw/R-BIND (thread-frame))   ; the child resumes with the frame live at the effect
                 (aadd! (g w rw/W-RESUME) a)
                 (unregister! w a)                 ; a delivery carrier, not a parked activation
-                (let [child (doto (fork-world* w) publish-world!)]
+                ;; built privately: published to its family only once the fork
+                ;; has committed (§8.1 F7), so no maintenance enters it before
+                (let [child (fork-world* w)]
                   (own-child! w owner child true)
           ;; the parent takes the delivery back and continues on its own copy
                   (remove-row! (g w rw/W-RESUME) a)
@@ -5572,8 +5594,18 @@
                     (s! r rw/R-EIDX eidx)
                     (set-active! r)
                     (commit! w [:fork (g r rw/ID) (g child rw/ID)])
+                    ;; a failure after the registry insertion is the published
+                    ;; child's (reported); one before it leaves the committed
+                    ;; child unpublished: its host admission is shut now, before
+                    ;; the run gets it, and its queued T21 releases it (its
+                    ;; completion acknowledges its owner scope)
+                    (if (try (publish-world! child #(report! "fork publication" %)) true
+                             (catch #?(:clj Throwable :cljs :default) t
+                               (report! "fork publication" t) false))
             ;; scheduled after the parent's gate is released (E3)
-                    (aadd! (g w rw/W-AFTER) child)
+                      (aadd! (g w rw/W-AFTER) child)
+                      (do (s! child rw/W-SHUT :released)
+                          (release-child! w child)))
                     (k [:parent child])))))
             (unwind! ek))))
 
@@ -5653,7 +5685,14 @@
                          ;; the basis is a fork of this commit that is never run, only forked;
                          ;; its run continues with the frame live at the effect
                                  (s! (rv w r) rw/R-BIND (thread-frame))
-                                 (let [basis (doto (fork-world* w) publish-world!)
+                                 (let [basis (fork-world* w)
+                                       ;; S1: never run, never changed. Unborn (E4) before it is
+                                       ;; published, so neither maintenance nor any handoff runs its
+                                       ;; copied work; frozen, so no host operation reaches it
+                                       ;; (activate!, swap-world!, send-world!, ...)
+                                       _ (s! basis rw/W-UNBORN true)
+                                       _ (s! basis rw/W-SHUT :frozen)
+                                       _ (publish-world! basis)
                                        pub (publication w (id-of z) site payload basis
                                                         (boolean (g (rv w (g (rv w r) rw/R-OF)) rw/K-LOCAL)))]
                            ;; the parent's own copy of the run keeps no slice (it is parked)

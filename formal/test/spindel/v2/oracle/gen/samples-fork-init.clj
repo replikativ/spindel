@@ -12,6 +12,13 @@
 ;;     The replay checks the family's allocator alignment around the refused fork (1)-(3):
 ;;     every world replays with no divergence and no resync.
 ;;
+;; 67  publication order of the `(fork)` effect and of a savepoint basis: a task forks with the
+;;     effect (its child, `:effect`, built privately and published after `[:fork r c]`); the
+;;     parent's copy parks on a deferred, so its run scope counts the child (C1c) until it ends.
+;;     Then a task publishes at a savepoint while a sibling is still runnable (the basis is
+;;     unborn: it never runs the sibling); an instance of it (`:instance`) is activated and runs
+;;     the sibling's and the resumed run's copies.
+;;
 ;; From the worktree root (one -Xmx1g JVM):
 ;;   clojure -J-Xmx1g -M:bench -i formal/test/spindel/v2/oracle/gen/samples-fork-init.clj
 (ns samples-fork-init
@@ -58,3 +65,31 @@
       (prn (dump! (str dir "log-sample-66-child.edn") (verify/log child)))
       (prn (dump! (str dir "log-sample-66-held.edn") (verify/log held)))
       (prn :66-divergences @acc))))
+
+;; 67
+(let [acc (atom []) w (vworld acc) pubs (atom []) kid (promise)]
+  (v2/install-handlers! w {:s (fn [p] (swap! pubs conj p))})
+  (binding [v2/*world* w]
+    (let [s (v2/signal 1)
+          gate (v2/deferred)
+          t (task (let [[side child] (v2/fork)]
+                    (v2/write! s (if (= side :child) 20 10))
+                    (when (= side :parent) (deliver kid child) (await gate))
+                    side))
+          effect (deref kid 2000 nil)
+          _ (prn :67-effect (v2/value (v2/in-world effect t) 2000 :timeout))
+          _ (v2/host-call! w (fn []
+                               (binding [v2/*world* w]
+                                 (task (inc (v2/savepoint :s 1)))
+                                 (task (v2/write! s 30) :sibling))))
+          p (first @pubs)
+          inst (doto (v2/instantiate p) (v2/activate! 41))]
+      (prn :67-instance (binding [v2/*world* inst] (v2/value (v2/signal 0) 200 nil)))
+      (v2/deliver! gate :done)
+      (prn :67-root (v2/value t 2000 :timeout))
+      (v2/abandon! p)
+      (Thread/sleep 100)
+      (prn (dump! (str dir "log-sample-67-root.edn") (verify/log w)))
+      (prn (dump! (str dir "log-sample-67-effect.edn") (verify/log effect)))
+      (prn (dump! (str dir "log-sample-67-instance.edn") (verify/log inst)))
+      (prn :67-divergences @acc))))

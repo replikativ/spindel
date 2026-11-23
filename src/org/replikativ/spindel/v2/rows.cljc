@@ -196,7 +196,9 @@
 (def ^:const W-ADMITTING 57) ; C2: host starts between their seal check and their enqueue (SC counter); §9 waits for 0
 (def ^:const W-LOCAL 58)    ; Z#77: unretired runs of fork-local tasks {run id -> run}; a fork starts with none
 (def ^:const W-RETIRE 59)   ; Z#77: the fork-local run sets inherited at the fork, retired at the first gate entry (T28)
-(def ^:const W-SIZE 60)
+(def ^:const W-SHUT 60)      ; host admission shut: nil, :frozen (a savepoint basis: never run or changed, S1)
+                             ; or :released (a fork effect's unpublished child, before and after its queued T21)
+(def ^:const W-SIZE 61)
 
 ;; Scope
 (def ^:const S-PARENT 2)

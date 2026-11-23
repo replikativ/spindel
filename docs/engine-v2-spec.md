@@ -1547,9 +1547,11 @@ difference, since every access to `W′`'s rows goes through its gate.
       gate) never runs `W′` under it;
     - *a queued recovery release:* when the publication fails before the
       insertion (installing the collection action, inserting), `W′` stays
-      accepted and owned but unpublished: its release (T21) is queued on its
-      ingress and handed off after `W`'s gate (its completion ends the
-      owner's obligation), and the fork throws to its caller with `W′`.
+      accepted and owned but unpublished: its host admission is shut at
+      once (no host work is admitted to it after the decision), its release
+      (T21) is queued on its ingress and handed off after `W`'s gate (its
+      completion ends the owner's obligation), and the fork throws to its
+      caller with `W′`.
     A failure after the insertion (requesting the sweep) is a failure of the
     published `W′`: it is reported, and `W′` stays published and owned.
     These orderings are the automatic dispatch's. A caller holding `W′` acts
@@ -1557,9 +1559,18 @@ difference, since every access to `W′`'s rows goes through its gate.
     on the unpublished `W′` of a failed publication) can enter it earlier,
     and runs its queued items then.
   - **Scope.** A host fork with another owner (F2) takes no `init-state` and
-    is published at construction, as are the child of the `fork` effect and a
-    savepoint basis. An instance (S3) is published with all its birth fields
-    set.
+    is published at construction. An instance (S3) is published with all
+    its birth fields set. A savepoint basis is published unborn (S1).
+  - **The `fork` effect** follows the same order: `W′` is built privately,
+    its marker is counted on the run's current scope (F2, C1c), then
+    `[:fork R W′]` commits, then `W′` is published and handed off after
+    `W`'s gate. No automatic dispatch enters `W′` before the commit. A
+    failure after the insertion is the published `W′`'s (reported); one
+    before it leaves the committed `W′` unpublished: its host admission is
+    shut before the run gets it (a host operation on it is refused as
+    released), its release (T21) is queued and handed off after `W`'s gate
+    (its completion ends the owner scope's count), and the run continues
+    with `[:parent W′]`.
 
 ### 8.2 Savepoints (R#7, R#17)
 
@@ -1569,7 +1580,15 @@ A savepoint publishes the rest of a body to a handler (see `savepoints.md`).
   parks in an activation `A_sp` (mode `one`) whose single member is a
   `savepoint` edge `E_sp` (X#6). A publication `P = {edge: E_sp, basis}`
   is created, and the handler receives its handle.
-  - `basis` is a frozen basis of `W` at this commit.
+  - `basis` is a frozen basis of `W` at this commit. It is never run or
+    changed, only forked (`instantiate`, `consume`), 2026-11-22:
+    - it is unborn (E4) from its construction, before it is published to
+      its family, so neither the family's atom maintenance nor any handoff
+      runs the work it copied;
+    - it is frozen: every host admission to it is refused
+      (`::spindel/invalid :frozen`), `activate`, world-state changes, sent
+      items and spawns included. Its family membership, atom sweeps and
+      collection action are those of any world.
   - `P` is host data. It pins only its basis pages and retains `E_sp`.
 - **S2 – in-place resume** (affine; the current API). The handler fires
   `E_sp` in `W` with a value. This is T9's savepoint branch, at most once. `P` then

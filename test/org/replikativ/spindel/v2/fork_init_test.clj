@@ -411,3 +411,139 @@
        (is (wait-until #(some (fn [[id]] (= cid id)) @seen)))
        (is (= [[cid false]] (filterv #(= cid (first %)) @seen))
            "the child ran after a's gate was released, not under it")))))
+
+(deftest a-savepoint-basis-never-runs
+  ;; the basis is published while a sibling task is still runnable in its
+  ;; copy, and its stale sweep generation has maintenance enter it at once
+  (checked
+   (let [w (vworld {:executor caller-runs})
+         pubs (atom [])
+         seen (atom [])]
+     (v2/install-handlers! w {:s (fn [p] (swap! pubs conj p))})
+     (stale-generation! w)
+     (with-synchronous-maintenance
+       (v2/host-call! w (fn []
+                          (binding [v2/*world* w]
+                            (task (v2/savepoint :s nil) :after)
+                            (task (swap! seen conj (recorder)))))))
+     (let [p (first @pubs)
+           bid (v2/world-id (:basis p))]
+       (is (member? w bid) "the basis is registered")
+       (is (= [] (filterv #(= bid (first %)) @seen)) "no work runs in the basis")
+       (testing "an instance of it runs the inherited work once activated"
+         (let [i (doto (v2/instantiate p) (v2/activate! :go))]
+           (is (wait-until #(some (fn [[id]] (= (v2/world-id i) id)) @seen)))))
+       (v2/abandon! p)))))
+
+(deftest a-fork-effects-child-runs-only-after-the-fork-commits
+  ;; the child is published after `[:fork r c]`: maintenance forced at its
+  ;; publication enters it, and its first slice finds the fork logged
+  (checked
+   (let [w (vworld {:executor caller-runs})
+         seen (atom [])
+         forked? (fn [cid] (boolean (some #(and (= :fork (first (:item %))) (= cid (nth (:item %) 2)))
+                                          (verify/log w))))]
+     (stale-generation! w)
+     (with-synchronous-maintenance
+       (binding [v2/*world* w]
+         (task (let [[side child] (v2/fork)]
+                 (if (= side :child)
+                   (let [id (v2/world-id (v2/current-world))]
+                     (swap! seen conj [id (forked? id) (.getName (Thread/currentThread))]))
+                   (await (v2/deferred)))))))
+     (is (= 1 (count @seen)) "the child's copy of the run resumed")
+     (let [[_ logged? thread] (first @seen)]
+       (is (= "test-maintenance" thread) "maintenance entered the child at its publication")
+       (is (true? logged?) "after the parent logged [:fork r c]")))))
+
+(deftest a-savepoint-basis-is-frozen
+  ;; S1: no host operation reaches a basis; its instances keep the inherited
+  ;; work and the publication-time state
+  (checked
+   (let [w (vworld {:executor caller-runs})
+         pubs (atom [])
+         seen (atom [])
+         frozen? (fn [f] (= :frozen (:spindel/invalid (ex-data (try (f) nil (catch clojure.lang.ExceptionInfo e e))))))]
+     (v2/install-handlers! w {:s (fn [p] (swap! pubs conj p))})
+     (v2/host-call! w (fn []
+                        (binding [v2/*world* w]
+                          (task (v2/savepoint :s nil) :after)
+                          (task (swap! seen conj (recorder))))))
+     (let [p (first @pubs)
+           b (:basis p)
+           bid (v2/world-id b)]
+       (is (frozen? #(v2/activate! b :go)) "activate! is refused")
+       (is (frozen? #(v2/swap-world! b assoc :k 1)) "a world-state change is refused")
+       (is (frozen? #(v2/send-world! b (fn [] nil))) "a sent item is refused")
+       (is (frozen? #(binding [v2/*world* b] (task :spawned))) "a spawn is refused")
+       (is (= [] (filterv #(= bid (first %)) @seen)) "nothing ran in the basis")
+       (let [i (doto (v2/instantiate p) (v2/activate! :go))
+             iid (v2/world-id i)]
+         (is (wait-until #(some (fn [[id]] (= iid id)) @seen)) "an instance runs the inherited sibling")
+         (is (= [[iid {}]] (mapv #(subvec % 0 2) (filterv #(= iid (first %)) @seen)))
+             "with the basis's unchanged state"))
+       (v2/abandon! p)))))
+
+(deftest a-fork-effects-unpublished-child-admits-no-work
+  ;; the child's publication fails before its insertion: the run still gets
+  ;; [:parent child], but the child takes no host work, and its queued
+  ;; release completes it and acknowledges the run's scope
+  (checked
+   (let [w (vworld)
+         on-collect hs/on-collect!
+         fired (atom false)
+         ran (atom false)
+         err (java.io.StringWriter.)
+         kid (promise)
+         t (binding [*err* err]
+             (with-redefs [hs/on-collect! (fn [x action]
+                                            (if (and (world-row? x) (not (identical? x w))
+                                                     (compare-and-set! fired false true))
+                                              (throw (ex-info "cleaner failed" {}))
+                                              (on-collect x action)))]
+               (binding [v2/*world* w]
+                 (task (let [[side child] (v2/fork)]
+                         (if (= side :parent)
+                           (do (deliver kid child)
+                               (try (v2/send-world! child #(reset! ran true)) :accepted
+                                    (catch clojure.lang.ExceptionInfo e
+                                      (if (:spindel/released (ex-data e)) :refused (throw e)))))
+                           :child))))))
+         child (deref kid 2000 nil)]
+     (is @fired "the insertion failed")
+     (is (= :refused (v2/value t 2000 ::timeout)) "no host work is admitted to the child")
+     (is (not (member? w (v2/world-id child))) "unpublished")
+     (is (true? (v2/await-complete child 2000 ::timeout)) "its queued release completes it")
+     (is (false? @ran))
+     (is (re-find #"fork publication failed" (str err)))
+     (v2/release-world! w)
+     (is (true? (v2/await-complete w 2000 ::timeout)) "the run's scope was acknowledged"))))
+
+(deftest a-fork-effects-publication-failure-after-insertion-is-reported
+  ;; the sweep request fails after the insertion: the child stays published,
+  ;; and its copy of the run resumes
+  (checked
+   (let [w (vworld)
+         err (java.io.StringWriter.)
+         seen (atom [])
+         _ (stale-generation! w)
+         later hs/metadata-later!
+         fail-once (atom true)
+         kid (promise)
+         t (binding [*err* err]
+             (with-redefs [hs/metadata-later! (fn [f & more]
+                                                (if (compare-and-set! fail-once true false)
+                                                  (throw (ex-info "scheduler down" {}))
+                                                  (apply later f more)))]
+               (binding [v2/*world* w]
+                 (task (let [[side child] (v2/fork)]
+                         (if (= side :parent)
+                           (do (deliver kid (v2/world-id child))
+                               (await (v2/deferred)))   ; the run's scope keeps the child
+                           (swap! seen conj (v2/world-id (v2/current-world)))))))))
+         cid (deref kid 2000 nil)]
+     (is (false? @fail-once) "the child's sweep request failed")
+     (is (member? w cid) "published")
+     (is (wait-until #(= [cid] @seen)) "the child's copy of the run resumed")
+     (is (re-find #"fork publication failed" (str err)) "the failure is reported")
+     (v2/cancel-task! t))))
