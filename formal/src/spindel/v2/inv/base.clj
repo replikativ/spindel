@@ -1709,7 +1709,7 @@
            (fn [a :- ActRow, ha :- (= (act-run-has (:runs w) a) true)]
              (Eq.trans (tbl-has-upd RunRow run-id x (:run a) run-cancel-row run-cancel-row-id (:runs w)) ha))
            (:acts w) (act-runs-alive-has w h)))
-  (have p := (acts-drop-fold (act-run-has (tbl-upd run-id x run-cancel-row (:runs w))) (tbl-scan act-id (act-of-run x) (:acts (run-upd w x run-cancel-row)))
+  (have p := (acts-drop-fold (act-run-has (tbl-upd run-id x run-cancel-row (:runs w))) (tbl-scan act-id (act-of-run x) (:acts w))
                (run-upd w x run-cancel-row) hh))
   (have hh2 (= (tbl-all (act-run-has (:runs (cancel-acts (run-upd w x run-cancel-row) x))) (:acts (cancel-acts (run-upd w x run-cancel-row) x))) true))
   (simp only [cancel-acts (And.right p)]) (exact (And.left p))

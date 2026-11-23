@@ -440,8 +440,8 @@
   (have before := (find-self RunRow run-id r (:runs w) (lit-runs-nodup w hs) mr))
   (have after := (hk-find-upd RunRow run-id (:id r) run-tick run-tick-run-id (:runs w) r before))
   (have shape := (current-members-prefix-shape xm w r ds mode k mine st fresh (nat-distinct ds) (List.nil Nat) ent (current-members-app-nil _)))
-  (rw [(And.left (And.right shape))])
-  (exact (tbl-find-mem RunRow run-id (:id r) (run-tick r) (:runs (run-upd w (:id r) run-tick)) after)))
+  (exact (Eq.mpr (congrArg (List.Mem (run-tick r)) (And.left (And.right shape)))
+           (tbl-find-mem RunRow run-id (:id r) (run-tick r) (:runs (run-upd w (:id r) run-tick)) after))))
 
 (a/theorem current-members-wired-pair-free [xm :- (List Nat), w :- World, r :- RunRow, ds :- (List Nat), mode :- Nat,
                                k :- Nat, mine :- (List Nat), st :- Nat, fresh :- Nat, d :- Nat]

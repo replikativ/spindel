@@ -1944,7 +1944,7 @@
 
 ;; ---- allocation without a row (the take fast path allocates the activation and edge ids
 ;; it does not keep, as the engine does)
-(a/theorem next-id-bump-pos [w :- World] (= (Nat.blt 0 (:next-id (bump w))) true) (simp only [bump set-next-id Nat.blt_eq]))
+(a/theorem next-id-bump-pos [w :- World] (= (Nat.blt 0 (:next-id (bump w))) true) (simp only [bump set-next-id Nat.blt_eq]) (omega))
 (a/theorem all-ids-bump [w :- World] (= (all-ids (bump w)) (all-ids w)) (rfl))
 
 (a/theorem ids-ok-bump [w :- World]

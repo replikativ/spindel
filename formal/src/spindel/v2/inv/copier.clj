@@ -1991,7 +1991,7 @@
   (have hs := (i9-res-well-formed w h))
   (have hr := (i9-res-rest-of w h))
   (simp only [i9-res-rest lit-i9-res Bool.and_eq_true] at hr)
-  (have fa := (runs-acts-fold (tbl-scan act-id (act-of-run (:id r)) (:acts (run-upd w (:id r) run-cancel-row)))
+  (have fa := (runs-acts-fold (tbl-scan act-id (act-of-run (:id r)) (:acts w))
                 (run-upd w (:id r) run-cancel-row)))
   (have e-runs (= (:runs (cancel-mid w r)) (tbl-upd run-id (:id r) run-cancel-row (:runs w))))
   (simp only [cancel-mid cleanup-set cleanup-ins cleanup-del set-cleanup cancel-res cancel-acts runs-cancel-fold])

@@ -2249,7 +2249,7 @@
     (case [true]
       (have ho2 (= (Nat.beq (:of (rs10 q)) cid) true)) (exact ho)
       (have ho3 (= (Nat.beq (:of (i10-current-run-key q)) cid) true)) (exact ho)
-      (simp only [ho2 Bool.not_true Bool.false_or Nat.blt_eq] at hr)
+      (simp only [ho Bool.not_true Bool.false_or Nat.blt_eq] at hr)
       (have lt (= (Nat.blt (:epoch (i10-current-run-key q)) (:epoch (ck-set-run n (i10-current-comp-key k)))) true))
       (simp only [Nat.blt_eq i10-current-run-key ck-set-run i10-current-comp-key]) (have z1 := (And.left hc)) (try (simp only [rs10] at hr)) (try (simp only [cs10] at z1)) (omega)
       (simp only [old-below ho3 lt Bool.not_true Bool.false_or]))

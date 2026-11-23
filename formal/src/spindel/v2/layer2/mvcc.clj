@@ -2762,6 +2762,7 @@
   (have hpo := (mi-pres-so cs ts o x hso))
   (have hb (= (Nat.ble (:so (mv-setv (mv-pres cs ts o x) (:val x))) f) false))
   (simp only [mv-setv]) (rw [hpo]) (exact (mv-ble-of-lt o f hfo))
+  (simp only [mv-setv] at hb)
   (simp only [mv-vat hb] at hp)
   (exact hp))
 

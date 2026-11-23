@@ -116,7 +116,7 @@
         (have cw := (current-members-c3-upd w (:id c) comp-react-row comp-react-row-id
                      (fn [q :- CompRow] (Nat.le_refl (:epoch q))) (current-members-run-key r) (comp-facts-lt-of _ _ (And.left hr)) hc))
         (cases ob)
-        (case [inl z] (rw [hx] at z) (cases z))
+        (case [inl z] (simp only [current-members-run-key] at hx) (rw [hx] at z) (cases z))
         (case [inr z]
           (cases z)
           (case [inl z1] (simp only [cw Bool.not_true] at z1) (cases z1))

@@ -1319,7 +1319,8 @@
   (case' [nil])
   (simp [nat-mem pin-count tbl-count])
   (cases hb (Nat.beq h x))
-  (all_goals (simp_all [nat-mem pin-count nat-eq-to tbl-count beq-comm])))
+  (all_goals (simp_all [nat-mem pin-count nat-eq-to tbl-count beq-comm]))
+  (omega))
 
 (a/theorem well-formed-t20-pin [w :- World, x :- Nat]
   (=> (= (well-formed w) true) (= (well-formed (:world (t20-pin w x))) true))

@@ -574,7 +574,7 @@
         (apply Or.inr)
         (have hcw := (hc3 (current-members-run-key r) o1 hcur))
         (cases ob)
-        (case [inl z] (rw [hxo] at z) (cases z))
+        (case [inl z] (simp only [current-members-run-key] at hxo) (rw [hxo] at z) (cases z))
         (case [inr z]
           (cases z)
           (case [inl z2] (simp only [hcw Bool.not_true] at z2) (cases z2))
@@ -760,7 +760,7 @@
         (have q2 (= (comp-id q) x)) (exact (Eq.trans (Nat.eq_of_beq_eq_true (And.left hq)) (Nat.eq_of_beq_eq_true hb)))
         (rw [q2] at z) (rw [hcx] at z) (cases z)
         (cases ob)
-        (case [inl q] (rw [(current-members-rm-cons-ne _ x xm q nox)] at hxo) (cases hxo))
+        (case [inl q] (simp only [current-members-run-key] at hxo) (rw [(current-members-rm-cons-ne _ x xm q nox)] at hxo) (cases hxo))
         (case [inr q]
           (cases q)
           (case [inl q2] (rw [hcur] at q2) (cases q2))
@@ -1280,7 +1280,7 @@
   (have hs4 := (cancel-mid-well-formed w r hs))
   (have hs5 := (well-formed-task-upd _ (:of r) task-cancel-result task-cancel-result-id hs4))
   (have tf4 (= (task-find (cancel-mid w r) (:of r)) (Option.some TaskRow t0)))
-  (simp only [task-find]) (rw [(And.left (cmid-tsq w r))]) (exact ht)
+  (simp only [task-find]) (exact (Eq.trans (congrArg (tbl-find task-id (:of r)) (And.left (cmid-tsq w r))) ht))
   (have hd5 := (tcr-final (cancel-mid w r) (:of r) t0 hs4 tf4))
   (have A6 := (qk-fold res-cancelled (:of r) (tbl-scan edge-id (on-task (:of r)) (:edges (task-upd (cancel-mid w r) (:of r) task-cancel-result)))
                 (task-upd (cancel-mid w r) (:of r) task-cancel-result) (List.nil Nat) hs5 hd5 (qk-nil (:of r) _)))

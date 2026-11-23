@@ -355,7 +355,7 @@
         (apply Or.inr)
         (have hcw := (hc3 (current-members-run-key r) o1 hcur))
         (cases ob)
-        (case [inl z] (rw [hxo] at z) (cases z))
+        (case [inl z] (simp only [current-members-run-key] at hxo) (rw [hxo] at z) (cases z))
         (case [inr z]
           (cases z)
           (case [inl z2] (simp only [hcw Bool.not_true] at z2) (cases z2))
@@ -2059,7 +2059,7 @@
         (have q2 (= (comp-id q) x)) (exact (Eq.trans (Nat.eq_of_beq_eq_true (And.left hq)) (Nat.eq_of_beq_eq_true hb)))
         (rw [q2] at z) (rw [hcx] at z) (cases z)
         (cases ob)
-        (case [inl q] (rw [(current-members-rm-cons-ne _ x xm q nox)] at hxo) (cases hxo))
+        (case [inl q] (simp only [current-members-run-key] at hxo) (rw [(current-members-rm-cons-ne _ x xm q nox)] at hxo) (cases hxo))
         (case [inr q]
           (cases q)
           (case [inl q2] (rw [hcur] at q2) (cases q2))
@@ -2250,7 +2250,7 @@
     (case [none]
       (have z := (tbl-find-none-has CompRow comp-id (:id c) (:comps w) hf))
       (have z2 := (mem-ids-has CompRow comp-id c (:comps w) mc))
-      (rw [nat-mem-ids] at z2) (rw [z2] at z) (cases z))
+      (rw [nat-mem-ids] at z2) (have z3 (= (tbl-has comp-id (:id c) (:comps w)) true)) (exact z2) (rw [z3] at z) (cases z))
     (case [some c2]
       (simp only [blocked-base hf run-parked-of] at hb)
       (have mc2 := (tbl-find-mem CompRow comp-id (:id c) c2 (:comps w) hf))

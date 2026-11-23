@@ -532,7 +532,7 @@
         (have q2 (= (comp-id q) x)) (exact (Eq.trans (Nat.eq_of_beq_eq_true (And.left hq)) (Nat.eq_of_beq_eq_true hb)))
         (rw [q2] at z) (rw [hcx] at z) (cases z)
         (cases ob)
-        (case [inl q] (rw [(current-members-rm-cons-ne _ x xm q nox)] at hxo) (cases hxo))
+        (case [inl q] (simp only [current-members-run-key] at hxo) (rw [(current-members-rm-cons-ne _ x xm q nox)] at hxo) (cases hxo))
         (case [inr q]
           (cases q)
           (case [inl q2] (rw [hcur] at q2) (cases q2))
@@ -626,9 +626,9 @@
   (have hin (forall [q :- RunRow] (=> (= (current-members-fr xm w x b q) true) (= (Nat.beq (run-id q) i) true) (= (current-members-fr xm (run-upd w i f) x b (f q)) true))))
   (intros q z hz)
   (rw [(current-members-fr-rk xm (run-upd w i f) x b (f q) q (hid q))])
-  (simp only [current-members-fr] at z) (simp only [current-members-fr]) (rw [e2]) (exact z)
+  (simp only [current-members-fr] at z) (simp only [current-members-fr]) (try (rw [e2])) (exact z)
   (have hout (forall [q :- RunRow] (=> (= (current-members-fr xm w x b q) true) (= (Nat.beq (run-id q) i) false) (= (current-members-fr xm (run-upd w i f) x b q) true))))
-  (intros q z hz) (simp only [current-members-fr] at z) (simp only [current-members-fr]) (rw [e2]) (exact z)
+  (intros q z hz) (simp only [current-members-fr] at z) (simp only [current-members-fr]) (try (rw [e2])) (exact z)
   (exact (tbl-all-upd RunRow run-id i f _ _ hin hout (:runs w) h)))
 ;; the current-members-r obligation of an activation a on run r, from E1, R.of below the allocator and the done-epoch fact
 (a/theorem current-members-r-new2 [xm :- (List Nat), w :- World, a :- ActRow, r :- RunRow]
@@ -757,7 +757,7 @@
   (have hsrc := (tbl-find-has SourceRow source-id x s (:sources w) hsf))
   (have nt := (has-false-ne TaskRow task-id x (:tasks w) (current-members-source-not-task w x hs hsrc)))
   (have nc := (hk-source-not-comp w x hs hsrc))
-  (have htk (= (tbl-all (current-members-tk (:runs (run-upd (insert-edge-fresh (bump (act-ins w (take-act w r k))) (take-edge r (:next-id w) x)) (:id r) run-tick-park)) x) (:tasks w)) true))
+  (have htk (= (tbl-all (current-members-tk (tbl-upd run-id (:id r) run-tick-park (:runs w)) x) (:tasks w)) true))
   (apply (tbl-all-mono TaskRow _ (current-members-tk (:runs (run-upd (insert-edge-fresh (bump (act-ins w (take-act w r k))) (take-edge r (:next-id w) x)) (:id r) run-tick-park)) x) _ (:tasks w) nt))
   (intros t ht) (simp only [current-members-tk]) (simp only [task-id] at ht) (simp only [ht Bool.true_or])
   (have hfr (forall [b :- ActRow, q :- RunRow]
@@ -784,7 +784,7 @@
     (exact ge))
   (case [tail mb3]
     (have fa0 := (tbl-all-mem ActRow _ b (:acts w) fr0 mb3))
-    (have fa3 (= (current-members-fa xm (insert-edge-fresh (bump (act-ins w (take-act w r k))) (take-edge r (:next-id w) x)) (+ (:next-id w) 1) b) true)) (rw [(current-members-fa-congr xm (insert-edge-fresh (bump (act-ins w (take-act w r k))) (take-edge r (:next-id w) x)) w (+ (:next-id w) 1) b (rfl) (rfl))]) (exact fa0)
+    (have fa3 (= (current-members-fa xm (insert-edge-fresh (bump (act-ins w (take-act w r k))) (take-edge r (:next-id w) x)) (+ (:next-id w) 1) b) true)) (rw [(current-members-fa-congr xm w (insert-edge-fresh (bump (act-ins w (take-act w r k))) (take-edge r (:next-id w) x)) (+ (:next-id w) 1) b (rfl) (rfl))]) (exact fa0)
     (have fa4 := (current-members-fa-run-upd xm (insert-edge-fresh (bump (act-ins w (take-act w r k))) (take-edge r (:next-id w) x)) (:id r) run-tick-park (fn [z :- RunRow] (Eq.refl (current-members-run-key z))) (+ (:next-id w) 1) b fa3))
     (exact (False.elim (current-members-fa-use xm (run-upd (insert-edge-fresh (bump (act-ins w (take-act w r k))) (take-edge r (:next-id w) x)) (:id r) run-tick-park) (+ (:next-id w) 1) b q fa4 mq iq hxo hcur hm hxx))))
   (exact (current-members-intro xm (run-upd (insert-edge-fresh (bump (act-ins w (take-act w r k))) (take-edge r (:next-id w) x)) (:id r) run-tick-park) hs4 (current-members-undo-g xm (run-upd (insert-edge-fresh (bump (act-ins w (take-act w r k))) (take-edge r (:next-id w) x)) (:id r) run-tick-park) (+ (:next-id w) 1) hcx hdx hfr (current-members-rest-of _ (run-upd (insert-edge-fresh (bump (act-ins w (take-act w r k))) (take-edge r (:next-id w) x)) (:id r) run-tick-park) w4)))))
@@ -851,7 +851,7 @@
   (have nh := (edge-fresh-absent w (+ (:next-id w) 1) hs (Nat.le_succ _)))
   (have fr0 := (current-members-free-noedge xm w (+ (:next-id w) 1) (current-members-rest-of xm w h) nh))
   (have nt := (has-false-ne TaskRow task-id x (:tasks w) hnt))
-  (have htk (= (tbl-all (current-members-tk (:runs (run-upd (insert-edge-fresh (bump (act-ins w (take-act w r k))) (take-edge r (:next-id w) x)) (:id r) run-tick-park)) x) (:tasks w)) true))
+  (have htk (= (tbl-all (current-members-tk (tbl-upd run-id (:id r) run-tick-park (:runs w)) x) (:tasks w)) true))
   (apply (tbl-all-mono TaskRow _ (current-members-tk (:runs (run-upd (insert-edge-fresh (bump (act-ins w (take-act w r k))) (take-edge r (:next-id w) x)) (:id r) run-tick-park)) x) _ (:tasks w) nt))
   (intros t ht) (simp only [current-members-tk]) (simp only [task-id] at ht) (simp only [ht Bool.true_or])
   (have hfr (forall [b :- ActRow, q :- RunRow]
@@ -878,7 +878,7 @@
     (exact ge))
   (case [tail mb3]
     (have fa0 := (tbl-all-mem ActRow _ b (:acts w) fr0 mb3))
-    (have fa3 (= (current-members-fa xm (insert-edge-fresh (bump (act-ins w (take-act w r k))) (take-edge r (:next-id w) x)) (+ (:next-id w) 1) b) true)) (rw [(current-members-fa-congr xm (insert-edge-fresh (bump (act-ins w (take-act w r k))) (take-edge r (:next-id w) x)) w (+ (:next-id w) 1) b (rfl) (rfl))]) (exact fa0)
+    (have fa3 (= (current-members-fa xm (insert-edge-fresh (bump (act-ins w (take-act w r k))) (take-edge r (:next-id w) x)) (+ (:next-id w) 1) b) true)) (rw [(current-members-fa-congr xm w (insert-edge-fresh (bump (act-ins w (take-act w r k))) (take-edge r (:next-id w) x)) (+ (:next-id w) 1) b (rfl) (rfl))]) (exact fa0)
     (have fa4 := (current-members-fa-run-upd xm (insert-edge-fresh (bump (act-ins w (take-act w r k))) (take-edge r (:next-id w) x)) (:id r) run-tick-park (fn [z :- RunRow] (Eq.refl (current-members-run-key z))) (+ (:next-id w) 1) b fa3))
     (exact (False.elim (current-members-fa-use xm (run-upd (insert-edge-fresh (bump (act-ins w (take-act w r k))) (take-edge r (:next-id w) x)) (:id r) run-tick-park) (+ (:next-id w) 1) b q fa4 mq iq hxo hcur hm hxx))))
   (exact (current-members-intro xm (run-upd (insert-edge-fresh (bump (act-ins w (take-act w r k))) (take-edge r (:next-id w) x)) (:id r) run-tick-park) hs4 (current-members-undo-g xm (run-upd (insert-edge-fresh (bump (act-ins w (take-act w r k))) (take-edge r (:next-id w) x)) (:id r) run-tick-park) (+ (:next-id w) 1) hcx hdx hfr (current-members-rest-of _ (run-upd (insert-edge-fresh (bump (act-ins w (take-act w r k))) (take-edge r (:next-id w) x)) (:id r) run-tick-park) w4)))))

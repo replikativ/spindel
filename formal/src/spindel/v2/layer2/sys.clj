@@ -2162,7 +2162,7 @@
   (case [none]
     (have z := (tbl-find-none-has Join join-id (:id j) js hf))
     (have hh := (mem-ids-has Join join-id j js m))
-    (rw [(nat-mem-ids Join join-id (:id j) js)] at hh)
+    (rw [(nat-mem-ids Join join-id (join-id j) js)] at hh)
     (have hh2 (= (tbl-has join-id (:id j) js) true)) (exact hh)
     (rw [z] at hh2) (cases hh2))
   (case [some r]

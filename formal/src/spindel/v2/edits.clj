@@ -631,7 +631,7 @@
                        (~'And.right (~'And.right ~'h))))
             (~'simp ~'only [~'ids-ok ~'ids-unique ~'ids-below ~'Bool.and_eq_true ~'hnew ~'bump ~'set-next-id
                             ~'Nat.blt_eq])
-            (~'exact (~'And.intro (~'And.left ~'hf) (~'And.intro ~'True.intro (~'And.right ~'hf))))))))
+            (~'exact (~'And.intro (~'And.left ~'hf) (~'And.intro (~'Nat.zero_lt_succ (:next-id ~'w)) (~'And.right ~'hf))))))))
 
 (deffresh)
 
