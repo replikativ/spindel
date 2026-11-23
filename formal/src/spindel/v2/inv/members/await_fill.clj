@@ -47,9 +47,9 @@
 (a/defn current-members-pending-exempt [ps :- (List DE), tail :- (List Nat),
                           xm :- (List Nat)] (List Nat)
   (match tail
-    [nil xm]
-    [(cons d t) (List.cons Nat (pair-edge d ps)
-                         (current-members-pending-exempt ps t xm))]))
+    nil xm
+    (cons d t) (List.cons Nat (pair-edge d ps)
+                        (current-members-pending-exempt ps t xm))))
 
 
 

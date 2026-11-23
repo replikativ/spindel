@@ -60,7 +60,7 @@
 ;; ---- finality of a debtor read from the source and task tables
 (a/defn sfin [s :- SourceRow] Bool (Bool.or (Bool.not (:open s)) (source-delivered s)))
 (a/defn find-or [A :- Type :implicit, g :- (=> A Bool), k :- Bool, o :- (Option A)] Bool
-  (match o [none k] [(some r) (g r)]))
+  (match o none k (some r) (g r)))
 (a/defn fin-st [xs :- (List SourceRow), ts :- (List TaskRow), d :- Nat] Bool
   (find-or sfin (find-or task-done false (tbl-find task-id d ts)) (tbl-find source-id d xs)))
 (a/theorem deb-final-st [w :- World, d :- Nat] (= (deb-final w d) (fin-st (:sources w) (:tasks w) d))
@@ -1554,9 +1554,9 @@
   (have hs0 := (i5-dep-final-well-formed x5d w h))
   (have hr0 := (i5-dep-final-rest-of x5d w h))
   (have h2 (= (i5-dep-final x5d (match (site-edge (:edges w) (:of r) (:effect-index r) x)
-                        [none (track-new w r x s k)]
-                        [(some e) (comp-upd (track-fin s (:id e) (edge-upd w (:id e) (edge-reread (track-cont r k) s)))
-                                            (:of r) (comp-consume-adopt (:effect-index r) x))])) true))
+                        none (track-new w r x s k)
+                        (some e) (comp-upd (track-fin s (:id e) (edge-upd w (:id e) (edge-reread (track-cont r k) s)))
+                                           (:of r) (comp-consume-adopt (:effect-index r) x)))) true))
   (cases he (site-edge (:edges w) (:of r) (:effect-index r) x)) (case' [some e]) (case' [none])
   (simp only [track-new])
   (have ins := (track-edge-ok w r x s k hc hs))

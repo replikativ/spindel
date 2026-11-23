@@ -47,9 +47,9 @@
 (a/defn root-scope-reserved-scope-key [s :- ScopeRow] RootScopeReservedScopeKey (RootScopeReservedScopeKey.mk (:id s) (:kind s) (:parent s)))
 (a/defn root-scope-reserved-scope-key-id [k :- RootScopeReservedScopeKey] Nat (:id k))
 (a/defn root-scope-reserved-scope-keys [ss :- (List ScopeRow)] (List RootScopeReservedScopeKey)
-  (match ss [nil (List.nil RootScopeReservedScopeKey)] [(cons h t) (List.cons RootScopeReservedScopeKey (root-scope-reserved-scope-key h) (root-scope-reserved-scope-keys t))]))
+  (match ss nil (List.nil RootScopeReservedScopeKey) (cons h t) (List.cons RootScopeReservedScopeKey (root-scope-reserved-scope-key h) (root-scope-reserved-scope-keys t))))
 (a/defn rscs [rs :- (List RunRow)] (List Nat)
-  (match rs [nil (List.nil Nat)] [(cons h t) (List.cons Nat (:scope h) (rscs t))]))
+  (match rs nil (List.nil Nat) (cons h t) (List.cons Nat (:scope h) (rscs t))))
 (a/defn root-ok [k :- RootScopeReservedScopeKey] Bool
   (Bool.or (Bool.not (Bool.or (Nat.beq (:kind k) scope-root) (Nat.beq (:id k) 2)))
            (Bool.and (Nat.beq (:id k) 2) (Bool.and (Nat.beq (:kind k) scope-root) (Nat.beq (:parent k) 0)))))

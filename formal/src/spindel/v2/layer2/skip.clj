@@ -128,7 +128,7 @@
   (exact (And.intro (chain-to-i14-ordered-skip w (And.left p)) (marks-waiting-skip w (And.right p)))))
 
 (a/defn skip-ids [n :- Nat, w :- World] World
-  (match n [zero w] [(succ k) (bump (skip-ids k w))]))
+  (match n zero w (succ k) (bump (skip-ids k w))))
 (a/theorem chain-to-marks-waiting-skip-ids [n :- Nat, w :- World] (=> (= (chain-to-marks-waiting w) true) (= (chain-to-marks-waiting (skip-ids n w)) true))
   (induction n)
   (case [zero] (intro h) (simp only [skip-ids]) (exact h))

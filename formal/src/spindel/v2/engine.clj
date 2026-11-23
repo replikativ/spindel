@@ -420,29 +420,29 @@
 ;; spindel.v2.progress.react).
 
 (a/defn run-busy [w :- World, c :- CompRow] Bool
-  (match (run-find w (:run c)) [none false] [(some r) (run-alive r)]))
+  (match (run-find w (:run c)) none false (some r) (run-alive r)))
 (a/defn comp-clean [w :- World, c :- CompRow, v :- Valid] Bool
   (Bool.and (Bool.or (:idle c) (comp-live c))
             (Bool.and (Bool.not (run-busy w c)) (Nat.beq (:version c) (:version v)))))
 (a/defn valid-loop [fuel :- (List Nat), w :- World, seen :- (List Nat), vs :- (List Valid)] Bool
   (match fuel
-    [nil false]
-    [(cons h f) (match vs
-                  [nil true]
-                  [(cons v t) (match (comp-find w (:debtor v))
-                                [none (if (Bool.or (source-has w (:debtor v)) (task-has w (:debtor v)))
-                                          (if (Nat.beq (deb-version w (:debtor v)) (:version v)) (valid-loop f w seen t) false)
-                                          false)]
-                                [(some c) (if (comp-clean w c v)
-                                              (if (Bool.and (:idle c) (Bool.not (reach-mem (:id c) seen)))
-                                                  (valid-loop f w (List.cons Nat (:id c) seen) (List.append Valid (:validity c) t))
-                                                  (valid-loop f w seen t))
-                                              false)])])]))
+    nil false
+    (cons h f) (match vs
+                 nil true
+                 (cons v t) (match (comp-find w (:debtor v))
+                              none (if (Bool.or (source-has w (:debtor v)) (task-has w (:debtor v)))
+                                       (if (Nat.beq (deb-version w (:debtor v)) (:version v)) (valid-loop f w seen t) false)
+                                       false)
+                              (some c) (if (comp-clean w c v)
+                                           (if (Bool.and (:idle c) (Bool.not (reach-mem (:id c) seen)))
+                                               (valid-loop f w (List.cons Nat (:id c) seen) (List.append Valid (:validity c) t))
+                                               (valid-loop f w seen t))
+                                           false)))))
 ;; fuel: 2 + the number of validity entries of all computations
 (a/defn valid-zeros [vs :- (List Valid)] (List Nat)
-  (match vs [nil (List.nil Nat)] [(cons h t) (List.cons Nat 0 (valid-zeros t))]))
+  (match vs nil (List.nil Nat) (cons h t) (List.cons Nat 0 (valid-zeros t))))
 (a/defn all-valid-zeros [cs :- (List CompRow)] (List Nat)
-  (match cs [nil (List.nil Nat)] [(cons h t) (List.append Nat (valid-zeros (:validity h)) (all-valid-zeros t))]))
+  (match cs nil (List.nil Nat) (cons h t) (List.append Nat (valid-zeros (:validity h)) (all-valid-zeros t))))
 (a/defn valid-fuel [w :- World] (List Nat)
   (List.cons Nat 0 (List.cons Nat 0 (all-valid-zeros (:comps w)))))
 ;; only a computation with a result can be valid (a fresh idle one, done-epoch none, has
@@ -451,7 +451,7 @@
   (Bool.and (Bool.not (Nat.beq (:done-epoch c) 0))
             (valid-loop (valid-fuel w) w (List.cons Nat (:id c) (List.nil Nat)) (:validity c))))
 
-(a/defn comp-rank [w :- World, x :- Nat] Nat (match (comp-find w x) [none 0] [(some c) (:rank c)]))
+(a/defn comp-rank [w :- World, x :- Nat] Nat (match (comp-find w x) none 0 (some c) (:rank c)))
 (a/defn comp-set-rank [n :- Nat, c :- CompRow] CompRow
   (CompRow.mk (:id c) (:owner c) (:inputs c) (:body c) (:run c) (:epoch c) (:done-epoch c)
               (:pending c) n (:version c) (:result c) (:idle c) (:validity c) (:basis c)
@@ -461,18 +461,18 @@
 (a/structure RJ [] (node Nat) (need Nat))
 (a/structure RaiseRes [] (world World) (ok Bool))
 (a/defn raise-jobs [n :- Nat, ys :- (List Nat)] (List RJ)
-  (match ys [nil (List.nil RJ)] [(cons h t) (List.cons RJ (RJ.mk h n) (raise-jobs n t))]))
+  (match ys nil (List.nil RJ) (cons h t) (List.cons RJ (RJ.mk h n) (raise-jobs n t))))
 (a/defn raise-loop [fuel :- (List Nat), d :- Nat, w :- World, todo :- (List RJ)] RaiseRes
   (match fuel
-    [nil (match todo [nil (RaiseRes.mk w true)] [(cons j t) (RaiseRes.mk w false)])]
-    [(cons u f) (match todo
-                  [nil (RaiseRes.mk w true)]
-                  [(cons j t) (if (Nat.beq (:node j) d)
-                                  (RaiseRes.mk w false)
-                                  (if (Nat.ble (:need j) (comp-rank w (:node j)))
-                                      (raise-loop f d w t)
-                                      (raise-loop f d (comp-upd w (:node j) (comp-set-rank (:need j)))
-                                                  (List.append RJ t (raise-jobs (+ (:need j) 1) (dep-creditors (:edges w) (:node j)))))))])]))
+    nil (match todo nil (RaiseRes.mk w true) (cons j t) (RaiseRes.mk w false))
+    (cons u f) (match todo
+                 nil (RaiseRes.mk w true)
+                 (cons j t) (if (Nat.beq (:node j) d)
+                                (RaiseRes.mk w false)
+                                (if (Nat.ble (:need j) (comp-rank w (:node j)))
+                                    (raise-loop f d w t)
+                                    (raise-loop f d (comp-upd w (:node j) (comp-set-rank (:need j)))
+                                                (List.append RJ t (raise-jobs (+ (:need j) 1) (dep-creditors (:edges w) (:node j))))))))))
 (a/defn raise-fuel [w :- World] (List Nat)
   (List.cons Nat 0 (rep-list (tbl-ids comp-id (:comps w)) (List.cons Nat 0 (tbl-ids edge-id (:edges w))))))
 ;; make room for the dep edge c -> d (only when d is a computation)
@@ -539,21 +539,21 @@
       (:world (raise-run (insert-edge-checked w (valid-edge w c v)) c (:debtor v)))
       w))
 (a/defn react-edges [w :- World, c :- Nat, vs :- (List Valid)] World
-  (match vs [nil w] [(cons v t) (react-edges (react-add w c v) c t)]))
+  (match vs nil w (cons v t) (react-edges (react-add w c v) c t)))
 (a/defn valid-debtors [vs :- (List Valid)] (List Nat)
-  (match vs [nil (List.nil Nat)] [(cons h t) (List.cons Nat (:debtor h) (valid-debtors t))]))
+  (match vs nil (List.nil Nat) (cons h t) (List.cons Nat (:debtor h) (valid-debtors t))))
 (a/defn react-one [w :- World, c :- CompRow] World
   (react-edges (comp-upd w (:id c) comp-react-row) (:id c) (:validity c)))
 (a/defn react-loop [fuel :- (List Nat), w :- World, q :- (List Nat)] World
   (match fuel
-    [nil w]
-    [(cons h f) (match q
-                  [nil w]
-                  [(cons x t) (match (comp-find w x)
-                                [none (react-loop f w t)]
-                                [(some c) (if (:idle c)
-                                              (react-loop f (react-one w c) (List.append Nat t (valid-debtors (:validity c))))
-                                              (react-loop f w t))])])]))
+    nil w
+    (cons h f) (match q
+                 nil w
+                 (cons x t) (match (comp-find w x)
+                              none (react-loop f w t)
+                              (some c) (if (:idle c)
+                                           (react-loop f (react-one w c) (List.append Nat t (valid-debtors (:validity c))))
+                                           (react-loop f w t))))))
 ;; fuel (found by branch l5): every queued id is a validity entry's debtor of a computation
 ;; reactivated here (at most once each: it is no longer idle) or the start, so 2 + the number of
 ;; validity entries bounds the pops; the former bound 2 + |comps| ran out when a validity list
@@ -576,12 +576,12 @@
 (a/theorem comp-demand-row-pending [c :- CompRow] (= (:pending (comp-demand-row c)) (:pending c)) (rfl))
 (a/defn demand-reactive [w :- World, d :- Nat] World
   (match (comp-find w d)
-    [none w]
-    [(some c) (if (:idle c)
-                  (if (valid-idle w c)
-                      (react-loop (react-fuel w) w (List.cons Nat d (List.nil Nat)))
-                      (comp-upd w d comp-demand-row))
-                  w)]))
+    none w
+    (some c) (if (:idle c)
+                 (if (valid-idle w c)
+                     (react-loop (react-fuel w) w (List.cons Nat d (List.nil Nat)))
+                     (comp-upd w d comp-demand-row))
+                 w)))
 
 (a/theorem comp-react-row-id [c :- CompRow] (= (comp-id (comp-react-row c)) (comp-id c)) (rfl))
 (a/theorem comp-react-row-pending [c :- CompRow] (= (:pending (comp-react-row c)) (:pending c)) (rfl))
@@ -664,7 +664,7 @@
   (Bool.and (Nat.beq (:parent s) x) (Bool.and (Nat.beq (:kind s) scope-explicit) (:open s))))
 (a/defn open-explicit-children [w :- World, x :- Nat] (List Nat) (tbl-scan scope-id (open-explicit-child x) (:scopes w)))
 (a/defn nat-max [m :- Nat, xs :- (List Nat)] Nat
-  (match xs [nil m] [(cons h t) (nat-max (if (Nat.blt m h) h m) t)]))
+  (match xs nil m (cons h t) (nat-max (if (Nat.blt m h) h m) t)))
 (a/defn cur-scope [w :- World, r :- RunRow] Nat
   (nat-max (:scope r)
     (:visited (reach-run-l (List.cons Nat 0 (List.cons Nat 0 (tbl-ids scope-id (:scopes w))))
@@ -677,9 +677,9 @@
 ;; adoption basis adopts it (allocates nothing); its recorded inputs must equal the logged ones
 (a/defn respawn-target [w :- World, r :- RunRow, x :- Nat] (Option TaskRow)
   (match (comp-find w (:of r))
-    [none (Option.none TaskRow)]
-    [(some c) (if (reach-mem x (nat-app (created-ids (:basis c)) (created-ids (:adopt-basis c))))
-                  (task-find w x) (Option.none TaskRow))]))
+    none (Option.none TaskRow)
+    (some c) (if (reach-mem x (nat-app (created-ids (:basis c)) (created-ids (:adopt-basis c))))
+                 (task-find w x) (Option.none TaskRow))))
 (a/defn created-other [x :- Nat, b :- Created] Bool (Bool.not (Nat.beq (:id b) x)))
 ;; the adopted task moves to the basis at the new site (its old entries go)
 (a/defn comp-rebasis [b :- Created, c :- CompRow] CompRow
@@ -709,18 +709,18 @@
 (a/defn detach-local-refused [w :- World, k :- Nat, s :- Nat] Bool (Bool.and (scope-local w s) (Bool.not (task-local-id w k))))
 ;; the option inside a computation body is refused (transition, Z#77: `{:spindel/invalid :fork-local}`)
 (a/defn spawn-local-refused [w :- World, st :- Nat, flag :- Bool] Bool
-  (Bool.and flag (match (tok-run w st) [none false] [(some r) (in-comp w r)])))
+  (Bool.and flag (match (tok-run w st) none false (some r) (in-comp w r))))
 
 ;; inside a run (body effect): a re-spawn (above), or a new task (fresh = next-id) owned per
 ;; §5.2, recorded in a computation's basis; effect tick either way
 (a/defn t4-spawn [w :- World, st :- Nat, body :- Nat, fresh :- Nat, inputs :- (List Nat), flag :- Bool] Outcome
   (match (tok-run w st)
-    [none (refuse w)]
-    [(some r) (match (respawn-target w r fresh)
-                [none (if (Nat.beq fresh (:next-id w))
-                          (accept (run-upd (record-basis (spawn-rows w (spawn-owner w r) inputs (spawn-loc w (spawn-owner w r) flag)) r fresh) (:id r) run-tick))
-                          (refuse w))]
-                [(some t) (if (nat-list-eq inputs (:inputs t)) (accept (respawn-raw w r fresh)) (refuse w))])]))
+    none (refuse w)
+    (some r) (match (respawn-target w r fresh)
+               none (if (Nat.beq fresh (:next-id w))
+                        (accept (run-upd (record-basis (spawn-rows w (spawn-owner w r) inputs (spawn-loc w (spawn-owner w r) flag)) r fresh) (:id r) run-tick))
+                        (refuse w))
+               (some t) (if (nat-list-eq inputs (:inputs t)) (accept (respawn-raw w r fresh)) (refuse w)))))
 ;; at top level: owned by the given open scope
 (a/defn t4-spawn-top [w :- World, scope :- Nat, body :- Nat, fresh :- Nat, inputs :- (List Nat), flag :- Bool] Outcome
   (if (Bool.and (Nat.beq fresh (:next-id w)) (scope-open-at w scope)) (accept (spawn-rows w scope inputs (spawn-loc w scope flag))) (refuse w)))
@@ -801,8 +801,8 @@
 
 (a/defn t5-start [w :- World, cid :- Nat, fresh :- Nat] Outcome
   (match (comp-find w cid)
-    [none (refuse w)]
-    [(some c) (if (Bool.and (Nat.beq fresh (:next-id w)) (startable w c)) (accept (start-raw w c)) (refuse w))]))
+    none (refuse w)
+    (some c) (if (Bool.and (Nat.beq fresh (:next-id w)) (startable w c)) (accept (start-raw w c)) (refuse w))))
 
 (a/theorem well-formed-start-raw [w :- World, c :- CompRow]
   (=> (= (well-formed w) true) (= (well-formed (start-raw w c)) true))
@@ -860,21 +860,21 @@
 
 (a/defn create-comp-raw [w :- World, c :- Nat, owner :- Nat, inputs :- (List Nat), body :- Nat] World
   (match (comp-find w c)
-    [none (bump (comp-ins w (new-comp-row w (:next-id w) owner inputs body)))]
-    [(some row) (if (nat-list-eq (:inputs row) inputs)
-                    (comp-upd w c comp-adopt-row)
-                    (mark-from (comp-upd w c (comp-replace-row inputs body)) c))]))
+    none (bump (comp-ins w (new-comp-row w (:next-id w) owner inputs body)))
+    (some row) (if (nat-list-eq (:inputs row) inputs)
+                   (comp-upd w c comp-adopt-row)
+                   (mark-from (comp-upd w c (comp-replace-row inputs body)) c))))
 ;; absent ids must be the fresh id
 (a/defn create-ok [w :- World, c :- Nat] Bool (Bool.or (comp-has w c) (Nat.beq c (:next-id w))))
 
 (a/defn t3-create [w :- World, st :- Nat, c :- Nat, inputs :- (List Nat), body :- Nat] Outcome
   (match (tok-run w st)
-    [none (refuse w)]
-    [(some r) (if (create-ok w c)
-                  (accept (run-upd (comp-upd (create-comp-raw w c (source-owner w r) inputs body) (:of r)
-                                             (comp-rebasis (Created.mk c (:effect-index r))))
-                                   (:id r) run-tick))
-                  (refuse w))]))
+    none (refuse w)
+    (some r) (if (create-ok w c)
+                 (accept (run-upd (comp-upd (create-comp-raw w c (source-owner w r) inputs body) (:of r)
+                                            (comp-rebasis (Created.mk c (:effect-index r))))
+                                  (:id r) run-tick))
+                 (refuse w))))
 (a/defn t3-create-top [w :- World, scope :- Nat, c :- Nat, inputs :- (List Nat), body :- Nat] Outcome
   (if (Bool.and (create-ok w c) (scope-open-at w scope)) (accept (create-comp-raw w c scope inputs body)) (refuse w)))
 
@@ -936,7 +936,7 @@
 
 ;; needs-run (§2, Z#1): done-epoch /= epoch and C.run is none or not current
 (a/defn run-current-of-comp [w :- World, c :- CompRow] Bool
-  (match (run-find w (:run c)) [none false] [(some r) (Nat.beq (:epoch r) (:epoch c))]))
+  (match (run-find w (:run c)) none false (some r) (Nat.beq (:epoch r) (:epoch c))))
 (a/defn needs-run [w :- World, c :- CompRow] Bool
   (Bool.and (Bool.not (Nat.beq (:done-epoch c) (:epoch c))) (Bool.not (run-current-of-comp w c))))
 ;; dirty (§2): not idle, not live, not fresh
@@ -951,17 +951,17 @@
 ;; `blocked-complete` connect it to Derive (the latter given convergence, which tests check).
 (a/defn run-parked [r :- RunRow] Bool (Nat.beq (:act r) act-parked))
 (a/defn run-parked-of [w :- World, c :- CompRow] Bool
-  (match (run-find w (:run c)) [none false]
-         [(some r) (Bool.and (Nat.beq (:act r) act-parked) (Nat.beq (:epoch r) (:epoch c)))]))
+  (match (run-find w (:run c)) none false
+         (some r) (Bool.and (Nat.beq (:act r) act-parked) (Nat.beq (:epoch r) (:epoch c)))))
 (a/defn entity-run [w :- World, x :- Nat] Nat
-  (match (comp-find w x) [none (match (task-find w x) [none 0] [(some t) (:run t)])] [(some c) (:run c)]))
+  (match (comp-find w x) none (match (task-find w x) none 0 (some t) (:run t)) (some c) (:run c)))
 (a/defn blocked-base [w :- World, x :- Nat] Bool
   (match (comp-find w x)
-    [none (match (task-find w x) [none false] [(some t) (opt-test run-parked (run-find w (:run t)))])]
-    [(some c) (run-parked-of w c)]))
-(a/defn edge-debtor-of [w :- World, x :- Nat] Nat (match (edge-find w x) [none 0] [(some e) (:debtor e)]))
+    none (match (task-find w x) none false (some t) (opt-test run-parked (run-find w (:run t))))
+    (some c) (run-parked-of w c)))
+(a/defn edge-debtor-of [w :- World, x :- Nat] Nat (match (edge-find w x) none 0 (some e) (:debtor e)))
 (a/defn debtors-of [w :- World, xs :- (List Nat)] (List Nat)
-  (match xs [nil (List.nil Nat)] [(cons h t) (List.cons Nat (edge-debtor-of w h) (debtors-of w t))]))
+  (match xs nil (List.nil Nat) (cons h t) (List.cons Nat (edge-debtor-of w h) (debtors-of w t))))
 (a/defn blocked-deps [w :- World, x :- Nat] (List Nat)
   (debtors-of w (tbl-gather (act-of-run (entity-run w x)) act-contrib (:acts w))))
 (a/defn blocked-leaf [w :- World, y :- Nat] Bool (Bool.or (source-has w y) (resource-has w y)))
@@ -992,8 +992,8 @@
 ;; eligibility (§4.5.7): every computation debtor of C (through a dep edge) is not dirty
 ;; (settled) or blocked (B4, the least fixpoint above)
 (a/defn debtor-settled [w :- World, bl :- (List Nat), e :- EdgeRow] Bool
-  (match (comp-find w (:debtor e)) [none true]
-         [(some d) (Bool.or (Bool.not (comp-dirty d)) (reach-mem (:id d) bl))]))
+  (match (comp-find w (:debtor e)) none true
+         (some d) (Bool.or (Bool.not (comp-dirty d)) (reach-mem (:id d) bl))))
 (a/defn dep-ok-for [w :- World, bl :- (List Nat), c :- Nat, e :- EdgeRow] Bool
   (Bool.or (Bool.not (dep-of c e)) (debtor-settled w bl e)))
 (a/defn eligible [w :- World, c :- CompRow] Bool (tbl-all (dep-ok-for w (blocked-set w) (:id c)) (:edges w)))
@@ -1003,9 +1003,9 @@
 (a/defn fired-dep-of [c :- Nat, e :- EdgeRow] Bool (Bool.and (dep-of c e) (Nat.beq (:phase e) ph-fired)))
 (a/defn earliest [best :- (Option EdgeRow), es :- (List EdgeRow)] (Option EdgeRow)
   (match es
-    [nil best]
-    [(cons h t) (earliest (match best [none (Option.some EdgeRow h)]
-                                 [(some b) (if (Nat.blt (:id h) (:id b)) (Option.some EdgeRow h) best)]) t)]))
+    nil best
+    (cons h t) (earliest (match best none (Option.some EdgeRow h)
+                                (some b) (if (Nat.blt (:id h) (:id b)) (Option.some EdgeRow h) best)) t)))
 (a/defn entry-edge [w :- World, c :- Nat] (Option EdgeRow)
   (earliest (Option.none EdgeRow) (tbl-filter (fired-dep-of c) (:edges w))))
 
@@ -1018,8 +1018,8 @@
 (a/defn keep-prefix [c :- Nat, has :- Bool, cid :- Nat, e :- EdgeRow] Bool (Bool.not (suffix-edge c has cid e)))
 (a/defn edge-base [e :- EdgeRow] AdoptBase (AdoptBase.mk (:at e) (:debtor e) (:base-value e) (:base-version e)))
 (a/defn bases-of [es :- (List EdgeRow)] (List AdoptBase)
-  (match es [nil (List.nil AdoptBase)]
-         [(cons h t) (if (:has-base h) (List.cons AdoptBase (edge-base h) (bases-of t)) (bases-of t))]))
+  (match es nil (List.nil AdoptBase)
+         (cons h t) (if (:has-base h) (List.cons AdoptBase (edge-base h) (bases-of t)) (bases-of t))))
 (a/defn created-after [has :- Bool, cut :- Nat, b :- Created] Bool (after-cut has cut (:at b)))
 (a/defn created-upto [has :- Bool, cut :- Nat, b :- Created] Bool (Bool.not (after-cut has cut (:at b))))
 ;; basis := prefix creations, adoption basis := suffix creations (only the latest), adoption
@@ -1054,10 +1054,10 @@
 ;; predecessor: the run C.run, if not done, is cancelled with cancel(R, replace) (Y#2)
 (a/defn cancel-pred [w :- World, c :- CompRow] World
   (match (run-find w (:run c))
-    [none w]
-    [(some r) (if (run-alive r)
-                  (run-cascade w (List.cons Job (Job.jcancel (:id r) true) (List.nil Job)))
-                  w)]))
+    none w
+    (some r) (if (run-alive r)
+                 (run-cascade w (List.cons Job (Job.jcancel (:id r) true) (List.nil Job)))
+                 w)))
 
 (a/defn cut-suffix [w :- World, c :- Nat, has :- Bool, cut :- Nat, cid :- Nat] World
   (comp-upd (drop-edges w (keep-prefix c has cid)) c
@@ -1068,16 +1068,16 @@
 
 (a/defn dispatch-raw [w :- World, c :- CompRow] World
   (match (entry-edge w (:id c))
-    [none (new-run-of (cut-suffix (cancel-pred w c) (:id c) false 0 0) c 0)]
-    [(some e) (new-run-of (consume-entry (cut-suffix (cancel-pred w c) (:id c) true (:at e) (:id e)) e) c (entry-ei e))]))
+    none (new-run-of (cut-suffix (cancel-pred w c) (:id c) false 0 0) c 0)
+    (some e) (new-run-of (consume-entry (cut-suffix (cancel-pred w c) (:id c) true (:at e) (:id e)) e) c (entry-ei e))))
 
 (a/defn t11-dispatch [w :- World, cid :- Nat, fresh :- Nat] Outcome
   (match (comp-find w cid)
-    [none (refuse w)]
-    [(some c) (if (Bool.and (Nat.beq fresh (:next-id w))
-                            (Bool.and (Bool.not (:idle c)) (Bool.and (needs-run w c) (eligible w c))))
-                  (accept (dispatch-raw w c))
-                  (refuse w))]))
+    none (refuse w)
+    (some c) (if (Bool.and (Nat.beq fresh (:next-id w))
+                           (Bool.and (Bool.not (:idle c)) (Bool.and (needs-run w c) (eligible w c))))
+                 (accept (dispatch-raw w c))
+                 (refuse w))))
 
 (a/theorem well-formed-cancel-pred [w :- World, c :- CompRow]
   (=> (= (well-formed w) true) (= (well-formed (cancel-pred w c)) true))
@@ -1149,8 +1149,8 @@
 ;; an armed dep edge that is an unfilled member of an activation of its creditor's current run
 (a/defn member-current [w :- World, e :- EdgeRow] Bool
   (match (act-with-member (:id e) (:acts w))
-    [none false]
-    [(some a) (run-current-of w (:run a) (:creditor e))]))
+    none false
+    (some a) (run-current-of w (:run a) (:creditor e))))
 ;; one out-edge of a settling D (version ver), Z#30: it fires (T9: a delivery to a current
 ;; member, else an invalidation) when the version it consumed (`seen`, none counts as
 ;; different) differs from D's; otherwise only a current member is delivered (Z#20). Then it
@@ -1158,12 +1158,12 @@
 (a/defn edge-behind [ver :- Nat, e :- EdgeRow] Bool (Bool.or (Bool.not (:has-seen e)) (Bool.not (Nat.beq (:seen e) ver))))
 (a/defn settle-edge [changed :- Bool, ver :- Nat, w :- World, x :- Nat] World
   (match (edge-find w x)
-    [none w]
-    [(some e) (unmark-edge
-                (if (Nat.beq (:phase e) ph-armed)
-                    (if (Bool.or (edge-behind ver e) (member-current w e)) (fire-dep w e) w)
-                    w)
-                x)]))
+    none w
+    (some e) (unmark-edge
+               (if (Nat.beq (:phase e) ph-armed)
+                   (if (Bool.or (edge-behind ver e) (member-current w e)) (fire-dep w e) w)
+                   w)
+               x)))
 (a/defn out-dep [d :- Nat, e :- EdgeRow] Bool (Bool.and (Nat.beq (:kind e) ek-dep) (Nat.beq (:debtor e) d)))
 (a/defn out-marked [d :- Nat, e :- EdgeRow] Bool (Bool.and (out-dep d e) (:marked e)))
 ;; observe edges deliver (seen < version, Z#9); wait edges on D fire: host waits are consumed
@@ -1188,11 +1188,11 @@
 
 (a/defn settle-loop [fuel :- (List Nat), w :- World, q :- (List Nat)] FinRes
   (match fuel
-    [nil (FinRes.mk w q)]
-    [(cons h f) (match q
-                  [nil (FinRes.mk w (List.nil Nat))]
-                  [(cons d t) (settle-loop f (settle-one w d false)
-                                (List.append Nat t (settle-next w (settle-one w d false) d)))])]))
+    nil (FinRes.mk w q)
+    (cons h f) (match q
+                 nil (FinRes.mk w (List.nil Nat))
+                 (cons d t) (settle-loop f (settle-one w d false)
+                              (List.append Nat t (settle-next w (settle-one w d false) d))))))
 ;; fuel (found by branch l5): every queued creditor comes from a distinct marked edge that the
 ;; settle of its debtor unmarks (no edge is marked during a settle), so 2 + |edges| bounds the
 ;; pops; the former bound 2 + |comps| ran out when a creditor has several marked edges on one
@@ -1204,7 +1204,7 @@
 (a/defn settle [w :- World, d :- Nat, changed :- Bool] World
   (if (ready-id w d) (:world (settle-res w d changed)) w))
 (a/defn settle-done [w :- World, d :- Nat, changed :- Bool] Bool
-  (match (:rest (settle-res w d changed)) [nil true] [(cons h t) false]))
+  (match (:rest (settle-res w d changed)) nil true (cons h t) false))
 
 (a/theorem well-formed-settle-edge [changed :- Bool, ver :- Nat, w :- World, x :- Nat]
   (=> (= (well-formed w) true) (= (well-formed (settle-edge changed ver w x)) true))
@@ -1285,11 +1285,11 @@
 ;; among them that still run are cancelled (§5.2)
 (a/defn released-run [w :- World, keep :- (List Nat), x :- Nat] Bool
   (Bool.and (Bool.not (reach-mem x keep))
-            (match (task-find w x) [none false]
-                   [(some t) (opt-test run-alive (run-find w (:run t)))])))
-(a/defn task-run-of [w :- World, x :- Nat] Nat (match (task-find w x) [none 0] [(some t) (:run t)]))
+            (match (task-find w x) none false
+                   (some t) (opt-test run-alive (run-find w (:run t))))))
+(a/defn task-run-of [w :- World, x :- Nat] Nat (match (task-find w x) none 0 (some t) (:run t)))
 (a/defn task-runs [w :- World, xs :- (List Nat)] (List Nat)
-  (match xs [nil (List.nil Nat)] [(cons h t) (List.cons Nat (task-run-of w h) (task-runs w t))]))
+  (match xs nil (List.nil Nat) (cons h t) (List.cons Nat (task-run-of w h) (task-runs w t))))
 (a/defn released-runs [w :- World, c :- CompRow] (List Nat)
   (task-runs w (tbl-filter (released-run w (created-ids (:basis c))) (created-ids (:adopt-basis c)))))
 
@@ -1307,16 +1307,16 @@
 ;; R done; by kind of entity; a stale computation run's result is discarded (W#1)
 (a/defn complete-body [w :- World, r :- RunRow, res :- RunResult] Casc
   (match (comp-find w (:of r))
-    [none (match (task-find w (:of r))
-            [none (Casc.mk w (List.nil Job))]
-            [(some k) (complete-task w r (:id k) res)])]
-    [(some c) (if (Nat.beq (:epoch r) (:epoch c)) (complete-comp w r c res) (Casc.mk w (List.nil Job)))]))
+    none (match (task-find w (:of r))
+           none (Casc.mk w (List.nil Job))
+           (some k) (complete-task w r (:id k) res))
+    (some c) (if (Nat.beq (:epoch r) (:epoch c)) (complete-comp w r c res) (Casc.mk w (List.nil Job)))))
 ;; then: cleanup[R] unless retirable, the cancels and T13 (cascade), T10 on the entity when it
 ;; is final (a completed task; a final computation)
 (a/defn retire-after [w :- World, rid :- Nat] World
   (match (run-find w rid)
-    [none w]
-    [(some r) (if (retirable r) w (cleanup-set w rid (cleanup-rows-of w r)))]))
+    none w
+    (some r) (if (retirable r) w (cleanup-set w rid (cleanup-rows-of w r)))))
 (a/defn complete-raw [w :- World, r :- RunRow, res :- RunResult] World
   (finalize-if-final
     (run-cascade (retire-after (:world (complete-body (run-upd w (:id r) run-complete-row) r res)) (:id r))
@@ -1327,8 +1327,8 @@
 (a/defn run-normal [r :- RunRow] Bool (Bool.and (run-alive r) (Nat.beq (:mode r) mode-normal)))
 (a/defn t12-complete [w :- World, st :- Nat, tag :- Nat, v :- Nat] Outcome
   (match (tok-run w st)
-    [none (refuse w)]
-    [(some r) (if (run-normal r) (accept (complete-raw w r (RunResult.mk tag v))) (refuse w))]))
+    none (refuse w)
+    (some r) (if (run-normal r) (accept (complete-raw w r (RunResult.mk tag v))) (refuse w))))
 
 (a/theorem well-formed-complete-body [w :- World, r :- RunRow, res :- RunResult]
   (=> (= (well-formed w) true) (= (well-formed (:world (complete-body w r res))) true))
@@ -1393,25 +1393,25 @@
   (Bool.or (comp-has w d) (Bool.or (task-has w d) (Bool.or (source-has w d) (resource-has w d)))))
 ;; the debtor-list without repetitions, first occurrences in order
 (a/defn nat-distinct-acc [seen :- (List Nat), xs :- (List Nat)] (List Nat)
-  (match xs [nil (List.nil Nat)]
-         [(cons h t) (if (nat-mem h seen) (nat-distinct-acc seen t)
-                         (List.cons Nat h (nat-distinct-acc (List.cons Nat h seen) t)))]))
+  (match xs nil (List.nil Nat)
+         (cons h t) (if (nat-mem h seen) (nat-distinct-acc seen t)
+                        (List.cons Nat h (nat-distinct-acc (List.cons Nat h seen) t)))))
 (a/defn nat-distinct [xs :- (List Nat)] (List Nat) (nat-distinct-acc (List.nil Nat) xs))
-(a/defn nat-len [xs :- (List Nat)] Nat (match xs [nil 0] [(cons h t) (+ (nat-len t) 1)]))
+(a/defn nat-len [xs :- (List Nat)] Nat (match xs nil 0 (cons h t) (+ (nat-len t) 1)))
 
 ;; fast path (T6): a live computation (or a valid idle one, read without reactivation), a
 ;; completed task, a closed source, a fired resource
 (a/defn res-fired [w :- World, d :- Nat] Bool
-  (match (resource-find w d) [none false] [(some z) (Nat.beq (:phase z) rp-fired)]))
+  (match (resource-find w d) none false (some z) (Nat.beq (:phase z) rp-fired)))
 ;; Z#31: a signal or cell is read at once (a dep edge like track in a computation, a snapshot
 ;; in a task)
 (a/defn sig-cell [w :- World, d :- Nat] Bool
-  (match (source-find w d) [none false]
-         [(some s) (Bool.or (Nat.beq (:kind s) sk-signal) (Nat.beq (:kind s) sk-cell))]))
+  (match (source-find w d) none false
+         (some s) (Bool.or (Nat.beq (:kind s) sk-signal) (Nat.beq (:kind s) sk-cell))))
 (a/defn fast-ready [w :- World, d :- Nat] Bool
   (match (comp-find w d)
-    [none (Bool.or (deb-final w d) (Bool.or (res-fired w d) (sig-cell w d)))]
-    [(some c) (Bool.or (comp-live c) (Bool.and (:idle c) (valid-idle w c)))]))
+    none (Bool.or (deb-final w d) (Bool.or (res-fired w d) (sig-cell w d)))
+    (some c) (Bool.or (comp-live c) (Bool.and (:idle c) (valid-idle w c)))))
 
 ;; member edges: in a computation run a dep edge (creditor C) for C/K/X debtors, a wait edge
 ;; (creditor A) otherwise and for resources (Z#6); cont per §2's re-entrancy rule (Y#3):
@@ -1516,25 +1516,25 @@
 (a/defn await-step [r :- RunRow, a :- Nat, mode :- Nat, k :- Nat, acc :- AwAcc, d :- Nat] AwAcc
   (if (as-dep (:world acc) r d)
       (match (site-edge (:edges (:world acc)) (:of r) (:effect-index r) d)
-        [none (AwAcc.mk (comp-upd (:world (await-new-dep (:world acc) r a mode k d))
-                                  (:of r) (comp-consume-adopt (:effect-index r) d))
-                        (List.cons DE (DE.mk d (:next-id (:world acc))) (:pairs acc))
-                        (Bool.and (:ok acc) (:ok (await-new-dep (:world acc) r a mode k d))))]
-        [(some e) (AwAcc.mk (comp-upd (edge-upd (:world acc) (:id e) (edge-reawait (await-cont r mode k)))
-                                      (:of r) (comp-consume-adopt (:effect-index r) d))
-                            (List.cons DE (DE.mk d (:id e)) (:pairs acc)) (:ok acc))])
+        none (AwAcc.mk (comp-upd (:world (await-new-dep (:world acc) r a mode k d))
+                                 (:of r) (comp-consume-adopt (:effect-index r) d))
+                       (List.cons DE (DE.mk d (:next-id (:world acc))) (:pairs acc))
+                       (Bool.and (:ok acc) (:ok (await-new-dep (:world acc) r a mode k d))))
+        (some e) (AwAcc.mk (comp-upd (edge-upd (:world acc) (:id e) (edge-reawait (await-cont r mode k)))
+                                     (:of r) (comp-consume-adopt (:effect-index r) d))
+                           (List.cons DE (DE.mk d (:id e)) (:pairs acc)) (:ok acc)))
       (AwAcc.mk (insert-edge-checked (:world acc) (await-edge (:world acc) r a mode k d))
                 (List.cons DE (DE.mk d (:next-id (:world acc))) (:pairs acc)) (:ok acc))))
 (a/defn await-wire [r :- RunRow, a :- Nat, mode :- Nat, k :- Nat, acc :- AwAcc, ds :- (List Nat)] AwAcc
-  (match ds [nil acc] [(cons d t) (await-wire r a mode k (await-step r a mode k acc d) t)]))
+  (match ds nil acc (cons d t) (await-wire r a mode k (await-step r a mode k acc d) t)))
 
 (a/defn pair-edge [d :- Nat, ps :- (List DE)] Nat
-  (match ps [nil 0] [(cons h t) (if (Nat.beq (:deb h) d) (:edge h) (pair-edge d t))]))
+  (match ps nil 0 (cons h t) (if (Nat.beq (:deb h) d) (:edge h) (pair-edge d t))))
 (a/defn mk-members [ps :- (List DE), i :- Nat, ds :- (List Nat)] (List Member)
-  (match ds [nil (List.nil Member)]
-         [(cons d t) (List.cons Member (Member.mk (pair-edge d ps) i) (mk-members ps (+ i 1) t))]))
+  (match ds nil (List.nil Member)
+         (cons d t) (List.cons Member (Member.mk (pair-edge d ps) i) (mk-members ps (+ i 1) t))))
 (a/defn none-slots [ds :- (List Nat)] (List RunResult)
-  (match ds [nil (List.nil RunResult)] [(cons h t) (List.cons RunResult none-result (none-slots t))]))
+  (match ds nil (List.nil RunResult) (cons h t) (List.cons RunResult none-result (none-slots t))))
 (a/defn act-set-members [ms :- (List Member), a :- ActRow] ActRow
   (ActRow.mk (:id a) (:run a) (:mode a) ms (:slots a) (:remaining a) (:cont a) (:spawned a)))
 (a/theorem act-set-members-id [ms :- (List Member), a :- ActRow] (= (act-id (act-set-members ms a)) (act-id a)) (rfl))
@@ -1583,9 +1583,9 @@
 ;; ::cycle (I12): a computation must not await itself or a computation that reaches it through
 ;; dep edges (debtor direction). Ranks are not maintained (reading B7).
 (a/defn dep-debtors [es :- (List EdgeRow), x :- Nat] (List Nat)
-  (match es [nil (List.nil Nat)]
-         [(cons h t) (if (Bool.and (Nat.beq (:creditor h) x) (Nat.beq (:kind h) ek-dep))
-                         (List.cons Nat (:debtor h) (dep-debtors t x)) (dep-debtors t x))]))
+  (match es nil (List.nil Nat)
+         (cons h t) (if (Bool.and (Nat.beq (:creditor h) x) (Nat.beq (:kind h) ek-dep))
+                        (List.cons Nat (:debtor h) (dep-debtors t x)) (dep-debtors t x))))
 (a/defn cycle-fuel [w :- World, ds :- (List Nat)] (List Nat)
   (List.cons Nat 0 (List.append Nat ds (List.append Nat (tbl-ids edge-id (:edges w)) (tbl-ids edge-id (:edges w))))))
 (a/defn await-cycle [w :- World, r :- RunRow, ds :- (List Nat)] Bool
@@ -1603,9 +1603,9 @@
 
 (a/defn t6-await [w :- World, st :- Nat, ds :- (List Nat), mode :- Nat, k :- Nat, fresh :- Nat, mine :- (List Nat)] Outcome
   (match (tok-run w st)
-    [none (refuse w)]
-    [(some r) (if (Bool.and (await-ok w r ds mode fresh) (:ok (await-acc w r ds mode k mine)))
-                  (accept (await-raw w r ds mode k mine)) (refuse w))]))
+    none (refuse w)
+    (some r) (if (Bool.and (await-ok w r ds mode fresh) (:ok (await-acc w r ds mode k mine)))
+                 (accept (await-raw w r ds mode k mine)) (refuse w))))
 
 (a/theorem edge-reawait-edge-id [c :- Nat, e :- EdgeRow] (= (edge-id (edge-reawait c e)) (edge-id e)) (rfl))
 (a/theorem edge-reawait-kind [c :- Nat, e :- EdgeRow] (= (:kind (edge-reawait c e)) (:kind e)) (rfl))
@@ -1729,8 +1729,8 @@
   (if (Bool.and (Nat.beq fresh (:next-id w)) (deb-exists w d)) (accept (host-await-raw w d)) (refuse w)))
 (a/defn t22-host-unawait [w :- World, x :- Nat] Outcome
   (match (edge-find w x)
-    [none (refuse w)]
-    [(some e) (if (Bool.and (Nat.beq (:kind e) ek-wait) (Nat.beq (:creditor e) 0)) (accept (remove-edge w x)) (refuse w))]))
+    none (refuse w)
+    (some e) (if (Bool.and (Nat.beq (:kind e) ek-wait) (Nat.beq (:creditor e) 0)) (accept (remove-edge w x)) (refuse w))))
 
 (a/theorem well-formed-host-await-raw [w :- World, d :- Nat]
   (=> (= (well-formed w) true) (= (well-formed (host-await-raw w d)) true))
@@ -1820,8 +1820,8 @@
     (Bool.and (Bool.not (:slice r)) (Bool.not (tbl-any run-slice (:runs w)))))))
 (a/defn t-schedule [w :- World, rid :- Nat] Outcome
   (match (run-find w rid)
-    [none (refuse w)]
-    [(some r) (if (schedule-ok w r) (accept (run-upd w rid run-enter-row)) (refuse w))]))
+    none (refuse w)
+    (some r) (if (schedule-ok w r) (accept (run-upd w rid run-enter-row)) (refuse w))))
 
 (a/theorem well-formed-t-schedule [w :- World, rid :- Nat]
   (=> (= (well-formed w) true) (= (well-formed (:world (t-schedule w rid))) true))
@@ -1860,17 +1860,17 @@
 (a/theorem pub-first-handle-id [p :- PubRow] (= (pub-id (pub-first-handle p)) (pub-id p)) (rfl))
 
 (a/defn new-pub-handle [w :- World, x :- Nat] Outcome
-  (match (pub-find w x) [none (refuse w)]
-         [(some p) (if (Nat.beq (:handles p) 0) (accept (pub-upd w x pub-first-handle)) (refuse w))]))
+  (match (pub-find w x) none (refuse w)
+         (some p) (if (Nat.beq (:handles p) 0) (accept (pub-upd w x pub-first-handle)) (refuse w))))
 (a/defn new-source-handle [w :- World, x :- Nat] Outcome
-  (match (source-find w x) [none (new-pub-handle w x)]
-         [(some s) (if (Nat.beq (:handles s) 0) (accept (source-upd w x source-first-handle)) (refuse w))]))
+  (match (source-find w x) none (new-pub-handle w x)
+         (some s) (if (Nat.beq (:handles s) 0) (accept (source-upd w x source-first-handle)) (refuse w))))
 (a/defn new-task-handle [w :- World, x :- Nat] Outcome
-  (match (task-find w x) [none (new-source-handle w x)]
-         [(some t) (if (Nat.beq (:handles t) 0) (accept (task-upd w x task-first-handle)) (refuse w))]))
+  (match (task-find w x) none (new-source-handle w x)
+         (some t) (if (Nat.beq (:handles t) 0) (accept (task-upd w x task-first-handle)) (refuse w))))
 (a/defn t-handle-new [w :- World, x :- Nat] Outcome
-  (match (comp-find w x) [none (new-task-handle w x)]
-         [(some c) (if (Nat.beq (:handles c) 0) (if (:tomb c) (refuse w) (accept (comp-upd w x comp-first-handle))) (refuse w))]))
+  (match (comp-find w x) none (new-task-handle w x)
+         (some c) (if (Nat.beq (:handles c) 0) (if (:tomb c) (refuse w) (accept (comp-upd w x comp-first-handle))) (refuse w))))
 
 (defmacro ^:private defnew-lemmas
   [f find upd row-f inv-lemma inv-args next-f & [tomb?]]
@@ -1923,15 +1923,15 @@
 ;; (a task fills its slot when it completes, T12, whose run is done by then).
 (a/defn loser-task [w1 :- World, s :- Nat, k :- Nat] Bool
   (Bool.and (tbl-all (no-debtor k) (:edges w1))
-            (match (task-find w1 k) [none false]
-                   [(some t) (Bool.and (Nat.beq (:owner t) s) (opt-test run-alive (run-find w1 (:run t))))])))
+            (match (task-find w1 k) none false
+                   (some t) (Bool.and (Nat.beq (:owner t) s) (opt-test run-alive (run-find w1 (:run t)))))))
 (a/defn run-of-task [w1 :- World, r :- RunRow] Bool (task-has w1 (:of r)))
 (a/defn group-mode [m :- Nat] Bool (Bool.or (Nat.beq m am-any) (Nat.beq m am-all)))
 (a/defn any-resolved [w1 :- World, a :- ActRow] Bool
   (Bool.and (group-mode (:mode a))
             (Bool.and (Bool.not (act-has w1 (:id a)))
                       (Bool.and (opt-test run-alive (run-find w1 (:run a))) (opt-test (run-of-task w1) (run-find w1 (:run a)))))))
-(a/defn run-scope-of [w1 :- World, rid :- Nat] Nat (match (run-find w1 rid) [none 0] [(some r) (:scope r)]))
+(a/defn run-scope-of [w1 :- World, rid :- Nat] Nat (match (run-find w1 rid) none 0 (some r) (:scope r)))
 (a/defn loser-runs [w1 :- World, a :- ActRow] (List Nat)
   (task-runs w1 (tbl-filter (loser-task w1 (run-scope-of w1 (:run a))) (:spawned a))))
 (a/defn cancel-losers [w0 :- World, w1 :- World] World
@@ -1993,7 +1993,7 @@
 (a/defn source-permit [s :- SourceRow] SourceRow
   (SourceRow.mk (:id s) (:owner s) (:kind s) (+ (:state s) 1) (:version s) (:open s) (:handles s) (:queue s)
                 (:rtask s) (:next s) (:tail s) (:fail s) (:max s)))
-(a/defn nat-tail [xs :- (List Nat)] (List Nat) (match xs [nil (List.nil Nat)] [(cons h t) t]))
+(a/defn nat-tail [xs :- (List Nat)] (List Nat) (match xs nil (List.nil Nat) (cons h t) t))
 ;; take's immediate path: a mailbox drops its head message, a semaphore one permit; version + 1 (as the
 ;; engine). Nothing left (reached only on a closed source, Z#57: the take fails with err ::closed): unchanged.
 (a/defn source-available [s :- SourceRow] Bool
@@ -2023,8 +2023,8 @@
    (Bool.and (Nat.beq (:debtor e) x)
     (Bool.and (Nat.beq (:phase e) ph-armed) (opt-test (act-receives w) (act-find w (:creditor e)))))))
 (a/defn min-id [best :- Nat, es :- (List EdgeRow)] Nat
-  (match es [nil best]
-         [(cons h t) (min-id (if (Bool.or (Nat.beq best 0) (Nat.blt (:id h) best)) (:id h) best) t)]))
+  (match es nil best
+         (cons h t) (min-id (if (Bool.or (Nat.beq best 0) (Nat.blt (:id h) best)) (:id h) best) t)))
 (a/defn oldest-waiter [w :- World, x :- Nat] Nat (min-id 0 (tbl-filter (waiter-ok w x) (:edges w))))
 
 ;; ---- deliver(X, v) (§4.3): once (a deferred, open, version 0): state := v, version := 1;
@@ -2046,8 +2046,8 @@
            (well-formed-source-upd w x (source-write v) (source-write-source-id v) h))))
 (a/defn t-deliver [w :- World, x :- Nat, v :- Nat] Outcome
   (match (source-find w x)
-    [none (refuse w)]
-    [(some s) (if (deliverable s) (accept (deliver-raw w x v)) (refuse w))]))
+    none (refuse w)
+    (some s) (if (deliverable s) (accept (deliver-raw w x v)) (refuse w))))
 
 (a/theorem well-formed-t-deliver [w :- World, x :- Nat, v :- Nat]
   (=> (= (well-formed w) true) (= (well-formed (:world (t-deliver w x v))) true))
@@ -2082,8 +2082,8 @@
 (a/defn open-kind [k :- Nat, s :- SourceRow] Bool (Bool.and (Nat.beq (:kind s) k) (:open s)))
 (a/defn t-post [w :- World, x :- Nat, v :- Nat] Outcome
   (match (source-find w x)
-    [none (refuse w)]
-    [(some s) (if (open-kind sk-mailbox s) (accept (post-raw w x v)) (refuse w))]))
+    none (refuse w)
+    (some s) (if (open-kind sk-mailbox s) (accept (post-raw w x v)) (refuse w))))
 ;; Z#62: a release at the semaphore's maximum (`max`, its permit count at creation) is refused
 ;; (engine `sem-release!`: logged `[:release x]` refused, and the host call throws)
 (a/defn releasable [s :- SourceRow] Bool
@@ -2092,8 +2092,8 @@
   (intro h) (simp only [releasable Bool.and_eq_true] at h) (exact (And.left h)))
 (a/defn t-release [w :- World, x :- Nat] Outcome
   (match (source-find w x)
-    [none (refuse w)]
-    [(some s) (if (releasable s) (accept (release-raw w x)) (refuse w))]))
+    none (refuse w)
+    (some s) (if (releasable s) (accept (release-raw w x)) (refuse w))))
 
 (a/theorem well-formed-serve-or [w :- World, x :- Nat, res :- RunResult, keep :- (=> SourceRow SourceRow),
                          hk :- (forall [s :- SourceRow] (= (source-id (keep s)) (source-id s)))]
@@ -2168,12 +2168,12 @@
   (bump (bump (run-upd (source-upd w x source-consume) (:id r) run-tick))))
 (a/defn t-take [w :- World, st :- Nat, x :- Nat, k :- Nat, fresh :- Nat] Outcome
   (match (tok-run w st)
-    [none (refuse w)]
-    [(some r) (match (source-find w x)
-                [none (refuse w)]
-                [(some s) (if (Bool.and (Nat.beq fresh (:next-id w)) (Bool.and (run-normal r) (takeable s)))
-                              (if (take-ready s) (accept (take-now w r x)) (accept (take-park w r x k)))
-                              (refuse w))])]))
+    none (refuse w)
+    (some r) (match (source-find w x)
+               none (refuse w)
+               (some s) (if (Bool.and (Nat.beq fresh (:next-id w)) (Bool.and (run-normal r) (takeable s)))
+                            (if (take-ready s) (accept (take-now w r x)) (accept (take-park w r x k)))
+                            (refuse w)))))
 
 (a/theorem well-formed-take-park [w :- World, r :- RunRow, x :- Nat, k :- Nat]
   (=> (= (well-formed w) true) (= (well-formed (take-park w r x k)) true))
@@ -2235,10 +2235,10 @@
   (take-park (arm-raw w r kind) (run-arm (:next-id w) r) (:next-id w) k))
 (a/defn t17-arm [w :- World, st :- Nat, kind :- Nat, k :- Nat, fresh :- Nat] Outcome
   (match (tok-run w st)
-    [none (refuse w)]
-    [(some r) (if (Bool.and (Nat.beq fresh (:next-id w)) (Bool.and (run-normal r) (arm-kind-ok kind)))
-                  (accept (arm-park w r kind k))
-                  (refuse w))]))
+    none (refuse w)
+    (some r) (if (Bool.and (Nat.beq fresh (:next-id w)) (Bool.and (run-normal r) (arm-kind-ok kind)))
+                 (accept (arm-park w r kind k))
+                 (refuse w))))
 
 (a/theorem well-formed-arm-park [w :- World, r :- RunRow, kind :- Nat, k :- Nat]
   (=> (= (well-formed w) true) (= (well-formed (arm-park w r kind k)) true))
@@ -2277,7 +2277,7 @@
 (a/defn run-fin-push [fz :- Finalizer, r :- RunRow] RunRow
   (RunRow.mk (:id r) (:of r) (:stamp r) (:epoch r) (:scope r) (:act r) (:mode r) (:slice r)
              (:effect-index r) (List.cons Finalizer fz (:finalizers r)) (:resources r)))
-(a/defn fins-tail [fs :- (List Finalizer)] (List Finalizer) (match fs [nil (List.nil Finalizer)] [(cons h t) t]))
+(a/defn fins-tail [fs :- (List Finalizer)] (List Finalizer) (match fs nil (List.nil Finalizer) (cons h t) t))
 (a/defn run-fin-pop [r :- RunRow] RunRow
   (RunRow.mk (:id r) (:of r) (:stamp r) (:epoch r) (:scope r) (:act r) (:mode r) (:slice r)
              (:effect-index r) (fins-tail (:finalizers r)) (:resources r)))
@@ -2293,11 +2293,11 @@
 ;; nests regions and running clauses as the CPS body does; the engine's R-FINS is the number of
 ;; regions (`fin-region`), R-INFIN the number of clauses (`fin-running`).
 (a/defn fin-running [fz :- Finalizer] Bool (Bool.not (Nat.beq (:f fz) 0)))
-(a/defn finally-exit-refused [fs :- (List Finalizer)] Bool (match fs [nil true] [(cons h t) (fin-running h)]))
-(a/defn finally-leave-refused [fs :- (List Finalizer)] Bool (match fs [nil true] [(cons h t) (fin-region h)]))
+(a/defn finally-exit-refused [fs :- (List Finalizer)] Bool (match fs nil true (cons h t) (fin-running h)))
+(a/defn finally-leave-refused [fs :- (List Finalizer)] Bool (match fs nil true (cons h t) (fin-region h)))
 (a/defn fin-mark [r :- RunRow] Finalizer (Finalizer.mk 1 (:effect-index r) (List.nil Nat)))
 (a/defn fins-exit [m :- Finalizer, fs :- (List Finalizer)] (List Finalizer)
-  (match fs [nil (List.nil Finalizer)] [(cons h t) (List.cons Finalizer m t)]))
+  (match fs nil (List.nil Finalizer) (cons h t) (List.cons Finalizer m t)))
 (a/defn run-fin-exit [r :- RunRow] RunRow
   (RunRow.mk (:id r) (:of r) (:stamp r) (:epoch r) (:scope r) (:act r) (:mode r) (:slice r)
              (:effect-index r) (fins-exit (fin-mark r) (:finalizers r)) (:resources r)))
@@ -2306,19 +2306,19 @@
 
 (a/defn t-finally-enter [w :- World, st :- Nat] Outcome
   (match (tok-run w st)
-    [none (refuse w)]
-    [(some r) (if (run-normal r)
-                  (accept (run-upd w (:id r) (run-fin-push (Finalizer.mk 0 (:effect-index r) (List.nil Nat)))))
-                  (refuse w))]))
+    none (refuse w)
+    (some r) (if (run-normal r)
+                 (accept (run-upd w (:id r) (run-fin-push (Finalizer.mk 0 (:effect-index r) (List.nil Nat)))))
+                 (refuse w))))
 (a/defn run-unwinding [r :- RunRow] Bool (Nat.beq (:mode r) mode-unwinding))
 (a/defn t-finally-exit [w :- World, st :- Nat] Outcome
   (match (tok-run w st)
-    [none (refuse w)]
-    [(some r) (if (finally-exit-refused (:finalizers r)) (refuse w) (accept (run-upd w (:id r) run-fin-exit)))]))
+    none (refuse w)
+    (some r) (if (finally-exit-refused (:finalizers r)) (refuse w) (accept (run-upd w (:id r) run-fin-exit)))))
 (a/defn t-finally-leave [w :- World, st :- Nat] Outcome
   (match (tok-run w st)
-    [none (refuse w)]
-    [(some r) (if (finally-leave-refused (:finalizers r)) (refuse w) (accept (run-upd w (:id r) run-fin-pop)))]))
+    none (refuse w)
+    (some r) (if (finally-leave-refused (:finalizers r)) (refuse w) (accept (run-upd w (:id r) run-fin-pop)))))
 
 ;; ---- slice-exit r (Z#35): the slice of a cancelled run returns. A cleanup slice runs the
 ;; whole finally chain (each region's exit a `finally-exit`, committed at the block's start, so
@@ -2330,8 +2330,8 @@
   (Bool.and (Nat.beq (:act r) act-done) (Bool.and (:slice r) (fins-empty (:finalizers r)))))
 (a/defn t-slice-exit [w :- World, rid :- Nat] Outcome
   (match (run-find w rid)
-    [none (refuse w)]
-    [(some r) (if (exit-ready r) (accept (t13-retire (run-upd w rid run-fin-pop-end) rid)) (refuse w))]))
+    none (refuse w)
+    (some r) (if (exit-ready r) (accept (t13-retire (run-upd w rid run-fin-pop-end) rid)) (refuse w))))
 
 (a/theorem well-formed-t-finally-enter [w :- World, st :- Nat]
   (=> (= (well-formed w) true) (= (well-formed (:world (t-finally-enter w st))) true))
@@ -2430,8 +2430,8 @@
      (Bool.and (Bool.not (:slice r)) (Bool.not (tbl-any run-slice (:runs w))))))))
 (a/defn t-finalize [w :- World, rid :- Nat] Outcome
   (match (run-find w rid)
-    [none (refuse w)]
-    [(some r) (if (cleanup-ready w r) (accept (run-upd w rid run-enter-row)) (refuse w))]))
+    none (refuse w)
+    (some r) (if (cleanup-ready w r) (accept (run-upd w rid run-enter-row)) (refuse w))))
 
 (a/theorem well-formed-t-finalize [w :- World, rid :- Nat]
   (=> (= (well-formed w) true) (= (well-formed (:world (t-finalize w rid))) true))
@@ -2469,8 +2469,8 @@
       (refuse w)))
 (a/defn t14-host-cancel [w :- World, rid :- Nat] Outcome
   (match (run-find w rid)
-    [none (refuse w)]
-    [(some r) (if (host-cancel-ok w r) (t14-cancel w rid false) (cancel-done w r))]))
+    none (refuse w)
+    (some r) (if (host-cancel-ok w r) (t14-cancel w rid false) (cancel-done w r))))
 
 (a/theorem well-formed-t14-host-cancel [w :- World, rid :- Nat]
   (=> (= (well-formed w) true) (= (well-formed (:world (t14-host-cancel w rid))) true))
@@ -2503,12 +2503,12 @@
 (a/defn open-ok [w :- World, r :- RunRow] Bool (Bool.and (run-normal r) (scope-has w (cur-scope w r))))
 (a/defn t-open-scope [w :- World, st :- Nat, s :- Nat] Outcome
   (match (tok-run w st)
-    [none (refuse w)]
-    [(some r) (if (Bool.and (Nat.beq s (:next-id w)) (open-ok w r))
-                  (accept (bump (scope-ins w (ScopeRow.mk s (cur-scope w r) scope-explicit true))))
-                  (refuse w))]))
+    none (refuse w)
+    (some r) (if (Bool.and (Nat.beq s (:next-id w)) (open-ok w r))
+                 (accept (bump (scope-ins w (ScopeRow.mk s (cur-scope w r) scope-explicit true))))
+                 (refuse w))))
 (a/defn scope-explicit-at [w :- World, s :- Nat] Bool
-  (match (scope-find w s) [none false] [(some sc) (Nat.beq (:kind sc) scope-explicit)]))
+  (match (scope-find w s) none false (some sc) (Nat.beq (:kind sc) scope-explicit)))
 (a/defn t-close-scope [w :- World, s :- Nat] Outcome
   (if (scope-explicit-at w s) (t16-close-scope w s) (refuse w)))
 
@@ -2559,7 +2559,7 @@
 (a/theorem task-set-owner-id [s :- Nat, t :- TaskRow] (= (task-id (task-set-owner s t)) (task-id t)) (rfl))
 (a/defn scope-set-parent [p :- Nat, s :- ScopeRow] ScopeRow (ScopeRow.mk (:id s) p (:kind s) (:open s)))
 (a/theorem scope-set-parent-id [p :- Nat, s :- ScopeRow] (= (scope-id (scope-set-parent p s)) (scope-id s)) (rfl))
-(a/defn task-run-scope [w :- World, t :- TaskRow] Nat (match (run-find w (:run t)) [none 0] [(some r) (:scope r)]))
+(a/defn task-run-scope [w :- World, t :- TaskRow] Nat (match (run-find w (:run t)) none 0 (some r) (:scope r)))
 (a/defn detach-move [w :- World, k :- Nat, s :- Nat, rs :- Nat] World
   (scope-upd (task-upd w k (task-set-owner s)) rs (scope-set-parent s)))
 (a/defn remove-empty-at [w :- World, o :- Nat] World (remove-if-empty w (scope-subtree w o)))
@@ -2575,10 +2575,10 @@
       (Bool.and (scope-open-at w s) (Bool.not (scope-within w s (task-run-scope w t)))))))
 (a/defn t-detach [w :- World, k :- Nat, s :- Nat] Outcome
   (match (task-find w k)
-    [none (refuse w)]
-    [(some t) (if (detach-ok w t s)
-                  (accept (remove-empty-at (detach-move w k s (task-run-scope w t)) (:owner t)))
-                  (refuse w))]))
+    none (refuse w)
+    (some t) (if (detach-ok w t s)
+                 (accept (remove-empty-at (detach-move w k s (task-run-scope w t)) (:owner t)))
+                 (refuse w))))
 
 (a/theorem well-formed-t-detach [w :- World, k :- Nat, s :- Nat]
   (=> (= (well-formed w) true) (= (well-formed (:world (t-detach w k s))) true))
@@ -2641,7 +2641,7 @@
 ;; its activation is complete at once)
 (a/defn world-runs [w :- World] Nat (List.length (:runs w)))
 ;; C1c stage B: and no fork marker (the engine's W-OWNED-N all zero and W-NORMALIZE empty, questions 15, 16)
-(a/defn forks-nil [fs :- (List ForkRow)] Bool (match fs [nil true] [(cons h t) false]))
+(a/defn forks-nil [fs :- (List ForkRow)] Bool (match fs nil true (cons h t) false))
 (a/defn world-quiet [w :- World] Bool (Bool.and (:released w) (Bool.and (Nat.beq (world-runs w) 0) (forks-nil (:forks w)))))
 
 ;; C1/E4: an unborn instance (layer 2, layer2/sys.clj `Cell.unborn`) released before its activation: nothing
@@ -2699,19 +2699,19 @@
 (a/defn source-owner-in-run [w :- World, r :- RunRow] Nat (if (in-comp w r) (:of r) (cur-scope w r)))
 (a/defn readopt-source [w :- World, r :- RunRow, x :- Nat] (Option SourceRow)
   (match (comp-find w (:of r))
-    [none (Option.none SourceRow)]
-    [(some c) (if (reach-mem x (nat-app (created-ids (:basis c)) (created-ids (:adopt-basis c))))
-                  (source-find w x) (Option.none SourceRow))]))
+    none (Option.none SourceRow)
+    (some c) (if (reach-mem x (nat-app (created-ids (:basis c)) (created-ids (:adopt-basis c))))
+                 (source-find w x) (Option.none SourceRow))))
 (a/defn create-source-in-run [w :- World, r :- RunRow, kind :- Nat, v :- Nat] World
   (run-upd (record-basis (bump (source-ins w (new-source (:next-id w) (source-owner-in-run w r) kind v))) r (:next-id w))
            (:id r) run-tick))
 (a/defn t1-create-nonstream [w :- World, st :- Nat, kind :- Nat, v :- Nat, fresh :- Nat] Outcome
   (match (tok-run w st)
-    [none (refuse w)]
-    [(some r) (match (readopt-source w r fresh)
-                [none (if (Bool.and (Nat.beq fresh (:next-id w)) (source-kind-ok kind))
-                          (accept (create-source-in-run w r kind v)) (refuse w))]
-                [(some x) (if (Nat.beq (:kind x) kind) (accept (respawn-raw w r fresh)) (refuse w))])]))
+    none (refuse w)
+    (some r) (match (readopt-source w r fresh)
+               none (if (Bool.and (Nat.beq fresh (:next-id w)) (source-kind-ok kind))
+                        (accept (create-source-in-run w r kind v)) (refuse w))
+               (some x) (if (Nat.beq (:kind x) kind) (accept (respawn-raw w r fresh)) (refuse w)))))
 
 (a/theorem well-formed-create-source-in-run [w :- World, r :- RunRow, kind :- Nat, v :- Nat]
   (=> (= (well-formed w) true) (= (well-formed (create-source-in-run w r kind v)) true))
@@ -2794,10 +2794,10 @@
   (run-upd (record-basis (bump (source-ins w (new-link (:next-id w) root-scope-id 0))) r (:next-id w)) (:id r) run-tick))
 (a/defn t-create-link [w :- World, st :- Nat, l :- Nat] Outcome
   (match (tok-run w st)
-    [none (refuse w)]
-    [(some r) (match (readopt-source w r l)
-                [none (if (Nat.beq l (:next-id w)) (accept (create-link-in-run w r)) (refuse w))]
-                [(some x) (if (Nat.beq (:kind x) sk-link) (accept (respawn-raw w r l)) (refuse w))])]))
+    none (refuse w)
+    (some r) (match (readopt-source w r l)
+               none (if (Nat.beq l (:next-id w)) (accept (create-link-in-run w r)) (refuse w))
+               (some x) (if (Nat.beq (:kind x) sk-link) (accept (respawn-raw w r l)) (refuse w)))))
 (a/defn t-create-link-top [w :- World, scope :- Nat, l :- Nat] Outcome
   (if (Bool.and (Nat.beq l (:next-id w)) (scope-open-at w scope))
       (accept (bump (source-ins w (new-link (:next-id w) scope 0))))
@@ -2871,10 +2871,10 @@
 ;; in a body: as `t1-create-nonstream` (adoption of a stream of C's basis or adoption basis, else fresh = next-id)
 (a/defn t1-create-stream [w :- World, st :- Nat, v :- Nat, fresh :- Nat] Outcome
   (match (tok-run w st)
-    [none (refuse w)]
-    [(some r) (match (readopt-source w r fresh)
-                [none (if (Nat.beq fresh (:next-id w)) (accept (create-stream-in-run w r v)) (refuse w))]
-                [(some x) (if (Nat.beq (:kind x) sk-stream) (accept (respawn-raw w r fresh)) (refuse w))])]))
+    none (refuse w)
+    (some r) (match (readopt-source w r fresh)
+               none (if (Nat.beq fresh (:next-id w)) (accept (create-stream-in-run w r v)) (refuse w))
+               (some x) (if (Nat.beq (:kind x) sk-stream) (accept (respawn-raw w r fresh)) (refuse w)))))
 (a/defn t1-create-source [w :- World, st :- Nat, kind :- Nat, v :- Nat, fresh :- Nat] Outcome
   (if (Nat.beq kind sk-stream) (t1-create-stream w st v fresh) (t1-create-nonstream w st kind v fresh)))
 (a/defn t1-create-source-top [w :- World, scope :- Nat, kind :- Nat, v :- Nat, fresh :- Nat] Outcome
@@ -2969,7 +2969,7 @@
 ;; `clear-rtasks`; the realizer is live while its task exists without a result) starts its realizer: task K owned by the root scope (handles 0),
 ;; its run and run scope (T4's rows, started: its first slice is a scheduling choice); L.rtask := K
 (a/defn task-live [w :- World, k :- Nat] Bool
-  (match (task-find w k) [none false] [(some t) (Nat.beq (:tag (:result t)) res-none)]))
+  (match (task-find w k) none false (some t) (Nat.beq (:tag (:result t)) res-none)))
 (a/defn realizer-live [w :- World, s :- SourceRow] Bool
   (Bool.and (Bool.not (Nat.beq (:rtask s) 0)) (task-live w (:rtask s))))
 (a/defn link-idle [w :- World, s :- SourceRow] Bool
@@ -2978,9 +2978,9 @@
   (source-upd (task-upd (spawn-rows w root-scope-id (List.nil Nat) false) (:next-id w) task-no-handles) l (link-set-rtask (:next-id w))))
 (a/defn t-link-demand [w :- World, l :- Nat, k :- Nat] Outcome
   (match (source-find w l)
-    [none (refuse w)]
-    [(some s) (if (Bool.and (link-idle w s) (Bool.and (Nat.beq k (:next-id w)) (scope-open-at w root-scope-id)))
-                  (accept (link-demand-raw w l)) (refuse w))]))
+    none (refuse w)
+    (some s) (if (Bool.and (link-idle w s) (Bool.and (Nat.beq k (:next-id w)) (scope-open-at w root-scope-id)))
+                 (accept (link-demand-raw w l)) (refuse w))))
 
 (a/theorem well-formed-link-demand-raw [w :- World, l :- Nat]
   (=> (= (well-formed w) true) (= (well-formed (link-demand-raw w l)) true))
@@ -3022,8 +3022,8 @@
           (refuse w))))
 (a/defn t-link-realize [w :- World, l :- Nat, tag :- Nat, v :- Nat, n :- Nat] Outcome
   (match (source-find w l)
-    [none (refuse w)]
-    [(some s) (if (link-idle w s) (link-realize-raw w l tag v n) (refuse w))]))
+    none (refuse w)
+    (some s) (if (link-idle w s) (link-realize-raw w l tag v n) (refuse w))))
 
 (a/theorem well-formed-link-next-raw [w :- World, l :- Nat, v :- Nat]
   (=> (= (well-formed w) true) (= (well-formed (link-next-raw w l v)) true))
@@ -3095,9 +3095,9 @@
                 old v false (:next-id w)))
 (a/defn t-append [w :- World, x :- Nat, v :- Nat, t :- Nat] Outcome
   (match (source-find w x)
-    [none (refuse w)]
-    [(some s) (if (Bool.and (open-kind sk-stream s) (Bool.and (Nat.beq t (:next-id w)) (link-pending w (:tail s))))
-                  (accept (append-raw w x v (:tail s))) (refuse w))]))
+    none (refuse w)
+    (some s) (if (Bool.and (open-kind sk-stream s) (Bool.and (Nat.beq t (:next-id w)) (link-pending w (:tail s))))
+                 (accept (append-raw w x v (:tail s))) (refuse w))))
 
 (a/theorem well-formed-append-raw [w :- World, x :- Nat, v :- Nat, old :- Nat]
   (=> (= (well-formed w) true) (= (well-formed (append-raw w x v old)) true))
@@ -3132,9 +3132,9 @@
   (close-source (end-link w t (Nat.beq tag res-err) v) x))
 (a/defn t-close [w :- World, x :- Nat, tag :- Nat, v :- Nat] Outcome
   (match (source-find w x)
-    [none (refuse w)]
-    [(some s) (if (Bool.and (open-kind sk-stream s) (close-tag-ok tag))
-                  (accept (close-raw w x (:tail s) tag v)) (refuse w))]))
+    none (refuse w)
+    (some s) (if (Bool.and (open-kind sk-stream s) (close-tag-ok tag))
+                 (accept (close-raw w x (:tail s) tag v)) (refuse w))))
 
 (a/theorem well-formed-close-raw [w :- World, x :- Nat, t :- Nat, tag :- Nat, v :- Nat]
   (=> (= (well-formed w) true) (= (well-formed (close-raw w x t tag v)) true))
@@ -3187,10 +3187,10 @@
 (a/defn arm-refused [w :- World, st :- Nat] Bool (Bool.or (in-cleanup w st) (in-finally w st)))
 (a/defn settled-now [w :- World, d :- Nat] Bool
   (match (comp-find w d)
-    [none (match (source-find w d)
-            [none (Bool.or (deb-final w d) (res-fired w d))]
-            [(some s) (Bool.or (Bool.not (Nat.beq (:kind s) sk-deferred)) (source-delivered s))])]
-    [(some c) (comp-live c)]))
+    none (match (source-find w d)
+           none (Bool.or (deb-final w d) (res-fired w d))
+           (some s) (Bool.or (Bool.not (Nat.beq (:kind s) sk-deferred)) (source-delivered s)))
+    (some c) (comp-live c)))
 (a/defn settled-mode [w :- World, ds :- (List Nat), mode :- Nat] Bool
   (if (Nat.beq mode am-any) (tbl-any (settled-now w) ds) (tbl-all (settled-now w) ds)))
 (a/defn finally-suspends [w :- World, st :- Nat, ds :- (List Nat), mode :- Nat] Bool
@@ -3271,8 +3271,8 @@
   (if (tbl-any (marker-of s c) (:forks w)) (accept (remove-empty-at (fork-del w c) s)) (refuse w)))
 (a/defn fork-in [ids :- (List Nat), f :- ForkRow] Bool (reach-mem (:id f) ids))
 (a/defn owners-in [ids :- (List Nat), fs :- (List ForkRow)] (List Nat)
-  (match fs [nil (List.nil Nat)]
-         [(cons h t) (if (reach-mem (:id h) ids) (List.cons Nat (:owner h) (owners-in ids t)) (owners-in ids t))]))
+  (match fs nil (List.nil Nat)
+         (cons h t) (if (reach-mem (:id h) ids) (List.cons Nat (:owner h) (owners-in ids t)) (owners-in ids t))))
 (a/defn t-drain [w :- World, ids :- (List Nat)] Outcome
   (if (tbl-any (fork-in ids) (:forks w))
       (accept (nat-fold remove-empty-at (nat-fold fork-del w ids) (owners-in ids (:forks w))))
@@ -3347,11 +3347,11 @@
 (a/defn run-of-local [w :- World, r :- RunRow] Bool (task-local-id w (:of r)))
 (a/defn run-depth [w :- World, r :- RunRow] Nat (List.length (scope-ancestors w (:scope r))))
 (a/defn ins-by-depth [w :- World, r :- RunRow, xs :- (List RunRow)] (List RunRow)
-  (match xs [nil (List.cons RunRow r (List.nil RunRow))]
-         [(cons h t) (if (Nat.ble (run-depth w h) (run-depth w r)) (List.cons RunRow r xs)
-                         (List.cons RunRow h (ins-by-depth w r t)))]))
+  (match xs nil (List.cons RunRow r (List.nil RunRow))
+         (cons h t) (if (Nat.ble (run-depth w h) (run-depth w r)) (List.cons RunRow r xs)
+                        (List.cons RunRow h (ins-by-depth w r t)))))
 (a/defn sort-depth [w :- World, xs :- (List RunRow)] (List RunRow)
-  (match xs [nil (List.nil RunRow)] [(cons h t) (ins-by-depth w h (sort-depth w t))]))
+  (match xs nil (List.nil RunRow) (cons h t) (ins-by-depth w h (sort-depth w t))))
 (a/defn local-order [w :- World] (List Nat) (tbl-ids run-id (sort-depth w (tbl-filter (run-of-local w) (:runs w)))))
 (a/defn ack-if [rid :- Nat, w :- World, z :- Nat] World
   (if (tbl-all (no-debtor z) (:edges w)) (ack-raw w z rid) w))
@@ -3364,8 +3364,8 @@
 ;; the result the retired run's task ends with: its own when it has one, else err v (never none)
 (a/defn task-final-res [w :- World, k :- Nat, res :- RunResult] RunResult
   (match (task-find w k)
-    [none res]
-    [(some t) (if (Nat.beq (:tag (:result t)) res-none) res (:result t))]))
+    none res
+    (some t) (if (Nat.beq (:tag (:result t)) res-none) res (:result t))))
 (a/theorem task-final-res-tag [w :- World, k :- Nat, v :- Nat]
   (= (Nat.beq (:tag (task-final-res w k (RunResult.mk res-err v))) res-none) false)
   (cases hf (task-find w k)) (case' [some t]) (case' [none])
@@ -3375,12 +3375,12 @@
   (simp only [task-final-res hf]) (rw [ht]))
 (a/defn retire-one [v :- Nat, w :- World, rid :- Nat] World
   (match (run-find w rid)
-    [none w]
-    [(some r) (match (run-find (retire-pre w r) rid)
-                [none (retire-pre w r)]
-                [(some r1) (if (Bool.and (run-alive r1) (run-of-local (retire-pre w r) r1))
-                               (complete-raw (retire-pre w r) r1 (task-final-res (retire-pre w r) (:of r1) (RunResult.mk res-err v)))
-                               (t13-retire (retire-pre w r) rid))])]))
+    none w
+    (some r) (match (run-find (retire-pre w r) rid)
+               none (retire-pre w r)
+               (some r1) (if (Bool.and (run-alive r1) (run-of-local (retire-pre w r) r1))
+                             (complete-raw (retire-pre w r) r1 (task-final-res (retire-pre w r) (:of r1) (RunResult.mk res-err v)))
+                             (t13-retire (retire-pre w r) rid)))))
 (a/defn t28-retire-local [w :- World, v :- Nat] Outcome
   (if (tbl-any (run-of-local w) (:runs w))
       (accept (nat-fold (retire-one v) w (local-order w)))
@@ -3427,55 +3427,55 @@
 
 (a/defn transition [w :- World, it :- Item] Outcome
   (match it
-    [(create-source st kind v fresh) (if (create-in-scope-refused w st) (refuse w) (require-root-open w (Nat.beq kind sk-stream) (t1-create-source w st kind v fresh)))]
-    [(create-source-top scope kind v fresh) (if (world-released w) (refuse w) (require-root-open w (Nat.beq kind sk-stream) (t1-create-source-top w scope kind v fresh)))]
-    [(write x v) (t2-write w x v)]
-    [(track st x k fresh) (if (in-cleanup w st) (refuse w) (t7-track w st x k fresh))]
-    [(observe d cb fresh) (if (world-released w) (refuse w) (t8-observe w d cb fresh))]
-    [(unobserve e) (t8-unobserve w e)]
-    [(fire e tag val) (t9-fire w e tag val)]
-    [(resource-ack z) (t15-resource-ack w z)]
-    [(arm st kind k fresh) (if (arm-refused w st) (refuse w) (t17-arm w st kind k fresh))]
-    [(resource-fire z tag val) (t18-resource-fire w z tag val)]
-    [(handle-drop x) (t19-handle-drop w x)]
-    [(pin x) (if (world-released w) (refuse w) (t20-pin w x))]
-    [(unpin x) (t20-unpin w x)]
-    [(create-comp st c i b) (if (create-refused w st) (refuse w) (t3-create w st c i b))]
-    [(create-comp-top sc c i b) (if (world-released w) (refuse w) (t3-create-top w sc c i b))]
-    [(spawn st b fresh ins loc) (if (create-in-scope-refused w st) (refuse w) (if (spawn-local-refused w st loc) (refuse w) (t4-spawn w st b fresh ins loc)))]
-    [(spawn-top sc b fresh ins loc) (if (world-released w) (refuse w) (t4-spawn-top w sc b fresh ins loc))]
-    [(start c fresh) (t5-start w c fresh)]
-    [(await st ds m k fresh mine) (if (await-refused w st ds m) (refuse w) (t6-await w st ds m k fresh mine))]
-    [(dispatch-comp c fresh) (t11-dispatch w c fresh)]
-    [(complete st tag val) (if (complete-refused w st tag) (refuse w) (t12-complete w st tag val))]
-    [(schedule r) (t-schedule w r)]
-    [(host-await d fresh) (if (host-await-refused w d) (refuse w) (t22-host-await w d fresh))]
-    [(host-unawait e) (t22-host-unawait w e)]
-    [(handle-new x) (if (world-released w) (refuse w) (t-handle-new w x))]
-    [(deliver x v) (t-deliver w x v)]
-    [(post x v) (t-post w x v)]
-    [(take st x k fresh) (if (take-refused w st x) (refuse w) (t-take w st x k fresh))]
-    [(release x) (t-release w x)]
-    [(finalize r) (t-finalize w r)]
-    [(cancel r) (t14-host-cancel w r)]
-    [(release-world) (t21-release-world w)]
-    [(open-scope st s) (t-open-scope w st s)]
-    [(close-scope s) (t-close-scope w s)]
-    [(detach k s) (if (detach-local-refused w k s) (refuse w) (t-detach w k s))]
-    [(finally-enter st) (t-finally-enter w st)]
-    [(finally-exit st) (t-finally-exit w st)]
-    [(slice-exit r) (t-slice-exit w r)]
-    [(create-link st l) (if (create-refused w st) (refuse w) (require-root-open w true (t-create-link w st l)))]
-    [(create-link-top sc l) (if (world-released w) (refuse w) (require-root-open w true (t-create-link-top w sc l)))]
-    [(link-demand l k) (if (world-released w) (refuse w) (t-link-demand w l k))]
-    [(link-realize l tag v n) (if (world-released w) (refuse w) (require-root-open w true (t-link-realize w l tag v n)))]
-    [(append x v t) (if (world-released w) (refuse w) (require-root-open w true (t-append w x v t)))]
-    [(close x tag v) (t-close w x tag v)]
-    [(finally-leave st) (t-finally-leave w st)]
-    [(own s m) (t-own w s m)]
-    [(owned-done s c) (t-owned-done w s c)]
-    [(drain ids) (t-drain w ids)]
-    [(retire-local v) (t28-retire-local w v)]))
+    (create-source st kind v fresh) (if (create-in-scope-refused w st) (refuse w) (require-root-open w (Nat.beq kind sk-stream) (t1-create-source w st kind v fresh)))
+    (create-source-top scope kind v fresh) (if (world-released w) (refuse w) (require-root-open w (Nat.beq kind sk-stream) (t1-create-source-top w scope kind v fresh)))
+    (write x v) (t2-write w x v)
+    (track st x k fresh) (if (in-cleanup w st) (refuse w) (t7-track w st x k fresh))
+    (observe d cb fresh) (if (world-released w) (refuse w) (t8-observe w d cb fresh))
+    (unobserve e) (t8-unobserve w e)
+    (fire e tag val) (t9-fire w e tag val)
+    (resource-ack z) (t15-resource-ack w z)
+    (arm st kind k fresh) (if (arm-refused w st) (refuse w) (t17-arm w st kind k fresh))
+    (resource-fire z tag val) (t18-resource-fire w z tag val)
+    (handle-drop x) (t19-handle-drop w x)
+    (pin x) (if (world-released w) (refuse w) (t20-pin w x))
+    (unpin x) (t20-unpin w x)
+    (create-comp st c i b) (if (create-refused w st) (refuse w) (t3-create w st c i b))
+    (create-comp-top sc c i b) (if (world-released w) (refuse w) (t3-create-top w sc c i b))
+    (spawn st b fresh ins loc) (if (create-in-scope-refused w st) (refuse w) (if (spawn-local-refused w st loc) (refuse w) (t4-spawn w st b fresh ins loc)))
+    (spawn-top sc b fresh ins loc) (if (world-released w) (refuse w) (t4-spawn-top w sc b fresh ins loc))
+    (start c fresh) (t5-start w c fresh)
+    (await st ds m k fresh mine) (if (await-refused w st ds m) (refuse w) (t6-await w st ds m k fresh mine))
+    (dispatch-comp c fresh) (t11-dispatch w c fresh)
+    (complete st tag val) (if (complete-refused w st tag) (refuse w) (t12-complete w st tag val))
+    (schedule r) (t-schedule w r)
+    (host-await d fresh) (if (host-await-refused w d) (refuse w) (t22-host-await w d fresh))
+    (host-unawait e) (t22-host-unawait w e)
+    (handle-new x) (if (world-released w) (refuse w) (t-handle-new w x))
+    (deliver x v) (t-deliver w x v)
+    (post x v) (t-post w x v)
+    (take st x k fresh) (if (take-refused w st x) (refuse w) (t-take w st x k fresh))
+    (release x) (t-release w x)
+    (finalize r) (t-finalize w r)
+    (cancel r) (t14-host-cancel w r)
+    (release-world) (t21-release-world w)
+    (open-scope st s) (t-open-scope w st s)
+    (close-scope s) (t-close-scope w s)
+    (detach k s) (if (detach-local-refused w k s) (refuse w) (t-detach w k s))
+    (finally-enter st) (t-finally-enter w st)
+    (finally-exit st) (t-finally-exit w st)
+    (slice-exit r) (t-slice-exit w r)
+    (create-link st l) (if (create-refused w st) (refuse w) (require-root-open w true (t-create-link w st l)))
+    (create-link-top sc l) (if (world-released w) (refuse w) (require-root-open w true (t-create-link-top w sc l)))
+    (link-demand l k) (if (world-released w) (refuse w) (t-link-demand w l k))
+    (link-realize l tag v n) (if (world-released w) (refuse w) (require-root-open w true (t-link-realize w l tag v n)))
+    (append x v t) (if (world-released w) (refuse w) (require-root-open w true (t-append w x v t)))
+    (close x tag v) (t-close w x tag v)
+    (finally-leave st) (t-finally-leave w st)
+    (own s m) (t-own w s m)
+    (owned-done s c) (t-owned-done w s c)
+    (drain ids) (t-drain w ids)
+    (retire-local v) (t28-retire-local w v)))
 
 ;; Z#56 (T21): a released world refuses the HOST's admissions (top-level creations, writes, observe,
 ;; pins, handles, host waits, source operations, cancel, close, detach), except while a run holds the
@@ -3484,55 +3484,55 @@
 ;; (fire, then ack: L2 joins) are no admissions.
 (a/defn host-item [it :- Item] Bool
   (match it
-    [(create-source st kind v fresh) false]
-    [(create-source-top scope kind v fresh) true]
-    [(write x v) true]
-    [(track st x k fresh) false]
-    [(observe d cb fresh) true]
-    [(unobserve e) true]
-    [(fire e tag val) false]
-    [(resource-ack z) false]
-    [(arm st kind k fresh) false]
-    [(resource-fire z tag val) false]
-    [(handle-drop x) true]
-    [(pin x) true]
-    [(unpin x) true]
-    [(create-comp st c i b) false]
-    [(create-comp-top sc c i b) true]
-    [(spawn st b fresh ins loc) false]
-    [(spawn-top sc b fresh ins loc) true]
-    [(start c fresh) false]
-    [(await st ds m k fresh mine) false]
-    [(dispatch-comp c fresh) false]
-    [(complete st tag val) false]
-    [(schedule r) false]
-    [(host-await d fresh) true]
-    [(host-unawait e) true]
-    [(handle-new x) true]
-    [(deliver x v) true]
-    [(post x v) true]
-    [(take st x k fresh) false]
-    [(release x) true]
-    [(finalize r) false]
-    [(cancel r) true]
-    [(release-world) false]
-    [(open-scope st s) false]
-    [(close-scope s) true]
-    [(detach k s) true]
-    [(finally-enter st) false]
-    [(finally-exit st) false]
-    [(slice-exit r) false]
-    [(create-link st l) false]
-    [(create-link-top sc l) true]
-    [(link-demand l k) false]
-    [(link-realize l tag v n) false]
-    [(append x v t) true]
-    [(close x tag v) true]
-    [(finally-leave st) false]
-    [(own s m) false]
-    [(owned-done s c) false]
-    [(drain ids) false]
-    [(retire-local v) false]))
+    (create-source st kind v fresh) false
+    (create-source-top scope kind v fresh) true
+    (write x v) true
+    (track st x k fresh) false
+    (observe d cb fresh) true
+    (unobserve e) true
+    (fire e tag val) false
+    (resource-ack z) false
+    (arm st kind k fresh) false
+    (resource-fire z tag val) false
+    (handle-drop x) true
+    (pin x) true
+    (unpin x) true
+    (create-comp st c i b) false
+    (create-comp-top sc c i b) true
+    (spawn st b fresh ins loc) false
+    (spawn-top sc b fresh ins loc) true
+    (start c fresh) false
+    (await st ds m k fresh mine) false
+    (dispatch-comp c fresh) false
+    (complete st tag val) false
+    (schedule r) false
+    (host-await d fresh) true
+    (host-unawait e) true
+    (handle-new x) true
+    (deliver x v) true
+    (post x v) true
+    (take st x k fresh) false
+    (release x) true
+    (finalize r) false
+    (cancel r) true
+    (release-world) false
+    (open-scope st s) false
+    (close-scope s) true
+    (detach k s) true
+    (finally-enter st) false
+    (finally-exit st) false
+    (slice-exit r) false
+    (create-link st l) false
+    (create-link-top sc l) true
+    (link-demand l k) false
+    (link-realize l tag v n) false
+    (append x v t) true
+    (close x tag v) true
+    (finally-leave st) false
+    (own s m) false
+    (owned-done s c) false
+    (drain ids) false
+    (retire-local v) false))
 (a/defn slice-held [w :- World] Bool (tbl-any run-slice (:runs w)))
 (a/defn host-item-refused [w :- World, it :- Item] Bool
   (Bool.and (:released w) (Bool.and (host-item it) (Bool.not (slice-held w)))))

@@ -30,7 +30,7 @@
 (a/defn z59-nf [c :- Nat, e :- EdgeRow] Bool (Bool.not (fired-dep-of c e)))
 (a/defn z59-ge [i :- Nat, q :- EdgeRow] Bool (Nat.ble i (:id q)))
 (a/defn z59-ble-opt [i :- Nat, o :- (Option EdgeRow)] Bool
-  (match o [none true] [(some b) (Nat.ble i (:id b))]))
+  (match o none true (some b) (Nat.ble i (:id b))))
 
 ;; Nat comparisons
 (a/theorem z59-blt-false [a :- Nat, b :- Nat] (=> (= (Nat.blt a b) false) (<= b a))

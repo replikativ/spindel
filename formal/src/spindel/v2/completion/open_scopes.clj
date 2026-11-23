@@ -330,9 +330,9 @@
 ;; ===========================================================================
 
 (a/defn sc-pars [ss :- (List ScopeRow)] (List Nat)
-  (match ss [nil (List.nil Nat)] [(cons h t) (List.cons Nat (:parent h) (sc-pars t))]))
+  (match ss nil (List.nil Nat) (cons h t) (List.cons Nat (:parent h) (sc-pars t))))
 (a/defn nd-ins [x :- Nat, acc :- (List Nat)] (List Nat) (if (nat-mem x acc) acc (List.cons Nat x acc)))
-(a/defn nd-list [xs :- (List Nat)] (List Nat) (match xs [nil (List.nil Nat)] [(cons h t) (nd-ins h (nd-list t))]))
+(a/defn nd-list [xs :- (List Nat)] (List Nat) (match xs nil (List.nil Nat) (cons h t) (nd-ins h (nd-list t))))
 
 (a/theorem nd-nodup [xs :- (List Nat)] (= (nat-nodup (nd-list xs)) true)
   (induction xs)
@@ -406,7 +406,7 @@
   (case [cons h t ih] (simp only [tbl-count (he h) ih])))
 
 (a/defn pc-sum [ss :- (List ScopeRow), us :- (List Nat)] Nat
-  (match us [nil 0] [(cons u t) (+ (tbl-count (parent-is u) ss) (pc-sum ss t))]))
+  (match us nil 0 (cons u t) (+ (tbl-count (parent-is u) ss) (pc-sum ss t))))
 (a/defn par-in [us :- (List Nat), s :- ScopeRow] Bool (nat-mem (:parent s) us))
 (a/theorem os-beq-comm [a :- Nat, b :- Nat] (= (Nat.beq a b) (Nat.beq b a))
   (cases h (Nat.beq a b))

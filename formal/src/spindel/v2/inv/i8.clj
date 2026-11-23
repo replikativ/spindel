@@ -62,17 +62,17 @@
 (a/defn i8-closed-task-key [t :- TaskRow] I8ClosedTaskKey (I8ClosedTaskKey.mk (:id t) (:owner t)))
 (a/defn i8-closed-task-key-id [k :- I8ClosedTaskKey] Nat (:id k))
 (a/defn i8-closed-task-keys [ts :- (List TaskRow)] (List I8ClosedTaskKey)
-  (match ts [nil (List.nil I8ClosedTaskKey)] [(cons h t) (List.cons I8ClosedTaskKey (i8-closed-task-key h) (i8-closed-task-keys t))]))
+  (match ts nil (List.nil I8ClosedTaskKey) (cons h t) (List.cons I8ClosedTaskKey (i8-closed-task-key h) (i8-closed-task-keys t))))
 (a/structure I8ClosedScopeKey [] (id Nat) (open Bool))
 (a/defn i8-closed-scope-key [s :- ScopeRow] I8ClosedScopeKey (I8ClosedScopeKey.mk (:id s) (:open s)))
 (a/defn i8-closed-scope-key-id [k :- I8ClosedScopeKey] Nat (:id k))
 (a/defn i8-closed-scope-keys [ss :- (List ScopeRow)] (List I8ClosedScopeKey)
-  (match ss [nil (List.nil I8ClosedScopeKey)] [(cons h t) (List.cons I8ClosedScopeKey (i8-closed-scope-key h) (i8-closed-scope-keys t))]))
+  (match ss nil (List.nil I8ClosedScopeKey) (cons h t) (List.cons I8ClosedScopeKey (i8-closed-scope-key h) (i8-closed-scope-keys t))))
 (a/structure I8ClosedSourceKey [] (id Nat) (owner Nat) (open Bool))
 (a/defn i8-closed-source-key [s :- SourceRow] I8ClosedSourceKey (I8ClosedSourceKey.mk (:id s) (:owner s) (:open s)))
 (a/defn i8-closed-source-key-id [k :- I8ClosedSourceKey] Nat (:id k))
 (a/defn i8-closed-source-keys [ss :- (List SourceRow)] (List I8ClosedSourceKey)
-  (match ss [nil (List.nil I8ClosedSourceKey)] [(cons h t) (List.cons I8ClosedSourceKey (i8-closed-source-key h) (i8-closed-source-keys t))]))
+  (match ss nil (List.nil I8ClosedSourceKey) (cons h t) (List.cons I8ClosedSourceKey (i8-closed-source-key h) (i8-closed-source-keys t))))
 (a/structure I8ClosedView [] (rks (List RunKey)) (tks (List I8ClosedTaskKey)) (sks (List I8ClosedScopeKey)) (xks (List I8ClosedSourceKey)))
 (a/defn i8-closed-view [w :- World] I8ClosedView (I8ClosedView.mk (run-keys (:runs w)) (i8-closed-task-keys (:tasks w)) (i8-closed-scope-keys (:scopes w)) (i8-closed-source-keys (:sources w))))
 
@@ -623,9 +623,9 @@
   (simp only [close-scope-id i8-closed-view scope-upd set-scopes (soks-upd-g x scope-close sk-shut slice-holder-ok-close (:scopes w))]))
 
 (a/defn xk-fold [ks :- (List I8ClosedSourceKey), xs :- (List Nat)] (List I8ClosedSourceKey)
-  (match xs [nil ks] [(cons x t) (xk-fold (tbl-upd i8-closed-source-key-id x xk-shut ks) t)]))
+  (match xs nil ks (cons x t) (xk-fold (tbl-upd i8-closed-source-key-id x xk-shut ks) t)))
 (a/defn sk-fold [ks :- (List I8ClosedScopeKey), xs :- (List Nat)] (List I8ClosedScopeKey)
-  (match xs [nil ks] [(cons x t) (sk-fold (tbl-upd i8-closed-scope-key-id x sk-shut ks) t)]))
+  (match xs nil ks (cons x t) (sk-fold (tbl-upd i8-closed-scope-key-id x sk-shut ks) t)))
 (a/defn i8-closed-view-xs [k :- I8ClosedView, xs :- (List Nat)] I8ClosedView (I8ClosedView.mk (:rks k) (:tks k) (:sks k) (xk-fold (:xks k) xs)))
 (a/defn i8-closed-view-ss [k :- I8ClosedView, xs :- (List Nat)] I8ClosedView (I8ClosedView.mk (:rks k) (:tks k) (sk-fold (:sks k) xs) (:xks k)))
 
@@ -1039,8 +1039,8 @@
 
 ;; ---- the escape list
 (a/defn job-cid [j :- Job] (List Nat)
-  (match j [(jcancel r rep) (List.cons Nat r (List.nil Nat))] [(jretire r) (List.nil Nat)] [(jclose s) (List.nil Nat)]))
-(a/defn cj [js :- (List Job)] (List Nat) (match js [nil (List.nil Nat)] [(cons j t) (List.append Nat (job-cid j) (cj t))]))
+  (match j (jcancel r rep) (List.cons Nat r (List.nil Nat)) (jretire r) (List.nil Nat) (jclose s) (List.nil Nat)))
+(a/defn cj [js :- (List Job)] (List Nat) (match js nil (List.nil Nat) (cons j t) (List.append Nat (job-cid j) (cj t))))
 (a/theorem cj-append [x :- Nat, t :- (List Job), u :- (List Job)]
   (= (reach-mem x (cj (List.append Job t u))) (Bool.or (reach-mem x (cj t)) (reach-mem x (cj u))))
   (induction t)

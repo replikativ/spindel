@@ -49,55 +49,55 @@
   Bool
   (match
    it
-   [(create-source st kind v fresh) false]
-   [(create-source-top scope kind v fresh) true]
-   [(write x v) true]
-   [(track st x k fresh) false]
-   [(observe d cb fresh) true]
-   [(unobserve e) true]
-   [(fire e tag val) false]
-   [(resource-ack z) false]
-   [(arm st kind k fresh) false]
-   [(resource-fire z tag val) false]
-   [(handle-drop x) true]
-   [(pin x) true]
-   [(unpin x) true]
-   [(create-comp st c i b) false]
-   [(create-comp-top sc c i b) true]
-   [(spawn st b fresh ins loc) false]
-   [(spawn-top sc b fresh ins loc) true]
-   [(start c fresh) false]
-   [(await st ds m k fresh mine) false]
-   [(dispatch-comp c fresh) false]
-   [(complete st tag val) false]
-   [(schedule r) false]
-   [(host-await d fresh) true]
-   [(host-unawait e) true]
-   [(handle-new x) true]
-   [(deliver x v) true]
-   [(post x v) true]
-   [(take st x k fresh) false]
-   [(release x) true]
-   [(finalize r) false]
-   [(cancel r) true]
-   [(release-world) false]
-   [(open-scope st s) false]
-   [(close-scope s) true]
-   [(detach k s) true]
-   [(finally-enter st) false]
-   [(finally-exit st) false]
-   [(slice-exit r) false]
-   [(create-link st l) false]
-   [(create-link-top sc l) true]
-   [(link-demand l k) false]
-   [(link-realize l tag v n) false]
-   [(append x v t) true]
-   [(close x tag v) true]
-   [(finally-leave st) false]
-   [(own s m) false]
-   [(owned-done s c) false]
-   [(drain ids) false]
-   [(retire-local v) false])),
+   (create-source st kind v fresh) false
+   (create-source-top scope kind v fresh) true
+   (write x v) true
+   (track st x k fresh) false
+   (observe d cb fresh) true
+   (unobserve e) true
+   (fire e tag val) false
+   (resource-ack z) false
+   (arm st kind k fresh) false
+   (resource-fire z tag val) false
+   (handle-drop x) true
+   (pin x) true
+   (unpin x) true
+   (create-comp st c i b) false
+   (create-comp-top sc c i b) true
+   (spawn st b fresh ins loc) false
+   (spawn-top sc b fresh ins loc) true
+   (start c fresh) false
+   (await st ds m k fresh mine) false
+   (dispatch-comp c fresh) false
+   (complete st tag val) false
+   (schedule r) false
+   (host-await d fresh) true
+   (host-unawait e) true
+   (handle-new x) true
+   (deliver x v) true
+   (post x v) true
+   (take st x k fresh) false
+   (release x) true
+   (finalize r) false
+   (cancel r) true
+   (release-world) false
+   (open-scope st s) false
+   (close-scope s) true
+   (detach k s) true
+   (finally-enter st) false
+   (finally-exit st) false
+   (slice-exit r) false
+   (create-link st l) false
+   (create-link-top sc l) true
+   (link-demand l k) false
+   (link-realize l tag v n) false
+   (append x v t) true
+   (close x tag v) true
+   (finally-leave st) false
+   (own s m) false
+   (owned-done s c) false
+   (drain ids) false
+   (retire-local v) false)),
  loser-task
  (a/defn
   loser-task
@@ -107,11 +107,11 @@
    (tbl-all (no-debtor k) (:edges w1))
    (match
     (task-find w1 k)
-    [none false]
-    [(some t)
-     (Bool.and
-      (Nat.beq (:owner t) s)
-      (opt-test run-alive (run-find w1 (:run t))))]))),
+    none false
+    (some t)
+    (Bool.and
+     (Nat.beq (:owner t) s)
+     (opt-test run-alive (run-find w1 (:run t))))))),
  then-cancel-losers
  (a/defn
   then-cancel-losers

@@ -110,7 +110,7 @@
   (cases h (fin-region fz)) (all_goals (simp only [fin-w h])) (all_goals (omega)))
 (a/theorem fin-w-le [fz :- Finalizer] (<= (fin-w fz) 2)
   (cases h (fin-region fz)) (all_goals (simp only [fin-w h])) (all_goals (omega)))
-(a/defn fins-len [fs :- (List Finalizer)] Nat (match fs [nil 0] [(cons h t) (+ (fins-len t) (fin-w h))]))
+(a/defn fins-len [fs :- (List Finalizer)] Nat (match fs nil 0 (cons h t) (+ (fins-len t) (fin-w h))))
 (a/defn pend [r :- RunRow] Nat (if (Bool.or (Bool.not (fins-empty (:finalizers r))) (:slice r)) 1 0))
 (a/defn mu-f [r :- RunRow] Nat (+ (fins-len (:finalizers r)) (pend r)))
 (a/defn mu-z [r :- RunRow] Nat (nat-len (:resources r)))
@@ -1249,7 +1249,7 @@
 ;; a computation that is demanded (not idle) and whose result is unavailable (not live): dirty or
 ;; fresh-and-not-live; `comp-dirty` implies it
 (a/defn comp-waiting [c :- CompRow] Bool (Bool.and (Bool.not (:idle c)) (Bool.not (comp-live c))))
-(a/defn waiting-at [w :- World, y :- Nat] Bool (match (comp-find w y) [none false] [(some d) (comp-waiting d)]))
+(a/defn waiting-at [w :- World, y :- Nat] Bool (match (comp-find w y) none false (some d) (comp-waiting d)))
 ;; no slice is runnable: every run is parked or done, and none holds the slice
 (a/defn run-quiet [r :- RunRow] Bool
   (Bool.and (Bool.not (:slice r)) (Bool.or (Nat.beq (:act r) act-parked) (Nat.beq (:act r) act-done))))
@@ -1267,9 +1267,9 @@
 ;;   whose current run is parked (the member fires at its completion), or a waiting computation
 ;;   the creditor has a dep edge on (fast path / settle deliver to a live one).
 (a/defn cur-ok [w :- World, c :- CompRow] Bool
-  (match (run-find w (:run c)) [none true]
-    [(some r) (Bool.or (Bool.not (Nat.beq (:epoch r) (:epoch c)))
-                (Bool.or (Bool.not (Nat.beq (:act r) act-done)) (Nat.beq (:done-epoch c) (:epoch c))))]))
+  (match (run-find w (:run c)) none true
+    (some r) (Bool.or (Bool.not (Nat.beq (:epoch r) (:epoch c)))
+               (Bool.or (Bool.not (Nat.beq (:act r) act-done)) (Nat.beq (:done-epoch c) (:epoch c))))))
 (a/defn h-cur [w :- World] Bool (tbl-all (cur-ok w) (:comps w)))
 (a/defn mark-ok [w :- World, e :- EdgeRow] Bool
   (Bool.or (Bool.not (:marked e)) (Bool.and (Nat.beq (:kind e) ek-dep) (waiting-at w (:debtor e)))))

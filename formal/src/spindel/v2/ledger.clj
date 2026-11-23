@@ -25,8 +25,8 @@
 ;; task k holds its owner: not done, or its run not yet retired (Z#56; rule.clj `task-held-in`)
 (a/defn task-held [w :- World, k :- Nat] Bool
   (match (task-find w k)
-    [none false]
-    [(some t) (Bool.or (Nat.beq (:tag (:result t)) res-none) (Bool.not (Nat.beq (:run t) 0)))]))
+    none false
+    (some t) (Bool.or (Nat.beq (:tag (:result t)) res-none) (Bool.not (Nat.beq (:run t) 0)))))
 
 ;; Z#70: done, run retired, run scope removed (or never materialized: removed at the retirement)
 (a/defn task-complete [w :- World, k :- Nat] Bool

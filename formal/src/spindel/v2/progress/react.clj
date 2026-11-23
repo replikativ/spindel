@@ -33,16 +33,16 @@
 ;; ---- the loop with its leftover queue
 (a/defn react-run8 [fuel :- (List Nat), w :- World, q :- (List Nat)] FinRes
   (match fuel
-    [nil (FinRes.mk w q)]
-    [(cons h f) (match q
-                  [nil (FinRes.mk w (List.nil Nat))]
-                  [(cons x t) (match (comp-find w x)
-                                [none (react-run8 f w t)]
-                                [(some c) (if (:idle c)
-                                              (react-run8 f (react-one w c) (List.append Nat t (valid-debtors (:validity c))))
-                                              (react-run8 f w t))])])]))
+    nil (FinRes.mk w q)
+    (cons h f) (match q
+                 nil (FinRes.mk w (List.nil Nat))
+                 (cons x t) (match (comp-find w x)
+                              none (react-run8 f w t)
+                              (some c) (if (:idle c)
+                                           (react-run8 f (react-one w c) (List.append Nat t (valid-debtors (:validity c))))
+                                           (react-run8 f w t))))))
 (a/defn react-done [w :- World, d :- Nat] Bool
-  (match (:rest (react-run8 (react-fuel w) w (List.cons Nat d (List.nil Nat)))) [nil true] [(cons h t) false]))
+  (match (:rest (react-run8 (react-fuel w) w (List.cons Nat d (List.nil Nat)))) nil true (cons h t) false))
 
 (a/theorem react-run8-world [fuel :- (List Nat)]
   (forall [w :- World, q :- (List Nat)] (= (:world (react-run8 fuel w q)) (react-loop fuel w q)))
@@ -65,9 +65,9 @@
 (a/defn ck8 [c :- CompRow] CK8 (CK8.mk (:id c) (:idle c) (List.length Valid (:validity c))))
 (a/defn ck8-id [k :- CK8] Nat (:id k))
 (a/defn ck8s [cs :- (List CompRow)] (List CK8)
-  (match cs [nil (List.nil CK8)] [(cons h t) (List.cons CK8 (ck8 h) (ck8s t))]))
+  (match cs nil (List.nil CK8) (cons h t) (List.cons CK8 (ck8 h) (ck8s t))))
 (a/defn ck8-v [k :- CK8] Nat (if (:idle k) (:nv k) 0))
-(a/defn ck8-sum [ks :- (List CK8)] Nat (match ks [nil 0] [(cons h t) (+ (ck8-v h) (ck8-sum t))]))
+(a/defn ck8-sum [ks :- (List CK8)] Nat (match ks nil 0 (cons h t) (+ (ck8-v h) (ck8-sum t))))
 (a/defn vm8 [w :- World] Nat (ck8-sum (ck8s (:comps w))))
 
 (a/theorem ck8s-upd [x :- Nat, f :- (=> CompRow CompRow), hk :- (forall [c :- CompRow] (= (ck8 (f c)) (ck8 c))), cs :- (List CompRow)]
@@ -255,24 +255,24 @@
 ;; `valid-ex` follows `valid-loop` and says whether it ran out of fuel
 (a/defn valid-ex [fuel :- (List Nat), w :- World, seen :- (List Nat), vs :- (List Valid)] Bool
   (match fuel
-    [nil true]
-    [(cons h f) (match vs
-                  [nil false]
-                  [(cons v t) (match (comp-find w (:debtor v))
-                                [none (if (Bool.or (source-has w (:debtor v)) (task-has w (:debtor v)))
-                                          (if (Nat.beq (deb-version w (:debtor v)) (:version v)) (valid-ex f w seen t) false)
-                                          false)]
-                                [(some c) (if (comp-clean w c v)
-                                              (if (Bool.and (:idle c) (Bool.not (reach-mem (:id c) seen)))
-                                                  (valid-ex f w (List.cons Nat (:id c) seen) (List.append Valid (:validity c) t))
-                                                  (valid-ex f w seen t))
-                                              false)])])]))
+    nil true
+    (cons h f) (match vs
+                 nil false
+                 (cons v t) (match (comp-find w (:debtor v))
+                              none (if (Bool.or (source-has w (:debtor v)) (task-has w (:debtor v)))
+                                       (if (Nat.beq (deb-version w (:debtor v)) (:version v)) (valid-ex f w seen t) false)
+                                       false)
+                              (some c) (if (comp-clean w c v)
+                                           (if (Bool.and (:idle c) (Bool.not (reach-mem (:id c) seen)))
+                                               (valid-ex f w (List.cons Nat (:id c) seen) (List.append Valid (:validity c) t))
+                                               (valid-ex f w seen t))
+                                           false)))))
 (a/defn valid-done [w :- World, c :- CompRow] Bool
   (Bool.not (valid-ex (valid-fuel w) w (List.cons Nat (:id c) (List.nil Nat)) (:validity c))))
 
 ;; potential: |entries| + the entries of the idle computations not yet expanded
 (a/defn ck8-u [seen :- (List Nat), k :- CK8] Nat (if (Bool.and (:idle k) (Bool.not (reach-mem (:id k) seen))) (:nv k) 0))
-(a/defn useen8 [seen :- (List Nat), ks :- (List CK8)] Nat (match ks [nil 0] [(cons h t) (+ (ck8-u seen h) (useen8 seen t))]))
+(a/defn useen8 [seen :- (List Nat), ks :- (List CK8)] Nat (match ks nil 0 (cons h t) (+ (ck8-u seen h) (useen8 seen t))))
 (a/theorem vlen-app [a :- (List Valid), b :- (List Valid)] (= (List.length Valid (List.append Valid a b)) (+ (List.length Valid a) (List.length Valid b)))
   (induction a)
   (case [nil] (simp only [List.length List.append]) (omega))

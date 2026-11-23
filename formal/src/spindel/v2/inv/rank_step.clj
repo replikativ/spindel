@@ -562,9 +562,9 @@
   (exact (comp-not-source w x (And.right (And.right (i12-ranks-parts w h))) (tbl-find-has SourceRow source-id x s (:sources w) hs)))
   (have hk (= (rank-edge-ok w (track-edge r x s k)) true)) (simp [rank-edge-ok track-edge hx])
   (have h2 (= (i12-ranks (match (site-edge (:edges w) (:of r) (:effect-index r) x)
-                             [none (track-new w r x s k)]
-                             [(some e) (comp-upd (track-fin s (:id e) (edge-upd w (:id e) (edge-reread (track-cont r k) s)))
-                                                 (:of r) (comp-consume-adopt (:effect-index r) x))])) true))
+                             none (track-new w r x s k)
+                             (some e) (comp-upd (track-fin s (:id e) (edge-upd w (:id e) (edge-reread (track-cont r k) s)))
+                                                (:of r) (comp-consume-adopt (:effect-index r) x)))) true))
   (cases he (site-edge (:edges w) (:of r) (:effect-index r) x)) (case' [some e]) (case' [none])
   (simp only [track-new])
   (exact (i12-ranks-comp-upd _ (:of r) (comp-consume-adopt (:effect-index r) x)

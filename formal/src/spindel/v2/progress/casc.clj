@@ -922,8 +922,8 @@
 
 ;; ---- follow-up jobs: at most #alive runs + 1
 
-(a/defn job-wt [n :- Nat, j :- Job] Nat (match j [(jcancel r rep) 1] [(jretire r) 1] [(jclose s) (+ n 1)]))
-(a/defn jobs-wt [n :- Nat, js :- (List Job)] Nat (match js [nil 0] [(cons h t) (+ (job-wt n h) (jobs-wt n t))]))
+(a/defn job-wt [n :- Nat, j :- Job] Nat (match j (jcancel r rep) 1 (jretire r) 1 (jclose s) (+ n 1)))
+(a/defn jobs-wt [n :- Nat, js :- (List Job)] Nat (match js nil 0 (cons h t) (+ (job-wt n h) (jobs-wt n t))))
 ;; the potential: |jobs| + n #jclose + (n+1) #alive runs + n #run rows
 (a/defn cascade-pot [n :- Nat, w :- World, js :- (List Job)] Nat
   (+ (jobs-wt n js) (+ (* (+ n 1) (alive-cnt w)) (* n (row-cnt w)))))

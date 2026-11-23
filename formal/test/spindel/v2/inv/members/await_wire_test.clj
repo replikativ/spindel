@@ -51,8 +51,8 @@
     (AwAcc.mk (await-pre w r ds mode k mine) (List.nil DE) true) pre))
 
 (a/defn current-members-debtors [ps :- (List DE)] (List Nat)
-  (match ps [nil (List.nil Nat)]
-    [(cons p t) (List.cons Nat (:deb p) (current-members-debtors t))]))
+  (match ps nil (List.nil Nat)
+    (cons p t) (List.cons Nat (:deb p) (current-members-debtors t))))
 
 (a/defn current-members-pairs [pre :- (List Nat), tail :- (List Nat), ps :- (List DE)] Prop
   (And (forall [d :- Nat]
@@ -306,7 +306,7 @@
           (is (= (closed/type-form (elab/elaborate @a/ansatz-env (list 'forall parameters result)))
                  (closed/type-form (.-type d))) (str name " exact safe definition signature"))
           (if (= name 'current-members-debtors)
-            (is (= '(match ps [nil (List.nil Nat)] [(cons p t) (List.cons Nat (:deb p) (current-members-debtors t))]) body)
+            (is (= '(match ps nil (List.nil Nat) (cons p t) (List.cons Nat (:deb p) (current-members-debtors t))) body)
                 "recursive body pinned without claiming evaluation of a symbolic list")
             (let [expected (elab/elaborate @a/ansatz-env (list 'fn parameters body) (.-type d))]
               (is (tc/is-def-eq (tc/mk-tc-state @a/ansatz-env) (.value d) expected)

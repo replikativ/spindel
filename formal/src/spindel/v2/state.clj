@@ -146,51 +146,51 @@
 ;; Generic table operations
 
 (a/defn tbl-find [A :- Type :implicit, idf :- (=> A Nat), x :- Nat, xs :- (List A)] (Option A)
-  (match xs [nil (Option.none A)]
-         [(cons h t) (if (Nat.beq (idf h) x) (Option.some A h) (tbl-find idf x t))]))
+  (match xs nil (Option.none A)
+         (cons h t) (if (Nat.beq (idf h) x) (Option.some A h) (tbl-find idf x t))))
 
 (a/defn tbl-has [A :- Type :implicit, idf :- (=> A Nat), x :- Nat, xs :- (List A)] Bool
-  (match xs [nil false]
-         [(cons h t) (if (Nat.beq (idf h) x) true (tbl-has idf x t))]))
+  (match xs nil false
+         (cons h t) (if (Nat.beq (idf h) x) true (tbl-has idf x t))))
 
 (a/defn tbl-ins [A :- Type :implicit, r :- A, xs :- (List A)] (List A)
   (List.cons A r xs))
 
 (a/defn tbl-del [A :- Type :implicit, idf :- (=> A Nat), x :- Nat, xs :- (List A)] (List A)
-  (match xs [nil (List.nil A)]
-         [(cons h t) (if (Nat.beq (idf h) x) (tbl-del idf x t)
-                         (List.cons A h (tbl-del idf x t)))]))
+  (match xs nil (List.nil A)
+         (cons h t) (if (Nat.beq (idf h) x) (tbl-del idf x t)
+                        (List.cons A h (tbl-del idf x t)))))
 
 (a/defn tbl-upd [A :- Type :implicit, idf :- (=> A Nat), x :- Nat, f :- (=> A A), xs :- (List A)]
   (List A)
-  (match xs [nil (List.nil A)]
-         [(cons h t) (if (Nat.beq (idf h) x) (List.cons A (f h) (tbl-upd idf x f t))
-                         (List.cons A h (tbl-upd idf x f t)))]))
+  (match xs nil (List.nil A)
+         (cons h t) (if (Nat.beq (idf h) x) (List.cons A (f h) (tbl-upd idf x f t))
+                        (List.cons A h (tbl-upd idf x f t)))))
 
 (a/defn tbl-all [A :- Type :implicit, p :- (=> A Bool), xs :- (List A)] Bool
-  (match xs [nil true] [(cons h t) (Bool.and (p h) (tbl-all p t))]))
+  (match xs nil true (cons h t) (Bool.and (p h) (tbl-all p t))))
 
 (a/defn tbl-count [A :- Type :implicit, p :- (=> A Bool), xs :- (List A)] Nat
-  (match xs [nil 0] [(cons h t) (if (p h) (+ (tbl-count p t) 1) (tbl-count p t))]))
+  (match xs nil 0 (cons h t) (if (p h) (+ (tbl-count p t) 1) (tbl-count p t))))
 
 (a/defn tbl-ids [A :- Type :implicit, idf :- (=> A Nat), xs :- (List A)] (List Nat)
-  (match xs [nil (List.nil Nat)] [(cons h t) (List.cons Nat (idf h) (tbl-ids idf t))]))
+  (match xs nil (List.nil Nat) (cons h t) (List.cons Nat (idf h) (tbl-ids idf t))))
 
 ;; Nat lists: membership and duplicate-freedom (Bool, executable)
 (a/defn nat-mem [x :- Nat, xs :- (List Nat)] Bool
-  (match xs [nil false] [(cons h t) (if (Nat.beq h x) true (nat-mem x t))]))
+  (match xs nil false (cons h t) (if (Nat.beq h x) true (nat-mem x t))))
 
 (a/defn nat-nodup [xs :- (List Nat)] Bool
-  (match xs [nil true]
-         [(cons h t) (Bool.and (Bool.not (nat-mem h t)) (nat-nodup t))]))
+  (match xs nil true
+         (cons h t) (Bool.and (Bool.not (nat-mem h t)) (nat-nodup t))))
 
 (a/defn nat-app [xs :- (List Nat), ys :- (List Nat)] (List Nat)
-  (match xs [nil ys] [(cons h t) (List.cons Nat h (nat-app t ys))]))
+  (match xs nil ys (cons h t) (List.cons Nat h (nat-app t ys))))
 
 ;; list equality on Nat lists (captured inputs, Z#13 / §5.2: equal captures give equal vectors)
 (a/defn nat-list-eq [xs :- (List Nat), ys :- (List Nat)] Bool
-  (match xs [nil (match ys [nil true] [(cons h t) false])]
-         [(cons h t) (match ys [nil false] [(cons h2 t2) (Bool.and (Nat.beq h h2) (nat-list-eq t t2))])]))
+  (match xs nil (match ys nil true (cons h t) false)
+         (cons h t) (match ys nil false (cons h2 t2) (Bool.and (Nat.beq h h2) (nat-list-eq t t2)))))
 
 ;; an edge whose creditor is the host: observe, or a host wait (creditor 0, T22, Z#27)
 (a/defn host-cred [e :- EdgeRow] Bool
@@ -198,9 +198,9 @@
 
 ;; activation members (Z#7): edge ids, membership, removal of an edge's entries
 (a/defn member-edges [ms :- (List Member)] (List Nat)
-  (match ms [nil (List.nil Nat)] [(cons h t) (List.cons Nat (:edge h) (member-edges t))]))
+  (match ms nil (List.nil Nat) (cons h t) (List.cons Nat (:edge h) (member-edges t))))
 (a/defn mem-has [x :- Nat, ms :- (List Member)] Bool
-  (match ms [nil false] [(cons h t) (if (Nat.beq (:edge h) x) true (mem-has x t))]))
+  (match ms nil false (cons h t) (if (Nat.beq (:edge h) x) true (mem-has x t))))
 
 ;; ---------------------------------------------------------------------------
 ;; World setters and per-table wrappers

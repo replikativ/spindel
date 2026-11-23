@@ -120,9 +120,9 @@
 (def expected-t6
   '(a/defn t6-await [w :- World st :- Nat ds :- (List Nat) mode :- Nat k :- Nat fresh :- Nat mine :- (List Nat)] Outcome
      (match (tok-run w st)
-       [none (refuse w)]
-       [(some r) (if (Bool.and (await-ok w r ds mode fresh) (:ok (await-acc w r ds mode k mine)))
-                   (accept (await-raw w r ds mode k mine)) (refuse w))])))
+       none (refuse w)
+       (some r) (if (Bool.and (await-ok w r ds mode fresh) (:ok (await-acc w r ds mode k mine)))
+                  (accept (await-raw w r ds mode k mine)) (refuse w)))))
 (def expected-raw0-await-branch
   '[(await st ds m k fresh mine)
     (if (await-refused w st ds m) (refuse w) (t6-await w st ds m k fresh mine))])

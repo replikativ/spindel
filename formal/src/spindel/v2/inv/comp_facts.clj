@@ -53,7 +53,7 @@
 (a/defn gdkey [c :- CompRow] GDK (GDK.mk (:id c) (:run c) (:epoch c) (:done-epoch c)))
 (a/defn gdk-id [k :- GDK] Nat (:id k))
 (a/defn gdkeys [cs :- (List CompRow)] (List GDK)
-  (match cs [nil (List.nil GDK)] [(cons h t) (List.cons GDK (gdkey h) (gdkeys t))]))
+  (match cs nil (List.nil GDK) (cons h t) (List.cons GDK (gdkey h) (gdkeys t))))
 (a/defn comp-facts-dle [c :- GDK] Bool (Bool.and (Nat.ble (:done c) (:epoch c)) (Nat.blt 0 (:epoch c))))
 (a/defn comp-facts-rof [c :- GDK, r :- RunRow] Bool (Bool.or (Bool.not (Nat.beq (:id r) (:run c))) (Nat.beq (:of r) (:id c))))
 (a/defn comp-facts-ncur [c :- GDK, r :- RunRow] Bool
@@ -1157,7 +1157,7 @@
   (Bool.not (Bool.and (Nat.beq (:of q) o) (Bool.and (Nat.beq (:epoch q) e) (run-alive q)))))
 (a/defn comp-facts-u1 [r :- RunRow, q :- RunRow] Bool (Bool.or (Nat.beq (:id q) (:id r)) (comp-facts-noal (:of r) (:epoch r) q)))
 (a/defn comp-facts-cce [w :- World, r :- RunRow] Bool
-  (match (comp-find w (:of r)) [none false] [(some c) (Nat.beq (:epoch r) (:epoch c))]))
+  (match (comp-find w (:of r)) none false (some c) (Nat.beq (:epoch r) (:epoch c))))
 
 (a/theorem comp-facts-result-c [rs :- (List RunRow), n :- Nat, c :- CompRow, ep :- Nat, res :- RunResult]
   (=> (= (comp-facts-c rs n (gdkey c)) true) (= ep (:epoch c)) (= (tbl-all (comp-facts-noal (:id c) (:epoch c)) rs) true)

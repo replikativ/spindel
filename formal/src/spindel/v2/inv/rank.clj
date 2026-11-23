@@ -87,7 +87,7 @@
     )
   (rw [(tbl-find-upd-ne CompRow comp-id n y (comp-set-rank k) (comp-set-rank-id k) (:comps w) hne)]))
 
-(a/defn crank [cs :- (List CompRow), x :- Nat] Nat (match (tbl-find comp-id x cs) [none 0] [(some c) (:rank c)]))
+(a/defn crank [cs :- (List CompRow), x :- Nat] Nat (match (tbl-find comp-id x cs) none 0 (some c) (:rank c)))
 
 (a/theorem crank-upd-eq [n :- Nat, k :- Nat, cs :- (List CompRow)]
   (=> (= (tbl-has comp-id n cs) true) (= (crank (tbl-upd comp-id n (comp-set-rank k) cs) n) k))

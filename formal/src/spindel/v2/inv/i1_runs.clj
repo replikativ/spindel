@@ -1142,7 +1142,7 @@
 (tree/restate! KRB '[well-formed-job-apply])
 (tree/restate! NEB '[well-formed-job-apply])
 
-(a/defn is-jr [k :- Nat, j :- Job] Bool (match j [(jcancel a b) false] [(jretire x) (Nat.beq x k)] [(jclose s) false]))
+(a/defn is-jr [k :- Nat, j :- Job] Bool (match j (jcancel a b) false (jretire x) (Nat.beq x k) (jclose s) false))
 (a/defn jr-in [k :- Nat, ks :- (List Job)] Bool (tbl-any (is-jr k) ks))
 
 (a/theorem runs-rie [w :- World, sub :- (List Nat)] (= (:runs (remove-if-empty w sub)) (:runs w))

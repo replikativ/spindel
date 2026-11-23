@@ -971,9 +971,9 @@
   (have hn (= (edge-new-ok (:comps w) (track-edge r x s k)) true))
   (simp [edge-new-ok track-edge obs-one haw ek-dep ek-observe])
   (have h2 (= (i7-idle (match (site-edge (:edges w) (:of r) (:effect-index r) x)
-                     [none (track-new w r x s k)]
-                     [(some e) (comp-upd (track-fin s (:id e) (edge-upd w (:id e) (edge-reread (track-cont r k) s)))
-                                         (:of r) (comp-consume-adopt (:effect-index r) x))])) true))
+                     none (track-new w r x s k)
+                     (some e) (comp-upd (track-fin s (:id e) (edge-upd w (:id e) (edge-reread (track-cont r k) s)))
+                                        (:of r) (comp-consume-adopt (:effect-index r) x)))) true))
   (cases he (site-edge (:edges w) (:of r) (:effect-index r) x)) (case' [some e]) (case' [none])
   (simp only [track-new])
   (exact (i7-idle-comp-upd-m _ (:of r) (comp-consume-adopt (:effect-index r) x)
@@ -1695,7 +1695,7 @@
     (case [false] (simp only [reach-mem hx] at hm) (exact (ih (And.right h) hm)))))
 
 (a/defn job-cancels [x :- Nat, j :- Job] Bool
-  (match j [(jcancel y rep) (Nat.beq y x)] [(jretire y) false] [(jclose s) false]))
+  (match j (jcancel y rep) (Nat.beq y x) (jretire y) false (jclose s) false))
 (a/defn cov-one [kd0 :- (List Nat), js :- (List Job), x :- Nat] Bool (Bool.or (reach-mem x kd0) (tbl-any (job-cancels x) js)))
 (a/defn not-alive-of [c :- Nat, q :- RunRow] Bool (Bool.or (Bool.not (run-alive q)) (Bool.not (Nat.beq (:of q) c))))
 

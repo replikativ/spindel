@@ -37,9 +37,9 @@
 (a/defn current-members-pending-exempt [ps :- (List DE), tail :- (List Nat),
                           xm :- (List Nat)] (List Nat)
   (match tail
-    [nil xm]
-    [(cons d t) (List.cons Nat (pair-edge d ps)
-                         (current-members-pending-exempt ps t xm))]))
+    nil xm
+    (cons d t) (List.cons Nat (pair-edge d ps)
+                        (current-members-pending-exempt ps t xm))))
 ])
 
 (def public-contracts
@@ -155,7 +155,7 @@
           (is (= (closed/type-form (elab/elaborate @a/ansatz-env (list 'forall parameters result)))
                  (closed/type-form (.-type d))) (str name " exact safe definition signature"))
           (if (= name 'current-members-pending-exempt)
-            (is (= '(match tail [nil xm] [(cons d t) (List.cons Nat (pair-edge d ps) (current-members-pending-exempt ps t xm))]) body)
+            (is (= '(match tail nil xm (cons d t) (List.cons Nat (pair-edge d ps) (current-members-pending-exempt ps t xm))) body)
                 "recursive body pinned without claiming evaluation of a symbolic list")
             (let [expected (elab/elaborate @a/ansatz-env (list 'fn parameters body) (.-type d))]
               (is (tc/is-def-eq (tc/mk-tc-state @a/ansatz-env) (.value d) expected)

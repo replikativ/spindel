@@ -99,7 +99,7 @@
 ;; so the fact the step keeps says "alive"; at a quiescent point alive means parked
 
 (a/defn task-alive-at [w :- World, y :- Nat] Bool
-  (match (task-find w y) [none false] [(some t) (opt-test run-alive (run-find w (:run t)))]))
+  (match (task-find w y) none false (some t) (opt-test run-alive (run-find w (:run t)))))
 (a/defn mem-y-ok2 [w :- World, x :- Nat, y :- Nat] Bool
   (Bool.or (blocked-leaf w y)
    (Bool.or (Bool.and (task-has w y) (task-alive-at w y))

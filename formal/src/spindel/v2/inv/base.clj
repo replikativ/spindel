@@ -2085,7 +2085,7 @@
 ;; ===========================================================================
 
 (a/defn fv [A :- Type :implicit, idf :- (=> A Nat), m :- (=> A Nat), d :- Nat, xs :- (List A)] Nat
-  (match (tbl-find idf d xs) [none 0] [(some r) (m r)]))
+  (match (tbl-find idf d xs) none 0 (some r) (m r)))
 (a/defn sver [s :- SourceRow] Nat (:version s))
 (a/defn cver [c :- CompRow] Nat (:version c))
 (a/defn dvk [ss :- (List SourceRow), cs :- (List CompRow), d :- Nat] Nat
@@ -2873,9 +2873,9 @@
       (= (i5-seen w) true) (= (i5-seen (track-raw w r x s k)) true))
   (intros hc hs h)
   (have h2 (= (i5-seen (match (site-edge (:edges w) (:of r) (:effect-index r) x)
-                      [none (track-new w r x s k)]
-                      [(some e) (comp-upd (track-fin s (:id e) (edge-upd w (:id e) (edge-reread (track-cont r k) s)))
-                                          (:of r) (comp-consume-adopt (:effect-index r) x))])) true))
+                      none (track-new w r x s k)
+                      (some e) (comp-upd (track-fin s (:id e) (edge-upd w (:id e) (edge-reread (track-cont r k) s)))
+                                         (:of r) (comp-consume-adopt (:effect-index r) x)))) true))
   (cases he (site-edge (:edges w) (:of r) (:effect-index r) x)) (case' [some e]) (case' [none])
   (simp only [track-new])
   (exact (i5-seen-comp-upd _ (:of r) (comp-consume-adopt (:effect-index r) x)

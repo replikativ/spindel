@@ -495,7 +495,7 @@
       (rw [ic] at nd) (exact nd))))
 
 ;; ---- the fold over the strays: the demoted ones are collected in the bundle's zd
-(a/defn current-members-acc [R :- (List Nat), D :- (List Nat)] (List Nat) (match R [nil D] [(cons x t) (current-members-acc t (List.cons Nat x D))]))
+(a/defn current-members-acc [R :- (List Nat), D :- (List Nat)] (List Nat) (match R nil D (cons x t) (current-members-acc t (List.cons Nat x D))))
 (a/theorem current-members-acc-d [d :- Nat, R :- (List Nat)]
   (forall [D :- (List Nat)] (=> (= (reach-mem d D) true) (= (reach-mem d (current-members-acc R D)) true)))
   (induction R)

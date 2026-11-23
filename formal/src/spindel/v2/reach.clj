@@ -52,19 +52,19 @@
   (step [x Nat] [y Nat] [hx (Reach succ roots x)] [hy (List.Mem Nat y (succ x))] :where [y]))
 
 (a/defn reach-mem [x :- Nat, xs :- (List Nat)] Bool
-  (match xs [nil false]
-         [(cons h t) (if (Nat.beq x h) true (reach-mem x t))]))
+  (match xs nil false
+         (cons h t) (if (Nat.beq x h) true (reach-mem x t))))
 
 (a/structure ReachResult [] (visited (List Nat)) (converged Bool))
 
 (a/defn reach-closure [fuel :- Nat, succ :- (=> Nat (List Nat)), work :- (List Nat), seen :- (List Nat)] ReachResult
   (match fuel
-    [zero (match work [nil (ReachResult.mk seen true)] [(cons h t) (ReachResult.mk seen false)])]
-    [(succ n) (match work
-                [nil (ReachResult.mk seen true)]
-                [(cons x rest) (if (reach-mem x seen)
-                                 (reach-closure n succ rest seen)
-                                 (reach-closure n succ (List.append Nat (succ x) rest) (List.cons Nat x seen)))])]))
+    zero (match work nil (ReachResult.mk seen true) (cons h t) (ReachResult.mk seen false))
+    (succ n) (match work
+               nil (ReachResult.mk seen true)
+               (cons x rest) (if (reach-mem x seen)
+                               (reach-closure n succ rest seen)
+                               (reach-closure n succ (List.append Nat (succ x) rest) (List.cons Nat x seen))))))
 
 (a/defn reach-run [fuel :- Nat, succ :- (=> Nat (List Nat)), roots :- (List Nat)] ReachResult
   (reach-closure fuel succ roots (List.nil Nat)))
@@ -351,8 +351,8 @@
       :where [x]))
 
 (a/defn derive-deps-ok [leaf :- (=> Nat Bool), derived :- (List Nat), ys :- (List Nat)] Bool
-  (match ys [nil true]
-         [(cons y t) (Bool.and (Bool.or (leaf y) (reach-mem y derived)) (derive-deps-ok leaf derived t))]))
+  (match ys nil true
+         (cons y t) (Bool.and (Bool.or (leaf y) (reach-mem y derived)) (derive-deps-ok leaf derived t))))
 
 (a/defn derive-ok [base :- (=> Nat Bool), deps :- (=> Nat (List Nat)), leaf :- (=> Nat Bool),
                    derived :- (List Nat), x :- Nat] Bool
@@ -360,23 +360,23 @@
 
 (a/defn derive-fresh [base :- (=> Nat Bool), deps :- (=> Nat (List Nat)), leaf :- (=> Nat Bool),
                       derived :- (List Nat), nodes :- (List Nat)] (List Nat)
-  (match nodes [nil (List.nil Nat)]
-         [(cons x t) (if (Bool.and (Bool.not (reach-mem x derived)) (derive-ok base deps leaf derived x))
-                       (List.cons Nat x (derive-fresh base deps leaf derived t))
-                       (derive-fresh base deps leaf derived t))]))
+  (match nodes nil (List.nil Nat)
+         (cons x t) (if (Bool.and (Bool.not (reach-mem x derived)) (derive-ok base deps leaf derived x))
+                      (List.cons Nat x (derive-fresh base deps leaf derived t))
+                      (derive-fresh base deps leaf derived t))))
 
 (a/structure DeriveResult [] (derived (List Nat)) (converged Bool))
 
 (a/defn derive-loop [fuel :- Nat, base :- (=> Nat Bool), deps :- (=> Nat (List Nat)), leaf :- (=> Nat Bool),
                      nodes :- (List Nat), derived :- (List Nat)] DeriveResult
   (match fuel
-    [zero (match (derive-fresh base deps leaf derived nodes)
-            [nil (DeriveResult.mk derived true)]
-            [(cons h t) (DeriveResult.mk derived false)])]
-    [(succ n) (match (derive-fresh base deps leaf derived nodes)
-                [nil (DeriveResult.mk derived true)]
-                [(cons h t) (derive-loop n base deps leaf nodes
-                              (List.append Nat (List.cons Nat h t) derived))])]))
+    zero (match (derive-fresh base deps leaf derived nodes)
+           nil (DeriveResult.mk derived true)
+           (cons h t) (DeriveResult.mk derived false))
+    (succ n) (match (derive-fresh base deps leaf derived nodes)
+               nil (DeriveResult.mk derived true)
+               (cons h t) (derive-loop n base deps leaf nodes
+                            (List.append Nat (List.cons Nat h t) derived)))))
 
 (a/defn derive-run [fuel :- Nat, base :- (=> Nat Bool), deps :- (=> Nat (List Nat)), leaf :- (=> Nat Bool),
                     nodes :- (List Nat)] DeriveResult
@@ -662,12 +662,12 @@
 
 (a/defn reach-closure-l [fuel :- (List Nat), succ :- (=> Nat (List Nat)), work :- (List Nat), seen :- (List Nat)] ReachResult
   (match fuel
-    [nil (match work [nil (ReachResult.mk seen true)] [(cons h t) (ReachResult.mk seen false)])]
-    [(cons u n) (match work
-                  [nil (ReachResult.mk seen true)]
-                  [(cons x rest) (if (reach-mem x seen)
-                                   (reach-closure-l n succ rest seen)
-                                   (reach-closure-l n succ (List.append Nat (succ x) rest) (List.cons Nat x seen)))])]))
+    nil (match work nil (ReachResult.mk seen true) (cons h t) (ReachResult.mk seen false))
+    (cons u n) (match work
+                 nil (ReachResult.mk seen true)
+                 (cons x rest) (if (reach-mem x seen)
+                                 (reach-closure-l n succ rest seen)
+                                 (reach-closure-l n succ (List.append Nat (succ x) rest) (List.cons Nat x seen))))))
 
 (a/defn reach-run-l [fuel :- (List Nat), succ :- (=> Nat (List Nat)), roots :- (List Nat)] ReachResult
   (reach-closure-l fuel succ roots (List.nil Nat)))
@@ -708,13 +708,13 @@
 (a/defn derive-loop-l [fuel :- (List Nat), base :- (=> Nat Bool), deps :- (=> Nat (List Nat)), leaf :- (=> Nat Bool),
                        nodes :- (List Nat), derived :- (List Nat)] DeriveResult
   (match fuel
-    [nil (match (derive-fresh base deps leaf derived nodes)
-           [nil (DeriveResult.mk derived true)]
-           [(cons h t) (DeriveResult.mk derived false)])]
-    [(cons u n) (match (derive-fresh base deps leaf derived nodes)
-                  [nil (DeriveResult.mk derived true)]
-                  [(cons h t) (derive-loop-l n base deps leaf nodes
-                                (List.append Nat (List.cons Nat h t) derived))])]))
+    nil (match (derive-fresh base deps leaf derived nodes)
+          nil (DeriveResult.mk derived true)
+          (cons h t) (DeriveResult.mk derived false))
+    (cons u n) (match (derive-fresh base deps leaf derived nodes)
+                 nil (DeriveResult.mk derived true)
+                 (cons h t) (derive-loop-l n base deps leaf nodes
+                              (List.append Nat (List.cons Nat h t) derived)))))
 
 (a/defn derive-run-l [fuel :- (List Nat), base :- (=> Nat Bool), deps :- (=> Nat (List Nat)), leaf :- (=> Nat Bool),
                       nodes :- (List Nat)] DeriveResult
@@ -770,8 +770,8 @@
 ;;   reach-run-l-conv       |roots| + unseen-cost succ [] us <= |fuel| -> converged
 
 (a/defn unseen-cost [succ :- (=> Nat (List Nat)), seen :- (List Nat), us :- (List Nat)] Nat
-  (match us [nil 0]
-         [(cons u t) (+ (if (reach-mem u seen) 0 (List.length (succ u))) (unseen-cost succ seen t))]))
+  (match us nil 0
+         (cons u t) (+ (if (reach-mem u seen) 0 (List.length (succ u))) (unseen-cost succ seen t))))
 
 (a/theorem unseen-cost-mono [succ :- (=> Nat (List Nat)), x :- Nat, seen :- (List Nat), us :- (List Nat)]
   (<= (unseen-cost succ (List.cons Nat x seen) us) (unseen-cost succ seen us))

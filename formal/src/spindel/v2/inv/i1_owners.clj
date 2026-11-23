@@ -323,7 +323,7 @@
 ;; ---- the owner view of a world: sources, tasks, computation (id, has-owner) keys
 (a/structure CK1 [] (id Nat) (nz Bool))
 (a/defn ck1 [c :- CompRow] CK1 (CK1.mk (:id c) (nzc c)))
-(a/defn ck1s [cs :- (List CompRow)] (List CK1) (match cs [nil (List.nil CK1)] [(cons h t) (List.cons CK1 (ck1 h) (ck1s t))]))
+(a/defn ck1s [cs :- (List CompRow)] (List CK1) (match cs nil (List.nil CK1) (cons h t) (List.cons CK1 (ck1 h) (ck1s t))))
 (a/structure OW [] (srcs (List SourceRow)) (tsks (List TaskRow)) (cks (List CK1)))
 (a/defn ow [w :- World] OW (OW.mk (:sources w) (:tasks w) (ck1s (:comps w))))
 
