@@ -868,12 +868,14 @@
 ;; changed initial state are fresh rows; their predecessors stay in the adoption basis, the task runs until T12.
 ;; 71: the cut keeps baselines only for edges with one (`bases-of`); an awaited deferred or computation after the
 ;; re-entry site is not retained by them. 72: demotion of parked computations that never completed and have a handle.
+;; 73: an idle computation keeps no run; its run in cleanup keeps it as a tombstone, also across a re-observe.
 (def ^:private adoption-specs
   {"68" {:w {:log (log "68-w") :kind :root}}
    "69" {:w {:log (log "69-w") :kind :root}}
    "70" {:w {:log (log "70-w") :kind :root}}
    "71" {:w {:log (log "71-w") :kind :root}}
-   "72" {:w {:log (log "72-w") :kind :root}}})
+   "72" {:w {:log (log "72-w") :kind :root}}
+   "73" {:w {:log (log "73-w") :kind :root}}})
 
 (deftest adoption-samples
   (doseq [[n spec] adoption-specs]
@@ -918,8 +920,18 @@
       (is (= [1 :invalid] ((juxt :epoch :validity) (get-in ux [:comps x])))
           "72: x's run retired at the cancel: no epoch step; its unconsumed edge fails the validity")
       (is (= [1 [[t 0]]] ((juxt :epoch :validity) (get-in uz [:comps z])))
-          "72: z's validity is its consumed track"))))
+          "72: z's validity is its consumed track"))
+    (is (= [:resource-fire] (keep #(when-not (:accepted %) (first (:item %))) (log "73-w")))
+        "73: only the cancelled offload's late fire is refused (its acknowledgement follows)")
+    (let [l (log "73-w")
+          [y h] (keep #(when (= :create-comp-top (first (:item %))) (nth (:item %) 2)) l)
+          [uy uh] (map :proj (filter #(= :unobserve (first (:item %))) l))
+          starts (keep #(when (= [:start h] (vec (take 2 (:item %)))) (nth (:item %) 2)) l)]
+      (is (nil? (get-in uy [:comps y :run])) "73: demoted with its run in cleanup, y keeps no run")
+      (is (and (get-in uh [:comps h :idle]) (nil? (get-in uh [:comps h :run]))) "73: h idle, no run")
+      (is (some? (get-in uh [:runs (first starts)])) "73: h's old run is in cleanup")
+      (is (= 2 (count starts)) "73: re-observed while that cleanup is pending, h starts a fresh run"))))
 
 (deftest projection-roundtrip-adoption
-  (doseq [n ["68-w" "69-w" "70-w" "71-w" "72-w"]]
+  (doseq [n ["68-w" "69-w" "70-w" "71-w" "72-w" "73-w"]]
     (is (= [] (o/roundtrip (log n))) (str "sample " n))))

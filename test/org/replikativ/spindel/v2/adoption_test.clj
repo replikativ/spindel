@@ -5,7 +5,7 @@
    basis until T12."
   (:refer-clojure :exclude [await])
   (:require [clojure.test :refer [deftest is testing]]
-            [org.replikativ.spindel.v2.core :as v2 :refer [spin task track await aseq take!]]
+            [org.replikativ.spindel.v2.core :as v2 :refer [spin task track await aseq take! offload]]
             [org.replikativ.spindel.v2.rows :as rw]
             [org.replikativ.spindel.v2.verify :as verify]
             [org.replikativ.spindel.v2.port.helpers :as h]
@@ -370,3 +370,64 @@
            ((v2/observe! z (fn [_ _])))
            (is (= 1 (:epoch (row z))))
            (is (= [[(hid w t) 0]] (:validity (row z))))))))))
+
+;; ---------------------------------------------------------------------------
+;; An idle computation keeps no run (§3.4); a run of it still in cleanup keeps
+;; it as a tombstone (§3.2) until that run retires.
+
+(defn- hold-until
+  ;; an offload that acknowledges its cancellation only once `p` is delivered
+  [started p]
+  (fn []
+    (deliver started true)
+    (while (not (realized? p)) (try (Thread/sleep 1) (catch InterruptedException _)))
+    :held))
+
+(deftest idle-computation-keeps-no-run
+  (checked
+   (let [w (vworld)]
+     (binding [v2/*world* w]
+       (let [d (v2/deferred)
+             row #(get-in (proj w) [:comps (hid w %)])
+             y (spin (try (await d) (finally nil)))]
+         ((v2/observe! y (fn [_ _])))
+         (is (true? (:idle (row y))))
+         (is (nil? (:run (row y))) "demoted with its run in cleanup, it keeps no run"))))))
+
+(deftest idle-computation-with-run-in-cleanup
+  (testing "re-observed while its old run is in cleanup, it starts a fresh run"
+    (checked
+     (let [w (vworld)]
+       (binding [v2/*world* w]
+         (let [started (promise) hold (promise)
+               row #(get-in (proj w) [:comps (hid w %)])
+               y (spin (offload (hold-until started hold)))
+               u1 (v2/observe! y (fn [_ _]))
+               _ (deref started 1000 nil)
+               r1 (:run (row y))]
+           (u1)
+           (is (true? (:idle (row y))))
+           (is (nil? (:run (row y))) "idle: it keeps no run")
+           (is (some? (get-in (proj w) [:runs r1])) "its old run is still in cleanup")
+           (let [seen (atom [])
+                 u2 (v2/observe! y (fn [v _] (swap! seen conj v)))]
+             (is (false? (:idle (row y))))
+             (is (not= r1 (:run (row y))) "a fresh run")
+             (deliver hold true)
+             (is (h/wait-until #(= [:held] @seen)))
+             (is (h/wait-until #(nil? (get-in (proj w) [:runs r1]))) "the old run retires")
+             (u2)))))))
+  (testing "its last handle dropped while the run is in cleanup, it stays until the run retires"
+    (checked
+     (let [w (vworld)]
+       (binding [v2/*world* w]
+         (let [started (promise) hold (promise)
+               y (spin (offload (hold-until started hold)))
+               u (v2/observe! y (fn [_ _]))
+               _ (deref started 1000 nil)
+               id (hid w y)]
+           (u)
+           (v2/release! y)
+           (is (some? (get-in (proj w) [:comps id])) "kept as its cleanup run's tombstone")
+           (deliver hold true)
+           (is (h/wait-until #(nil? (get-in (proj w) [:comps id]))) "removed once the run retired")))))))
