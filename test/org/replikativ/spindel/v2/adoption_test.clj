@@ -339,3 +339,34 @@
          (is (true? (get-in (proj w) [:comps (hid w x) :idle])) "x is demoted")
          (is (empty? (get-in (proj w) [:comps (hid w c) :adoption :baselines])))
          (u))))))
+
+;; ---------------------------------------------------------------------------
+;; Demotion of a parked computation that never completed and has a handle
+;; (§3.3): step 2 cancels its stray run before step 3 demotes it, so the
+;; epoch steps only when the run survives in cleanup (Z#42: a run kept in
+;; cleanup is stale); kept for its handle, it takes its validity from the
+;; removed edges, and an edge that never consumed a version makes it fail
+;; (Z#24).
+
+(deftest demote-parked-fresh-computation
+  (checked
+   (let [w (vworld)]
+     (binding [v2/*world* w]
+       (let [d (v2/deferred)
+             t (v2/signal 0)
+             mb (v2/mailbox)
+             row #(get-in (proj w) [:comps (hid w %)])
+             x (spin (await d))
+             y (spin (try (await d) (finally nil)))
+             z (spin (iv/get-new (track t)) (take! mb))]
+         (testing "a run that retires at the cancel leaves nothing to make stale"
+           ((v2/observe! x (fn [_ _])))
+           (is (= 1 (:epoch (row x))))
+           (is (= :invalid (:validity (row x))) "the await never consumed a version"))
+         (testing "a run kept in cleanup is made stale"
+           ((v2/observe! y (fn [_ _])))
+           (is (= 2 (:epoch (row y)))))
+         (testing "edges that all consumed a version give the validity"
+           ((v2/observe! z (fn [_ _])))
+           (is (= 1 (:epoch (row z))))
+           (is (= [[(hid w t) 0]] (:validity (row z))))))))))
