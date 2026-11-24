@@ -860,16 +860,19 @@
       (is (= [] (o/roundtrip (log n))) (str "sample " n)))))
 
 ;; ---------------------------------------------------------------------------
-;; Adoption follows the model (phase-d design §1.2 R2/R3), samples 68-70 (generator oracle/gen/samples-adoption.clj).
+;; Adoption follows the model (phase-d design §1.2 R2/R3), samples 68-71 (generator oracle/gen/samples-adoption.clj).
 ;; 68: two interrupted reruns that do not re-create: the second cut replaces the adoption basis with the empty
 ;; suffix; Rule R cancels the task nothing else retains in that dispatch item, the awaited one keeps running.
 ;; 69: a source of another kind at a readopted ordinal is a fresh source; the rejected one stays in the adoption
 ;; basis until T12, and the next run readopts the new one. 70: a task with changed captures and a sequence with a
 ;; changed initial state are fresh rows; their predecessors stay in the adoption basis, the task runs until T12.
+;; 71: the cut keeps baselines only for edges with one (`bases-of`); an awaited deferred or computation after the
+;; re-entry site is not retained by them.
 (def ^:private adoption-specs
   {"68" {:w {:log (log "68-w") :kind :root}}
    "69" {:w {:log (log "69-w") :kind :root}}
-   "70" {:w {:log (log "70-w") :kind :root}}})
+   "70" {:w {:log (log "70-w") :kind :root}}
+   "71" {:w {:log (log "71-w") :kind :root}}})
 
 (deftest adoption-samples
   (doseq [[n spec] adoption-specs]
@@ -897,8 +900,16 @@
       (is (not= (nth (:item k1) 3) (nth (:item k2) 3)) "70: changed captures spawn a fresh task")
       (is (#{:active :parked} (get-in (:proj k2) [:runs r1 :act])) "70: no cancel in the spawn's item")
       (is (some (fn [[_ c]] (some #{(nth (:item k1) 3)} (get-in c [:adoption :basis]))) (:comps (:proj k2)))
-          "70: the predecessor stays in the adoption basis"))))
+          "70: the predecessor stays in the adoption basis"))
+    (is (every? :accepted (log "71-w")))
+    (let [l (log "71-w")
+          d (first (filter #(= :dispatch (first (:item %))) l))
+          [y c] (keep #(when (= :create-comp-top (first (:item %))) (nth (:item %) 2)) l)
+          t (nth (:item (second l)) 4)]
+      (is (= c (second (:item d))))
+      (is (= #{t y} (set (map second (get-in (:proj d) [:comps c :adoption :baselines]))))
+          "71: the signal and the delivered await keep a baseline, the pending deferred none"))))
 
 (deftest projection-roundtrip-adoption
-  (doseq [n ["68-w" "69-w" "70-w"]]
+  (doseq [n ["68-w" "69-w" "70-w" "71-w"]]
     (is (= [] (o/roundtrip (log n))) (str "sample " n))))

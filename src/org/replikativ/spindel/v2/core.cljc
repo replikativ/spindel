@@ -1620,6 +1620,16 @@
   [k ek v]
   (try (k v) (catch #?(:clj Throwable :cljs :default) t (ek t))))
 
+(defn- has-base?
+  "The model's `has-base` of a dep edge (§4.4): it consumed a version (a
+   track, a delivered await re-armed with its result, a reactivation edge),
+   or its debtor is a signal or cell (an await's baseline). A pending await
+   of a computation, task, deferred or link has none."
+  [w e]
+  (or (some? (g e rw/E-SEEN))
+      (let [d (rv w (g e rw/E-DEBTOR))]
+        (and (source? d) (<= (gl d rw/X-KIND) rw/SRC-CELL)))))
+
 (defn- dispatch!
   "T11 (and T5 for a computation without a fired edge): starts the
    computation's next run, re-entering at its earliest fired dep edge when
@@ -1642,18 +1652,23 @@
             old-bs (g c rw/C-ADOPT-BASE)]
         (s! c rw/C-ADOPT nil)
         (s! c rw/C-ADOPT-BASE nil)
-        ;; Suffix: dep edges after E keep their debtors through the adoption
-        ;; baselines (§4.4, Z#21).
+        ;; Suffix: dep edges after E are removed; those with a baseline keep
+        ;; their debtors through the adoption baselines (§4.4, Z#21; the
+        ;; model's `bases-of`). The baselines take their references before
+        ;; any suffix edge is unlinked.
         (let [keep (if ei (inc (long ei)) (if restart? 0 (acount ins)))]
           (when (> (acount ins) keep)
-            (let [bs (alist)]
+            (let [bs (alist)
+                  gone (alist)]
               (loop []
                 (when (> (acount ins) keep)
                   (let [x (rv w (apop! ins))]
-                    (ref-inc! (rv w (g x rw/E-DEBTOR)))
-                    (aadd! bs x)
-                    (unlink! w x))
+                    (when (has-base? w x)
+                      (ref-inc! (rv w (g x rw/E-DEBTOR)))
+                      (aadd! bs x))
+                    (aadd! gone x))
                   (recur)))
+              (dotimes [i (acount gone)] (unlink! w (anth gone i)))
               (s! c rw/C-ADOPT-BASE bs))))
         ;; Suffix creations become the adoption basis.
         (let [basis (g c rw/C-BASIS)]
