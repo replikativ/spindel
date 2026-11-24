@@ -860,12 +860,15 @@
       (is (= [] (o/roundtrip (log n))) (str "sample " n)))))
 
 ;; ---------------------------------------------------------------------------
-;; Adoption follows the model (phase-d design §1.2 R3), samples 69-70 (generator oracle/gen/samples-adoption.clj).
+;; Adoption follows the model (phase-d design §1.2 R2/R3), samples 68-70 (generator oracle/gen/samples-adoption.clj).
+;; 68: two interrupted reruns that do not re-create: the second cut replaces the adoption basis with the empty
+;; suffix; Rule R cancels the task nothing else retains in that dispatch item, the awaited one keeps running.
 ;; 69: a source of another kind at a readopted ordinal is a fresh source; the rejected one stays in the adoption
 ;; basis until T12, and the next run readopts the new one. 70: a task with changed captures and a sequence with a
 ;; changed initial state are fresh rows; their predecessors stay in the adoption basis, the task runs until T12.
 (def ^:private adoption-specs
-  {"69" {:w {:log (log "69-w") :kind :root}}
+  {"68" {:w {:log (log "68-w") :kind :root}}
+   "69" {:w {:log (log "69-w") :kind :root}}
    "70" {:w {:log (log "70-w") :kind :root}}})
 
 (deftest adoption-samples
@@ -876,6 +879,14 @@
 
 (deftest adoption-sample-shapes
   (let [items (fn [n] (filter #(#{:create-source :spawn} (first (:item %))) (log n)))]
+    (is (every? :accepted (log "68-w")))
+    (let [l (log "68-w")
+          [ra rb] (map #(get-in (:proj %) [:tasks (nth (:item %) 3) :run]) (filter #(= :spawn (first (:item %))) l))
+          [d1 d2] (filter #(= :dispatch (first (:item %))) l)
+          running? (fn [c r] (contains? #{:active :parked} (get-in (:proj c) [:runs r :act])))]
+      (is (running? d1 ra) "68: the first cut keeps the task in the adoption basis")
+      (is (not (running? d2 ra)) "68: the second cut cancels it in its dispatch item")
+      (is (running? d2 rb) "68: the task another computation awaits keeps running"))
     (is (every? :accepted (log "69-w")))
     (is (every? :accepted (log "70-w")))
     (let [[_ m1 m2 m3] (map #(peek (:item %)) (items "69-w"))]
@@ -889,5 +900,5 @@
           "70: the predecessor stays in the adoption basis"))))
 
 (deftest projection-roundtrip-adoption
-  (doseq [n ["69-w" "70-w"]]
+  (doseq [n ["68-w" "69-w" "70-w"]]
     (is (= [] (o/roundtrip (log n))) (str "sample " n))))

@@ -1352,6 +1352,8 @@
     (when (task? x) (task-complete! w x))       ; C1c L1: if its run scope is gone
     ;; the spent task and its owner chain go with the run (Z#56)
     (when (and (task? x) (g x rw/K-DONE)) (release-ownership! w x))
+    ;; a task kept only as this run's tombstone goes now
+    (when (and (task? x) (zero? (gl x rw/REFS)) (zero? (gl x rw/HANDLES))) (aadd! (g w rw/W-RQ) x))
     ;; a computation kept only as this run's tombstone (§3.2) goes now
     (when (and (comp? x) (zero? (gl x rw/REFS)) (zero? (gl x rw/HANDLES))) (aadd! (g w rw/W-RQ) x))
     ;; last: a complete world implies every task in it is complete (C1c)
@@ -1492,6 +1494,13 @@
     (s! c rw/C-ADOPT-BASE nil)
     (dotimes [i (acount bs)] (ref-dec! w (rv w (g (rv w (anth bs i)) rw/E-DEBTOR))))))
 
+(defn- drop-adoption!
+  "Ends the references of an adoption basis `ab` and baselines `bs` the
+   computation no longer holds."
+  [w ab bs]
+  (when ab (dotimes [i (acount ab)] (ref-dec! w (rv w (anth ab i)))))
+  (when bs (dotimes [i (acount bs)] (ref-dec! w (rv w (g (rv w (anth bs i)) rw/E-DEBTOR))))))
+
 (defn- release-ownership!
   "A done task leaves its owner scope once its run has retired: until then the
    cleanup entry keeps it as a tombstone, and its owner chain (§3.2, Z#56)."
@@ -1625,29 +1634,38 @@
           e (when ei (rv w (anth ins ei)))
           at (if e (gl e rw/E-AT) -1)]
       (s! c rw/C-RESTART false)
-      ;; Suffix: dep edges after E keep their debtors through the adoption
-      ;; baselines (§4.4, Z#21).
-      (let [keep (if ei (inc (long ei)) (if restart? 0 (acount ins)))]
-        (when (> (acount ins) keep)
-          (let [bs (or (gm c rw/C-ADOPT-BASE) (alist))]
-            (loop []
-              (when (> (acount ins) keep)
-                (let [x (rv w (apop! ins))]
-                  (ref-inc! (rv w (g x rw/E-DEBTOR)))
-                  (aadd! bs x)
-                  (unlink! w x))
-                (recur)))
-            (s! c rw/C-ADOPT-BASE bs))))
-      ;; Suffix creations become the adoption basis.
-      (let [basis (g c rw/C-BASIS)]
-        (when (and basis (pos? (acount basis)))
-          (let [ab (or (gm c rw/C-ADOPT) (alist))
-                kept (alist)]
-            (dotimes [i (acount basis)]
-              (let [x (rv w (anth basis i))]
-                (if (or restart? (> (gl x rw/AT) at)) (aadd! ab x) (aadd! kept x))))
-            (s! c rw/C-BASIS kept)
-            (s! c rw/C-ADOPT ab))))
+      ;; The cut (`comp-cut-row`): the latest suffix replaces the adoption
+      ;; basis and baselines, also when it is empty. The previous ones are
+      ;; dropped once the suffix holds its references; Rule R cancels a
+      ;; task nothing else retains (§3.3 step 1.2).
+      (let [old-ab (g c rw/C-ADOPT)
+            old-bs (g c rw/C-ADOPT-BASE)]
+        (s! c rw/C-ADOPT nil)
+        (s! c rw/C-ADOPT-BASE nil)
+        ;; Suffix: dep edges after E keep their debtors through the adoption
+        ;; baselines (§4.4, Z#21).
+        (let [keep (if ei (inc (long ei)) (if restart? 0 (acount ins)))]
+          (when (> (acount ins) keep)
+            (let [bs (alist)]
+              (loop []
+                (when (> (acount ins) keep)
+                  (let [x (rv w (apop! ins))]
+                    (ref-inc! (rv w (g x rw/E-DEBTOR)))
+                    (aadd! bs x)
+                    (unlink! w x))
+                  (recur)))
+              (s! c rw/C-ADOPT-BASE bs))))
+        ;; Suffix creations become the adoption basis.
+        (let [basis (g c rw/C-BASIS)]
+          (when (and basis (pos? (acount basis)))
+            (let [ab (alist)
+                  kept (alist)]
+              (dotimes [i (acount basis)]
+                (let [x (rv w (anth basis i))]
+                  (if (or restart? (> (gl x rw/AT) at)) (aadd! ab x) (aadd! kept x))))
+              (s! c rw/C-BASIS kept)
+              (s! c rw/C-ADOPT ab))))
+        (drop-adoption! w old-ab old-bs))
       (let [t5? (and (nil? e) (zero? (acount ins)))
             r (new-run! w c (g c rw/C-EPOCH))
             k (when e (g e rw/E-CONT))
@@ -2802,8 +2820,17 @@
                   (when (and (g row rw/C-IDLE) (zero? (gl row rw/HANDLES)) (nil? (rv w (g row rw/C-RUN))))
                     (unregister! w row)))
               (task? row)
-              (when (and (g row rw/K-DONE) (zero? (gl row rw/HANDLES)))
-                (unregister! w row))
+              (do
+                ;; §3.3 step 1.2: a computation's running task outside live
+                ;; (no creation list, edge or host wait retains it) is
+                ;; cancelled; a handle admits only a completed task (§3.4)
+                (when-not (g row rw/K-DONE)
+                  (when-let [kr (rv w (g row rw/K-RUN))]
+                    (let [o (rv w (g row rw/OWNER))]
+                      (when (and o (comp? o)) (cancel! w kr ::cancelled)))))
+                ;; a run in cleanup keeps its task as a tombstone; it goes at retirement
+                (when (and (g row rw/K-DONE) (zero? (gl row rw/HANDLES)) (nil? (rv w (g row rw/K-RUN))))
+                  (unregister! w row)))
               (source? row)
               (when (zero? (gl row rw/HANDLES)) (unregister! w row)))))
         (recur)))))
