@@ -2485,17 +2485,22 @@
       (s! r rw/R-PATH (nth saved 0)))))
 
 (defn- adopt!
-  "The creation of `c` with `key`, from its basis or its adoption basis."
-  [w c key]
+  "The creation of `c` with `key`, from its basis or its adoption basis, when
+   `ok?` accepts it (kind, captures, path, initial state). A rejected
+   candidate stays where it is: the model's fresh creation leaves its
+   predecessor in the adoption basis (T1, T4, create-link), for T12 or the
+   next cut."
+  [w c key ok?]
   (let [basis (or (gm c rw/C-BASIS) (let [l (alist)] (s! c rw/C-BASIS l) l))
         bi (find-created w basis key)
         ab (gm c rw/C-ADOPT)
         ai (when-not bi (find-created w ab key))]
-    (cond bi (rv w (anth basis bi))
+    (cond bi (let [x (rv w (anth basis bi))] (when (ok? x) x))
           ai (let [x (rv w (anth ab ai))]
-               (aput! ab ai (rv w (anth ab (dec (acount ab))))) (apop! ab)
-               (aadd! basis x)   ; the adoption reference moves to the basis
-               x))))
+               (when (ok? x)
+                 (aput! ab ai (rv w (anth ab (dec (acount ab))))) (apop! ab)
+                 (aadd! basis x)   ; the adoption reference moves to the basis
+                 x)))))
 
 (declare admit-change! admitting host-sealed? host-released? sealed-ex)
 
@@ -2527,7 +2532,7 @@
               (commit! w [:create-comp (g r rw/ID) (g child rw/ID) [:opaque-seq inputs] [:opaque body]])
               h))
           (let [key (creation-key! r site)
-                child (adopt! w c key)]
+                child (adopt! w c key comp?)]
             (if child
               (do (s! child rw/AT at)   ; adoption reuses the live handle, or makes one (Z#29)
                   ;; bindings are not inputs: the latest creation's frame, no rerun
@@ -2620,27 +2625,23 @@
              at (next-at! r)]
          (if (comp? x)
            (let [key (creation-key! r site)
-                 old (adopt! w x key)]
-             (if (and old (task? old) (same-inputs? inputs (g old rw/K-INPUTS))
-                      (= (g r rw/R-PATH) (g old rw/K-PATH)))   ; §8.2 P4
+                 old (adopt! w x key #(and (task? %) (same-inputs? inputs (g % rw/K-INPUTS))
+                                           (= (g r rw/R-PATH) (g % rw/K-PATH))))]   ; §8.2 P4
+             (if old
                (do (s! old rw/AT at)
                    (do (commit! w [:spawn (g r rw/ID) [:opaque body] (g old rw/ID) [:opaque-seq inputs]])
                       ;; the item first: its projection is the readoption itself; a new
                       ;; handle (a dead one replaced) follows as its own [:handle-new]
                        (handle! w old)))
-               (do (when old                       ; changed captures: replace it
-                     (let [basis (gm x rw/C-BASIS)
-                           i (idx-of basis old)]
-                       (hs/remove-at! basis i)
-                       (when-let [or* (rv w (g old rw/K-RUN))] (cancel! w or* ::cancelled))
-                       (ref-dec! w old)))
-                   (let [k (set-origin! (new-task! w x key at inputs body 0) (conj (frame-of x) key) r)]
-                     (aadd! (gm x rw/C-BASIS) k)
-                     (ref-inc! k)
-                     (start-task! w k (thread-frame))
-                     (let [h (handle! w k)]
-                       (commit! w [:spawn (g r rw/ID) [:opaque body] (g k rw/ID) [:opaque-seq inputs]])
-                       h)))))
+               ;; changed captures or path: a fresh task; the predecessor stays
+               ;; in the adoption basis and runs until T12 or the next cut (T4)
+               (let [k (set-origin! (new-task! w x key at inputs body 0) (conj (frame-of x) key) r)]
+                 (aadd! (gm x rw/C-BASIS) k)
+                 (ref-inc! k)
+                 (start-task! w k (thread-frame))
+                 (let [h (handle! w k)]
+                   (commit! w [:spawn (g r rw/ID) [:opaque body] (g k rw/ID) [:opaque-seq inputs]])
+                   h))))
            (let [s (current-scope! w r)
                  local (or local (boolean (g s rw/S-LOCAL)))   ; Z#77: K2 inheritance
                  k (set-origin! (new-task! w s 0 at inputs body 0) (conj (frame-of x) (creation-key! r site)) r)]
@@ -3247,10 +3248,11 @@
         at (next-at! r)]
     (if (comp? x)
       (let [key (creation-key! r -1)
-            old (adopt! w x key)]
-        ;; readoption by ordinal needs the same kind (a run that creates a
-        ;; signal where the last one created a mailbox makes a new source)
-        (if (and old (source? old) (== (long kind) (gl old rw/X-KIND)))
+            ;; readoption by ordinal needs the same kind (a run that creates a
+            ;; signal where the last one created a mailbox makes a new source;
+            ;; the other stays in the adoption basis)
+            old (adopt! w x key #(and (source? %) (== (long kind) (gl % rw/X-KIND))))]
+        (if old
           (do (s! old rw/AT at)
               (do (commit! w [:create-source (g r rw/ID) (rw/kind-names kind)
                               (source-item-value kind v) (g old rw/ID)])
@@ -3578,26 +3580,26 @@
         (let [w (cw)
               at (next-at! r)
               key (creation-key! r site)
-              old (adopt! w x key)
-              spec (when (and old (link? old)) (g old rw/X-REALIZE))]
-          (if (and spec (same-inputs? inputs (nth spec 5)) (same-capture? init (nth spec 1)))
+              old (adopt! w x key #(when (link? %)
+                                     (let [spec (g % rw/X-REALIZE)]
+                                       (and spec (same-inputs? inputs (nth spec 5))
+                                            (same-capture? init (nth spec 1))))))]
+          (if old
             (do (s! old rw/AT at)
                 (do (commit! w [:create-link (g r rw/ID) (g old rw/ID)])
                     ;; the item first: its projection is the readoption itself; a new
                     ;; handle (a dead one replaced) follows as its own [:handle-new]
                     (handle! w old)))
-            (do (when old
-                  (let [basis (gm x rw/C-BASIS)]
-                    (hs/remove-at! basis (idx-of basis old))
-                    (ref-dec! w old)))
-                (let [h (new-link! w [f init (thread-frame) nil 0 inputs] nil)
-                      nx (row-of h)]
-                  (s! nx rw/KEY key)
-                  (s! nx rw/AT at)
-                  (aadd! (gm x rw/C-BASIS) nx)
-                  (ref-inc! nx)
-                  (commit! w [:create-link (g r rw/ID) (g nx rw/ID)])
-                  h))))))))
+            ;; other captures or initial state: a new link; the predecessor
+            ;; stays in the adoption basis until T12 or the next cut
+            (let [h (new-link! w [f init (thread-frame) nil 0 inputs] nil)
+                  nx (row-of h)]
+              (s! nx rw/KEY key)
+              (s! nx rw/AT at)
+              (aadd! (gm x rw/C-BASIS) nx)
+              (ref-inc! nx)
+              (commit! w [:create-link (g r rw/ID) (g nx rw/ID)])
+              h)))))))
 
 (defn stream
   "A push stream (C0): `append!` adds elements, `close!` ends it, and it ends
