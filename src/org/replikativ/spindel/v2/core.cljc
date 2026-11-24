@@ -1339,7 +1339,8 @@
   [w r]
   (let [x (rv w (g r rw/R-OF))]
     (if (comp? x)
-      (when (identical? r (rv w (g x rw/C-RUN))) (s! x rw/C-RUN nil))
+      (do (when (identical? r (rv w (g x rw/C-RUN))) (s! x rw/C-RUN nil))
+          (when (identical? r (rv w (g x rw/C-CLEANUP-RUN))) (s! x rw/C-CLEANUP-RUN nil)))
       (when (identical? r (rv w (g x rw/K-RUN))) (s! x rw/K-RUN nil)))
     (s! r rw/R-MODE 2)                       ; retired
     (when-let [s (rv w (g r rw/R-SROW))]
@@ -2815,6 +2816,11 @@
     (s! c rw/C-PENDING 0)
     (if (or (some? (g c rw/C-DONE-EPOCH)) (pos? (gl c rw/HANDLES)))
       (do (s! c rw/C-IDLE true)
+          ;; §3.4: an idle computation keeps no run; one still in cleanup
+          ;; keeps it as a tombstone (§3.2) until it retires
+          (when-let [r (rv w (g c rw/C-RUN))]
+            (s! c rw/C-CLEANUP-RUN r)
+            (s! c rw/C-RUN nil))
           ;; Z#64: a dirty computation (its result is not for its current
           ;; epoch: invalidated, or re-demoted right after a failed
           ;; validation) is :invalid, never valid by an empty edge list
@@ -2840,7 +2846,7 @@
               (comp? row)
               (do (when-not (g row rw/C-IDLE) (demote! w row))
                   ;; a run in cleanup keeps its computation as a tombstone (§3.2)
-                  (when (and (g row rw/C-IDLE) (zero? (gl row rw/HANDLES)) (nil? (rv w (g row rw/C-RUN))))
+                  (when (and (g row rw/C-IDLE) (zero? (gl row rw/HANDLES)) (nil? (rv w (g row rw/C-CLEANUP-RUN))))
                     (unregister! w row)))
               (task? row)
               (do

@@ -248,7 +248,8 @@
 (def ^:const C-FRAME 29)     ; creation keys of the creating entities and this one (§8.2 addresses)
 (def ^:const C-PATH 30)      ; the creating run's path at creation, nil if empty (§8.2 P3)
 (def ^:const C-BIND 31)      ; JVM: the creator's dynamic binding frame, each run's initial frame
-(def ^:const C-SIZE 32)
+(def ^:const C-CLEANUP-RUN 32) ; idle: its run still in cleanup (the §3.2 tombstone), until it retires
+(def ^:const C-SIZE 33)
 
 ;; Task
 (def ^:const K-BODY 12)
