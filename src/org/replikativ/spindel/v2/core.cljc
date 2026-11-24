@@ -2064,7 +2064,8 @@
   [w y]
   (if (g y rw/C-IDLE)
     (let [vs (g y rw/C-VALIDITY)]
-      (if (sequential? vs)
+      ;; a fresh one is never reactivated: its validity re-links nothing
+      (if (and (sequential? vs) (some? (g y rw/C-DONE-EPOCH)))
         (into [] (keep (fn [[d]] (let [d (rv w d)] (when (and d (comp? d)) d)))) vs)
         []))
     (let [ins (g y rw/C-INS)]
@@ -2717,7 +2718,9 @@
    validity still has the recorded version (Z#24); otherwise it must run."
   [w c]
   (let [vs (g c rw/C-VALIDITY)
-        ok? (and (not= :invalid vs)
+        ;; a fresh computation has no result to reactivate: its validity is not checked
+        ok? (and (some? (g c rw/C-DONE-EPOCH))
+                 (not= :invalid vs)
                  (every? (fn [[d ver]]
                            (let [d (rv w d)]
                              (when (and (comp? d) (g d rw/C-IDLE)) (validate! w d))
@@ -2787,8 +2790,11 @@
   [w c]
   (when-let [r (rv w (g c rw/C-RUN))]
     (cancel! w r ::cancelled)
-    ;; a cancelled run that survives in cleanup must not count as current (I10)
-    (when (current? c r) (s! c rw/C-EPOCH (inc (gl c rw/C-EPOCH)))))
+    ;; a cancelled run that survives in cleanup must not count as current
+    ;; (I10, Z#42); one that retired at the cancel (§3.3 step 1.2, before
+    ;; this demotion) leaves nothing to make stale
+    (when (and (current? c r) (identical? r (rv w (g c rw/C-RUN))))
+      (s! c rw/C-EPOCH (inc (gl c rw/C-EPOCH)))))
   (let [ins (gm c rw/C-INS)
         validity (loop [acc []]
                    (if (pos? (acount ins))
@@ -2812,11 +2818,13 @@
           ;; Z#64: a dirty computation (its result is not for its current
           ;; epoch: invalidated, or re-demoted right after a failed
           ;; validation) is :invalid, never valid by an empty edge list
-          (s! c rw/C-VALIDITY (when (some? (g c rw/C-DONE-EPOCH))
-                                (if (and (== (gl c rw/C-DONE-EPOCH) (gl c rw/C-EPOCH))
-                                         (every? (comp some? second) validity))
-                                  validity
-                                  :invalid))))
+          ;; A fresh one (no result) takes it from the removed edges too
+          ;; (§3.3); an edge that never consumed a version makes it fail (Z#24).
+          (s! c rw/C-VALIDITY (if (and (or (nil? (g c rw/C-DONE-EPOCH))
+                                           (== (gl c rw/C-DONE-EPOCH) (gl c rw/C-EPOCH)))
+                                       (every? (comp some? second) validity))
+                                validity
+                                :invalid)))
       ;; a run in cleanup keeps it as a tombstone (§3.2); it goes at retirement
       (when-not (rv w (g c rw/C-RUN)) (unregister! w c)))))
 
