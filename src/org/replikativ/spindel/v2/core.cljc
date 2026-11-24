@@ -1570,8 +1570,9 @@
       (let [ords (hs/vmap)]
         (dotimes [i (acount basis)]
           (let [key (gl (rv w (anth basis i)) rw/KEY)
-                site (quot key 1048576)
-                nxt (inc (mod key 1048576))
+                ord (mod key 1048576)                 ; floors, as the encode: site -1 is negative
+                site (quot (- key ord) 1048576)       ; exact: key - ord is a multiple of 2^20
+                nxt (inc ord)
                 cur (long (or (hs/mget ords site) 0))]
             (when (> nxt cur) (hs/mput! ords site nxt))))
         (s! r rw/R-ORD ords)))))
