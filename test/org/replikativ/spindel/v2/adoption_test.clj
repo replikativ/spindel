@@ -5,7 +5,7 @@
    basis until T12."
   (:refer-clojure :exclude [await])
   (:require [clojure.test :refer [deftest is testing]]
-            [org.replikativ.spindel.v2.core :as v2 :refer [spin task track await aseq]]
+            [org.replikativ.spindel.v2.core :as v2 :refer [spin task track await aseq take!]]
             [org.replikativ.spindel.v2.rows :as rw]
             [org.replikativ.spindel.v2.verify :as verify]
             [org.replikativ.spindel.v2.port.helpers :as h]
@@ -286,3 +286,56 @@
             (is (<= (reduce + (vals after)) (+ 4 (reduce + (vals before)))) (str before " -> " after))
             (is (<= (count (:adopt (adoption w c))) 1) "only the latest suffix")))
         (u)))))
+
+;; ---------------------------------------------------------------------------
+;; The cut keeps baselines only for edges that have one (the model's
+;; `bases-of` over `has-base`: tracks, awaits of signals and cells, delivered
+;; awaits re-armed with their result, reactivation edges; §4.4)
+
+(deftest a-cut-baselines-only-for-edges-with-a-baseline
+  ;; run 1 awaits a computation (delivered), tracks a signal and awaits a
+  ;; deferred (pending) after its re-entry site; run 2 does none of them and
+  ;; parks on a mailbox take (a wait edge). The pending await has no baseline.
+  (checked
+   (let [w (vworld)]
+     (binding [v2/*world* w]
+       (let [s (v2/signal 0)
+             t (v2/signal 0)
+             d (v2/deferred)
+             mb (v2/mailbox)
+             y (spin (iv/get-new (track t)))
+             c (spin (let [v (iv/get-new (track s))]
+                       (when (zero? v)
+                         (await y)
+                         (iv/get-new (track t))
+                         (await d))
+                       (take! mb)))
+             u (v2/observe! c (fn [_ _]))
+             baselines #(set (map second (get-in (proj w) [:comps (hid w c) :adoption :baselines])))]
+         (v2/write! s 1)
+         (is (= #{(hid w t) (hid w y)} (baselines))
+             "the tracked signal and the delivered await keep a baseline, the pending deferred none")
+         (u))))))
+
+(deftest a-cut-pending-await-does-not-retain-its-debtor
+  ;; run 1 awaits a computation that is itself parked; run 2 does not await
+  ;; it. The pending await has no baseline, so nothing retains the computation
+  ;; after the cut: it is demoted there and its run is cancelled.
+  (checked
+   (let [w (vworld)]
+     (binding [v2/*world* w]
+       (let [s (v2/signal 0)
+             d (v2/deferred)
+             mb (v2/mailbox)
+             log (atom [])
+             x (spin (try (await d) (finally (swap! log conj :x-fin))))
+             c (spin (let [v (iv/get-new (track s))]
+                       (when (zero? v) (await x))
+                       (take! mb)))
+             u (v2/observe! c (fn [_ _]))]
+         (is (false? (get-in (proj w) [:comps (hid w x) :idle])) "run 1 awaits x, which runs")
+         (v2/write! s 1)
+         (is (h/wait-until #(= [:x-fin] @log)) "x's run is cancelled at the cut")
+         (is (true? (get-in (proj w) [:comps (hid w x) :idle])) "x is demoted")
+         (is (empty? (get-in (proj w) [:comps (hid w c) :adoption :baselines])))
+         (u))))))

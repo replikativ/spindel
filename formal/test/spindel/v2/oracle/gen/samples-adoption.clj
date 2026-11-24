@@ -1,4 +1,4 @@
-;; Adoption follows the model (phase-d design §1.2 R2/R3): oracle log samples 68-70.
+;; Adoption follows the model (phase-d design §1.2 R2/R3): oracle log samples 68-71.
 ;;
 ;; 68  w: two interrupted reruns that do not re-create. Run 1 spawns two tasks; runs 2 and 3 do not, and park on
 ;;     an empty mailbox (a wait edge: no baseline). The second cut replaces the adoption basis with the empty
@@ -12,6 +12,10 @@
 ;; 70  w: a task with changed captures and a sequence with a changed initial state: the spawn and the link
 ;;     creation are fresh rows; the predecessors stay in the adoption basis (no cancel in the spawn's item) until
 ;;     the run's T12 (its complete item) cancels the task and releases both.
+;; 71  w: the cut keeps baselines only for edges that have one (`bases-of` over `has-base`: tracks, awaits of
+;;     signals and cells, delivered awaits re-armed with their result). Run 1 awaits a computation (delivered),
+;;     tracks a signal and awaits a deferred (pending) after its re-entry site; run 2 does none of it and parks on a
+;;     mailbox take (a wait edge). The dispatch item keeps the baselines of the signal and the computation only.
 ;;
 ;; From the repository root (one -Xmx1g JVM):
 ;;   clojure -J-Xmx1g -Sdeps '{:paths ["src" "test"]}' -M -i formal/test/spindel/v2/oracle/gen/samples-adoption.clj
@@ -75,3 +79,21 @@
   (v2/observe! c (fn [_ _]))
   (v2/write! s 1)
   (finish! 70 w acc))
+
+;; 71
+(let [acc (atom []) w (vworld acc)
+      s (in w #(let [s (v2/signal 0)
+                     t (v2/signal 0)
+                     d (v2/deferred)
+                     mb (v2/mailbox)
+                     y (spin (iv/get-new (track t)))
+                     c (spin (let [v (iv/get-new (track s))]
+                               (when (zero? v)
+                                 (await y)
+                                 (iv/get-new (track t))
+                                 (await d))
+                               (take! mb)))]
+                 (v2/observe! c (fn [_ _]))
+                 s))]
+  (v2/write! s 1)
+  (finish! 71 w acc))
