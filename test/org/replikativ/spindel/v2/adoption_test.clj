@@ -146,3 +146,143 @@
            (is (= #{l2} (:basis a)))
            (is (not (contains? (:adopt a) l1)) "T12 released it"))
          (u))))))
+
+;; ---------------------------------------------------------------------------
+;; A-cut (R2): T11's cut replaces the adoption basis and baselines with the
+;; latest suffix (`comp-cut-row`); Rule R cancels a superseded running task
+;; that nothing else retains (§3.3 step 1.2)
+
+(deftest a-cut-2a-superseded-task-is-cancelled-at-the-cut
+  ;; run 1 spawns a polling task; runs 2 and 3 do not re-create it and never
+  ;; complete. The second cut drops it (an empty suffix): nothing else
+  ;; retains it, so it is cancelled there, its finally runs once.
+  (checked
+   (let [w (vworld)]
+     (binding [v2/*world* w]
+       (let [s (v2/signal 0)
+             never (v2/deferred)
+             log (atom [])
+             ks (atom [])
+             c (spin (let [v (iv/get-new (track s))]
+                       (when (zero? v)
+                         (swap! ks conj (rid (task (try (loop [] (v2/sleep 20) (recur))
+                                                        (finally (swap! log conj :fin)))))))
+                       (await never)))
+             u (v2/observe! c (fn [_ _]))
+             [k] @ks]
+         (v2/write! s 1)
+         (settle! w)
+         (is (= [] @log) "the first cut keeps it in the adoption basis")
+         (is (= #{k} (:adopt (adoption w c))))
+         (v2/write! s 2)
+         (is (h/wait-until #(= [:fin] @log)) "the next cut drops it: cancelled, its finally runs")
+         (is (empty? (:adopt (adoption w c))) "the empty suffix replaced the adoption basis")
+         (verify/gc-settle! w)
+         (is (nil? (get-in (proj w) [:tasks k])) "the row goes once its cleanup ended")
+         (is (= [:fin] @log) "once")
+         (u))))))
+
+(deftest a-cut-2b-task-awaited-elsewhere-keeps-running
+  (testing "a superseded task another live computation awaits runs on and completes"
+    (checked
+     (let [w (vworld)]
+       (binding [v2/*world* w]
+         (let [s (v2/signal 0)
+               never (v2/deferred)
+               fin (v2/deferred)
+               held (atom nil)
+               ks (atom [])
+               c (spin (let [v (iv/get-new (track s))]
+                         (when (even? v)
+                           (let [k (task (await fin))]   ; the same captures in every run
+                             (reset! held k)
+                             (swap! ks conj (rid k))))
+                         (await never)))
+               u (v2/observe! c (fn [_ _]))
+               k0 @held
+               o (spin (await k0))
+               seen (atom [])
+               uo (v2/observe! o (fn [v _] (swap! seen conj v)))]
+           (v2/write! s 1)
+           (v2/write! s 2)
+           (settle! w)
+           (let [[k1 k2] @ks]
+             (is (not= k1 k2) "it is not readopted by a later run of its creator")
+             (is (not (contains? (:adopt (adoption w c)) k1)))
+             (is (some? (get-in (proj w) [:tasks k1 :run])) "it keeps running"))
+           (v2/deliver! fin :done)
+           (is (h/wait-until #(= [:done] @seen)) "and completes for the computation awaiting it")
+           (uo)
+           (u))))))
+  (testing "it is cancelled once that computation stops awaiting it"
+    (checked
+     (let [w (vworld)]
+       (binding [v2/*world* w]
+         (let [s (v2/signal 0)
+               never (v2/deferred)
+               log (atom [])
+               held (atom nil)
+               c (spin (let [v (iv/get-new (track s))]
+                         (when (zero? v)
+                           (reset! held (task (try (await never) (finally (swap! log conj :fin))))))
+                         (await never)))
+               u (v2/observe! c (fn [_ _]))
+               o (spin (await @held))
+               uo (v2/observe! o (fn [_ _]))]
+           (v2/write! s 1)
+           (v2/write! s 2)
+           (settle! w)
+           (is (= [] @log) "kept across both cuts by the awaiting computation")
+           (uo)
+           (is (h/wait-until #(= [:fin] @log)) "cancelled when it stops awaiting")
+           (u)))))))
+
+(deftest a-cut-handle-only-does-not-keep-a-running-task
+  ;; §3.4: a handle admits only a completed task; the host holding the
+  ;; handle (without waiting on it) does not keep the superseded task running.
+  (checked
+   (let [w (vworld)]
+     (binding [v2/*world* w]
+       (let [s (v2/signal 0)
+             never (v2/deferred)
+             log (atom [])
+             held (atom nil)
+             c (spin (let [v (iv/get-new (track s))]
+                       (when (zero? v)
+                         (reset! held (task (try (await never) (finally (swap! log conj :fin))))))
+                       (await never)))
+             u (v2/observe! c (fn [_ _]))]
+         (v2/write! s 1)
+         (v2/write! s 2)
+         (is (h/wait-until #(= [:fin] @log)) "cancelled at the second cut")
+         (is (= ::v2/cancelled (try (v2/value @held 1000 ::timeout)
+                                    (catch Throwable e (:spindel/cancelled (ex-data e) e))))
+             "the handle reads the cancellation")
+         (u))))))
+
+(deftest a-cut-census-repeated-interruptions
+  ;; I11b: retention stays bounded by the last runs. Every other run spawns a
+  ;; task capturing the run's value; no run completes.
+  (let [w (v2/world {:verify? true})]
+    (binding [v2/*world* w]
+      (let [s (v2/signal 0)
+            never (v2/deferred)
+            c (spin (let [v (iv/get-new (track s))]
+                      (when (even? v) (task (await never) v))
+                      (await never)))
+            u (v2/observe! c (fn [_ _]))
+            census #(do (verify/gc-settle! w)
+                        (v2/call-in! w (fn [] (frequencies (map (fn [r] (aget ^objects r rw/TYPE))
+                                                                (vals (aget ^objects w rw/W-REG)))))))]
+        (dotimes [i 100] (v2/write! s (inc i)))
+        (let [before (census)]
+          (dotimes [i 10000] (v2/write! s (+ 101 i)))
+          ;; coalesced writes can leave the previous run's task in the adoption
+          ;; basis beside the current one (with its run, activation and wait
+          ;; edge): the last two runs, never more
+          (let [after (census)]
+            (is (<= (get after rw/T-TASK 0) 2) (str before " -> " after))
+            (is (<= (get after rw/T-RUN 0) 3) (str before " -> " after))
+            (is (<= (reduce + (vals after)) (+ 4 (reduce + (vals before)))) (str before " -> " after))
+            (is (<= (count (:adopt (adoption w c))) 1) "only the latest suffix")))
+        (u)))))

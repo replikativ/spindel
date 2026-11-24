@@ -1,5 +1,9 @@
-;; Adoption follows the model (phase-d design §1.2 R2/R3): oracle log samples 69-70.
+;; Adoption follows the model (phase-d design §1.2 R2/R3): oracle log samples 68-70.
 ;;
+;; 68  w: two interrupted reruns that do not re-create. Run 1 spawns two tasks; runs 2 and 3 do not, and park on
+;;     an empty mailbox (a wait edge: no baseline). The second cut replaces the adoption basis with the empty
+;;     suffix: the task nothing else retains is cancelled in that dispatch item (Rule R); the one another
+;;     computation awaits keeps running.
 ;; 69  w: a kind mismatch then a rerun. Body sources share site -1: run 1 creates a signal (ord 0) and a mailbox
 ;;     (ord 1); run 2 creates only the mailbox, at ord 0, which rejects the signal (T1: same kind) and is a new
 ;;     source; the signal stays in the adoption basis until the run's T12. Run 3 readopts the mailbox. The runs
@@ -14,7 +18,7 @@
 ;; Generated logs are registered in oracle_test.clj (`adoption-specs`).
 (ns samples-adoption
   (:refer-clojure :exclude [await])
-  (:require [org.replikativ.spindel.v2.core :as v2 :refer [spin task track await aseq]]
+  (:require [org.replikativ.spindel.v2.core :as v2 :refer [spin task track await aseq take!]]
             [org.replikativ.spindel.v2.verify :as verify]
             [org.replikativ.spindel.incremental.interval :as iv]
             [clojure.pprint]))
@@ -31,6 +35,22 @@
   (assert (true? (v2/await-complete w 2000 :timeout)) "the world completes")
   (prn (dump! (str dir "log-sample-" n "-w.edn") (verify/log w)))
   (prn :sample n :divergences @acc))
+
+;; 68
+(let [acc (atom []) w (vworld acc) held (atom nil)
+      [s c o] (in w #(let [s (v2/signal 0)
+                           mb (v2/mailbox)
+                           c (spin (let [v (iv/get-new (track s))]
+                                     (when (zero? v)
+                                       (task (take! mb))
+                                       (reset! held (task (take! mb))))
+                                     (take! mb)))]
+                       (v2/observe! c (fn [_ _]))
+                       [s c (spin (await @held))]))]
+  (v2/observe! o (fn [_ _]))
+  (v2/write! s 1)
+  (v2/write! s 2)
+  (finish! 68 w acc))
 
 ;; 69
 (let [acc (atom []) w (vworld acc)
