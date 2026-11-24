@@ -858,3 +858,36 @@
       (is (= [(count (:log (spec k))) 0 0] ((juxt :checked :n-divergences :resyncs) res)) (str "sample 67 " k)))
     (doseq [n ["67-root" "67-effect" "67-instance"]]
       (is (= [] (o/roundtrip (log n))) (str "sample " n)))))
+
+;; ---------------------------------------------------------------------------
+;; Adoption follows the model (phase-d design §1.2 R3), samples 69-70 (generator oracle/gen/samples-adoption.clj).
+;; 69: a source of another kind at a readopted ordinal is a fresh source; the rejected one stays in the adoption
+;; basis until T12, and the next run readopts the new one. 70: a task with changed captures and a sequence with a
+;; changed initial state are fresh rows; their predecessors stay in the adoption basis, the task runs until T12.
+(def ^:private adoption-specs
+  {"69" {:w {:log (log "69-w") :kind :root}}
+   "70" {:w {:log (log "70-w") :kind :root}}})
+
+(deftest adoption-samples
+  (doseq [[n spec] adoption-specs]
+    (let [fam (o/replay-family spec)]
+      (doseq [[k {:keys [res]}] fam]
+        (is (= [(count (:log (spec k))) 0 0] ((juxt :checked :n-divergences :resyncs) res)) (str "sample " n " " k))))))
+
+(deftest adoption-sample-shapes
+  (let [items (fn [n] (filter #(#{:create-source :spawn} (first (:item %))) (log n)))]
+    (is (every? :accepted (log "69-w")))
+    (is (every? :accepted (log "70-w")))
+    (let [[_ m1 m2 m3] (map #(peek (:item %)) (items "69-w"))]
+      (is (not= m1 m2) "69: the mailbox at the signal's ordinal is a new source")
+      (is (= m2 m3) "69: the next run readopts it"))
+    (let [[k1 k2] (items "70-w")
+          r1 (get-in (:proj k1) [:tasks (nth (:item k1) 3) :run])]
+      (is (not= (nth (:item k1) 3) (nth (:item k2) 3)) "70: changed captures spawn a fresh task")
+      (is (#{:active :parked} (get-in (:proj k2) [:runs r1 :act])) "70: no cancel in the spawn's item")
+      (is (some (fn [[_ c]] (some #{(nth (:item k1) 3)} (get-in c [:adoption :basis]))) (:comps (:proj k2)))
+          "70: the predecessor stays in the adoption basis"))))
+
+(deftest projection-roundtrip-adoption
+  (doseq [n ["69-w" "70-w"]]
+    (is (= [] (o/roundtrip (log n))) (str "sample " n))))
