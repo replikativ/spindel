@@ -1,4 +1,4 @@
-;; Keyed creation (spec §5.2 Z#82, phase-d design §1.13): oracle log samples 75-79. Keys are absent from the
+;; Keyed creation (spec §5.2 Z#82, phase-d design §1.13): oracle log samples 75-79 and 81. Keys are absent from the
 ;; model (ids are item inputs), so the replay shows each chosen id is a legal item; the shape checks in
 ;; oracle_test.clj (`keyed-sample-shapes`) pin the key -> id mapping.
 ;;
@@ -15,6 +15,10 @@
 ;; 79  w: repeated interrupted reruns with fresh keys. Each run creates a child under the key of the tracked value
 ;;     and parks on an empty mailbox (no completion). Each cut replaces the adoption basis with the previous run's
 ;;     child only.
+;; 81  w: creations rejected at the ordinal limit change nothing (sol's review of #359). The count of a creation
+;;     site is seeded at 2^20 in the running run (test-only access to R-ORD); the next creation there throws
+;;     ::too-many-creations, the body catches it and continues: in a task with a task-owned computation, and in a
+;;     computation with a body source (site -1). No item, effect index, id or row comes from the rejection.
 ;;
 ;; From the repository root (one -Xmx1g JVM):
 ;;   clojure -J-Xmx1g -Sdeps '{:paths ["src" "test"]}' -M -i formal/test/spindel/v2/oracle/gen/samples-keyed.clj
@@ -22,6 +26,8 @@
 (ns samples-keyed
   (:refer-clojure :exclude [await])
   (:require [org.replikativ.spindel.v2.core :as v2 :refer [spin task track await await-all take!]]
+            [org.replikativ.spindel.v2.rows :as rw]
+            [org.replikativ.spindel.v2.host :as hs]
             [org.replikativ.spindel.v2.verify :as verify]
             [org.replikativ.spindel.incremental.interval :as iv]
             [clojure.pprint]))
@@ -115,3 +121,23 @@
   (v2/observe! c (fn [_ _]))
   (doseq [v [1 2 3 4]] (v2/write! s v))
   (finish! 79 w acc))
+
+;; 81
+(defn- reject-at-limit
+  "Inside a body: one creation with `make` (whose creation key is `(key-of h)`) gives its site; with the
+   site's count seeded at 2^20 the next one is rejected, and caught."
+  [make key-of]
+  (let [site (Math/floorDiv (long (key-of (make))) 1048576)]
+    (hs/mput! (aget ^objects (v2/active-run) rw/R-ORD) site 1048576)
+    (try (make) :created (catch Exception e (:spindel/invalid (ex-data e))))))
+(defn- frame-key [h] (peek (aget ^objects (v2/row-of h) rw/C-FRAME)))
+(defn- row-key [h] (aget ^objects (v2/row-of h) rw/KEY))
+(let [acc (atom []) w (vworld acc)
+      [t c] (in w #(vector (task (let [r (reject-at-limit (fn [] (spin nil)) frame-key)]
+                                   [r (await (spin :after))]))
+                           (spin (let [r (reject-at-limit (fn [] (v2/signal 0)) row-key)]
+                                   [r (await (spin :after))]))))]
+  (v2/observe! c (fn [_ _]))
+  (assert (= [::v2/too-many-creations :after] (v2/value t 2000 :timeout)))
+  (assert (= [::v2/too-many-creations :after] (v2/value c 2000 :timeout)))
+  (finish! 81 w acc))
