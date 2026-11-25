@@ -16,6 +16,7 @@
     a binding frame conveyed to a future, a deferred callback or a child
     computation retains only a small dead record."
   (:require [org.replikativ.spindel.engine.hash :as h]
+            #?(:clj [clojure.string :as str])
             #?(:clj [replikativ.logging :as log])))
 
 (defn element-address
@@ -85,3 +86,48 @@
      (if (:js-globals env)
        (contains? (:locals env) '__dom-parent)
        (contains? env '__dom-parent))))
+
+;; ---------------------------------------------------------------------------
+;; Macro time: the source identity an address hashes
+
+#?(:clj
+   (defn canonical-source
+     "The classpath-relative path of source file `path`, as a compiler names
+      it: a resource path (the JVM's `*file*`, shadow-cljs), a path relative
+      to the working directory `cwd` or an absolute one (the stock
+      ClojureScript compiler), a file: or jar: URL. A file path under one of
+      the directories `roots` loses the longest such root; a path under none
+      is returned unchanged."
+     [path cwd roots]
+     (let [p (str path)]
+       (cond
+         (str/starts-with? p "jar:") (subs p (+ 2 (str/index-of p "!/")))
+         (str/starts-with? p "file:") (recur (.getPath (java.net.URI. p)) cwd roots)
+         :else
+         (let [norm (fn [f] (str (.normalize (.toAbsolutePath (.toPath ^java.io.File f)))))
+               abs (norm (let [f (java.io.File. p)] (if (.isAbsolute f) f (java.io.File. (str cwd) p))))
+               root (->> roots
+                         (map #(norm (let [f (java.io.File. (str %))] (if (.isAbsolute f) f (java.io.File. (str cwd) (str %))))))
+                         (filter #(str/starts-with? abs (str % "/")))
+                         (sort-by count >)
+                         first)]
+           (if root (subs abs (inc (count root))) p))))))
+
+#?(:clj
+   (def ^:private classpath-dirs
+     (delay (->> (str/split (System/getProperty "java.class.path") (re-pattern java.io.File/pathSeparator))
+                 (filter #(.isDirectory (java.io.File. ^String %)))
+                 vec))))
+
+#?(:clj
+   (defn source-file
+     "Macro time: the canonical source path of the form being compiled in
+      `env`. The JVM names it in `*file*`; ClojureScript compilers in
+      `cljs.analyzer/*cljs-file*` (shadow-cljs leaves `*file*` as
+      NO_SOURCE_PATH), as a resource path or a file path."
+     [env]
+     (canonical-source (if (:js-globals env)
+                         (some-> (resolve 'cljs.analyzer/*cljs-file*) deref)
+                         *file*)
+                       (System/getProperty "user.dir")
+                       @classpath-dirs)))

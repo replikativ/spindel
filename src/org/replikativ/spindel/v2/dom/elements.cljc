@@ -17,24 +17,35 @@
              c1 (let [__dom-parent eff __dom-slot 1] <c1, treated>)]
          (build-element :li my a [c0 c1]))
 
-  A plain function component cannot see the locals; a child form that may
-  call one is treated:
-  - an effect-free child that contains a call whose head is a local or a
-    function var outside clojure.core/cljs.core runs under
-    `call-with-context`;
-  - an effectful child: a call with effectful arguments is hoisted (the
-    arguments bound in order, then the call under the context); in a
-    `let`/`let*` each initializer and the last body form, in a `do` the
-    last form, in an `if`/`when`/`when-not` the branches are treated by
-    these same rules; DOM macros inside see the locals.
+  A plain function component cannot see the locals. A child form is
+  treated so that every plain component it may call runs under the
+  context. A possible component call is a call whose head is a local or a
+  function var outside clojure.core/cljs.core (not a macro or an effect),
+  or an indirect one: a component var or a function literal that calls one
+  passed as an argument, a local passed as the function of a core
+  higher-order function (`apply`, `mapv`, `reduce`, ...), a `for`/`doseq`
+  that calls one.
+  - An effect-free form that may call a component runs under
+    `call-with-context`.
+  - An effectful form is taken apart in a closed set of shapes, whose
+    parts are treated by these same rules: a call (its operands bound in
+    order, symbols, literals and function literals left in place, then the
+    call), `let`/`let*` (destructuring lowered first; every initializer and
+    body form), `do`, `if`, `when`/`when-not` (every form). DOM macros see
+    the locals; an inline `spin`'s body is treated too.
 
-  Unsupported positions: a plain component call inside an effectful `loop`,
-  `case`, `cond`, `condp`, `try`, threading macro, `doseq`/`for` or any
-  other macro; a plain component called from a helper function that is
-  itself called after a suspension; a component result computed after a
-  suspension and passed through a local defined outside the child form.
-  Use `in-context` there. A recognizable unsupported form prints the
-  compile-time warning ::unaddressed-call with its location.
+  Unsupported, with the compile-time warning ::unaddressed-call at the
+  form's location:
+  - a possible component call in any other effectful form after a
+    suspension (`loop`, `case`, `cond`, `condp`, `try`, a threading macro,
+    any other macro);
+  - a lazy sequence of component calls (`map`, `for`, ...): it is realized
+    later, outside the context; use an eager form (`mapv`, `into []`);
+  - a computation or task created in a position the rules do not reach
+    (or a task anywhere) whose body calls a plain component.
+  Not recognizable, so not warned: a plain component called from a helper
+  function that is itself called after a suspension, or called through a
+  function value the rules cannot see. Use `in-context` there.
 
   Computations: an inline `spin` in a child captures the locals; a
   computation made by a plain component is created with `component`."
@@ -43,6 +54,7 @@
             [org.replikativ.spindel.dom.fragment :as frag]
             [org.replikativ.spindel.v2.core :as v2]
             [org.replikativ.spindel.v2.dom.addressing :as addr]
+            #?(:clj [org.replikativ.spindel.v2.macro-support :as ms])
             #?(:clj [is.simm.partial-cps.ioc :as ioc]))
   #?(:cljs (:require-macros [org.replikativ.spindel.v2.dom.elements])))
 
@@ -79,8 +91,6 @@
   {:type (cond
            (nil? child) :nil
            (frag/keyed-fragment? child) :keyed
-           (core/vnode? child) :single
-           (vector? child) :keyed
            :else :single)
    :value child})
 
@@ -136,72 +146,168 @@
      ;; times (partial-cps, the free-variable analysis, the compiler)
      (defonce ^:private warned (atom #{}))
 
-     (defn- local? [env sym]
-       (if (:js-globals env) (contains? (:locals env) sym) (contains? env sym)))
-
-     (defn- macro-meta
-       "The var metadata of macro `h` in `env`, or nil."
-       [env h]
-       (when (and (symbol? h) (not (local? env h)))
-         (if (:js-globals env)
-           (let [m (ioc/resolve-macro-var-cljs env h)] (when (:macro m) m))
-           (let [v (try (resolve env h) (catch Exception _ nil))]
-             (when (and (var? v) (:macro (meta v))) (meta v))))))
-
-     (defn- dom-macro? [env h] (boolean (::dom-macro (macro-meta env h))))
-
-     (defn- special? [env h]
-       (or (special-symbol? h)
-           (and (:js-globals env) (contains? @(requiring-resolve 'cljs.analyzer/specials) h))))
-
-     (defn- head-name [env h] (try (ioc/var-name env h) (catch Exception _ nil)))
+     (defn- dom-macro? [env h] (boolean (::dom-macro (ms/macro-meta env h))))
 
      (defn- interop? [h]
        (let [n (name h)] (or (str/starts-with? n ".") (str/ends-with? n "."))))
 
-     (defn- component-head?
-       "Whether a call of `h` may be a plain component: `h` is a local, or a
-        function var outside clojure.core/cljs.core. Macros, effects,
-        special forms and interop are not."
+     (defn- core-name? [q]
+       (boolean (and q (#{"clojure.core" "cljs.core"} (namespace q)))))
+
+     (defn- inline-fn?
+       "Whether `h` names a ClojureScript core function that also has a
+        macro (`some?`, `+`, ...): a call of it is a function call."
        [env h]
-       (cond
-         (not (symbol? h)) false
-         (local? env h) true
-         (special? env h) false
-         (macro-meta env h) false
-         (interop? h) false
-         (v2/effectful? env (list h)) false
-         :else (let [q (head-name env h)]
-                 (boolean (and q (namespace q)
-                               (not (#{"clojure.core" "cljs.core" "js"} (namespace q))))))))
+       (and (:js-globals env)
+            (let [q (ms/head-name env h)]
+              (and (core-name? q)
+                   (some? (get-in @@(requiring-resolve 'cljs.env/*compiler*)
+                                  [:cljs.analyzer/namespaces 'cljs.core :defs (symbol (name q))]))))))
+
+     (defn- component-var?
+       "Whether symbol `h` names a function var that may be a plain
+        component: outside clojure.core/cljs.core, not a macro, an effect,
+        a special form or interop."
+       [env h]
+       (and (symbol? h)
+            (not (ms/local? env h))
+            (not (ms/special? env h))
+            (not (ms/macro-meta env h))
+            (not (interop? h))
+            (not (v2/effectful? env (list h)))
+            (let [q (ms/head-name env h)]
+              (boolean (and q (namespace q) (not (core-name? q)) (not= "js" (namespace q)))))))
+
+     (defn- component-head?
+       "Whether a call of `h` may be a plain component: `h` is a local or a
+        component var."
+       [env h]
+       (and (symbol? h) (or (ms/local? env h) (component-var? env h))))
+
+     (def ^:private hof-names
+       "Core functions that call their first argument, a function,
+        synchronously or lazily."
+       '#{apply map mapv filter filterv remove keep keep-indexed map-indexed mapcat
+          reduce reduce-kv run! some every? not-any? not-every?
+          sort-by group-by partition-by take-while drop-while repeatedly})
+
+     (def ^:private lazy-names
+       "Core functions whose result realizes the calls of its function argument later."
+       '#{map filter remove keep keep-indexed map-indexed mapcat partition-by
+          take-while drop-while repeatedly})
+
+     (declare component-call-in?)
+
+     (defn- fn-form? [env x]
+       (and (seq? x)
+            (or (= 'fn* (first x))
+                (#{'clojure.core/fn 'cljs.core/fn} (ms/head-name env (first x))))))
+
+     (defn- fn-calls-component?
+       "Whether a function literal calls a possible component in its body."
+       [env [_ & tail]]
+       (let [tail (if (symbol? (first tail)) (rest tail) tail)
+             arities (if (vector? (first tail)) [tail] tail)]
+         (boolean (some (fn [[params & body]]
+                          (component-call-in? (ioc/bind-locals env (ioc/binding-symbols params))
+                                              (cons 'do body)))
+                        arities))))
+
+     (defn- seq-macro
+       "The core sequence macro `x` calls (:for or :doseq), or nil."
+       [env x]
+       ({'clojure.core/for :for 'cljs.core/for :for 'clojure.core/doseq :doseq 'cljs.core/doseq :doseq}
+        (ms/head-name env (first x))))
+
+     (defn- indirect-call?
+       "Whether call `x` calls a possible component indirectly: it passes a
+        component var or a function literal that calls one, or a core
+        higher-order function gets a local as its function; or it is a
+        `for`/`doseq` whose bindings or body call one."
+       [env x]
+       (if (seq-macro env x)
+         (component-call-in? env (cons 'do (rest x)))
+         (let [q (ms/head-name env (first x))
+               fs (when (and (core-name? q) (contains? hof-names (symbol (name q))))
+                    (set (take (if (= "repeatedly" (name q)) 2 1) (rest x))))]
+           (boolean (some (fn [a]
+                            (cond (symbol? a) (if (ms/local? env a) (contains? fs a) (component-var? env a))
+                                  (fn-form? env a) (fn-calls-component? env a)))
+                          (rest x))))))
 
      (defn- component-call-in?
-       "Whether `form` calls a possible component in its own scope, outside
-        DOM macros (they place their own children)."
+       "Whether `form` calls a possible component, directly or indirectly,
+        in its own scope, outside DOM macros (they place their own
+        children)."
        [env form]
-       (boolean (v2/scope-some env form
-                               (fn [env x]
-                                 (let [h (first x)]
-                                   (cond (dom-macro? env h) ::v2/skip
-                                         (component-head? env h) true))))))
+       (boolean (ms/some-call env form
+                              (fn [env x]
+                                (let [h (first x)]
+                                  (cond (dom-macro? env h) :org.replikativ.spindel.v2.macro-support/skip
+                                        (component-head? env h) true
+                                        (indirect-call? env x) true))))))
+
+     (defn- lazy-call-in?
+       "Whether `form` builds a lazy sequence of component calls in its own
+        scope: it is realized later, outside any context."
+       [env form]
+       (boolean (ms/some-call env form
+                              (fn [env x]
+                                (let [h (first x) q (ms/head-name env h)]
+                                  (cond (dom-macro? env h) :org.replikativ.spindel.v2.macro-support/skip
+                                        (= :for (seq-macro env x)) (indirect-call? env x)
+                                        (and (core-name? q) (contains? lazy-names (symbol (name q))))
+                                        (indirect-call? env x)))))))
+
+     (defn- deferred-call-in?
+       "Whether `form` creates a computation or task in its own scope whose
+        body calls a possible component: the body runs later, without the
+        synchronous context."
+       [env form]
+       (boolean (ms/some-call env form
+                              (fn [env x]
+                                (cond (dom-macro? env (first x)) :org.replikativ.spindel.v2.macro-support/skip
+                                      :else (when-let [body (ms/body-of env x)]
+                                              (let [b (cons 'do body)]
+                                                (or (component-call-in? env b) (deferred-call-in? env b)))))))))
 
      (defn- wrap [form]
        `(addr/call-with-context ~'__dom-parent ~'__dom-slot (fn [] ~form)))
 
-     (defn- warn-if-unaddressed!
-       "Prints ::unaddressed-call for an effectful `form` the rules do not
-        handle when it calls a possible component."
+     (defn- warn!
+       "Prints ::unaddressed-call for `form`, once per location."
+       [loc form why]
+       (let [at (merge loc (select-keys (meta form) [:line :column]))]
+         (when-not (contains? @warned at)
+           (swap! warned conj at)
+           (binding [*out* *err*]
+             (println "WARNING:" ::unaddressed-call (pr-str at) "-" why
+                      "- the call gets no DOM context; see the el/ namespace doc (el/in-context)")))))
+
+     (defn- finish
+       "An effect-free form, or a form the rules do not take apart: run
+        under the context when it calls a possible component and is
+        effect-free; warn when it cannot be placed."
        [env loc form]
-       (when (component-call-in? env form)
-         (let [at (merge loc (select-keys (meta form) [:line :column]))]
-           (when-not (contains? @warned at)
-             (swap! warned conj at)
-             (binding [*out* *err*]
-               (println "WARNING:" ::unaddressed-call (pr-str at)
-                        "- a plain component called here after a suspension gets no DOM context;"
-                        "wrap the call in el/in-context"))))))
+       (let [calls? (component-call-in? env form)
+             eff? (v2/effectful? env form)]
+         (when (deferred-call-in? env form)
+           (warn! loc form "a computation or task created here calls a plain component in its body"))
+         (when (lazy-call-in? env form)
+           (warn! loc form "a lazy sequence of component calls is realized later; use an eager form (mapv, into [])"))
+         (cond
+           (not calls?) form
+           (not eff?) (wrap form)
+           :else (do (warn! loc form "a plain component is called after a suspension in an unsupported form")
+                     form))))
 
      (declare treat)
+
+     (defn- treat-from
+       "`form` with every form after the first `n` treated."
+       [env loc form n]
+       (let [[head body] (split-at n form)]
+         (with-meta (apply list (concat head (map #(treat env loc %) body))) (meta form))))
 
      (defn- treat-let [env loc [h bvec & body :as form]]
        (let [[bvec' env'] (loop [ps (partition 2 bvec) out [] env env]
@@ -209,62 +315,61 @@
                               (recur (rest ps) (conj out b (treat env loc init))
                                      (ioc/bind-locals env (ioc/binding-symbols b)))
                               [out env]))]
-         (with-meta (if (seq body)
-                      `(~h ~bvec' ~@(butlast body) ~(treat env' loc (last body)))
-                      `(~h ~bvec'))
-           (meta form))))
+         (with-meta (apply list h bvec' (map #(treat env' loc %) body)) (meta form))))
 
-     (defn- treat-last [env loc form n]
-       ;; the forms of `form` after the first `n` are a body: treat its last
-       (let [[head body] (split-at n form)]
-         (with-meta (if (seq body)
-                      `(~@head ~@(butlast body) ~(treat env loc (last body)))
-                      form)
-           (meta form))))
-
-     (defn- treat-if [env loc [h test then & more :as form]]
-       (with-meta `(~h ~test ~(treat env loc then) ~@(map #(treat env loc %) more)) (meta form)))
+     (defn- keep-in-place?
+       "An operand whose evaluation has no effect and that the indirect-call
+        check must see: a symbol, a literal or a function literal."
+       [env a]
+       (or (symbol? a) (not (coll? a)) (fn-form? env a)))
 
      (defn- hoist
-       "A call with effectful arguments: the arguments bound in order (each
-        treated), then the call, under the context if it may be a component."
+       "A call: the operands that need it are bound in order (each treated),
+        then the call is finished."
        [env loc [h & args :as form]]
-       (if-not (or (component-head? env h) (some #(component-call-in? env %) args))
+       (if-not (or (component-call-in? env form) (deferred-call-in? env form))
          form
-         (let [ts (mapv (fn [_] (gensym "arg")) args)
-               call (with-meta (list* h ts) (meta form))]
-           `(let [~@(interleave ts (map #(treat env loc %) args))]
-              ~(if (component-head? env h) (wrap call) call)))))
+         (let [ts (mapv #(when-not (keep-in-place? env %) (gensym "arg")) args)
+               call (with-meta (cons h (map #(or %1 %2) ts args)) (meta form))]
+           `(let [~@(mapcat (fn [t a] (when t [t (treat env loc a)])) ts args)]
+              ~(finish (ioc/bind-locals env (remove nil? ts)) loc call)))))
 
      (defn- treat
-       "A child form (or a part of one, §2.5) in `env`, where the reserved
-        locals are bound."
+       "A form in a position whose value or effects the DOM context must
+        reach (§2.5), in `env` where the reserved locals are bound."
        [env loc form]
        (cond
-         (not (v2/effectful? env form))
-         (if (component-call-in? env form) (wrap form) form)
+         (ms/body-of env form)
+         (if (= 'org.replikativ.spindel.v2.core/spin (ms/head-name env (first form)))
+           ;; an inline computation: its body is treated too, it captures the locals
+           (with-meta (apply list (first form) (map #(treat env loc %) (rest form))) (meta form))
+           (finish env loc form))
+
+         (not (or (v2/effectful? env form) (deferred-call-in? env form)))
+         (finish env loc form)
 
          (not (and (seq? form) (symbol? (first form))))
-         (do (warn-if-unaddressed! env loc form) form)
+         (finish env loc form)
 
          :else
          (let [h (first form)]
            (cond
              (dom-macro? env h) form
-             (local? env h) (hoist env loc form)
-             (special? env h) (case h
-                                let* (treat-let env loc form)
-                                do (treat-last env loc form 1)
-                                if (treat-if env loc form)
-                                (do (warn-if-unaddressed! env loc form) form))
+             (ms/local? env h) (hoist env loc form)
+             (ms/special? env h) (case h
+                                   let* (treat-let env loc form)
+                                   (do if) (treat-from env loc form 1)
+                                   (finish env loc form))
              :else
-             (let [q (head-name env h)]
+             (let [q (ms/head-name env h)]
                (cond
-                 (#{'clojure.core/let 'cljs.core/let} q) (treat-let env loc form)
+                 ;; destructuring is lowered first: its defaults are code
+                 (#{'clojure.core/let 'cljs.core/let} q)
+                 (treat-let env loc (with-meta (first (ioc/expand-macro form env)) (meta form)))
                  (#{'clojure.core/when 'cljs.core/when 'clojure.core/when-not 'cljs.core/when-not} q)
-                 (treat-last env loc form 2)
-                 (or (macro-meta env h) (interop? h))
-                 (do (warn-if-unaddressed! env loc form) form)
+                 (treat-from env loc form 1)
+                 (or (and (ms/macro-meta env h) (not (inline-fn? env h))) (interop? h))
+                 (finish env loc form)
                  :else (hoist env loc form)))))))
 
      (defn- context-bindings
@@ -276,14 +381,10 @@
            [c `(addr/current '~loc) p `(nth ~c 0) s `(nth ~c 1)])))
 
      (defn- source-loc
-       "The location of `form`. The file is the source's classpath path on
-        both platforms (D2): `*file*` on the JVM; ClojureScript compilers do
-        not bind `*file*` (it is \"NO_SOURCE_PATH\" under shadow-cljs) but
-        `cljs.analyzer/*cljs-file*`."
+       "The location of `form`: its canonical source path (the same on every
+        platform and compiler, D2), line and column."
        [env form]
-       {:file (if (:js-globals env)
-                (some-> (resolve 'cljs.analyzer/*cljs-file*) deref str)
-                *file*)
+       {:file (addr/source-file env)
         :line (:line (meta form))
         :column (:column (meta form))})
 
@@ -313,7 +414,7 @@
 
      (defmacro ^:private defelements [& specs]
        `(do ~@(for [[nm tag] (partition 2 specs)]
-                `(defmacro ~(with-meta nm {::dom-macro true ::v2/scope ::v2/transparent
+                `(defmacro ~(with-meta nm {::dom-macro true :org.replikativ.spindel.v2.macro-support/scope :org.replikativ.spindel.v2.macro-support/transparent
                                            :doc element-doc :arglists ''([& args])})
                    [& args#]
                    (element-form ~tag args# ~'&form ~'&env)))))))
@@ -338,33 +439,46 @@
      script :script, style :style))
 
 #?(:clj
-   (defmacro ^{::dom-macro true ::v2/scope ::v2/transparent} element
+   (defmacro ^{::dom-macro true :org.replikativ.spindel.v2.macro-support/scope :org.replikativ.spindel.v2.macro-support/transparent} element
      "An element with a dynamic tag: (element tag attrs? & children)."
      [tag & args]
      (element-form tag args &form &env)))
 
 #?(:clj
-   (defmacro ^{::dom-macro true ::v2/scope ::v2/transparent} in-context
+   (defmacro ^{::dom-macro true :org.replikativ.spindel.v2.macro-support/scope :org.replikativ.spindel.v2.macro-support/transparent} in-context
      "The explicit boundary: runs the effect-free `body` under the current
       DOM context (the reserved locals, or the synchronous context), so a
-      plain component called in it is placed there. Usable after a
-      suspension: (case (await mode) :a (el/in-context (card-a x)) ...)."
+      plain component called in it, also indirectly, is placed there.
+      Usable after a suspension: (case (await mode) :a (el/in-context
+      (card-a x)) ...). An effect in `body` is a compile error."
      [& body]
-     (if (addr/lexical-context? &env)
-       `(addr/call-with-context ~'__dom-parent ~'__dom-slot (fn [] ~@body))
-       (let [c (gensym "context")]
-         `(let [~c (addr/current '~(source-loc &env &form))]
-            (addr/call-with-context (nth ~c 0) (nth ~c 1) (fn [] ~@body)))))))
+     (let [loc (source-loc &env &form)
+           env (ioc/bind-locals &env reserved)]
+       (when (v2/effectful? &env (cons 'do body))
+         (throw (ex-info "el/in-context: its body must be effect-free; await before it" {:loc loc})))
+       (when (deferred-call-in? env (cons 'do body))
+         (warn! loc &form "a computation or task created here calls a plain component in its body"))
+       (when (lazy-call-in? env (cons 'do body))
+         (warn! loc &form "a lazy sequence of component calls is realized later; use an eager form (mapv, into [])"))
+       (if (addr/lexical-context? &env)
+         `(addr/call-with-context ~'__dom-parent ~'__dom-slot (fn [] ~@body))
+         (let [c (gensym "context")]
+           `(let [~c (addr/current '~loc)]
+              (addr/call-with-context (nth ~c 0) (nth ~c 1) (fn [] ~@body))))))))
 
 #?(:clj
-   (defmacro ^{::dom-macro true ::v2/scope ::v2/opaque} component
+   (defmacro ^{::dom-macro true :org.replikativ.spindel.v2.macro-support/scope :org.replikativ.spindel.v2.macro-support/opaque} component
      "A computation made by a plain component: (component body...) is a
-      `spin` whose body's elements are placed at the component's DOM
-      context, captured as an input (moved, it reruns). The spin keeps this
-      form's source location as its creation site."
+      `spin` whose body is placed at the component's DOM context, captured
+      as an input (moved, it reruns). Its body is treated like an element
+      child: elements in it, and plain components it calls, also after a
+      suspension in the supported shapes, are placed there. The spin keeps
+      this form's source location as its creation site."
      [& body]
-     (let [spin-form (with-meta `(v2/spin ~@body) (meta &form))]
+     (let [loc (source-loc &env &form)
+           env (ioc/bind-locals &env reserved)
+           spin-form (with-meta `(v2/spin ~@(map #(treat env loc %) body)) (meta &form))]
        (if (addr/lexical-context? &env)
          spin-form
-         `(let [[~'__dom-parent ~'__dom-slot] (addr/current '~(source-loc &env &form))]
+         `(let [[~'__dom-parent ~'__dom-slot] (addr/current '~loc)]
             ~spin-form)))))
