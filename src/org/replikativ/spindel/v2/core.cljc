@@ -2535,12 +2535,17 @@
 (defn- effect-key!
   "§8.2: a registered effect's occurrence key, the site and a per-run
    ordinal of that site; never keyed. Shares R-ORD with positional
-   creations by site."
+   creations by site. An ordinal below 2^20 is packed with its site into a
+   long (site < 2^30: exact in JS doubles); a larger one, which would spill
+   into the next site's range, is the pair [site ordinal], so keys stay
+   distinct however long a run's effect loop is."
   [r site]
   (let [ords (or (gm r rw/R-ORD) (let [m (hs/vmap)] (s! r rw/R-ORD m) m))
         ord (long (or (hs/mget ords site) 0))]
     (hs/mput! ords site (inc ord))
-    (+ (* (long site) 1048576) ord)))   ; site < 2^30, ord < 2^20: exact in JS doubles
+    (if (< ord 1048576)
+      (+ (* (long site) 1048576) ord)
+      [site ord])))
 
 (defn- creation-key!
   "§5.2 (Z#82): the creation key of a creation at `site` in run `r`.
@@ -2558,7 +2563,7 @@
           (when (<= 1048576 (long (or (hs/mget ords site) 0)))
             (throw (ex-info "too many creations at one site in one run (2^20); create them under with-key"
                             {:spindel/invalid ::too-many-creations :site site}))))
-        (effect-key! r site))))
+        (effect-key! r site))))   ; below 2^20: the packed long, decoded by restore-ordinals!
 
 (defn with-key*
   "§5.2 (Z#82), the thunk form of `with-key`: calls `f` with `k` appended to
