@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.incremental.sequence-algebra-test
+(ns org.replikativ.spindel.v2.incremental.sequence-algebra-test
   "Property tests for `SequenceAlgebra`. Pins all four monoid laws plus
    the state-diff round-trip and the `empty-deltas?` predicate.
 
@@ -181,3 +181,154 @@
                                                  (sa/diff {:degree n :change {0 :x}})
                                                  (sa/diff {:degree 1 :grow 1
                                                            :change {0 :x}})))))))
+
+;; =============================================================================
+;; Composition law cases (phase D review): delete→insert, move→delete,
+;; change→move, and size-changing compositions.
+;;
+;; Each case is a chain of states s0 → s1 → s2 (→ s3). Every step's diff
+;; must take its state to the next, and the composed diff must take s0 to
+;; the last state directly. Diffs come from both producers: `keyed-seq-diff`
+;; (identity by key, so moves are permutations) and `state-diff` (identity
+;; by value, so a move may come out as changes — correct, not minimal).
+;;
+;; States are vectors of [key value] items; a "change" keeps the key and
+;; replaces the value.
+;; =============================================================================
+
+(defn- keyed-diff
+  "keyed-seq-diff between two states of [key value] items, or the identity
+   diff when nothing changed (keyed-seq-diff returns nil then)."
+  [prev new]
+  (or (sa/keyed-seq-diff (mapv first new) (mapv first prev)
+                         (into {} (map (juxt first identity)) new)
+                         (into {} (map (juxt first identity)) prev)
+                         =)
+      (a/empty-deltas alg {:size (count prev)})))
+
+(defn- value-diff [prev new]
+  (a/state-diff alg prev new))
+
+(defn- chain-holds?
+  "True when every step diff of `states` (made by `diff-fn`) takes its state
+   to the next, the left- and right-folded compositions both take the first
+   state to the last, and composition with the identity on either side
+   changes nothing."
+  [diff-fn states]
+  (let [steps (mapv diff-fn states (rest states))
+        s0 (first states)
+        sn (peek states)
+        left (reduce #(a/compose-deltas alg %1 %2) steps)
+        right (reduce #(a/compose-deltas alg %2 %1) (rseq steps))]
+    (and (every? true? (map (fn [s d s'] (= s' (a/apply-deltas alg s d)))
+                            states steps (rest states)))
+         (= sn (a/apply-deltas alg s0 left))
+         (= sn (a/apply-deltas alg s0 right))
+         (= (count s0) (sa/size-before left))
+         (= (count sn) (sa/size-after left))
+         (= sn (a/apply-deltas alg s0 (a/compose-deltas
+                                       alg (a/empty-deltas alg {:size (count s0)}) left)))
+         (= sn (a/apply-deltas alg s0 (a/compose-deltas
+                                       alg left (a/empty-deltas alg {:size (count sn)})))))))
+
+(defn- items [& kvs] (mapv vec (partition 2 kvs)))
+
+(def ^:private law-cases
+  {"delete -> insert, middle"
+   [(items :a 1 :b 2 :c 3 :d 4) (items :a 1 :c 3 :d 4) (items :a 1 :x 9 :c 3 :d 4)]
+   "delete at head -> insert at tail"
+   [(items :a 1 :b 2 :c 3) (items :b 2 :c 3) (items :b 2 :c 3 :x 9)]
+   "delete at tail -> insert at head (grow after a shrink region)"
+   [(items :a 1 :b 2 :c 3) (items :a 1 :b 2) (items :x 9 :a 1 :b 2)]
+   "delete -> re-insert the same key elsewhere"
+   [(items :a 1 :b 2 :c 3) (items :a 1 :c 3) (items :a 1 :c 3 :b 2)]
+   "move -> delete the moved item"
+   [(items :a 1 :b 2 :c 3 :d 4) (items :b 2 :c 3 :d 4 :a 1) (items :b 2 :c 3 :d 4)]
+   "move -> delete another item"
+   [(items :a 1 :b 2 :c 3 :d 4) (items :b 2 :c 3 :d 4 :a 1) (items :b 2 :d 4 :a 1)]
+   "reverse -> delete head"
+   [(items :a 1 :b 2 :c 3) (items :c 3 :b 2 :a 1) (items :b 2 :a 1)]
+   "change -> move the changed item"
+   [(items :a 1 :b 2 :c 3) (items :a 1 :b 20 :c 3) (items :b 20 :a 1 :c 3)]
+   "change -> move another item"
+   [(items :a 1 :b 2 :c 3) (items :a 10 :b 2 :c 3) (items :b 2 :c 3 :a 10)]
+   "change -> swap two changed items"
+   [(items :a 1 :b 2) (items :a 10 :b 20) (items :b 20 :a 10)]
+   "grow -> shrink past the grown items"
+   [(items :a 1 :b 2) (items :a 1 :b 2 :c 3 :d 4) (items :a 1)]
+   "shrink to empty -> grow from empty"
+   [(items :a 1 :b 2 :c 3) [] (items :x 9 :y 8)]
+   "grow from empty -> shrink to empty"
+   [[] (items :a 1 :b 2) []]
+   "insert -> delete -> insert, net size change"
+   [(items :a 1 :b 2) (items :a 1 :x 9 :b 2) (items :x 9 :b 2) (items :x 9 :b 2 :y 8 :z 7)]
+   "delete two -> insert one -> move -> change"
+   [(items :a 1 :b 2 :c 3 :d 4) (items :a 1 :d 4) (items :a 1 :x 9 :d 4)
+    (items :d 4 :a 1 :x 9) (items :d 4 :a 1 :x 90)]})
+
+(deftest composition-law-cases
+  (doseq [[label states] law-cases]
+    (testing label
+      (is (chain-holds? keyed-diff states) "keyed-seq-diff")
+      (is (chain-holds? value-diff states) "state-diff"))))
+
+(deftest keyed-moves-are-permutations
+  (testing "keyed-seq-diff expresses a move as a permutation alone: no grow,
+            no shrink, no change. state-diff only promises a correct diff,
+            not a minimal one, so it is not held to this."
+    (let [s0 (items :a 1 :b 2 :c 3 :d 4)
+          s1 (items :b 2 :c 3 :d 4 :a 1)
+          d (keyed-diff s0 s1)]
+      (is (zero? (:grow d)))
+      (is (zero? (:shrink d)))
+      (is (empty? (:change d)))
+      (is (seq (:permutation d)))
+      (is (= s1 (a/apply-deltas alg s0 (value-diff s0 s1)))))))
+
+(def ^:private gen-keyed-state
+  "A vector of [key value] items with distinct keys from a small pool and
+   values from a small set, so consecutive states share keys and values."
+  (gen/let [ks (gen/shuffle (range 6))
+            n (gen/choose 0 6)
+            vs (gen/vector (gen/elements [:p :q]) 6)]
+    (mapv vector (take n ks) vs)))
+
+(defspec keyed-diff-chain-composition 300
+  ;; Arbitrary mixes of delete, insert, move and change across three steps.
+  (prop/for-all [states (gen/vector gen-keyed-state 2 4)]
+                (and (chain-holds? keyed-diff states)
+                     (chain-holds? value-diff states))))
+
+;; =============================================================================
+;; nil and false keys (phase D decision: reject them)
+;;
+;; keyed-seq-diff assigns grown and doomed slots with `(filterv added
+;; order)` and `(filterv removed prev-order)`: the key sets are the
+;; predicates, so a nil or false key is a member that tests falsy and gets
+;; no slot. The diff's permutation is then not a bijection. Phase D does not
+;; teach the algebra these keys; callers reject them before diffing
+;; (`ifor-each` throws ::invalid-key). These cases pin the edge: if
+;; keyed-seq-diff ever handles them, revisit that decision.
+;; =============================================================================
+
+(defn- self-keyed-diff
+  "keyed-seq-diff between two vectors of keys, each key its own value."
+  [prev new]
+  (sa/keyed-seq-diff new prev (zipmap new new) (zipmap prev prev) =))
+
+(defn- bijective?
+  "A sparse permutation (fixed points omitted) is a bijection exactly when
+   it moves a set of positions onto itself."
+  [perm]
+  (= (set (keys perm)) (set (vals perm))))
+
+(deftest nil-and-false-keys-are-outside-keyed-seq-diff
+  (doseq [k [nil false]]
+    (testing (str "key " (pr-str k) " added")
+      (is (bijective? (:permutation (self-keyed-diff [:a :b] [:a :k :b])))
+          "control: a truthy key")
+      (is (not (bijective? (:permutation (self-keyed-diff [:a :b] [:a k :b]))))))
+    (testing (str "key " (pr-str k) " removed")
+      (is (bijective? (:permutation (self-keyed-diff [:a :k :b] [:a :b])))
+          "control: a truthy key")
+      (is (not (bijective? (:permutation (self-keyed-diff [:a k :b] [:a :b]))))))))

@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.incremental.algebra-test
+(ns org.replikativ.spindel.v2.incremental.algebra-test
   "Property-based tests for the typed-delta-algebra foundation.
 
    Covers:
