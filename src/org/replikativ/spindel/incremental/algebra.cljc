@@ -31,8 +31,8 @@
                           delta-soundness invariant
                           `(apply old Δ) = new`.
 
-   See the namespace docstrings of `sequence_algebra.cljc` and
-   `map_algebra.cljc` for the concrete algebras and their delta shapes."
+   See the namespace docstring of `sequence_algebra.cljc` for the
+   sequence algebra and its delta shape."
   (:refer-clojure :exclude [merge]))
 
 ;; =============================================================================
@@ -263,10 +263,8 @@
 ;; widening is deferred. This file's lift/lower handles map-only
 ;; paths today.
 ;;
-;; The map-algebra reference is supplied as a parameter so this file
-;; does not need to require map_algebra.cljc (which would create a
-;; cycle). Callers pass `map-algebra/map-algebra` as the
-;; `map-alg` argument.
+;; The map algebra is supplied by the caller as the `map-alg`
+;; argument; this namespace does not define one.
 ;; =============================================================================
 
 (defn lift

@@ -857,7 +857,7 @@ What happens, in order:
    as `doubled`'s resolve callback wrapper, the render-effect fires
    synchronously *inside* step 8's resolve: the new vnode tree flows
    through the discharge layer, which applies the typed
-   `SequenceAlgebra` / `MapAlgebra` deltas to the DOM (see
+   `SequenceAlgebra` deltas to the DOM (see
    [`incremental.md`](incremental.md)).
 10. **Cascade.** The `:spin-completion` event in `:engine/pending`
     is processed next by the same drain loop. Any parent spin that

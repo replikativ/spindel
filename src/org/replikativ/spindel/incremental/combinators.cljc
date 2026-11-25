@@ -27,10 +27,6 @@
                   is the entire reason this primitive exists; in every
                   other respect it is `map*`.
 
-   The applicative (`izip*`) and monadic (`iflat-map*`) primitives live
-   in `typed_combinators.cljc` alongside this namespace; they complete
-   the algebraic core.
-
    Intervals
    ---------
    Combinators consume any value that satisfies `PInterval` (legacy

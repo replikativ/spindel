@@ -122,8 +122,6 @@ subject to three laws (stated `algebra.cljc:13-17`).
   `sequence_algebra.cljc:70-74`); `apply-pipeline` of an empty diff is a
   grow-0/shrink-0/identity-perm/empty-change no-op
   (`sequence_algebra.cljc:91-114`). **Holds.**
-* `MapAlgebra` — `id = {:assoc {} :dissoc #{} :update {}}`;
-  `apply-pipeline` over empty fields is identity. **Holds.**
 
 **Application homomorphism** — `apply(t, d₁·d₂) = apply(apply(t,d₁), d₂)`.
 * Scalar — last-write-wins compose; `apply(apply(t,d1),d2)` and
@@ -134,20 +132,12 @@ subject to three laws (stated `algebra.cljc:13-17`).
   the namespace docstring states this and a property test is referenced
   (`algebra.cljc` and `sequence_algebra.cljc:38-48`). **Holds**
   (conjectured complete; relies on the property test).
-* Map — `compose` recurses one level into inner algebras
-  (`map_algebra.cljc:37-44`). **Holds** for one nesting level. Scope
-  boundary: sequence-nested `lift`/`lower` is deferred
-  (`algebra.cljc:259-264`) — the `:change` field has no
-  `(:nested algebra delta)` variant yet, so the homomorphism is
-  **not claimed** for sequence-nested paths.
 
 **Associativity of `compose`** — `(d₁·d₂)·d₃ = d₁·(d₂·d₃)`.
 * Scalar — trivially associative (last-write-wins). **Holds.**
 * Sequence — permutations form a group, the other fields are additive
   monoids; `sequence_algebra.cljc:36-48` claims the quotient monoid is
   associative. **Holds (conjectured, property-tested).**
-* Map — per-key folding; associative because each field's merge is
-  associative. **Holds (conjectured).**
 * `compose-deltas` variadic left-folds (`algebra.cljc:118-125`); the
   fold is well-defined *iff* the binary op is associative.
 
@@ -2138,7 +2128,7 @@ violated.
 | L20 | **Released worlds** (tombstones). `released(v) ⇒` `v` is not in the registry; only its tombstone remains and its id is never reused; every capability of `v` is terminal; no live `fdeps` row anywhere names `v`. A row of another world `W` names `v` only in **in-flight** form, with its cleanup event queued in `W` itself: an obligation with `{:cancelled o}`, a `releasing_W` row with `{:fdep-ended}`, or `[:fork v]` with `{:fork-released v}`. `W` removes it in its own transaction (T36). The one exception without a queued event is an obligation of an **attached cut child** `W` (unpublished, fenced, non-executable; copy rule 4) whose admitted or pending-start evidence lies in the cut's immutable basis: no request exists yet, and T24 replaces that evidence atomically, so a request to the released `v` fails at once with `{:cancelled o}` in `W`. T25 removes it with the child. | all worlds | V: timers, binding frames and `:parent-ctx` retain worlds (§4.3.2) |
 | L21 | **Lineage** (W6). Every live world has an immutable lineage record. Root `⇔ parent = nil`. The parent id is a world that was created. The registry contains exactly the worlds whose status is not `:released` (live and sealed). No state holds a parent context, only its id. | worlds | M: `:parent-ctx` is a strong reference |
 | L22 | **Cuts** (P1, P2). An active cut has exactly one engine world. Its participants are fenced; no world or registered system is in two active cuts (SCI components may be shared). `:captured ⇒` the coordinator holds every participating component's exclusive permit, acquired in ascending world-id order, and no thread holds a read permit on them. `:attached ⇒` the child is fenced and non-executable, its capability is unpublished, and its rows are the basis `b` re-keyed to the child. | cuts, env | V: I19 (three separate reads) |
-| L23 | **Keys.** A keyed signal has `id = keyid(root(w),k)` and `:key k`, and there is at most one per id. Cache rows and keyed entries are keyed by `[instance site\|key]` with an owner. No row is keyed by site alone. | entities | V: `[:incremental "comb-file-line-col"]` (`incremental/combinators.cljc` 60–74; typed combinators alike); keyed signals only via `->SignalRef` |
+| L23 | **Keys.** A keyed signal has `id = keyid(root(w),k)` and `:key k`, and there is at most one per id. Cache rows and keyed entries are keyed by `[instance site\|key]` with an owner. No row is keyed by site alone. | entities | V: `[:incremental "comb-file-line-col"]` (`incremental/combinators.cljc` 60–74); keyed signals only via `->SignalRef` |
 | L24 | **Armed teardown** (R13; between crashes). Every waiter still registered in a resource has either an open `:external` obligation or an armed token. Every armed token belongs to a waiter that is still registered. | atoms, tokens | V: I16; teardown leaves gates unarmed (AS-IS G7) |
 | L25 | **Unwinding.** `status(r) = :unwinding ⇔ r` was retired (cancelled, superseded or normalised; §4.3 run retirement) `∧ (∃th. run(th) = r ∨ ∃n. owner(n) = [w r] ∧ state(n) ≠ :joined)`. An `:unwinding` run owns no scope or entity, is the parent of no scope, is the creditor of no obligation, gives no reason to any entity, is in no index except the thread/native-op links and `:anchor`, and may outlive its spin's entity (L4 does not apply to its `:spin`). | runs, env | M: completion, supersession and cancel forget running slices; native ops orphaned |
 | L26 | **Adoption ancestry.** Every run's `:ancestors` is a set of older generations of the same spin. Every member names a non-unwinding run or a surviving entity creator. An unwinding row has empty ancestry. Membership is inherited only from the chosen predecessor, never reconstructed from relevance. | runs, entities | Candidate model and compact engine; bounded evidence survives retirement of intermediate rows |

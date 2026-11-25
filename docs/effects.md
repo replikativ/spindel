@@ -80,9 +80,8 @@ Effects are the mechanism through which spins interact with the outside world �
 
 - If you tracked a **typed-combinator interval** (e.g. an `imap`/`ifilter`
   result), `:deltas` is the combinator's algebra-specific record — a
-  SequenceAlgebra `{:degree :grow :shrink :permutation :change :freeze}`,
-  a MapAlgebra `{:assoc :dissoc :update}`, or a ScalarAlgebra
-  `::no-change | [::replace v]`.
+  SequenceAlgebra `{:degree :grow :shrink :permutation :change :freeze}`
+  or a ScalarAlgebra `::no-change | [::replace v]`.
 
 - `nil` means "I don't know what changed — recompute from `:new`".
 
