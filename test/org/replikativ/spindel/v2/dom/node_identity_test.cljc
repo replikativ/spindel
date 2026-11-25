@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.dom.node-identity-test
+(ns org.replikativ.spindel.v2.dom.node-identity-test
   "DOM node IDENTITY and ORDER — the two things a vdom must never get wrong.
 
    The existing MockDischarge is structurally blind to both: it does not model

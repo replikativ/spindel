@@ -162,6 +162,31 @@
                  (is (= 10 (d/unwrap-deltaable (:old view)))))
                (done))))))
 
+;; CLJ-only (moved from incremental/deltaable_test): reads the signal
+;; synchronously, outside a spin.
+#?(:clj
+   (deftest test-signal-integration
+     (testing "Signal integration with dual perspective"
+       (with-ctx [_ctx]
+         (let [counter (sig/signal 0)]
+           ;; Initial state
+           (let [[new old deltas] (sig/get-signal-detailed counter)]
+             (is (= 0 new) "Initial value is 0")
+             (is (nil? old) "No old value initially")
+             (is (nil? deltas) "No deltas for simple values"))
+
+           ;; After swap
+           (swap! counter inc)
+
+           (let [[new old deltas] (sig/get-signal-detailed counter)]
+             (is (= 1 new) "New value is 1")
+             (is (= 0 old) "Old value is 0")
+             (is (nil? deltas) "No deltas for simple values"))
+
+           ;; Deref returns current value
+           (is (= 1 @(sig/get-signal-detailed counter))
+               "Dereferencing SignalValue returns current value"))))))
+
 ;; =============================================================================
 ;; Spin tracking signals (cross-platform, single execution only)
 ;; =============================================================================

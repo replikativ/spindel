@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.dom.seq-diff-test
+(ns org.replikativ.spindel.v2.dom.seq-diff-test
   "Tests for the SequenceAlgebra-native discharge entry point
    `apply-seq-diff!`. Verifies that the DOM operations emitted by the
    discharge layer leave the parent's child list in exactly the order
@@ -10,26 +10,12 @@
    `:change` carry a `[:new k]` token. After the diff is applied,
    reconstructing the final child list from the discharge log must
    match the algebra's `apply-deltas` on the equivalent token vector."
-  (:require #?(:clj  [clojure.test :refer [deftest is testing use-fixtures]]
-               :cljs [cljs.test :refer-macros [deftest is testing use-fixtures]])
+  (:require #?(:clj  [clojure.test :refer [deftest is testing]]
+               :cljs [cljs.test :refer-macros [deftest is testing]])
             [org.replikativ.spindel.dom.core :as dom]
             [org.replikativ.spindel.dom.discharge :as disch]
-            [org.replikativ.spindel.engine.context :as ctx]
-            [org.replikativ.spindel.engine.core :as ec]
             [org.replikativ.spindel.incremental.algebra :as a]
             [org.replikativ.spindel.incremental.sequence-algebra :as sa]))
-
-;; Tests that exercise shrink / replace paths trigger
-;; `call-refs-on-unmount!` which evicts the dom-cache and needs an
-;; execution context bound. Provide one for every test in this ns.
-(use-fixtures :each
-  (fn [t]
-    (let [c (ctx/create-execution-context)]
-      (try
-        (binding [ec/*execution-context* c]
-          (t))
-        (finally
-          (ctx/stop-context! c))))))
 
 ;; =============================================================================
 ;; Test infrastructure

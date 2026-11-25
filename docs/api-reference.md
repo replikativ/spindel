@@ -581,8 +581,6 @@ see [Incremental Collections](incremental.md) for the algebra contract.
 | `(ireduce rf init source)` | Incremental reduce (scalar algebra) |
 | `(ifor-each key-fn transform source)` | Keyed per-item transformation (sequence algebra) |
 | `(islice window source)` | Windowed view for virtual scroll (sequence algebra). `window` is a map `{:start n :end n}`. |
-| `(izip f s1 s2 …)` | Combine intervals into a scalar (typed combinator) |
-| `(iflat-map f source)` | Flat-map producing a sequence interval (typed combinator) |
 
 ---
 

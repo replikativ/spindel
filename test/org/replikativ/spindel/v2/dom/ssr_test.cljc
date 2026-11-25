@@ -1,21 +1,10 @@
-(ns org.replikativ.spindel.dom.ssr-test
-  (:require #?(:clj [clojure.test :refer [deftest is testing use-fixtures]]
-               :cljs [cljs.test :refer-macros [deftest is testing use-fixtures]])
+(ns org.replikativ.spindel.v2.dom.ssr-test
+  (:require #?(:clj [clojure.test :refer [deftest is testing]]
+               :cljs [cljs.test :refer-macros [deftest is testing]])
             [org.replikativ.spindel.dom.ssr :as ssr]
             [org.replikativ.spindel.dom.elements :as el]
             [org.replikativ.spindel.dom.core :as dom]
-            [org.replikativ.spindel.dom.fragment :as frag]
-            [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.engine.context :as ctx]))
-
-(use-fixtures :each
-  (fn [f]
-    (let [test-ctx (ctx/create-execution-context)]
-      (try
-        (binding [ec/*execution-context* test-ctx]
-          (f))
-        (finally
-          (ctx/stop-context! test-ctx))))))
+            [org.replikativ.spindel.dom.fragment :as frag]))
 
 ;; =============================================================================
 ;; Basic Element Rendering

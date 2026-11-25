@@ -1,4 +1,4 @@
-(ns org.replikativ.spindel.incremental.permutation-test
+(ns org.replikativ.spindel.v2.incremental.permutation-test
   "Property tests for the symmetric-group operations on permutations.
 
    These tests pin the four group laws (closure, associativity,

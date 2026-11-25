@@ -184,16 +184,13 @@ legacy and typed intervals.
 
 ### Algebras
 
-Two algebras ship in `org.replikativ.spindel.incremental.{sequence_algebra,
-map_algebra}`:
+One collection algebra ships in
+`org.replikativ.spindel.incremental.sequence_algebra`:
 
 - **SequenceAlgebra** — deltas are records of `{:degree :grow :shrink
   :permutation :change :freeze}`, applied in order `grow → permutation →
   shrink → change → freeze`. Output of `imap` / `ifilter` / `islice` /
-  `for-each*` / `iflat-map`.
-- **MapAlgebra** — deltas are `{:assoc {k v} :dissoc #{k} :update {k
-  {:algebra A :delta Δ}}}`. Inner deltas under `:update` carry their own
-  algebra, enabling nested incremental updates one level deep.
+  `for-each*`.
 
 A scalar algebra (`a/scalar-algebra`) covers single-value outputs like
 `ireduce`'s result.

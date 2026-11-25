@@ -1,14 +1,10 @@
-(ns org.replikativ.spindel.incremental.deltaable-test
+(ns org.replikativ.spindel.v2.incremental.deltaable-test
   "Comprehensive tests for deltaable collections and delta tracking.
    Ported from laufzeit."
   (:require #?(:clj [clojure.test :refer [deftest is testing]]
                :cljs [cljs.test :refer-macros [deftest is testing]])
             [org.replikativ.spindel.incremental.deltaable :as d]
-            [org.replikativ.spindel.incremental.interval :as iv]
-            [org.replikativ.spindel.engine.context :as ctx]
-            [org.replikativ.spindel.engine.core :as ec]
-            [org.replikativ.spindel.signal :as sig]
-            #?(:clj [org.replikativ.spindel.test-helpers :as th])))
+            [org.replikativ.spindel.incremental.interval :as iv]))
 
 ;; =============================================================================
 ;; Interval Tests (formerly SignalValue/SignalDeltaView)
@@ -16,31 +12,31 @@
 
 (deftest test-interval-creation
   (testing "Interval creation and access"
-    (let [iv (sig/signal-interval 41 42)]
+    (let [iv (iv/interval 41 42)]
       (is (= 42 (iv/get-new iv)))
       (is (= 41 (iv/get-old iv)))
       (is (= 42 @iv) "Deref returns current value")))
 
   (testing "Interval with nil old value"
-    (let [iv (sig/signal-interval 42)]
+    (let [iv (iv/interval 42)]
       (is (= 42 (iv/get-new iv)))
       (is (nil? (iv/get-old iv)))))
 
   (testing "Interval destructuring via nth"
-    (let [iv (sig/signal-interval 41 42)]
+    (let [iv (iv/interval 41 42)]
       (is (= 42 (nth iv 0)) "Index 0 returns new value")
       (is (= 41 (nth iv 1)) "Index 1 returns old-value")
       (is (nil? (nth iv 2)) "Index 2 returns deltas (nil for non-deltaable)")))
 
   (testing "Interval destructuring with let"
-    (let [iv (sig/signal-interval 41 42)
+    (let [iv (iv/interval 41 42)
           [new old deltas] iv]
       (is (= 42 new))
       (is (= 41 old))
       (is (nil? deltas))))
 
   (testing "Interval out of bounds"
-    (let [iv (sig/signal-interval 41 42)]
+    (let [iv (iv/interval 41 42)]
       (is (thrown? #?(:clj IndexOutOfBoundsException :cljs js/Error) (nth iv 3)))
       (is (= :not-found (nth iv 3 :not-found))))))
 
@@ -104,47 +100,23 @@
 
   (testing "unwrap"
     (is (= 42 (d/unwrap (d/deltaable-value 42))))
-    (is (= 42 @(sig/signal-interval 41 42)) "Interval uses IDeref for unwrapping")
+    (is (= 42 @(iv/interval 41 42)) "Interval uses IDeref for unwrapping")
     (is (= 42 (d/unwrap 42)) "Non-wrapped values return as-is")
     (is (= [1 2 3] (d/unwrap [1 2 3])))))
 
 ;; =============================================================================
-;; Signal Integration Tests
+;; Interval with deltaable values
 ;; =============================================================================
 
 (deftest test-interval-with-deltaable-value
   (testing "Interval containing DeltaableValue"
     (let [dv-new (d/deltaable-value 42)
           dv-old (d/deltaable-value 41)
-          iv (sig/signal-interval dv-old dv-new)
+          iv (iv/interval dv-old dv-new)
           [new old deltas] iv]
       (is (= dv-new new))
       (is (= dv-old old))
       (is (nil? deltas) "DeltaableValue has no structural deltas"))))
-
-;; CLJ-only: Signal macro not available in CLJS
-#?(:clj
-   (deftest test-signal-integration
-     (testing "Signal integration with dual perspective"
-       (th/with-ctx [ctx]
-         (let [counter (sig/signal 0)]
-           ;; Initial state
-           (let [[new old deltas] (sig/get-signal-detailed counter)]
-             (is (= 0 new) "Initial value is 0")
-             (is (nil? old) "No old value initially")
-             (is (nil? deltas) "No deltas for simple values"))
-
-           ;; After swap
-           (swap! counter inc)
-
-           (let [[new old deltas] (sig/get-signal-detailed counter)]
-             (is (= 1 new) "New value is 1")
-             (is (= 0 old) "Old value is 0")
-             (is (nil? deltas) "No deltas for simple values"))
-
-           ;; Deref returns current value
-           (is (= 1 @(sig/get-signal-detailed counter))
-               "Dereferencing SignalValue returns current value"))))))
 
 ;; =============================================================================
 ;; DeltaableVector Tests

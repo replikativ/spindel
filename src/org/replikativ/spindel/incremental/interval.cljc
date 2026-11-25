@@ -175,8 +175,7 @@
 (defn typed-interval-map?
   "True when `x` is a Clojure map carrying the typed-interval shape
    (`:algebra`, `:old`, `:new`, `:deltas`). Typed-interval maps are
-   produced by the new combinators (`map*`, `filter*`, …) and by
-   typed_combinators.cljc (`izip*`, `iflat-map*`). They satisfy
+   produced by the new combinators (`map*`, `filter*`, …). They satisfy
    `PInterval` via the map extension below — so consumers reading via
    `get-new` / `get-old` / `get-deltas` work uniformly across the
    legacy `Interval` deftype and the new typed maps.
