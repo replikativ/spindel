@@ -969,3 +969,103 @@
       (is (nil? (get-in (:proj drop) [:comps a])) "80: and the child removes the computation"))
     (doseq [n ["80-root" "80-child"]]
       (is (= [] (o/roundtrip (log n))) (str "sample " n)))))
+
+;; ---------------------------------------------------------------------------
+;; Keyed creation (spec §5.2 Z#82, phase-d design §1.13), samples 75-79 (generator oracle/gen/samples-keyed.clj).
+;; The model holds no keys (ids are item inputs): the replay shows every chosen id is a legal item, and the shape
+;; checks pin the key -> id mapping. 75: keyed children reversed (no fresh id), one inserted (one fresh id), one
+;; removed (released at the parent's T12). 76: a keyed task whose key vanished is cancelled at the parent's T12;
+;; the kept key's task is readopted. 77: a fork family reorders independently, each world readopting by key.
+;; 78: a resume between keyed creations with a duplicate (site, K): the counts continue from the kept prefix, so
+;; the suffix child is readopted. 79: repeated interrupted reruns with fresh keys: each cut's adoption basis is
+;; the previous run's child only.
+(def ^:private keyed-specs
+  {"75" {:w {:log (log "75-w") :kind :root}}
+   "76" {:w {:log (log "76-w") :kind :root}}
+   "77" (let [r (log "77-root")]
+          {:root {:log r :kind :root}
+           :child {:log (log "77-child") :from :root :kind :fork-host :at (c1-idx r #(= :fork-host (first %)))}})
+   "78" {:w {:log (log "78-w") :kind :root}}
+   "79" {:w {:log (log "79-w") :kind :root}}})
+
+(deftest keyed-samples
+  (doseq [[n spec] (dissoc keyed-specs "77")]
+    (let [fam (o/replay-family spec)]
+      (doseq [[k {:keys [res]}] fam]
+        (is (= [(count (:log (spec k))) 0 0] ((juxt :checked :n-divergences :resyncs) res)) (str "sample " n " " k))))))
+
+;; Sample 77's child diverges only on the handle counts of the computations it readopts: a row copied into a fork
+;; has no live handle (HREF), so the engine's readoption makes one and counts a second handle without a
+;; `[:handle-new]` item; the model keeps one. The positional analog (no `with-key`: a host-fork child rerun that
+;; readopts two inherited children by ordinal) diverges the same way on engine-v2 88a002ba, so this is not E1's;
+;; it is pinned here (open question in the E1 report) so that any other divergence fails.
+(deftest keyed-sample-77-fork
+  (let [spec (keyed-specs "77")
+        fam (o/replay-family spec)
+        {root :res} (:root fam)
+        {child :res} (:child fam)]
+    (is (= [(count (:log (:root spec))) 0 0] ((juxt :checked :n-divergences :resyncs) root)) "sample 77 :root")
+    (is (= [(count (:log (:child spec))) 0] ((juxt :checked :resyncs) child)) "sample 77 :child")
+    (is (= #{[:comps :handles]} (set (mapcat (fn [d] (map (juxt :table :field) (:diffs-all d))) (:divergences child))))
+        "77: only the known fork-readoption handle count diverges")
+    (is (every? (fn [d] (every? #(= [2 1] [(:engine %) (:model %)]) (:diffs-all d))) (:divergences child)))))
+
+(defn- created [l] (keep #(when (= :create-comp (first (:item %))) (nth (:item %) 2)) l))
+(defn- top-comps [l] (keep #(when (= :create-comp-top (first (:item %))) (nth (:item %) 2)) l))
+(defn- last-complete
+  "The last `:complete` item of a run of computation `c` (its runs from the `:start` and `:dispatch` items)."
+  [l c]
+  (let [runs (set (keep #(when (and (#{:start :dispatch} (first (:item %))) (= c (second (:item %))))
+                           (nth (:item %) 2))
+                        l))]
+    (last (filter #(and (= :complete (first (:item %))) (runs (second (:item %)))) l))))
+
+(deftest keyed-sample-shapes
+  (doseq [n ["75-w" "76-w" "77-root" "77-child" "78-w" "79-w"]]
+    (is (every? :accepted (log n)) (str n ": every item accepted")))
+  (let [l (log "75-w")
+        ids (vec (created l))
+        first3 (set (subvec ids 0 3))
+        [_ b _] ids
+        [c] (top-comps l)
+        pc (get-in (:proj (last-complete l c)) [:comps c])]
+    (is (= 13 (count ids)))
+    (is (= 3 (count first3)))
+    (is (every? first3 (subvec ids 3 6)) "75: the reverse names only existing ids")
+    (is (= 1 (count (remove first3 (subvec ids 6 10)))) "75: the insert creates one fresh child")
+    (is (= (set (subvec ids 6 10)) (into (set (subvec ids 10 13)) [b])) "75: the remove keeps the other keys")
+    (is (= 3 (count (:basis pc))))
+    (is (not-any? #{b} (concat (map first (:basis pc)) (get-in pc [:adoption :basis])))
+        "75: the removed key's child is released at the parent's T12"))
+  (let [l (log "76-w")
+        [k1 k2 k1'] (keep #(when (= :spawn (first (:item %))) (nth (:item %) 3)) l)
+        [c] (top-comps l)
+        done (last-complete l c)
+        running? (fn [k] (contains? #{:active :parked}
+                                    (get-in (:proj done) [:runs (get-in (:proj done) [:tasks k :run]) :act])))]
+    (is (= k1 k1') "76: the kept key's task is readopted")
+    (is (not= k1 k2))
+    (is (running? k1))
+    (is (not (running? k2)) "76: the vanished key's task is cancelled in the parent's complete item"))
+  (let [r (created (log "77-root"))
+        ch (created (log "77-child"))]
+    (is (= 3 (count (set r))) "77: the root readopts by key")
+    (is (= 3 (count ch)))
+    (is (= (set r) (set ch)) "77: the child readopts the inherited children by key"))
+  (let [ids (created (log "78-w"))]
+    (is (= 4 (count ids)))
+    (is (= 3 (count (set ids))) "78: the duplicates are three rows")
+    (is (= (nth ids 2) (nth ids 3)) "78: the suffix child (n = 2) is readopted after the resume"))
+  (let [l (log "79-w")
+        ids (vec (created l))
+        [c] (top-comps l)
+        cuts (filter #(= [:dispatch c] (vec (take 2 (:item %)))) l)]
+    (is (= 5 (count (set ids))) "79: fresh keys, fresh children")
+    (is (= 4 (count cuts)))
+    (doseq [[i d] (map-indexed vector cuts)]
+      (is (= [(ids i)] (get-in (:proj d) [:comps c :adoption :basis]))
+          (str "79: cut " (inc i) " holds only the previous run's child")))))
+
+(deftest projection-roundtrip-keyed
+  (doseq [n ["75-w" "76-w" "77-root" "77-child" "78-w" "79-w"]]
+    (is (= [] (o/roundtrip (log n))) (str "sample " n))))

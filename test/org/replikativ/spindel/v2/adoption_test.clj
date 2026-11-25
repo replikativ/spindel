@@ -83,6 +83,48 @@
                ids (into #{} (comp cat (remove nil?)) @seen)]
            (is (empty? (filter srcs ids)) "no created source remains after demotion")))))))
 
+(deftest a-kind-2-source-kind-change-under-a-key
+  ;; A-kind-1 under a key (E1): body sources share site -1, so within K = [:k]
+  ;; they are positional by n. Run 1 makes S [-1 [:k] 0] and M [-1 [:k] 1];
+  ;; run 2's mailbox at n = 0 meets S, rejects it and is a new source; S stays
+  ;; in the adoption basis until T12. Run 3 readopts the mailbox; demotion
+  ;; leaves no row.
+  (checked
+   (let [w (vworld)]
+     (binding [v2/*world* w]
+       (let [s (v2/signal 0)
+             gates {0 (v2/deferred) 1 (v2/deferred) 2 (v2/deferred)}
+             seen (atom [])
+             c (spin (let [v (iv/get-new (track s))
+                           [a m] (v2/with-key :k [(when (zero? v) (v2/signal 0)) (v2/mailbox)])]
+                       (swap! seen conj [(when a (rid a)) (rid m)])
+                       (await (get gates v))
+                       v))
+             u (v2/observe! c (fn [_ _]))
+             [[sig m1]] @seen]
+         (is (some? sig))
+         (v2/write! s 1)
+         (let [[_ m2] (peek @seen)
+               a (adoption w c)]
+           (is (not= m1 m2) "the mailbox at the signal's count is a new source")
+           (is (contains? (:basis a) m2))
+           (is (not (contains? (:basis a) sig)) "the rejected signal does not move into the basis")
+           (is (contains? (:adopt a) sig) "it stays in the adoption basis"))
+         (v2/deliver! (gates 1) :go)
+         (is (= 1 (v2/value c 2000 ::timeout)))
+         (let [[_ m2] (peek @seen)
+               a (adoption w c)]
+           (is (= #{m2} (:basis a)) "T12 released the rejected signal")
+           (is (empty? (:adopt a))))
+         (v2/write! s 2)
+         (let [[[_ m2] [_ m3]] (take-last 2 @seen)]
+           (is (= m2 m3) "the next run readopts the mailbox by key"))
+         (u)
+         (verify/gc-settle! w)
+         (let [srcs (set (keys (:sources (proj w))))
+               ids (into #{} (comp cat (remove nil?)) @seen)]
+           (is (empty? (filter srcs ids)) "no created source remains after demotion")))))))
+
 (deftest a-repl-1-task-changed-captures
   ;; T4: a spawn with changed captures is a fresh task; the predecessor stays
   ;; in the adoption basis and keeps running until the run completes, then
