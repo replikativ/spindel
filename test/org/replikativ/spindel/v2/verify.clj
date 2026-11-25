@@ -135,14 +135,36 @@
              :when (not (.containsKey ^java.util.Map reg (f row rw/ID)))]
          {:type (t row) :id (f row rw/ID) :removed true})))))
 
+(defn key-violations
+  "Z#82: within a computation's basis a creation key occurs at most once, and
+   within its adoption basis (the positional list and the keyed map
+   together) at most once; a keyed map entry is under its row's key. A
+   rejected predecessor and its replacement may share a key across the two."
+  [w]
+  (binding [*reg* (f w rw/W-REG)]
+    (let [key-of #(f (canon %) rw/KEY)]
+      (vec (for [c (rows w)
+                 :when (== rw/T-COMP (t c))
+                 v (concat
+                    (for [[container xs] [[:basis (map key-of (f c rw/C-BASIS))]
+                                          [:adoption (concat (map key-of (f c rw/C-ADOPT))
+                                                             (map key-of (vals (f c rw/C-ADOPT-K))))]]
+                          [k n] (frequencies xs)
+                          :when (> (long n) 1)]
+                      {:container container :key k})
+                    (for [[k x] (f c rw/C-ADOPT-K)
+                          :when (not= k (key-of x))]
+                      {:container :adoption-map :key k}))]
+             (assoc v :comp (f c rw/ID)))))))
+
 (defn checking-hook
-  "A world hook that records Rule R divergences per commit into `acc`. The
-   engine isolates its observer (a throw is only reported), so a check that
-   throws is recorded as a divergence too."
+  "A world hook that records Rule R divergences and creation-key violations
+   per commit into `acc`. The engine isolates its observer (a throw is only
+   reported), so a check that throws is recorded as a divergence too."
   [acc]
   (fn [w item]
     (try
-      (let [v (violations w)]
+      (let [v (into (violations w) (key-violations w))]
         (when (seq v) (swap! acc conj {:item item :violations v})))
       (catch Throwable t
         (swap! acc conj {:item item :observer-error t})))))

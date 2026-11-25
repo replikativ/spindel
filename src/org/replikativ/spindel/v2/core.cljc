@@ -1582,17 +1582,6 @@
         (let [e (rv w (anth ins i))]
           (if (g e rw/E-ARMED) (recur (inc i)) i))))))
 
-(defn- check-unique-keys!
-  "Verify mode (Z#82): a creation key occurs at most once in a basis."
-  [w c basis]
-  (loop [i 0 seen #{}]
-    (when (< i (acount basis))
-      (let [k (g (rv w (anth basis i)) rw/KEY)]
-        (when (contains? seen k)
-          (throw (ex-info "a creation key occurs twice in a basis"
-                          {:spindel/invalid ::duplicate-creation-key :comp (g c rw/ID) :key k})))
-        (recur (inc i) (conj seen k))))))
-
 (defn- restore-ordinals!
   "T11 resume: the creation counts continue from the creations kept in the
    basis (§5.2): positional ordinals per site, keyed counts per [site K]."
@@ -1705,7 +1694,6 @@
         ;; their creation key, positional ones in a list.
         (let [basis (g c rw/C-BASIS)]
           (when (and basis (pos? (acount basis)))
-            (when (logging? w) (check-unique-keys! w c basis))
             (let [ab (alist)
                   kept (alist)
                   abk (loop [i 0 abk (transient {})]
