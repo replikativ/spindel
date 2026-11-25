@@ -338,3 +338,53 @@
                                                (catch #?(:clj Exception :cljs :default) _ nil))
                                           (addr/current))))
       "an inner call that throws restores the outer context"))
+
+;; ---------------------------------------------------------------------------
+;; Hoisting keeps the operands' evaluation order (sol's second P4a review):
+;; a var read stays before a later operand that mutates or suspends
+
+(def table {:k "old"})
+
+(defn- replace-table! [v]
+  #?(:clj (alter-var-root #'table (constantly v))
+     :cljs (set! table v)))
+
+(deftest hoisting-reads-a-var-in-order
+  (replace-table! {:k "old"})
+  (in-world
+   (fn [done]
+     (let [d (v2/deferred)
+           c (spin (el/div (get table (do (replace-table! {:k "new"}) (await d)))))]
+       (later #(v2/deliver! d :k))
+       (then c (fn [vn]
+                 (is (= "old" (get-in vn [:children 0 :content])) "table is read before the mutation")
+                 (replace-table! {:k "old"})
+                 (done)))))))
+
+(defn- note!
+  "Records `x` in `log`; returns it."
+  [log x]
+  (swap! log conj x)
+  x)
+
+(deftest hoisting-keeps-the-operand-order
+  (replace-table! {:k "old"})
+  (in-world
+   (fn [done]
+     (let [d (v2/deferred)
+           log (atom [])
+           out (atom nil)
+           c (spin (let [x :local]
+                     (el/div (reset! out (vector (note! log 1)
+                                                 table
+                                                 x
+                                                 (do (replace-table! {:k "new"}) (note! log 2) (await d))
+                                                 (note! log 3)
+                                                 table
+                                                 (note! log 4))))))]
+       (later #(v2/deliver! d :awaited))
+       (then c (fn [_]
+                 (is (= [1 2 3 4] @log) "side effects in operand order")
+                 (is (= [1 {:k "old"} :local :awaited 3 {:k "new"} 4] @out) "each var read where it was written")
+                 (replace-table! {:k "old"})
+                 (done)))))))
