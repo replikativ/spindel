@@ -2653,17 +2653,19 @@
       (body-released!)
       (let [w (cw)
             c (rv w (g r rw/R-OF))
+            ;; §5.2: first, so a rejected creation (the ordinal limit)
+            ;; changes nothing: no effect index, id or registration
+            key (creation-key! r site)
             at (next-at! r)]
         (if-not (comp? c)
           ;; Created by a task run: owned by the run scope, retained by demand.
           (let [child (set-origin! (new-comp! w (run-scope! w r) 0 at inputs body 0)
-                                   (conj (frame-of c) (creation-key! r site)) r)]
+                                   (conj (frame-of c) key) r)]
             (aadd! (g w rw/W-RQ) child)
             (let [h (handle! w child)]
               (commit! w [:create-comp (g r rw/ID) (g child rw/ID) [:opaque-seq inputs] [:opaque body]])
               h))
-          (let [key (creation-key! r site)
-                child (adopt! w c key comp?)]
+          (let [child (adopt! w c key comp?)]
             (if child
               (do (s! child rw/AT at)   ; adoption reuses the live handle, or makes one (Z#29)
                   ;; bindings are not inputs: the latest creation's frame, no rerun
@@ -2753,10 +2755,10 @@
              local (fork-local-opt opts)
              _ (when (and local (comp? x))
                  (throw (invalid-op :fork-local "a computation's tasks are never fork-local (Z#77)")))
+             key (creation-key! r site)   ; §5.2: first, a rejected creation changes nothing
              at (next-at! r)]
          (if (comp? x)
-           (let [key (creation-key! r site)
-                 old (adopt! w x key #(and (task? %) (same-inputs? inputs (g % rw/K-INPUTS))
+           (let [old (adopt! w x key #(and (task? %) (same-inputs? inputs (g % rw/K-INPUTS))
                                            (= (g r rw/R-PATH) (g % rw/K-PATH))))]   ; §8.2 P4
              (if old
                (do (s! old rw/AT at)
@@ -2775,7 +2777,7 @@
                    h))))
            (let [s (current-scope! w r)
                  local (or local (boolean (g s rw/S-LOCAL)))   ; Z#77: K2 inheritance
-                 k (set-origin! (new-task! w s 0 at inputs body 0) (conj (frame-of x) (creation-key! r site)) r)]
+                 k (set-origin! (new-task! w s 0 at inputs body 0) (conj (frame-of x) key) r)]
              (when local (s! k rw/K-LOCAL true))
              (hs/oset-add! (gm s rw/S-TASKS) (id-of k) k)
              (ref-inc! k)
@@ -3395,13 +3397,14 @@
   (body-released!)
   (let [w (cw)
         x (rv w (g r rw/R-OF))
+        ;; §5.2: first, a rejected creation changes nothing
+        key (when (comp? x) (creation-key! r -1))
         at (next-at! r)]
     (if (comp? x)
-      (let [key (creation-key! r -1)
-            ;; readoption by creation key needs the same kind (a run that creates a
-            ;; signal where the last one created a mailbox makes a new source;
-            ;; the other stays in the adoption basis)
-            old (adopt! w x key #(and (source? %) (== (long kind) (gl % rw/X-KIND))))]
+      ;; readoption by creation key needs the same kind (a run that creates a
+      ;; signal where the last one created a mailbox makes a new source; the
+      ;; other stays in the adoption basis)
+      (let [old (adopt! w x key #(and (source? %) (== (long kind) (gl % rw/X-KIND))))]
         (if old
           (do (s! old rw/AT at)
               (do (commit! w [:create-source (g r rw/ID) (rw/kind-names kind)
@@ -3728,8 +3731,8 @@
       (when (valid-run)
         (body-released!)
         (let [w (cw)
+              key (creation-key! r site)   ; §5.2: first, a rejected creation changes nothing
               at (next-at! r)
-              key (creation-key! r site)
               old (adopt! w x key #(when (link? %)
                                      (let [spec (g % rw/X-REALIZE)]
                                        (and spec (same-inputs? inputs (nth spec 5))
