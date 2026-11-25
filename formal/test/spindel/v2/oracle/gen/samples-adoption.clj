@@ -1,4 +1,4 @@
-;; Adoption follows the model (phase-d design §1.2 R2/R3): oracle log samples 68-72.
+;; Adoption follows the model (phase-d design §1.2 R2/R3): oracle log samples 68-73.
 ;;
 ;; 68  w: two interrupted reruns that do not re-create. Run 1 spawns two tasks; runs 2 and 3 do not, and park on
 ;;     an empty mailbox (a wait edge: no baseline). The second cut replaces the adoption basis with the empty
@@ -21,13 +21,17 @@
 ;;     edge never consumed a version). z tracks a signal and parks on a mailbox take: its validity is the
 ;;     consumed track. (A run kept in cleanup is left out: the engine keeps C.run on the idle computation,
 ;;     the model clears it, a separate divergence.)
+;; 73  w: an idle computation keeps no run (§3.4); a run of it in cleanup keeps it as a tombstone (§3.2). y awaits
+;;     a deferred inside a `finally`: observe, unobserve, the demotion leaves C.run none while the run is in
+;;     cleanup. h parks on an offload that acknowledges its cancellation late: observe, unobserve (its run stays
+;;     in cleanup), observe again while the cleanup is pending (a fresh run starts), then the offloads return.
 ;;
 ;; From the repository root (one -Xmx1g JVM):
 ;;   clojure -J-Xmx1g -Sdeps '{:paths ["src" "test"]}' -M -i formal/test/spindel/v2/oracle/gen/samples-adoption.clj
 ;; Generated logs are registered in oracle_test.clj (`adoption-specs`).
 (ns samples-adoption
   (:refer-clojure :exclude [await])
-  (:require [org.replikativ.spindel.v2.core :as v2 :refer [spin task track await aseq take!]]
+  (:require [org.replikativ.spindel.v2.core :as v2 :refer [spin task track await aseq take! offload]]
             [org.replikativ.spindel.v2.verify :as verify]
             [org.replikativ.spindel.incremental.interval :as iv]
             [clojure.pprint]))
@@ -113,3 +117,26 @@
   (doseq [c [x z]] ((v2/observe! c (fn [_ _]))))
   (finish! 72 w acc)
   (prn :kept (every? some? [x z])))
+
+;; 73
+(defn- hold-until [started p]
+  (fn []
+    (deliver started true)
+    (while (not (realized? p)) (try (Thread/sleep 1) (catch InterruptedException _)))
+    :held))
+(let [acc (atom []) w (vworld acc)
+      started (promise) hold (promise) seen (promise)
+      [y h] (in w #(let [d (v2/deferred)]
+                     [(spin (try (await d) (finally nil)))
+                      (spin (offload (hold-until started hold)))]))]
+  ((v2/observe! y (fn [_ _])))
+  (let [u (v2/observe! h (fn [_ _]))]
+    (deref started 2000 nil)
+    (u))
+  (v2/observe! h (fn [v _] (deliver seen v)))
+  (Thread/sleep 50)
+  (deliver hold true)
+  (assert (= :held (deref seen 2000 :timeout)) "the fresh run completes")
+  (Thread/sleep 50)
+  (finish! 73 w acc)
+  (prn :kept (every? some? [y h])))
