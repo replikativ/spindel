@@ -431,3 +431,55 @@
            (is (some? (get-in (proj w) [:comps id])) "kept as its cleanup run's tombstone")
            (deliver hold true)
            (is (h/wait-until #(nil? (get-in (proj w) [:comps id]))) "removed once the run retired")))))))
+
+(deftest every-cleanup-run-keeps-its-computation
+  ;; The model keeps a computation for every cleanup entry of its runs
+  ;; (`cleanup-base`: a run's stored rows hold R.of). Re-demanded and demoted
+  ;; again while its first run is in cleanup, with the new run kept in
+  ;; cleanup too and its last handle gone, it stays until BOTH runs retire,
+  ;; whichever finishes first.
+  (checked
+   (let [w (vworld)]
+     (binding [v2/*world* w]
+       (let [[s1 h1 s2 h2] (repeatedly 4 promise)
+             pairs (atom [[s1 h1] [s2 h2]])
+             pick! (fn [] (let [[s h] (first @pairs)] (swap! pairs rest) (hold-until s h)))
+             y (spin (offload (pick!)))
+             id (hid w y)
+             runs-of-y #(count (filter (fn [[_ r]] (= id (:of r))) (:runs (proj w))))]
+         (let [u (v2/observe! y (fn [_ _]))] (deref s1 1000 nil) (u))
+         (let [u (v2/observe! y (fn [_ _]))] (deref s2 1000 nil) (u))
+         (v2/release! y)
+         (is (= 2 (runs-of-y)) "both runs are in cleanup")
+         (is (some? (get-in (proj w) [:comps id])))
+         (deliver h2 true)                    ; the new run's cleanup ends first
+         (is (h/wait-until #(= 1 (runs-of-y))))
+         (is (some? (get-in (proj w) [:comps id])) "kept: its first run is still in cleanup")
+         (deliver h1 true)
+         (is (h/wait-until #(zero? (runs-of-y))))
+         (is (h/wait-until #(nil? (get-in (proj w) [:comps id]))) "removed once both runs retired"))))))
+
+(deftest cleanup-run-count-across-a-fork
+  ;; C-RUNS follows W-RUNS: a fork copies the computation row with its count
+  ;; and inherits every unretired run; each world retires its own copy of the
+  ;; run once and counts down its own copy of the computation. Here the child
+  ;; discharges the inherited offload at its first turn, the parent waits for
+  ;; the late acknowledgement: each keeps the computation exactly as long as
+  ;; its own copy of the run is unretired.
+  (checked
+   (let [w (vworld)]
+     (binding [v2/*world* w]
+       (let [started (promise) hold (promise)
+             y (spin (offload (hold-until started hold)))
+             id (hid w y)
+             comp-in (fn [wx] (get-in (v2/call-in! wx #(verify/projection wx)) [:comps id]))]
+         (let [u (v2/observe! y (fn [_ _]))] (deref started 1000 nil) (u))
+         (let [child (v2/fork! w)
+               yc (v2/in-world child y)]
+           (v2/release! yc)
+           (v2/release! y)
+           (is (h/wait-until #(nil? (comp-in child))) "the child retires its copy of the run and drops y")
+           (is (some? (comp-in w)) "the parent keeps y while its run is in cleanup")
+           (deliver hold true)
+           (is (h/wait-until #(nil? (comp-in w))) "then drops it")
+           (v2/release-world! child)))))))

@@ -1,4 +1,4 @@
-;; Adoption follows the model (phase-d design §1.2 R2/R3): oracle log samples 68-73.
+;; Adoption follows the model (phase-d design §1.2 R2/R3): oracle log samples 68-74.
 ;;
 ;; 68  w: two interrupted reruns that do not re-create. Run 1 spawns two tasks; runs 2 and 3 do not, and park on
 ;;     an empty mailbox (a wait edge: no baseline). The second cut replaces the adoption basis with the empty
@@ -25,6 +25,9 @@
 ;;     a deferred inside a `finally`: observe, unobserve, the demotion leaves C.run none while the run is in
 ;;     cleanup. h parks on an offload that acknowledges its cancellation late: observe, unobserve (its run stays
 ;;     in cleanup), observe again while the cleanup is pending (a fresh run starts), then the offloads return.
+;; 74  w: every cleanup run keeps its computation (the model's `cleanup-base`: a run's stored rows hold R.of). y
+;;     parks on a late-acknowledging offload: observe, unobserve (run 1 in cleanup), observe, unobserve (run 2
+;;     in cleanup too), its last handle goes; run 2's cleanup ends first, then run 1's. y stays until both retired.
 ;;
 ;; From the repository root (one -Xmx1g JVM):
 ;;   clojure -J-Xmx1g -Sdeps '{:paths ["src" "test"]}' -M -i formal/test/spindel/v2/oracle/gen/samples-adoption.clj
@@ -140,3 +143,18 @@
   (Thread/sleep 50)
   (finish! 73 w acc)
   (prn :kept (every? some? [y h])))
+
+;; 74
+(let [acc (atom []) w (vworld acc)
+      [s1 h1 s2 h2] (repeatedly 4 promise)
+      pairs (atom [[s1 h1] [s2 h2]])
+      pick! (fn [] (let [[s h] (first @pairs)] (swap! pairs rest) (hold-until s h)))
+      y (in w #(spin (offload (pick!))))]
+  (let [u (v2/observe! y (fn [_ _]))] (deref s1 2000 nil) (u))
+  (let [u (v2/observe! y (fn [_ _]))] (deref s2 2000 nil) (u))
+  (v2/release! y)
+  (deliver h2 true)
+  (Thread/sleep 100)
+  (deliver h1 true)
+  (Thread/sleep 100)
+  (finish! 74 w acc))
