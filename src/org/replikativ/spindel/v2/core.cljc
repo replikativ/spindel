@@ -1161,7 +1161,10 @@
     (s! r rw/R-CURSOR 0)
     (s! r rw/R-PATH (g x (if (comp? x) rw/C-PATH rw/K-PATH)))   ; §8.2 P3: fixed at creation
     (when (comp? x) (s! r rw/R-BIND (g x rw/C-BIND)))           ; a task's: start-task!
-    (if (comp? x) (s! x rw/C-RUN r) (s! x rw/K-RUN r))
+    (if (comp? x)
+      (do (s! x rw/C-RUN r)
+          (s! x rw/C-RUNS (inc (gl x rw/C-RUNS))))   ; §3.2: until its retirement
+      (s! x rw/K-RUN r))
     (s! w rw/W-RUNS (inc (gl w rw/W-RUNS)))     ; C1 W1: until its retirement
     (when (and (task? x) (g x rw/K-LOCAL))      ; Z#77: retired in every fork of `w`
       (s! w rw/W-LOCAL (assoc (g w rw/W-LOCAL) (g r rw/ID) r)))
@@ -1340,7 +1343,7 @@
   (let [x (rv w (g r rw/R-OF))]
     (if (comp? x)
       (do (when (identical? r (rv w (g x rw/C-RUN))) (s! x rw/C-RUN nil))
-          (when (identical? r (rv w (g x rw/C-CLEANUP-RUN))) (s! x rw/C-CLEANUP-RUN nil)))
+          (s! x rw/C-RUNS (dec (gl x rw/C-RUNS))))
       (when (identical? r (rv w (g x rw/K-RUN))) (s! x rw/K-RUN nil)))
     (s! r rw/R-MODE 2)                       ; retired
     (when-let [s (rv w (g r rw/R-SROW))]
@@ -2474,6 +2477,7 @@
     (s! c rw/C-INS (alist))
     (s! c rw/C-QUEUED false)
     (s! c rw/C-RESTART false)
+    (s! c rw/C-RUNS 0)
     (register! w c)))
 
 (defn- find-created [w l key]
@@ -2816,11 +2820,9 @@
     (s! c rw/C-PENDING 0)
     (if (or (some? (g c rw/C-DONE-EPOCH)) (pos? (gl c rw/HANDLES)))
       (do (s! c rw/C-IDLE true)
-          ;; §3.4: an idle computation keeps no run; one still in cleanup
-          ;; keeps it as a tombstone (§3.2) until it retires
-          (when-let [r (rv w (g c rw/C-RUN))]
-            (s! c rw/C-CLEANUP-RUN r)
-            (s! c rw/C-RUN nil))
+          ;; §3.4: an idle computation keeps no run; each of its runs still
+          ;; in cleanup keeps it as a tombstone (§3.2, C-RUNS) until it retires
+          (s! c rw/C-RUN nil)
           ;; Z#64: a dirty computation (its result is not for its current
           ;; epoch: invalidated, or re-demoted right after a failed
           ;; validation) is :invalid, never valid by an empty edge list
@@ -2832,7 +2834,7 @@
                                 validity
                                 :invalid)))
       ;; a run in cleanup keeps it as a tombstone (§3.2); it goes at retirement
-      (when-not (rv w (g c rw/C-RUN)) (unregister! w c)))))
+      (when (zero? (gl c rw/C-RUNS)) (unregister! w c)))))
 
 (defn- rule-r!
   "Processes rows whose retention count reached 0."
@@ -2846,7 +2848,7 @@
               (comp? row)
               (do (when-not (g row rw/C-IDLE) (demote! w row))
                   ;; a run in cleanup keeps its computation as a tombstone (§3.2)
-                  (when (and (g row rw/C-IDLE) (zero? (gl row rw/HANDLES)) (nil? (rv w (g row rw/C-CLEANUP-RUN))))
+                  (when (and (g row rw/C-IDLE) (zero? (gl row rw/HANDLES)) (zero? (gl row rw/C-RUNS)))
                     (unregister! w row)))
               (task? row)
               (do
