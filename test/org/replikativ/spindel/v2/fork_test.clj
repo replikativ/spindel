@@ -341,3 +341,44 @@
          (is (= [:sub :p] (v2/value t 1000 ::timeout)) "the child's scope close did not close the parent's")
          (v2/release-world! child)))
      (v2/release-world! w))))
+
+(deftest a-readoption-in-a-fork-takes-over-the-inherited-handle
+  ;; Z#29: `handles` counts live handle objects, at most one per row; an
+  ;; adoption reuses it and adds 1 only with `handle-new` (from 0). A row
+  ;; copied into a fork inherits its count but no handle object in the fork
+  ;; (handles are per world). The fork's readoption makes the fork's handle
+  ;; object, which takes over the inherited count: no second handle, no item.
+  ;; Once that handle is collected the count reaches 0, so a child the fork's
+  ;; computation no longer creates is removed there (§3.4).
+  (checked
+   (let [w (vworld)]
+     (binding [v2/*world* w]
+       (let [s (v2/signal 0)
+             ids (atom [])
+             c (spin (let [v (iv/get-new (track s))]
+                       (if (< v 2)
+                         (let [a (spin 1)]
+                           (swap! ids conj (aget ^objects (v2/row-of a) rw/ID))
+                           (+ v (await a)))
+                         v)))
+             _ (v2/observe! c (fn [_ _]))
+             _ (is (= 1 (v2/value c 1000 ::timeout)))
+             child (v2/fork! w)
+             cc (v2/in-world child c)
+             proj #(v2/call-in! child (fn [] (verify/projection child)))
+             _ (v2/observe! cc (fn [_ _]))]
+         (v2/write! (v2/in-world child s) 1)
+         (is (= 2 (v2/value cc 1000 ::timeout)))
+         (let [[a a'] @ids]
+           (is (= a a') "the fork readopts the inherited child")
+           ;; 0 only if a collection already dropped the fork's handle
+           (let [n (get-in (proj) [:comps a :handles])]
+             (is (contains? #{0 1} n) (str "one handle: the fork's takes over the inherited count; got " n)))
+           (is (not-any? #(= [:handle-new a] (:item %)) (verify/log child)))
+           (v2/write! (v2/in-world child s) 2)
+           (is (= 2 (v2/value cc 1000 ::timeout)))
+           (verify/gc-settle! child)
+           (is (nil? (get-in (proj) [:comps a])) "the fork's child goes once its handle is collected")
+           (is (some? (get-in (v2/call-in! w #(verify/projection w)) [:comps a])) "the parent's is untouched"))
+         (v2/release-world! child)))
+     (v2/release-world! w))))

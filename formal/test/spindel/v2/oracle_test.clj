@@ -945,3 +945,27 @@
 (deftest projection-roundtrip-adoption
   (doseq [n ["68-w" "69-w" "70-w" "71-w" "72-w" "73-w" "74-w"]]
     (is (= [] (o/roundtrip (log n))) (str "sample " n))))
+
+;; ---------------------------------------------------------------------------
+;; Readoption in a fork (Z#29, §8.1), sample 80 (generator oracle/gen/samples-fork-readopt.clj): the child's rerun
+;; readopts a computation it inherited. The copy has no handle object in the child, so the child's readoption makes
+;; one that takes over the inherited count (handles stay 1, no `[:handle-new]`, as the model's T3); once the child
+;; no longer creates it and its handle is collected, `[:handle-drop]` takes the count to 0 and the child removes it.
+(deftest sample-80-fork-readoption
+  (let [r (log "80-root")
+        c (log "80-child")
+        spec {:root {:log r :kind :root}
+              :child {:log c :from :root :kind :fork-host :at (c1-idx r #(= :fork-host (first %)))}}
+        fam (o/replay-family spec)]
+    (doseq [[k {:keys [res]}] fam]
+      (is (= [(count (:log (spec k))) 0 0] ((juxt :checked :n-divergences :resyncs) res)) (str "sample 80 " k)))
+    (let [[a] (keep #(when (= :create-comp (first (:item %))) (nth (:item %) 2)) r)
+          [ra] (keep #(when (= :create-comp (first (:item %))) %) c)
+          drop (first (filter #(= [:handle-drop a] (:item %)) c))]
+      (is (= a (nth (:item ra) 2)) "80: the child readopts the inherited computation")
+      (is (= 1 (get-in (:proj ra) [:comps a :handles])) "80: one handle after the readoption")
+      (is (not-any? #(= :handle-new (first (:item %))) c) "80: no handle-new")
+      (is (some? drop) "80: the child's handle is collected")
+      (is (nil? (get-in (:proj drop) [:comps a])) "80: and the child removes the computation"))
+    (doseq [n ["80-root" "80-child"]]
+      (is (= [] (o/roundtrip (log n))) (str "sample " n)))))
