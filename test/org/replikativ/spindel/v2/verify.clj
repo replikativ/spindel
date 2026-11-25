@@ -35,6 +35,7 @@
                         (f row rw/C-INS)
                         (f row rw/C-BASIS)
                         (f row rw/C-ADOPT)
+                        (vals (f row rw/C-ADOPT-K))     ; the keyed part (Z#82)
                         (map #(f (canon %) rw/E-DEBTOR) (f row rw/C-ADOPT-BASE))))
     rw/T-RUN (when-not (== rw/ACT-DONE (long (f row rw/R-ACT)))
                (concat [(f row rw/R-OF)]
@@ -198,8 +199,9 @@
                           :validity (let [v (f c rw/C-VALIDITY)]
                                       (if (sequential? v) (mapv (fn [[d ver]] [(id d) ver]) v) v))
                           :basis (mapv (fn [x] [(id x) (f x rw/AT)]) (f c rw/C-BASIS))
-                          :adoption (when (or (f c rw/C-ADOPT) (f c rw/C-ADOPT-BASE))
-                                      {:basis (mapv id (f c rw/C-ADOPT))
+                          :adoption (when (or (f c rw/C-ADOPT) (f c rw/C-ADOPT-K) (f c rw/C-ADOPT-BASE))
+                                      ;; the adoption basis: the positional list and the keyed map's rows (Z#82)
+                                      {:basis (mapv id (concat (f c rw/C-ADOPT) (vals (f c rw/C-ADOPT-K))))
                                        :baselines (mapv (fn [e] [(f e rw/E-AT) (id (f e rw/E-DEBTOR))
                                                                  (intern! w (f e rw/E-BASE))])
                                                         (f c rw/C-ADOPT-BASE))})

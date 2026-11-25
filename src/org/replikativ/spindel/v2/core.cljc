@@ -1486,23 +1486,28 @@
 (defn- ok-k [v] (complete! (active-run) v false))
 (defn- err-k [t] (complete! (active-run) t true))
 
+(defn- release-adopted! [w x]
+  ;; §5.2: a task the new run did not re-spawn is cancelled
+  (when (and (task? x) (rv w (g x rw/K-RUN))) (cancel! w (rv w (g x rw/K-RUN)) ::cancelled))
+  (ref-dec! w x))
+
 (defn- release-adoption! [w c]
   (when-let [ab (g c rw/C-ADOPT)]
     (s! c rw/C-ADOPT nil)
-    (dotimes [i (acount ab)]
-      (let [x (rv w (anth ab i))]
-        ;; §5.2: a task the new run did not re-spawn is cancelled
-        (when (and (task? x) (rv w (g x rw/K-RUN))) (cancel! w (rv w (g x rw/K-RUN)) ::cancelled))
-        (ref-dec! w x))))
+    (dotimes [i (acount ab)] (release-adopted! w (rv w (anth ab i)))))
+  (when-let [abk (g c rw/C-ADOPT-K)]
+    (s! c rw/C-ADOPT-K nil)
+    (doseq [x (vals abk)] (release-adopted! w (rv w x))))
   (when-let [bs (g c rw/C-ADOPT-BASE)]
     (s! c rw/C-ADOPT-BASE nil)
     (dotimes [i (acount bs)] (ref-dec! w (rv w (g (rv w (anth bs i)) rw/E-DEBTOR))))))
 
 (defn- drop-adoption!
-  "Ends the references of an adoption basis `ab` and baselines `bs` the
-   computation no longer holds."
-  [w ab bs]
+  "Ends the references of an adoption basis `ab` (and its keyed part `abk`)
+   and baselines `bs` the computation no longer holds."
+  [w ab abk bs]
   (when ab (dotimes [i (acount ab)] (ref-dec! w (rv w (anth ab i)))))
+  (doseq [x (vals abk)] (ref-dec! w (rv w x)))
   (when bs (dotimes [i (acount bs)] (ref-dec! w (rv w (g (rv w (anth bs i)) rw/E-DEBTOR))))))
 
 (defn- release-ownership!
@@ -1577,17 +1582,37 @@
         (let [e (rv w (anth ins i))]
           (if (g e rw/E-ARMED) (recur (inc i)) i))))))
 
-(defn- restore-ordinals! [w c r]
+(defn- check-unique-keys!
+  "Verify mode (Z#82): a creation key occurs at most once in a basis."
+  [w c basis]
+  (loop [i 0 seen #{}]
+    (when (< i (acount basis))
+      (let [k (g (rv w (anth basis i)) rw/KEY)]
+        (when (contains? seen k)
+          (throw (ex-info "a creation key occurs twice in a basis"
+                          {:spindel/invalid ::duplicate-creation-key :comp (g c rw/ID) :key k})))
+        (recur (inc i) (conj seen k))))))
+
+(defn- restore-ordinals!
+  "T11 resume: the creation counts continue from the creations kept in the
+   basis (§5.2): positional ordinals per site, keyed counts per [site K]."
+  [w c r]
   (when-let [basis (g c rw/C-BASIS)]
     (when (pos? (acount basis))
       (let [ords (hs/vmap)]
         (dotimes [i (acount basis)]
-          (let [key (gl (rv w (anth basis i)) rw/KEY)
-                ord (mod key 1048576)                 ; floors, as the encode: site -1 is negative
-                site (quot (- key ord) 1048576)       ; exact: key - ord is a multiple of 2^20
-                nxt (inc ord)
-                cur (long (or (hs/mget ords site) 0))]
-            (when (> nxt cur) (hs/mput! ords site nxt))))
+          (let [key (g (rv w (anth basis i)) rw/KEY)]
+            (if (vector? key)
+              (let [sk (subvec key 0 2)
+                    nxt (inc (long (nth key 2)))
+                    kord (or (g r rw/R-KORD) {})]
+                (when (> nxt (long (get kord sk 0))) (s! r rw/R-KORD (assoc kord sk nxt))))
+              (let [key (long key)
+                    ord (mod key 1048576)                 ; floors, as the encode: site -1 is negative
+                    site (quot (- key ord) 1048576)       ; exact: key - ord is a multiple of 2^20
+                    nxt (inc ord)
+                    cur (long (or (hs/mget ords site) 0))]
+                (when (> nxt cur) (hs/mput! ords site nxt))))))
         (s! r rw/R-ORD ords)))))
 
 ;; ---------------------------------------------------------------------------
@@ -1653,8 +1678,10 @@
       ;; dropped once the suffix holds its references; Rule R cancels a
       ;; task nothing else retains (§3.3 step 1.2).
       (let [old-ab (g c rw/C-ADOPT)
+            old-abk (g c rw/C-ADOPT-K)
             old-bs (g c rw/C-ADOPT-BASE)]
         (s! c rw/C-ADOPT nil)
+        (s! c rw/C-ADOPT-K nil)
         (s! c rw/C-ADOPT-BASE nil)
         ;; Suffix: dep edges after E are removed; those with a baseline keep
         ;; their debtors through the adoption baselines (§4.4, Z#21; the
@@ -1674,17 +1701,27 @@
                   (recur)))
               (dotimes [i (acount gone)] (unlink! w (anth gone i)))
               (s! c rw/C-ADOPT-BASE bs))))
-        ;; Suffix creations become the adoption basis.
+        ;; Suffix creations become the adoption basis: keyed ones (Z#82) by
+        ;; their creation key, positional ones in a list.
         (let [basis (g c rw/C-BASIS)]
           (when (and basis (pos? (acount basis)))
+            (when (logging? w) (check-unique-keys! w c basis))
             (let [ab (alist)
-                  kept (alist)]
-              (dotimes [i (acount basis)]
-                (let [x (rv w (anth basis i))]
-                  (if (or restart? (> (gl x rw/AT) at)) (aadd! ab x) (aadd! kept x))))
+                  kept (alist)
+                  abk (loop [i 0 abk (transient {})]
+                        (if (< i (acount basis))
+                          (let [x (rv w (anth basis i))]
+                            (if (or restart? (> (gl x rw/AT) at))
+                              (let [key (g x rw/KEY)]
+                                (if (vector? key)
+                                  (recur (inc i) (assoc! abk key x))
+                                  (do (aadd! ab x) (recur (inc i) abk))))
+                              (do (aadd! kept x) (recur (inc i) abk))))
+                          (persistent! abk)))]
               (s! c rw/C-BASIS kept)
-              (s! c rw/C-ADOPT ab))))
-        (drop-adoption! w old-ab old-bs))
+              (s! c rw/C-ADOPT ab)
+              (s! c rw/C-ADOPT-K (not-empty abk)))))
+        (drop-adoption! w old-ab old-abk old-bs))
       (let [t5? (and (nil? e) (zero? (acount ins)))
             r (new-run! w c (g c rw/C-EPOCH))
             k (when e (g e rw/E-CONT))
@@ -2485,18 +2522,54 @@
     (s! c rw/C-RUNS 0)
     (register! w c)))
 
-(defn- find-created [w l key]
+(defn- find-created
+  "The index of the row with the positional creation `key` in list `l`;
+   keyed rows (vector keys, Z#82) never match."
+  [w l key]
   (when l
     (loop [i 0]
       (when (< i (acount l))
-        (let [x (rv w (anth l i))]
-          (if (== (long key) (gl x rw/KEY)) i (recur (inc i))))))))
+        (let [k (g (rv w (anth l i)) rw/KEY)]
+          (if (and (number? k) (== (long key) (long k))) i (recur (inc i))))))))
 
-(defn- creation-key! [r site]
+(defn- effect-key!
+  "§8.2: a registered effect's occurrence key, the site and a per-run
+   ordinal of that site; never keyed. Shares R-ORD with positional
+   creations by site."
+  [r site]
   (let [ords (or (gm r rw/R-ORD) (let [m (hs/vmap)] (s! r rw/R-ORD m) m))
         ord (long (or (hs/mget ords site) 0))]
     (hs/mput! ords site (inc ord))
     (+ (* (long site) 1048576) ord)))   ; site < 2^30, ord < 2^20: exact in JS doubles
+
+(defn- creation-key!
+  "§5.2 (Z#82): the creation key of a creation at `site` in run `r`.
+   Inside `with-key` it is [site K n], `n` counting the run's earlier
+   creations with the same site and keys K; otherwise the positional
+   (site, n) packed into a long, `n` below 2^20."
+  [r site]
+  (if-let [ks (g r rw/R-KEY)]
+    (let [kord (or (g r rw/R-KORD) {})
+          sk [site ks]
+          n (long (get kord sk 0))]
+      (s! r rw/R-KORD (assoc kord sk (inc n)))
+      [site ks n])
+    (do (when-let [ords (g r rw/R-ORD)]
+          (when (<= 1048576 (long (or (hs/mget ords site) 0)))
+            (throw (ex-info "too many creations at one site in one run (2^20); create them under with-key"
+                            {:spindel/invalid ::too-many-creations :site site}))))
+        (effect-key! r site))))
+
+(defn with-key*
+  "§5.2 (Z#82), the thunk form of `with-key`: calls `f` with `k` appended to
+   the running run's keys, restored however `f` exits. Outside a body it
+   calls `f` unkeyed."
+  [k f]
+  (if-let [r (active-run)]
+    (let [prev (g r rw/R-KEY)]
+      (s! r rw/R-KEY (conj (or prev []) k))
+      (try (f) (finally (s! r rw/R-KEY prev))))
+    (f)))
 
 (defn- frame-of
   "§8.2 addresses: the creation keys of the entities that created `x`, and
@@ -2536,15 +2609,24 @@
    next cut."
   [w c key ok?]
   (let [basis (or (gm c rw/C-BASIS) (let [l (alist)] (s! c rw/C-BASIS l) l))
-        bi (find-created w basis key)
-        ab (gm c rw/C-ADOPT)
-        ai (when-not bi (find-created w ab key))]
-    (cond bi (let [x (rv w (anth basis bi))] (when (ok? x) x))
-          ai (let [x (rv w (anth ab ai))]
-               (when (ok? x)
-                 (aput! ab ai (rv w (anth ab (dec (acount ab))))) (apop! ab)
-                 (aadd! basis x)   ; the adoption reference moves to the basis
-                 x)))))
+        abk (when (vector? key) (g c rw/C-ADOPT-K))]
+    (if (vector? key)
+      ;; keyed (Z#82): only the adoption basis can hold it, the counts make
+      ;; the key new in the basis
+      (when-let [x (some->> (get abk key) (rv w))]
+        (when (ok? x)
+          (s! c rw/C-ADOPT-K (not-empty (dissoc abk key)))
+          (aadd! basis x)   ; the adoption reference moves to the basis
+          x))
+      (let [bi (find-created w basis key)
+            ab (gm c rw/C-ADOPT)
+            ai (when-not bi (find-created w ab key))]
+        (cond bi (let [x (rv w (anth basis bi))] (when (ok? x) x))
+              ai (let [x (rv w (anth ab ai))]
+                   (when (ok? x)
+                     (aput! ab ai (rv w (anth ab (dec (acount ab))))) (apop! ab)
+                     (aadd! basis x)   ; the adoption reference moves to the basis
+                     x)))))))
 
 (declare admit-change! admitting host-sealed? host-released? sealed-ex)
 
@@ -3302,7 +3384,7 @@
 
 (defn- create-source-in-run!
   "T1 inside a run: owned by the computation (in its basis, adopted by later
-   runs in creation order) or by the task run's current scope, which retains
+   runs by creation key, §5.2) or by the task run's current scope, which retains
    it only through edges and handles (§5.2)."
   [r kind v init]
   (body-released!)
@@ -3311,7 +3393,7 @@
         at (next-at! r)]
     (if (comp? x)
       (let [key (creation-key! r -1)
-            ;; readoption by ordinal needs the same kind (a run that creates a
+            ;; readoption by creation key needs the same kind (a run that creates a
             ;; signal where the last one created a mailbox makes a new source;
             ;; the other stays in the adoption basis)
             old (adopt! w x key #(and (source? %) (== (long kind) (gl % rw/X-KIND))))]
@@ -5964,7 +6046,7 @@
       (let [h (or (get @effect-handlers sym)
                   (throw (ex-info "unregistered effect" {:spindel/invalid :effect :effect sym})))
           ;; §8.2 addresses: counted on entry, before a savepoint freezes the run
-            key (creation-key! r site)
+            key (effect-key! r site)
             op (try (h args {:effect sym :site site :run (g r rw/ID) :effect-index (gl r rw/R-EIDX)
                              :key key :frame (frame-of (rv (cw) (g r rw/R-OF))) :path (g r rw/R-PATH)})
                     (catch #?(:clj Throwable :cljs :default) t [:error t]))]
@@ -6153,6 +6235,18 @@
          `(let [~saved (push-path! ~p)]
             (~'try (do (enter-finally!) ~@body)
                    (~'finally (exit-finally!) (~'try (pop-path! ~saved) (~'finally (leave-finalizer!))))))))
+     (defmacro with-key
+       "§5.2 (Z#82): the creations in `body` (also in the functions it calls),
+        in the running run, have the creation key [site K n]: K the keys of
+        the active `with-key` forms, outermost first, `n` the run's earlier
+        creations with the same site and K. A computation run adopts the
+        predecessor with the same key, in any order. `k` is an immutable
+        value, compared by value, evaluated once before `body`. `body` runs
+        synchronously: an effect in it does not compile; the computations and
+        tasks it creates run in their own scopes. Outside a body it runs
+        `body` unkeyed."
+       [k & body]
+       `(with-key* ~k (fn [] ~@body)))
      (defmacro defeffect
        "R3: defines effect `name` in this namespace: `(defeffect choose [args
         ctx] op-form)`; see register-effect!. It registers at expansion too,

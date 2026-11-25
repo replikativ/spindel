@@ -249,7 +249,8 @@
 (def ^:const C-PATH 30)      ; the creating run's path at creation, nil if empty (§8.2 P3)
 (def ^:const C-BIND 31)      ; JVM: the creator's dynamic binding frame, each run's initial frame
 (def ^:const C-RUNS 32)      ; its unretired runs (the §3.2 tombstone count), as W-RUNS per world
-(def ^:const C-SIZE 33)
+(def ^:const C-ADOPT-K 33)   ; the keyed part of the adoption basis: persistent map creation key -> row, or nil (Z#82)
+(def ^:const C-SIZE 34)
 
 ;; Task
 (def ^:const K-BODY 12)
@@ -312,7 +313,9 @@
 (def ^:const R-PATH 17)      ; the run's path, nil if empty (§8.2 P1-P3)
 (def ^:const R-BIND 18)      ; JVM: the run's dynamic binding frame between slices
 (def ^:const R-INFIN 19)     ; C1 W4: depth of finally clauses executing (suspension refused)
-(def ^:const R-SIZE 20)
+(def ^:const R-KEY 20)       ; the keys of the active `with-key` forms, outermost first, or nil (Z#82)
+(def ^:const R-KORD 21)      ; keyed creation counts: persistent map [site K] -> next n, or nil (Z#82)
+(def ^:const R-SIZE 22)
 
 (def ^:const ACT-ACTIVE 0)
 (def ^:const ACT-PARKED 1)
