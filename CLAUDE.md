@@ -366,10 +366,8 @@ src/org/replikativ/spindel/
 │   ├── algebra.cljc             # PDeltaAlgebra protocol + laws
 │   ├── interval.cljc            # Interval (:old, :new, :deltas)
 │   ├── sequence_algebra.cljc    # SequenceAlgebra (ifor-each output)
-│   ├── map_algebra.cljc         # MapAlgebra
 │   ├── permutation.cljc         # Permutation utilities
-│   ├── combinators.cljc         # imap, ifilter, islice, ireduce, izip
-│   ├── typed_combinators.cljc   # Typed-algebra-emitting combinators
+│   ├── combinators.cljc         # imap, ifilter, islice, ireduce
 │   ├── deltaable.cljc           # Delta-tracking collections (re-exports)
 │   └── deltaable/
 │       ├── protocols.cljc       # PDeltaable, PWrap/UnwrapDeltaable
