@@ -317,7 +317,8 @@ prototypes are not acceptance evidence for this smaller operation API.
     mailboxes, semaphore release on semaphores, take/acquire on mailboxes and
     semaphores, pin on computations, tasks and sources; misuse throws to the
     caller, or is a refused item when only the item sees it. Readoption by
-    ordinal needs the same kind. `await-any` of no input is an error.
+    creation key (§5.2) needs the same kind; a rejected predecessor stays in
+    the adoption basis. `await-any` of no input is an error.
     `world-id` is public (unique within a family).
   - Z#76 (C1 Q5/Q8, T1/T3/T4; user decision 2026-11-18, model `world-released` on
     body paths): a released world takes no new work from bodies either: a
@@ -359,6 +360,10 @@ prototypes are not acceptance evidence for this smaller operation API.
     it never entered: B8's suspension check saw no clause, and the clause's
     end left an orphan `finally-leave`, which the engine now refuses as the
     model does.
+  - Z#82 (§5.2, §8.2; phase D, user decision 2026-11-22): keyed creation. A
+    creation inside `with-key` has the creation key `(site, K, n)`;
+    adoption, re-spawn and readoption find the predecessor by creation key.
+    The model is unchanged: ids are item inputs.
   - Z#77 (§1, §2, T4, T28, §5.2, I16, §8.1 F6, D3, S3/S8, §13; user decision
     2026-11-18, dvergr F9, `fork-local-design.md`): **fork-local tasks.**
     - A task started with `task-with {:fork-local true}` is fork-local, and
@@ -1208,6 +1213,31 @@ resource acknowledgement (T15), operation completion (T25), finalizer exit
 A fork-local run's children are fork-local (Z#77). `detach` into a fork-local
 scope requires a fork-local task.
 
+**Creation keys (Z#82).** Each creation in a run (T1, T3, T4, a pull sequence)
+has a creation key. Outside `with-key` it is `(site, n)`: `n` counts the run's
+earlier creations at `site`, and is below 2^20. Body-created sources of every
+kind share one site. Inside `with-key k body` the key is `(site, K, n)`: `K` is
+the vector of the keys of the run's active `with-key` forms, outermost first;
+`n` counts the run's earlier creations with the same `site` and `K`. Keys are
+immutable values compared by value. `k` is evaluated once, before `body`.
+`body` runs synchronously: an effect in it is an error (§7); computations and
+tasks it creates run in their own scopes. Outside a body `with-key` runs `body`
+unkeyed.
+
+A computation run adopts the entity of its adoption basis that has the
+creation key of a new creation, if it is accepted: a computation always (T3,
+with W#5 and P4 for changed captures or path); a task if its captures and path
+are equal (T4), else a new task is spawned; a source if its kind is equal (T1);
+a pull sequence if its captures and initial state are equal (C0). Only an
+accepted entity moves to `basis`. Creations of the same `(site, K)` in one run
+are told apart by `n`, so equal keys are positional among themselves. After a
+T11 resume the counts continue from the creations kept in `basis`. Each T11
+replaces the adoption basis with the latest suffix; the superseded one loses
+that retention, and Rule R (§3.3) cancels those of its tasks that are no longer
+live. A rejected predecessor stays in the adoption basis. Registered-effect
+occurrences are never keyed (§8.2). Creation keys decide adoption only;
+ownership and retention follow the table above.
+
 **Errors.**
 - A throw completes the run with `err e` after lexical cleanup; Z#66 preserves
   the body failure as cause when cleanup also fails.
@@ -1657,16 +1687,17 @@ A savepoint publishes the rest of a body to a handler (see `savepoints.md`).
 
 **Addresses of effect sites (2026-11-14).** A registered effect receives,
 besides its `site`, the occurrence's `key` (the site and a per-run ordinal of
-that site, as for creations) and its `frame`: the creation keys of the
-entities that created the run's entity, outermost first, and of the entity
-itself (a site and ordinal in the creating run); empty for an entity the host
-created. The frame follows creation, not ownership, so `detach` keeps it. A consumer's
+that site; never keyed by `with-key`) and its `frame`: the creation keys
+(§5.2) of the entities that created the run's entity, outermost first, and of
+the entity itself; empty for an entity the host created. A keyed creation's
+frame entry carries its keys, so the effects of a keyed child are addressed by
+key. The frame follows creation, not ownership, so `detach` keeps it. A consumer's
 address for an effect occurrence is `[frame key]` or an explicit id. The
 ordinal is counted when the effect is entered, before a savepoint freezes the
 run, so instances continue the count of the run they copy. In task runs and
 their instances keys are stable; in a computation run re-entered by T11 only
-creation ordinals are restored (formalism §1.6), so effect-only keys after the
-re-entry point count from there.
+creation counts are restored (§5.2), so effect-only keys after the re-entry
+point count from there.
 
 **Paths of effect sites (2026-11-14).** Readable, hierarchical names for
 effect occurrences (Gen's `:step => i => :x`), for consumers that let callers
@@ -1803,8 +1834,9 @@ cases.
    `switch`.
 8. **Lazy invalidation (Q2)** via hot counts: observers plus hot creditors.
 9. **Ids:**
-   - 64-bit non-cryptographic `(creator, site, ordinal)`, where `site` is a
-     macro-time int;
+   - creation keys `(site, ordinal)` or `(site, keys, ordinal)` (§5.2),
+     where `site` is a macro-time int; row ids come from the family
+     allocator;
    - keywords and UUIDs only for serialization;
    - no `random-uuid` on hot paths.
 10. **Rule R incrementally:**
@@ -2027,6 +2059,7 @@ Shaped by the ansatz feasibility read (`ansatz/.internal/design/spindel-v2-feasi
 | `in-callers-world` | cross-world ingress (H4) |
 | `fork-context` | §8.1 (frozen default; sources may follow) |
 | `engine.addressing/with-scope` (readable site names) | `with-path` (§8.2 P1–P6) |
+| `engine.addressing/with-key`, `spin/keyed` | `with-key` (§5.2) |
 | savepoint in-place resume | S2 |
 | new: `instantiate`/`activate`/`abandon` | S3, S4, S7 |
 | `stop-context!`, `release-context!` | `seal` / `release` |
