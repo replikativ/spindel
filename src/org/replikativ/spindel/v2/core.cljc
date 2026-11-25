@@ -18,6 +18,7 @@
             [org.replikativ.spindel.v2.lifetime :as lt]
             [is.simm.partial-cps.runtime :as pr]
             #?(:clj [is.simm.partial-cps.ioc :as ioc])
+            #?(:clj [org.replikativ.spindel.v2.macro-support :as ms])
             #?(:clj [org.replikativ.spindel.engine.free-vars :as free-vars]))
   #?(:cljs (:require-macros [org.replikativ.spindel.v2.rows :refer [g gm s! gl alist acount anth aadd! apop! aput! aclear! acopy]]
                             [org.replikativ.spindel.v2.core :refer [gated commit! rv ingress-body]])))
@@ -6197,6 +6198,14 @@
            `(let [~a (object-array ~(count frees))]
               ~@(map-indexed (fn [i x] `(aset ~a ~i ~x)) frees)
               ~a))))
+     (defn effectful?
+       "Macro time (A3): whether `form` performs an effect in its own scope:
+        calls a v2 breakpoint or a registered effect (`defeffect`), looked
+        up through `env`, locals first. Nested bodies, closures and quoted
+        forms are not its scope (see `macro-support/some-call`)."
+       [env form]
+       (let [effects (merge breakpoints @extra-breakpoints)]
+         (boolean (ms/some-call env form (fn [env x] (contains? effects (ms/head-name env (first x))))))))
      (defn- site-of [form]
        (bit-and 0x3fffffff (hash [(str *ns*) (:line (meta form)) (:column (meta form))])))
      (defmacro spin
