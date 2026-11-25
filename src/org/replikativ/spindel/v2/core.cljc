@@ -6197,6 +6197,96 @@
            `(let [~a (object-array ~(count frees))]
               ~@(map-indexed (fn [i x] `(aset ~a ~i ~x)) frees)
               ~a))))
+     (defn- local-in? [env sym]
+       (if (:js-globals env) (contains? (:locals env) sym) (contains? env sym)))
+     (defn- head-name
+       "The qualified name `h` resolves to in `env`, or nil (locals, special
+        forms, unresolvable symbols)."
+       [env h]
+       (when (and (symbol? h) (not (local-in? env h)))
+         (try (ioc/var-name env h) (catch Exception _ nil))))
+     (def ^:private opaque-bodies
+       "The body macros whose body is a scope of its own."
+       `#{spin task task-with body* aseq})
+     (defn- head-scope
+       "How the scope walk treats a call of `h`: `::opaque` (a body of its
+        own, not entered), `::transparent` (a macro whose arguments are
+        expressions evaluated in the caller's scope, walked without expanding
+        it), or nil. A macro declares either in its var metadata under
+        `::scope`."
+       [env h]
+       (when (and (symbol? h) (not (local-in? env h)))
+         (if (contains? opaque-bodies (head-name env h))
+           ::opaque
+           (::scope (if (:js-globals env)
+                      (ioc/resolve-macro-var-cljs env h)
+                      (let [v (try (resolve env h) (catch Exception _ nil))]
+                        (when (var? v) (meta v))))))))
+     (defn- special-head? [env h]
+       (or (special-symbol? h)
+           (and (:js-globals env) (contains? @(requiring-resolve 'cljs.analyzer/specials) h))))
+     (defn scope-some
+       "Macro time (A3): the first truthy `(f env call)` over the calls of
+        `form` that execute in its own scope, `env` the macro environment
+        there; `::skip` from `f` skips that call's subforms. The walk is
+        scope-aware: it tracks `let`/`loop`/`letfn`/`catch` locals; it does
+        not enter `quote`, `var`, `fn`/`fn*`, `reify`, `deftype`, the
+        functions of a `letfn`, nor the bodies of `spin`, `task`,
+        `task-with`, `body*`, `aseq` or a macro declared `::opaque`; it
+        expands other macros with `env`, except one declared
+        `::transparent`, whose arguments it walks."
+       [env form f]
+       (letfn [(scan-all [env xs] (some #(scan env %) xs))
+               (scan-bindings [env bvec body]
+                 (loop [env env ps (seq (partition 2 bvec))]
+                   (if-let [[[b init] & more] ps]
+                     (or (scan env init) (recur (ioc/bind-locals env (ioc/binding-symbols b)) more))
+                     (scan-all env body))))
+               (scan-special [env [h & args]]
+                 (case h
+                   (quote var fn* reify* deftype* defrecord*) nil
+                   (let* loop*) (scan-bindings env (first args) (rest args))
+                   letfn* (scan-all (ioc/bind-locals env (take-nth 2 (first args))) (rest args))
+                   catch (let [[_ local & body] args] (scan-all (ioc/bind-locals env [local]) body))
+                   case* (if (:js-globals env)
+                           (let [[t _ vs default] args] (or (scan env t) (scan-all env vs) (scan env default)))
+                           (let [[t _ _ default table] args]
+                             (or (scan env t) (scan env default) (scan-all env (map #(second (val %)) table)))))
+                   . (let [[target & members] args]
+                       (or (scan env target)
+                           (some #(cond (seq? %) (scan-all env (rest %)) (symbol? %) nil :else (scan env %)) members)))
+                   (scan-all env args)))
+               (scan [env x]
+                 (cond
+                   (seq? x)
+                   (when (seq x)
+                     (let [h (first x)
+                           r (f env x)]
+                       (cond
+                         (= ::skip r) nil
+                         r r
+                         (not (symbol? h)) (scan-all env x)
+                         (local-in? env h) (scan-all env (rest x))
+                         (special-head? env h) (scan-special env x)
+                         :else
+                         (case (head-scope env h)
+                           ::opaque nil
+                           ::transparent (scan-all env (rest x))
+                           (if-let [[expanded] (ioc/expand-macro x env)]
+                             (scan env expanded)
+                             (scan-all env (rest x)))))))
+                   (map? x) (some (fn [[k v]] (or (scan env k) (scan env v))) x)
+                   (coll? x) (scan-all env x)
+                   :else nil))]
+         (scan env form)))
+     (defn effectful?
+       "Macro time (A3): whether `form` performs an effect in its own scope:
+        calls a v2 breakpoint or a registered effect (`defeffect`), looked
+        up through `env`, locals first. Nested bodies, closures and quoted
+        forms are not its scope (see `scope-some`)."
+       [env form]
+       (let [effects (merge breakpoints @extra-breakpoints)]
+         (boolean (scope-some env form (fn [env x] (contains? effects (head-name env (first x))))))))
      (defn- site-of [form]
        (bit-and 0x3fffffff (hash [(str *ns*) (:line (meta form)) (:column (meta form))])))
      (defmacro spin
