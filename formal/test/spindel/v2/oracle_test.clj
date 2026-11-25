@@ -969,3 +969,94 @@
       (is (nil? (get-in (:proj drop) [:comps a])) "80: and the child removes the computation"))
     (doseq [n ["80-root" "80-child"]]
       (is (= [] (o/roundtrip (log n))) (str "sample " n)))))
+
+;; ---------------------------------------------------------------------------
+;; Keyed creation (spec §5.2 Z#82, phase-d design §1.13), samples 75-79 (generator oracle/gen/samples-keyed.clj).
+;; The model holds no keys (ids are item inputs): the replay shows every chosen id is a legal item, and the shape
+;; checks pin the key -> id mapping. 75: keyed children reversed (no fresh id), one inserted (one fresh id), one
+;; removed (released at the parent's T12). 76: a keyed task whose key vanished is cancelled at the parent's T12;
+;; the kept key's task is readopted. 77: a fork family reorders independently, each world readopting by key.
+;; 78: a resume between keyed creations with a duplicate (site, K): the counts continue from the kept prefix, so
+;; the suffix child is readopted. 79: repeated interrupted reruns with fresh keys: each cut's adoption basis is
+;; the previous run's child only. 81: creations rejected at the ordinal limit (caught by the body) leave no item,
+;; id, row or effect index behind.
+(def ^:private keyed-specs
+  {"75" {:w {:log (log "75-w") :kind :root}}
+   "76" {:w {:log (log "76-w") :kind :root}}
+   "77" (let [r (log "77-root")]
+          {:root {:log r :kind :root}
+           :child {:log (log "77-child") :from :root :kind :fork-host :at (c1-idx r #(= :fork-host (first %)))}})
+   "78" {:w {:log (log "78-w") :kind :root}}
+   "79" {:w {:log (log "79-w") :kind :root}}
+   "81" {:w {:log (log "81-w") :kind :root}}})
+
+(deftest keyed-samples
+  (doseq [[n spec] keyed-specs]
+    (let [fam (o/replay-family spec)]
+      (doseq [[k {:keys [res]}] fam]
+        (is (= [(count (:log (spec k))) 0 0] ((juxt :checked :n-divergences :resyncs) res)) (str "sample " n " " k))))))
+
+(defn- created [l] (keep #(when (= :create-comp (first (:item %))) (nth (:item %) 2)) l))
+(defn- top-comps [l] (keep #(when (= :create-comp-top (first (:item %))) (nth (:item %) 2)) l))
+(defn- last-complete
+  "The last `:complete` item of a run of computation `c` (its runs from the `:start` and `:dispatch` items)."
+  [l c]
+  (let [runs (set (keep #(when (and (#{:start :dispatch} (first (:item %))) (= c (second (:item %))))
+                           (nth (:item %) 2))
+                        l))]
+    (last (filter #(and (= :complete (first (:item %))) (runs (second (:item %)))) l))))
+
+(deftest keyed-sample-shapes
+  (doseq [n ["75-w" "76-w" "77-root" "77-child" "78-w" "79-w" "81-w"]]
+    (is (every? :accepted (log n)) (str n ": every item accepted")))
+  (let [l (log "75-w")
+        ids (vec (created l))
+        [a b c3] ids
+        d (nth ids 7)
+        [c] (top-comps l)
+        pc (get-in (:proj (last-complete l c)) [:comps c])]
+    (is (= 13 (count ids)))
+    (is (= 3 (count (set [a b c3]))) "75: keys 1 2 3")
+    (is (= [c3 b a] (subvec ids 3 6)) "75: the reverse [3 2 1] names each key's id")
+    (is (not-any? #{d} [a b c3]) "75: the inserted key 4 is a fresh child")
+    (is (= [c3 d b a] (subvec ids 6 10)) "75: [3 4 2 1]")
+    (is (= [c3 d a] (subvec ids 10 13)) "75: [3 4 1]")
+    (is (= 3 (count (:basis pc))))
+    (is (not-any? #{b} (concat (map first (:basis pc)) (get-in pc [:adoption :basis])))
+        "75: the removed key's child is released at the parent's T12"))
+  (let [l (log "76-w")
+        [k1 k2 k1'] (keep #(when (= :spawn (first (:item %))) (nth (:item %) 3)) l)
+        [c] (top-comps l)
+        done (last-complete l c)
+        running? (fn [k] (contains? #{:active :parked}
+                                    (get-in (:proj done) [:runs (get-in (:proj done) [:tasks k :run]) :act])))]
+    (is (= k1 k1') "76: the kept key's task is readopted")
+    (is (not= k1 k2))
+    (is (running? k1))
+    (is (not (running? k2)) "76: the vanished key's task is cancelled in the parent's complete item"))
+  (let [[a b c :as r] (vec (created (log "77-root")))
+        ch (created (log "77-child"))]
+    (is (= 3 (count (set (take 3 r)))) "77: keys 1 2 3")
+    (is (= [b c a] (subvec r 3 6)) "77: the root's [2 3 1] readopts by key")
+    (is (= [c b a] ch) "77: the child's [3 2 1] readopts the inherited children by key"))
+  (let [ids (created (log "78-w"))]
+    (is (= 4 (count ids)))
+    (is (= 3 (count (set ids))) "78: the duplicates are three rows")
+    (is (= (nth ids 2) (nth ids 3)) "78: the suffix child (n = 2) is readopted after the resume"))
+  (let [l (log "79-w")
+        ids (vec (created l))
+        [c] (top-comps l)
+        cuts (filter #(= [:dispatch c] (vec (take 2 (:item %)))) l)]
+    (is (= 5 (count (set ids))) "79: fresh keys, fresh children")
+    (is (= 4 (count cuts)))
+    (doseq [[i d] (map-indexed vector cuts)]
+      (is (= [(ids i)] (get-in (:proj d) [:comps c :adoption :basis]))
+          (str "79: cut " (inc i) " holds only the previous run's child"))))
+  (let [l (log "81-w")]
+    (is (= {:spawn-top 1 :create-comp-top 1 :create-comp 3 :create-source 1}
+           (frequencies (keep #(#{:spawn-top :create-comp-top :create-comp :create-source :spawn} (first (:item %))) l)))
+        "81: the two rejected creations have no item")))
+
+(deftest projection-roundtrip-keyed
+  (doseq [n ["75-w" "76-w" "77-root" "77-child" "78-w" "79-w" "81-w"]]
+    (is (= [] (o/roundtrip (log n))) (str "sample " n))))

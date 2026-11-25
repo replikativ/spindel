@@ -172,7 +172,7 @@
         then T16 on the root scope (2). Later host items are not refused globally: top-level
         creations need an open scope, handle operations find 0 handles.
     B22. T1 in a body (`t1-create-nonstream`, replacing step's T1 in the step): a computation run adopts a
-        source of its basis/adoption basis named by `fresh` (creation order; same kind; no
+        source of its basis/adoption basis named by `fresh` (by creation key, Z#82; same kind; no
         allocation); otherwise a new source owned by the computation, or in a task run by the
         run's current scope (B15).
     B23. Z#33: every demand (T6 in any run, T8, T22) on an idle computation clears `idle` in
@@ -2692,7 +2692,7 @@
   (simp only [t21-release-world hr refuse]))
 
 ;; ---- T1 in a body (engine `[:create-source st kind v fresh]`): in a computation run, `fresh`
-;; naming a source of C's basis or adoption basis adopts it (creation order; no allocation, the
+;; naming a source of C's basis or adoption basis adopts it (by creation key, Z#82; no allocation, the
 ;; kind must match; it moves to the basis at the new site, like a re-spawn); otherwise fresh =
 ;; next-id creates it, owned by the computation, or in a task run by the run's current scope
 ;; (reading B22), recorded in a computation's basis. Effect tick either way.
