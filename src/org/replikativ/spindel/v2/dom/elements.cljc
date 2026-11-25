@@ -29,8 +29,8 @@
     `call-with-context`.
   - An effectful form is taken apart in a closed set of shapes, whose
     parts are treated by these same rules: a call (its operands bound in
-    order, symbols, literals and function literals left in place, then the
-    call), `let`/`let*` (destructuring lowered first; every initializer and
+    evaluation order, var reads included; locals, literals and function
+    literals left in place; then the call), `let`/`let*` (destructuring lowered first; every initializer and
     body form), `do`, `if`, `when`/`when-not` (every form). DOM macros see
     the locals; an inline `spin`'s body is treated too.
 
@@ -43,9 +43,13 @@
     later, outside the context; use an eager form (`mapv`, `into []`);
   - a computation or task created in a position the rules do not reach
     (or a task anywhere) whose body calls a plain component.
-  Not recognizable, so not warned: a plain component called from a helper
-  function that is itself called after a suspension, or called through a
-  function value the rules cannot see. Use `in-context` there.
+  Recognized and placed: a helper function called directly in a supported
+  shape, also after a suspension (it is a possible component call). Not
+  recognizable, so not warned: a component called through a function value
+  the rules cannot see (a map lookup, a field, a local handed to a function
+  other than the core higher-order ones), or by a helper that is itself
+  called that way. Use `in-context` there. The lazy warning is conservative: an eager
+  consumer around `map` (`(vec (map card xs))`) warns too; prefer `mapv`.
 
   Computations: an inline `spin` in a child captures the locals; a
   computation made by a plain component is created with `component`."
@@ -284,22 +288,25 @@
              (println "WARNING:" ::unaddressed-call (pr-str at) "-" why
                       "- the call gets no DOM context; see the el/ namespace doc (el/in-context)")))))
 
-     (defn- finish
-       "An effect-free form, or a form the rules do not take apart: run
-        under the context when it calls a possible component and is
-        effect-free; warn when it cannot be placed."
-       [env loc form]
-       (let [calls? (component-call-in? env form)
-             eff? (v2/effectful? env form)]
-         (when (deferred-call-in? env form)
+     (defn- finish-as
+       "`form`, an effect-free form or a form the rules do not take apart,
+        classified as `shape` (the same call before its operands were
+        hoisted): run under the context when it calls a possible component
+        and is effect-free; warn when it cannot be placed."
+       [env loc form shape]
+       (let [calls? (component-call-in? env shape)
+             eff? (v2/effectful? env shape)]
+         (when (deferred-call-in? env shape)
            (warn! loc form "a computation or task created here calls a plain component in its body"))
-         (when (lazy-call-in? env form)
+         (when (lazy-call-in? env shape)
            (warn! loc form "a lazy sequence of component calls is realized later; use an eager form (mapv, into [])"))
          (cond
            (not calls?) form
            (not eff?) (wrap form)
            :else (do (warn! loc form "a plain component is called after a suspension in an unsupported form")
                      form))))
+
+     (defn- finish [env loc form] (finish-as env loc form form))
 
      (declare treat)
 
@@ -318,21 +325,28 @@
          (with-meta (apply list h bvec' (map #(treat env' loc %) body)) (meta form))))
 
      (defn- keep-in-place?
-       "An operand whose evaluation has no effect and that the indirect-call
-        check must see: a symbol, a literal or a function literal."
+       "An operand that reads the same whenever it is evaluated: a local, a
+        literal or a function literal (it reads vars only when called)."
        [env a]
-       (or (symbol? a) (not (coll? a)) (fn-form? env a)))
+       (or (and (symbol? a) (ms/local? env a))
+           (and (not (symbol? a)) (not (coll? a)))
+           (fn-form? env a)))
 
      (defn- hoist
-       "A call: the operands that need it are bound in order (each treated),
-        then the call is finished."
+       "A call: its operands are bound in order (each treated), except those
+        that read the same at any time, then the call is finished. A var
+        read is bound too, so it stays before a later operand that mutates
+        the var or suspends. The call is classified as written, with its
+        var operands, not as the locals they are bound to."
        [env loc [h & args :as form]]
        (if-not (or (component-call-in? env form) (deferred-call-in? env form))
          form
          (let [ts (mapv #(when-not (keep-in-place? env %) (gensym "arg")) args)
-               call (with-meta (cons h (map #(or %1 %2) ts args)) (meta form))]
+               env' (ioc/bind-locals env (remove nil? ts))
+               call (with-meta (cons h (map #(or %1 %2) ts args)) (meta form))
+               shape (with-meta (cons h (map (fn [t a] (if (and t (not (symbol? a))) t a)) ts args)) (meta form))]
            `(let [~@(mapcat (fn [t a] (when t [t (treat env loc a)])) ts args)]
-              ~(finish (ioc/bind-locals env (remove nil? ts)) loc call)))))
+              ~(finish-as env' loc call shape)))))
 
      (defn- treat
        "A form in a position whose value or effects the DOM context must
