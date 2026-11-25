@@ -2383,12 +2383,17 @@
 
 (defn- handle!
   "The row's live handle, or a new one (+1 handle, Z#29). A row has at most
-   one live handle object."
+   one live handle object. A row copied into a fork inherits its count but no
+   handle object (handles are per world, §8.1): the fork's first handle takes
+   over the inherited count instead of adding one."
   [w row]
   (or (let [r (g row rw/HREF)] (if (instance? Handle r) r (hs/deref-weak r)))
       (let [h (new-handle w row)
             again? (some? (g row rw/HREF))
-            acquire? (or (not (watchable-source? row)) (zero? (gl row rw/HANDLES)))]
+            acquire? (if again?
+                       (or (not (watchable-source? row)) (zero? (gl row rw/HANDLES)))
+                       ;; no handle object yet: a new row (0), or a fork's copy (its inherited count)
+                       (zero? (gl row rw/HANDLES)))]
         ;; Source aliases share one logical allowance, owned by their token.
         ;; Replacing a dead canonical HREF does not acquire a second allowance.
         (when acquire? (s! row rw/HANDLES (inc (gl row rw/HANDLES))))
