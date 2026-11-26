@@ -31,6 +31,22 @@
   [parent k]
   (keyword (str "keyed-" (h/content-hash [parent :keyed k]))))
 
+(defn check-keys!
+  "Throws unless the item keys `ks` of a keyed list are distinct and
+   neither nil nor false: ::invalid-key, ::duplicate-key (ex-data :type).
+   The keyed diff drops nil and false keys, and the commit keeps one item
+   per key."
+  [ks]
+  (reduce (fn [seen k]
+            (cond
+              (or (nil? k) (false? k))
+              (throw (ex-info "a keyed list item has a nil or false key" {:type ::invalid-key :key k}))
+              (contains? seen k)
+              (throw (ex-info "a keyed list has a duplicate key" {:type ::duplicate-key :key k}))
+              :else (conj seen k)))
+          #{} ks)
+  nil)
+
 ;; ---------------------------------------------------------------------------
 ;; The synchronous context
 
