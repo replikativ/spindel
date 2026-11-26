@@ -38,7 +38,6 @@
   - StringDischarge (string.cljc) — HTML string for SSR
   - MockDischarge (this file)    — operation log for tests"
   (:require [org.replikativ.spindel.dom.core :as core]
-            [org.replikativ.spindel.dom.cache :as cache]
             [org.replikativ.spindel.dom.fragment :as frag]
             [org.replikativ.spindel.incremental.deltaable :as d]
             [org.replikativ.spindel.incremental.permutation :as perm]
@@ -193,7 +192,21 @@
 
 (defonce ^:private logged-collisions (atom #{}))
 
-(defonce ^:private logged-unbound (atom #{}))
+(def ^:no-doc log-throttle-cap
+  "How many distinct addresses a once-per-address log throttle remembers.
+   Past the cap, logging stops for new addresses; violation collection in
+   tests is unaffected."
+  1024)
+
+(defn ^:no-doc first-log?
+  "Whether `addr` is logged now under the once-per-address throttle
+   `logged` (an atom of a set): it was not logged before and the set is
+   under the cap. Records it when so."
+  [logged addr]
+  (let [s @logged]
+    (when (and (not (contains? s addr)) (< (count s) log-throttle-cap))
+      (swap! logged conj addr)
+      true)))
 
 (defn register-addr!
   "Register an address as claimed during this render pass.
@@ -212,8 +225,7 @@
                              {:addr addr
                               :prior (vnode-fingerprint seen)
                               :new (vnode-fingerprint vnode)})
-          (when-not (contains? @logged-collisions addr)
-            (swap! logged-collisions conj addr)
+          (when (first-log? logged-collisions addr)
             (log/error ::addr-collision
                        {:addr addr
                         :prior (vnode-fingerprint seen)
@@ -728,12 +740,24 @@
    the caller owns attachment)."
   nil)
 
+(def ^:dynamic ^:no-doc *mount-hooks*
+  "The commit hooks of an engine-v2 mount (`v2.dom.render`), or nil. When
+   bound to `{:created (fn [vnode el]) :removed (fn [vnode])}`, the mount
+   owns every lifecycle call: `render-initial!` reports each element it
+   creates to `:created` (post-order, whether or not it has a `:ref`) and
+   calls no ref, and a removal reports the departing subtree to `:removed`
+   (before it is detached) instead of calling refs with nil. Unbound, refs
+   behave as described at `*mount-effects*`."
+  nil)
+
 (defn- mount-ref!
   [vnode el]
-  (when (:ref vnode)
-    (if-let [q *mount-effects*]
-      (vswap! q update :pending conj [vnode el])
-      (call-ref! vnode el))))
+  (if-let [h *mount-hooks*]
+    ((:created h) vnode el)
+    (when (:ref vnode)
+      (if-let [q *mount-effects*]
+        (vswap! q update :pending conj [vnode el])
+        (call-ref! vnode el)))))
 
 (defn subtree-attached!
   "Record that the subtree(s) `render-initial!` just built have been attached
@@ -781,6 +805,9 @@
   [vnode]
   (when vnode
     (cond
+      *mount-hooks*
+      ((:removed *mount-hooks*) vnode)
+
       (core/text-node? vnode)
       nil  ; Text nodes have no :addr and no refs
 
