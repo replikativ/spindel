@@ -7,9 +7,9 @@
    take. Exhaustion is an empty executor queue after pumping, which the
    handoff guarantees whenever work is pending.
 
-   On CLJS a body runs once, on an inline world: its operations complete
-   before they return (within the budget), so settling is a no-op and
-   reads answer synchronously."
+   On CLJS a body runs once, on an inline world without a time slice: its
+   operations complete before they return (within the budget), so settling
+   is a no-op and reads answer synchronously."
   (:require #?(:clj [clojure.test :refer [is testing]]
                :cljs [cljs.test :refer-macros [is testing]])
             [org.replikativ.spindel.v2.core :as v2]
@@ -39,7 +39,9 @@
   "The world configurations every test runs on."
   #?(:clj [{:label "inline" :opts {}}
            {:label "non-inline, budget 8" :opts {:inline? false :budget 8}}]
-     :cljs [{:label "inline" :opts {}}]))
+     ;; no time slice: a turn ends only at its budget, so an inline
+     ;; operation completes before it returns however slow the host is
+     :cljs [{:label "inline" :opts {:slice-ms nil}}]))
 
 (defn with-world
   "Calls `(f env)` with a fresh world bound, made with `opts` (JVM: in

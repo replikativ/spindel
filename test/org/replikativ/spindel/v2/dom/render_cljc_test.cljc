@@ -60,7 +60,7 @@
                                                     (done))))))))))
 
 (deftest m2-unmount-from-a-ref-during-the-first-commit
-  (in-world {}
+  (in-world {:slice-ms nil}
             (fn [_w done]
               (let [m (mock/make-mock)
                     d (v2/deferred)
@@ -84,7 +84,7 @@
                 (done)))))
 
 (deftest m8-stop-from-a-ref-during-a-commit
-  (in-world {}
+  (in-world {:slice-ms nil}
             (fn [_w done]
               (let [m (mock/make-mock)
                     d (v2/deferred)

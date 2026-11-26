@@ -120,6 +120,9 @@
 ;; ---------------------------------------------------------------------------
 ;; CB10: a write, then a throw
 
+;; JVM: on CLJS the propagation after an inline throw comes in a macrotask
+;; (the handoff), so CB10 is in batch_cljs_test there
+#?(:clj
 (deftest cb10-a-write-then-a-throw
   (fx/each-world
    (fn [env]
@@ -134,7 +137,7 @@
          (is (nil? thrown) "queued, it is reported by the processing thread"))
        (is (= [[:div {} "1"]] (mock/dom (d env) :container)) "the first write stays and propagates")
        (is (= 2 (render/revision state)))
-       (fx/unmount! env ctl)))))
+       (fx/unmount! env ctl))))))
 
 ;; ---------------------------------------------------------------------------
 ;; CB8, CB9 (JVM)

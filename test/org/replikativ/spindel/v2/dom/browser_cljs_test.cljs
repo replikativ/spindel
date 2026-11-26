@@ -30,11 +30,12 @@
 (defn- html [p] (.-innerHTML (:container p)))
 
 (defn- with-world
-  "Calls `(f w p done)` with a fresh world made with `opts` bound and a
-   fresh page; the test ends at `(done)`."
+  "Calls `(f w p done)` with a fresh world made with `opts` bound (no time
+   slice unless given: a turn ends only at its budget) and a fresh page; the
+   test ends at `(done)`."
   [opts f]
   (async done
-         (let [w (v2/world opts)
+         (let [w (v2/world (merge {:slice-ms nil} opts))
                p (page)]
            (binding [v2/*world* w]
              (f w p (fn [] (v2/release-world! w) (js/setTimeout done 0)))))))
@@ -224,7 +225,7 @@
                  (if (or @hit (> budget 12))
                    (do (is (some? @hit) "a budget at which the callback deferred and the flush came too late")
                        (done))
-                   (let [w (v2/world {:budget budget})
+                   (let [w (v2/world {:budget budget :slice-ms nil})
                          p (page)
                          {:keys [state ctl u input]} (binding [v2/*world* w] (mount-input p (fn [_])))
                          deferred? (atom false)]
