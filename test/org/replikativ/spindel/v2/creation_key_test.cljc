@@ -7,13 +7,17 @@
             [org.replikativ.spindel.v2.core :as v2 :refer [spin track]]
             #?(:clj [org.replikativ.spindel.v2.port.helpers :refer [checked-fixture]])))
 
+;; no time slice: an inline operation completes before it returns however
+;; slow the host is (#363's default 5 ms slice can spill a slow turn, and a
+;; synchronous read would see it pending)
 (use-fixtures :each
   #?(:clj checked-fixture
-     :cljs (fn [f] (let [w (v2/world)]
+     :cljs (fn [f] (let [w (v2/world {:slice-ms nil})]
                      (try (binding [v2/*world* w] (f)) (finally (v2/release-world! w)))))))
 
 (defn- now
-  "The settled value of `h`. CLJS inline worlds settle synchronously."
+  "The settled value of `h`. CLJS inline worlds without a time
+   slice settle synchronously."
   [h]
   #?(:clj (v2/value h 1000 ::timeout)
      :cljs (let [a (atom ::pending)]

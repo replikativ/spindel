@@ -34,8 +34,12 @@
     ((sp/close! s) identity identity)))
 
 (deftest explicit-ids
+  ;; the handler records the savepoint after resuming it: the test closes the
+  ;; session once it sees it, and a resume after that throws on the
+  ;; handler's executor thread, uncaught (it reached the next no-uncaught
+  ;; test's handler)
   (let [w (v2/world) seen (atom nil)
-        s (sp/open! w {:handlers {:choose (fn [p] (reset! seen p) (sp/resume p 1))}})]
+        s (sp/open! w {:handlers {:choose (fn [p] (sp/resume p 1) (reset! seen p))}})]
     (sp/start! s #(task (sp/savepoint :choose nil {:id [:x 3]})))
     (is (wait-until #(some? @seen)))
     (is (= [:x 3] (:savepoint/address @seen)))
