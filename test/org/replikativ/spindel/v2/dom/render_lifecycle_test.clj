@@ -52,7 +52,7 @@
        (is (identical? (fx/read! env root) (render/committed state))
            "the committed vdom is the root's value")
        (fx/unmount! env ctl)
-       (is (fx/closed? env state))
+       (is (empty? (fx/leftovers env state)))
        (is (= ::render/unmounted (render/await-revision state 5 100)) "a later waiter is released")
        (testing "unmount is idempotent"
          (fx/unmount! env ctl)
@@ -75,7 +75,7 @@
        (fx/unmount! env ctl)
        (fx/write! env s 3)
        (is (= 2 (render/revision state)) "no commit after teardown")
-       (is (fx/closed? env state))))))
+       (is (empty? (fx/leftovers env state)))))))
 
 (deftest the-revision-waiter
   (fx/with-world
@@ -128,7 +128,7 @@
             (is (= 1 (render/revision state)) "the queued delivery did not commit")
             (is (= (if (= request :unmount!) :unmounted :stopped) (render/phase state)))
             (if (= request :unmount!)
-              (is (fx/closed? env state))
+              (is (empty? (fx/leftovers env state)))
               (is (= [[:div {} "1"]] (dom env)) "a stopped mount keeps its DOM"))
             (fx/write! env s 3)
             (is (= 1 (render/revision state)) "and nothing later commits")))))))
@@ -161,7 +161,7 @@
            "the outer ref, after the request, never ran; the inner one is claimed once")
        (is (= 1 (render/revision state)) "the commit counted")
        (is (= 2 (clears env)) "one mount, one teardown")
-       (is (fx/closed? env state))))))
+       (is (empty? (fx/leftovers env state)))))))
 
 (deftest m2-a-ref-writes-a-signal-of-its-world
   (fx/each-world
@@ -178,7 +178,7 @@
        (is (= 2 (render/revision state)) "the next delivery committed after the first commit")
        (is (= [[:div {} "5"]] (dom env)))
        (fx/unmount! env ctl)
-       (is (fx/closed? env state))))))
+       (is (empty? (fx/leftovers env state)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; M3: :unmount! from another thread during a slow commit waits for it
@@ -205,7 +205,7 @@
         (deref writer 5000 nil)
         (fx/settle! env)
         (is (= 2 (render/revision state)) "the slow commit completed; none after the teardown")
-        (is (fx/closed? env state))))))
+        (is (empty? (fx/leftovers env state)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; M4: the control object kept after unmount holds no tree
@@ -215,21 +215,32 @@
     {:verify? false}
     (fn [env]
       (let [kept (atom nil)
-            {:keys [state] :as ctl} (let [root (spin (let [child (spin (el/span "child"))]
+            run (atom nil)
+            {:keys [state] :as ctl} (let [root (spin (reset! run (java.lang.ref.WeakReference. (v2/active-run)))
+                                                     (let [child (spin (el/span "child"))]
                                                        (reset! kept child)
                                                        (el/div (await child))))
                                           c (fx/render! env root)]
                                       (v2/release! root)
                                       c)
-            weak (java.lang.ref.WeakReference. (render/committed state))]
-        (is (some? (.get weak)))
+            weak (java.lang.ref.WeakReference. (render/committed state))
+            ;; read outside `is`: its try block would keep the tree in a frame slot
+            mounted? (some? (.get weak))]
+        (is mounted?)
         (fx/unmount! env ctl)
         (is (nil? (render/committed state)))
         (verify/gc-settle! (:w env))
         (fx/settle! env)
         (verify/gc-settle! (:w env))
-        (is (nil? (.get weak)) "the vnode tree is collectable")
-        (is (some? @kept) "while a child computation is still kept")
+        ;; every read outside `is`, whose try block keeps its values in frame slots
+        (let [run-gone? (nil? (.get ^java.lang.ref.WeakReference @run))
+              child-kept? (some? @kept)]
+          (is run-gone? "a retained child computation does not keep its creator's run (D8)")
+          (is child-kept?))
+        (reset! kept nil)
+        (verify/gc-settle! (:w env))
+        (let [tree-gone? (nil? (.get weak))]
+          (is tree-gone? "the vnode tree is collectable"))
         (is (= :unmounted (render/phase (:state ctl))))))))
 
 ;; ---------------------------------------------------------------------------
@@ -248,7 +259,7 @@
        (fx/settle! env)
        (fx/unmount! env c1)
        (fx/write! env s 2)
-       (is (fx/closed? env (:state c1)))
+       (is (empty? (fx/leftovers env (:state c1))))
        (is (= [[:div {:id "b"} "2"]] (mock/dom (:discharge m2) :container)) "the other mount still commits")
        (is (= 2 (render/revision (:state c2))))
        (is (= 1 (count (render/ledger (:state c2)))))
@@ -296,7 +307,7 @@
        (is (nil? (render/error state)))
        (is (= [[:root true] [:root false] [:x true] [:root true]] @log))
        (fx/unmount! env ctl)
-       (is (fx/closed? env state))))))
+       (is (empty? (fx/leftovers env state)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; M8: :stop! from a mount ref during a commit
@@ -324,7 +335,7 @@
        (is (= 1 (render/revision state)) "no later commit")
        (is (= [[:div {} [:span {} "1"]]] (dom env)) "the DOM stays")
        (fx/unmount! env c)
-       (is (fx/closed? env state))
+       (is (empty? (fx/leftovers env state)))
        (is (once-each? @log))))))
 
 ;; ---------------------------------------------------------------------------
@@ -348,7 +359,7 @@
            (is (= (if (= request :unmount!) :unmounted :stopped) (render/phase state))
                "never :failed")
            (when (= request :stop!) (fx/unmount! env c))
-           (is (fx/closed? env state))))))))
+           (is (empty? (fx/leftovers env state)))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; M10: the observe error ::released
@@ -364,7 +375,7 @@
        (is (= :stopped (render/phase state)))
        (is (= [[:div {} "r"]] (dom env)) "the DOM stays")
        (fx/unmount! env ctl)
-       (is (fx/closed? env state) "a later :unmount! tears down")
+       (is (empty? (fx/leftovers env state)) "a later :unmount! tears down")
        (is (once-each? @log))))))
 
 ;; ---------------------------------------------------------------------------
@@ -413,7 +424,7 @@
         (fx/unmount! env ctl)
         (v2/host! (:w env) #(dotimes [i 10] (reset! v (vnode (+ 20 i)))))
         (fx/settle! env)
-        (is (fx/closed? env state) "no commit after :unmount!")))))
+        (is (empty? (fx/leftovers env state)) "no commit after :unmount!")))))
 
 (deftest cb4-ordinary-observers-are-untouched
   (fx/each-world
@@ -463,7 +474,7 @@
            (is (= :stopped (render/phase state)))
            (is (= 2 (render/revision state))))
          (fx/unmount! env ctl)
-         (is (fx/closed? env state)))))))
+         (is (empty? (fx/leftovers env state))))))))
 
 (deftest cb6-an-initial-delivery-and-writes-before-the-flush
   (fx/with-world

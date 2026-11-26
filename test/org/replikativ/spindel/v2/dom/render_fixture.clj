@@ -106,16 +106,17 @@
   (v2/write! h v)
   (settle! env))
 
-(defn closed?
-  "Whether a torn-down mount left nothing: the mock's registry, the store,
-   the ledger, the hooks table and the deferred queue are empty, the
-   committed vdom is nil, and the container has no children."
+(defn leftovers
+  "What a torn-down mount left behind, as a vector of keywords; empty when
+   the mock's registry, the store, the ledger and the container are empty,
+   the committed vdom is nil and the phase is :unmounted."
   [env state]
   (let [{:keys [elements discharge]} (:mock env)]
-    (and (= :unmounted (render/phase state))
-         (empty? @elements)
-         (empty? (mock/children discharge :container))
-         (render/clean? state))))
+    (cond-> []
+      (not= :unmounted (render/phase state)) (conj [:phase (render/phase state)])
+      (seq @elements) (conj :registry)
+      (seq (mock/children discharge :container)) (conj :container)
+      (not (render/clean? state)) (conj :mount-state))))
 
 (defn violations
   "The integrity violations collected since the last drain."
