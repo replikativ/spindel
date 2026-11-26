@@ -5,7 +5,7 @@
    order."
   (:refer-clojure :exclude [await])
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
-            [org.replikativ.spindel.v2.core :as v2 :refer [spin task track await await-all aseq take!]]
+            [org.replikativ.spindel.v2.core :as v2 :refer [spin task track await await-all await-any aseq take!]]
             [org.replikativ.spindel.v2.rows :as rw]
             [org.replikativ.spindel.v2.host :as hs]
             [org.replikativ.spindel.v2.verify :as verify]
@@ -725,5 +725,185 @@
     (is (= [] (v2/call-in! w #(kv w))))
     (is (= #{:basis} (found rw/C-BASIS)))
     (is (= #{:adoption} (found rw/C-ADOPT)))
+    (is (= [{:container :kept :key [0 [:x] 0] :comp (hid w c)} {:container :kept :completed true :comp (hid w c)}]
+           (v2/call-in! w (fn []
+                            (let [^objects x (v2/row-of c)]
+                              ;; a basis row under another key, left by a completed run
+                              (aset x rw/C-KEPT-K {[0 [:x] 0] (.get ^java.util.List (aget x rw/C-BASIS) 0)})
+                              (let [v (kv w)] (aset x rw/C-KEPT-K nil) v)))))
+        "the kept keyed prefix of a restart (T11)")
     (is (= [] (v2/call-in! w #(kv w))) "restored")
+    (u)))
+
+;; ---------------------------------------------------------------------------
+;; T11 restart from the body: a group await stores no continuation, so a fired
+;; edge at it restarts the run from its body. The creations before that edge
+;; stay in the basis for adoption (spec T11), keyed ones included. Item
+;; bodies count their runs before their track: a resume at the track does not
+;; count, a new computation (or a rerun from its body) does.
+
+(defn- selected
+  "One keyed item per element of `xs`; each counts its runs in `runs` and
+   tracks `sel`."
+  [xs sel runs]
+  (loop [xs xs acc []]
+    (if-let [x (first xs)]
+      (recur (rest xs)
+             (conj acc (v2/with-key x (spin (swap! runs update x (fnil inc 0))
+                                            [x (= x (iv/get-new (track sel)))]))))
+      acc)))
+
+(deftest a-restart-readopts-keyed-prefix-creations
+  (let [w v2/*world*
+        sel (v2/signal 1)
+        runs (atom {}) ids (atom [])
+        c (spin (let [p (spin (swap! runs update :p (fnil inc 0)) :p)
+                      hs (selected [1 2 3] sel runs)]
+                  (swap! ids conj (mapv rid (into [p] hs)))
+                  (await-all (into [p] hs))))
+        u (v2/observe! c (fn [_ _]))]
+    (is (= [:p [1 true] [2 false] [3 false]] (now c)))
+    (v2/write! sel 2)
+    (is (= [:p [1 false] [2 true] [3 false]] (now c)))
+    (is (= 2 (count @ids)) "the item's change restarted the list")
+    (is (apply = @ids) "the positional and the keyed creations keep their rows")
+    (is (= {:p 1 1 1 2 1 3 1} @runs) "no item body runs again from its start")
+    (is (= 4 (count (:basis (adoption w c)))) "each creation is in the basis once")
+    (u)))
+
+(deftest a-restart-reruns-a-keyed-prefix-row-whose-captures-changed
+  ;; the captures come from a host atom the list does not track
+  (let [sel (v2/signal 1)
+        gen (atom 0)
+        runs (atom {}) ids (atom [])
+        c (spin (let [g (deref gen)
+                      hs (loop [xs [1 2] acc []]
+                           (if-let [x (first xs)]
+                             (recur (rest xs)
+                                    (conj acc (v2/with-key x (spin (swap! runs update x (fnil inc 0))
+                                                                   [g x (= x (iv/get-new (track sel)))]))))
+                             acc))]
+                  (swap! ids conj (mapv rid hs))
+                  (await-all hs)))
+        u (v2/observe! c (fn [_ _]))]
+    (is (= [[0 1 true] [0 2 false]] (now c)))
+    (reset! gen 1)
+    (v2/write! sel 2)
+    (is (= [[1 1 false] [1 2 true]] (now c)))
+    (is (apply = @ids) "readopted at the same rows")
+    (is (= {1 2 2 2} @runs) "the changed captures rerun each item from its body (W#5)")
+    (u)))
+
+(deftest a-restart-readopts-keyed-tasks-sources-and-sequences
+  (let [w v2/*world*
+        sel (v2/signal 1)
+        never (v2/deferred)
+        log (atom [])
+        seen (atom [])
+        c (spin (let [k (v2/with-key :t (task (swap! log conj :start)
+                                              (try (await never) (finally (swap! log conj :fin)))))
+                      s (v2/with-key :s (v2/signal 0))
+                      q (v2/with-key :q (aseq [n 0] [n (inc n)]))
+                      i (v2/with-key :i (spin (iv/get-new (track sel))))]
+                  (swap! seen conj (mapv rid [k s q i]))
+                  (await-all [i])))
+        u (v2/observe! c (fn [_ _]))]
+    (is (= [1] (now c)))
+    (is (h/wait-until #(= [:start] @log)))
+    (v2/write! sel 2)
+    (is (= [2] (now c)))
+    (is (= 2 (count @seen)) "the item's change restarted the list")
+    (is (apply = @seen) "the task, the source and the sequence keep their rows")
+    (is (= 4 (count (:basis (adoption w c)))))
+    (is (= [:start] @log) "the task keeps running: neither cancelled nor started again")
+    (u)))
+
+(deftest an-await-any-restart-readopts-keyed-prefix-creations
+  (let [sel (v2/signal 1)
+        runs (atom {}) ids (atom [])
+        c (spin (let [hs (selected [1 2] sel runs)]
+                  (swap! ids conj (mapv rid hs))
+                  (await-any hs)))
+        u (v2/observe! c (fn [_ _]))]
+    (is (= [1 true] (now c)))
+    ;; the loser's first settle fires its edge too: a restart before the write
+    (let [n (count @ids)]
+      (v2/write! sel 2)
+      (is (= [1 false] (now c)))
+      (is (= (inc n) (count @ids)) "the winner's change restarted the list"))
+    (is (apply = @ids))
+    (is (= {1 1 2 1} @runs))
+    (u)))
+
+(deftest a-fail-fast-await-all-restart-readopts-keyed-prefix-creations
+  ;; :a fails, so the group resumes at once; :b's edge stays with the list,
+  ;; and when :b settles it fires and restarts the list from its body
+  (let [gate (v2/deferred)
+        runs (atom {}) ids (atom [])
+        c (spin (let [a (v2/with-key :a (spin (swap! runs update :a (fnil inc 0)) (throw (ex-info "a" {}))))
+                      b (v2/with-key :b (spin (swap! runs update :b (fnil inc 0)) (await gate)))]
+                  (swap! ids conj (mapv rid [a b]))
+                  (try (await-all [a b]) (catch Exception e (ex-message e)))))
+        u (v2/observe! c (fn [_ _]))]
+    (is (= "a" (now c)))
+    (v2/deliver! gate :go)
+    (is (h/wait-until #(= 2 (count @ids))) "the loser's settle restarted the list")
+    (is (= "a" (now c)))
+    (is (apply = @ids))
+    (is (= {:a 1 :b 1} @runs))
+    (u)))
+
+(deftest a-key-missing-from-the-restarted-run-stays-a-prefix-creation
+  ;; the keys come from a host atom the list does not track. Model B11: T12
+  ;; releases only the adoption basis; prefix creations stay in the basis
+  (let [w v2/*world*
+        ks (atom [1 2 3])
+        sel (v2/signal 1)
+        runs (atom {}) ids (atom [])
+        c (spin (let [xs (vec (deref ks))
+                      hs (selected xs sel runs)]
+                  (swap! ids conj (into {} (map (fn [x hd] [x (rid hd)]) xs hs)))
+                  (await-all hs)))
+        u (v2/observe! c (fn [_ _]))]
+    (is (= [[1 true] [2 false] [3 false]] (now c)))
+    (reset! ks [3 1])
+    (v2/write! sel 3)
+    (is (= [[3 true] [1 false]] (now c)))
+    (let [[before after] @ids
+          a (adoption w c)]
+      (is (= (dissoc before 2) after) "the remaining keys keep their rows")
+      (is (= {1 1 2 1 3 1} @runs))
+      (is (= (set (vals before)) (:basis a)) "the missing key's row stays in the basis, once")
+      (is (empty? (:adopt a))))
+    (u)))
+
+(deftest a-fork-adopts-keyed-prefix-creations-from-its-copy
+  ;; the restarted run parks on the take between its two keyed creations: :a
+  ;; is readopted, :b still waits for its readoption when the world forks
+  (let [w v2/*world*
+        sel (v2/signal :a)
+        mb (v2/mailbox)
+        ids (atom [])
+        c (spin (let [a (v2/with-key :a (spin (= :a (iv/get-new (track sel)))))
+                      _ (take! mb)
+                      b (v2/with-key :b (spin (= :b (iv/get-new (track sel)))))]
+                  (swap! ids conj [(rid a) (rid b)])
+                  (await-all [a b])))
+        u (v2/observe! c (fn [_ _]))]
+    (v2/post! mb :go)
+    (is (= [true false] (now c)))
+    (v2/write! sel :b)
+    (let [child (v2/fork! w)
+          cc (v2/in-world child c)
+          uc (v2/observe! cc (fn [_ _]))]
+      (v2/post! mb :go)
+      (is (= [false true] (now c)))
+      (v2/post! (v2/in-world child mb) :go)
+      (is (= [false true] (now cc)))
+      (is (= 3 (count @ids)) "the first run, the parent's restart and the fork's")
+      (is (apply = @ids) "each world readopts :b from its own copy")
+      (is (= (set (first @ids)) (:basis (adoption w c))))
+      (is (= [] (v2/call-in! child #(verify/key-violations child))))
+      (uc)
+      (v2/release-world! child))
     (u)))

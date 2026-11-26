@@ -139,7 +139,9 @@
   "Z#82: within a computation's basis a creation key occurs at most once, and
    within its adoption basis (the positional list and the keyed map
    together) at most once; a keyed map entry is under its row's key. A
-   rejected predecessor and its replacement may share a key across the two."
+   rejected predecessor and its replacement may share a key across the two.
+   The keyed prefix kept by a restart from the body (T11) indexes basis rows
+   under their keys, and ends with the run that completes."
   [w]
   (binding [*reg* (f w rw/W-REG)]
     (let [key-of #(f (canon %) rw/KEY)]
@@ -154,7 +156,13 @@
                       {:container container :key k})
                     (for [[k x] (f c rw/C-ADOPT-K)
                           :when (not= k (key-of x))]
-                      {:container :adoption-map :key k}))]
+                      {:container :adoption-map :key k})
+                    (let [basis (set (map canon (f c rw/C-BASIS)))]
+                      (for [[k x] (f c rw/C-KEPT-K)
+                            :when (or (not= k (key-of x)) (not (basis (canon x))))]
+                        {:container :kept :key k}))
+                    (when (and (f c rw/C-KEPT-K) (= (f c rw/C-DONE-EPOCH) (f c rw/C-EPOCH)))
+                      [{:container :kept :completed true}]))]
              (assoc v :comp (f c rw/ID)))))))
 
 (defn checking-hook

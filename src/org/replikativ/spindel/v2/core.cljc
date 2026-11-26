@@ -1503,6 +1503,7 @@
   (ref-dec! w x))
 
 (defn- release-adoption! [w c]
+  (s! c rw/C-KEPT-K nil)   ; no references: its rows are the basis's
   (when-let [ab (g c rw/C-ADOPT)]
     (s! c rw/C-ADOPT nil)
     (dotimes [i (acount ab)] (release-adopted! w (rv w (anth ab i)))))
@@ -1683,6 +1684,7 @@
         (s! c rw/C-ADOPT nil)
         (s! c rw/C-ADOPT-K nil)
         (s! c rw/C-ADOPT-BASE nil)
+        (s! c rw/C-KEPT-K nil)
         ;; Suffix: dep edges after E are removed; those with a baseline keep
         ;; their debtors through the adoption baselines (§4.4, Z#21; the
         ;; model's `bases-of`). The baselines take their references before
@@ -1702,24 +1704,30 @@
               (dotimes [i (acount gone)] (unlink! w (anth gone i)))
               (s! c rw/C-ADOPT-BASE bs))))
         ;; Suffix creations become the adoption basis: keyed ones (Z#82) by
-        ;; their creation key, positional ones in a list.
-        (let [basis (g c rw/C-BASIS)]
+        ;; their creation key, positional ones in a list. A run that restarts
+        ;; from the body (E without a continuation) counts its creations
+        ;; afresh, so it re-creates the kept prefix too: its keyed rows are
+        ;; indexed by key (positional ones are found in the basis).
+        (let [basis (g c rw/C-BASIS)
+              body? (and e (nil? (g e rw/E-CONT)))]
           (when (and basis (pos? (acount basis)))
             (let [ab (alist)
                   kept (alist)
-                  abk (loop [i 0 abk (transient {})]
-                        (if (< i (acount basis))
-                          (let [x (rv w (anth basis i))]
-                            (if (or restart? (> (gl x rw/AT) at))
-                              (let [key (g x rw/KEY)]
-                                (if (vector? key)
-                                  (recur (inc i) (assoc! abk key x))
-                                  (do (aadd! ab x) (recur (inc i) abk))))
-                              (do (aadd! kept x) (recur (inc i) abk))))
-                          (persistent! abk)))]
+                  [abk kk] (loop [i 0 abk (transient {}) kk (transient {})]
+                             (if (< i (acount basis))
+                               (let [x (rv w (anth basis i))
+                                     key (g x rw/KEY)]
+                                 (if (or restart? (> (gl x rw/AT) at))
+                                   (if (vector? key)
+                                     (recur (inc i) (assoc! abk key x) kk)
+                                     (do (aadd! ab x) (recur (inc i) abk kk)))
+                                   (do (aadd! kept x)
+                                       (recur (inc i) abk (if (and body? (vector? key)) (assoc! kk key x) kk)))))
+                               [(persistent! abk) (persistent! kk)]))]
               (s! c rw/C-BASIS kept)
               (s! c rw/C-ADOPT ab)
-              (s! c rw/C-ADOPT-K (not-empty abk)))))
+              (s! c rw/C-ADOPT-K (not-empty abk))
+              (s! c rw/C-KEPT-K (not-empty kk)))))
         (drop-adoption! w old-ab old-abk old-bs))
       (let [t5? (and (nil? e) (zero? (acount ins)))
             r (new-run! w c (g c rw/C-EPOCH))
@@ -2615,13 +2623,16 @@
   (let [basis (or (gm c rw/C-BASIS) (let [l (alist)] (s! c rw/C-BASIS l) l))
         abk (when (vector? key) (g c rw/C-ADOPT-K))]
     (if (vector? key)
-      ;; keyed (Z#82): only the adoption basis can hold it, the counts make
-      ;; the key new in the basis
-      (when-let [x (some->> (get abk key) (rv w))]
+      ;; keyed (Z#82): the counts make the key new in the basis, except for
+      ;; the prefix a restart from the body re-creates (C-KEPT-K)
+      (if-let [x (some->> (get abk key) (rv w))]
         (when (ok? x)
           (s! c rw/C-ADOPT-K (not-empty (dissoc abk key)))
           (aadd! basis x)   ; the adoption reference moves to the basis
-          x))
+          x)
+        (when-let [x (some->> (get (g c rw/C-KEPT-K) key) (rv w))]
+          (s! c rw/C-KEPT-K (not-empty (dissoc (g c rw/C-KEPT-K) key)))
+          (when (ok? x) x)))   ; it stays in the basis, as a positional one
       (let [bi (find-created w basis key)
             ab (gm c rw/C-ADOPT)
             ai (when-not bi (find-created w ab key))]

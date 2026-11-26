@@ -32,9 +32,13 @@
                  (finally (v2/release-world! w)))
             (is (empty? @acc) (str "Rule R divergences: " (vec (take 3 @acc)))))
      :cljs (async done
-                  (let [w (v2/world)]
+                  (let [w (v2/world)
+                        over (atom false)
+                        end (fn [] (when (compare-and-set! over false true)
+                                     (v2/release-world! w) (js/setTimeout done 0)))
+                        t (js/setTimeout #(when-not @over (is false "the test completes") (end)) 5000)]
                     (binding [v2/*world* w]
-                      (f (fn [] (v2/release-world! w) (js/setTimeout done 0))))))))
+                      (f (fn [] (js/clearTimeout t) (end))))))))
 
 (defn- rid [x] (aget ^objects (v2/row-of x) rw/ID))
 
@@ -207,3 +211,31 @@
                     (done)
                     (k18-case w (first cs) #(step (rest cs)))))]
        (step cases)))))
+
+(deftest a-restart-readopts-keyed-prefix-creations
+  ;; T11: the item tracks `sel` and reruns on its own; the list's await-all
+  ;; stores no continuation, so the list restarts from its body and readopts
+  ;; the items, created before the fired edge, by key. Each item counts its
+  ;; runs before its track: a resume there does not count, a new row does.
+  (in-world
+   (fn [done]
+     (let [sel (v2/signal 1)
+           runs (atom {}) ids (atom [])
+           c (spin (let [hs (loop [xs [1 2 3] acc []]
+                              (if-let [x (first xs)]
+                                (recur (rest xs)
+                                       (conj acc (v2/with-key x (spin (swap! runs update x (fnil inc 0))
+                                                                      [x (= x (iv/get-new (track sel)))]))))
+                                acc))]
+                     (swap! ids conj (mapv rid hs))
+                     (await-all hs)))
+           u (v2/observe! c (fn [_ _]))]
+       (then c (fn [v]
+                 (is (= [[1 true] [2 false] [3 false]] v))
+                 (v2/write! sel 2)
+                 (then c (fn [v]
+                           (is (= [[1 false] [2 true] [3 false]] v))
+                           (is (= 2 (count @ids)) "the item's change restarted the list")
+                           (is (apply = @ids) "every key keeps its row")
+                           (is (= {1 1 2 1 3 1} @runs) "no item body runs again from its start")
+                           (u) (done)))))))))
