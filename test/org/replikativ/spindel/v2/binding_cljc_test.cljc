@@ -13,15 +13,19 @@
 (v2/convey *y*)
 
 (defn- now
-  "The settled outcome of `h`. CLJS inline worlds settle synchronously."
+  "The settled outcome of `h`. CLJS inline worlds without a time
+   slice settle synchronously."
   [h]
   #?(:clj (try (v2/value h 2000 ::timeout) (catch Exception e [:err (ex-message e)]))
      :cljs (let [a (atom ::pending)]
              (v2/value-async h (fn [v err?] (reset! a (if err? [:err (ex-message v)] v))))
              @a)))
 
+;; no time slice: an inline operation completes before it returns however
+;; slow the host is (#363's default 5 ms slice can spill a slow turn, and a
+;; synchronous read would see it pending)
 (defn- in-world [f]
-  (let [w (v2/world)]
+  (let [w (v2/world {:slice-ms nil})]
     (try (binding [v2/*world* w] (f)) (finally (v2/release-world! w)))))
 
 (deftest a-body-binding-spans-an-effect
