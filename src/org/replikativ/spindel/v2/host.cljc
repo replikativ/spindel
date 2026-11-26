@@ -118,20 +118,53 @@
 
 (defn executor [] #?(:clj @default-executor :cljs nil))
 
+#?(:cljs
+   (defn macrotask
+     "The handoff primitive of the host environment `env` (`js/globalThis`;
+      a test passes its own): a fn that runs a thunk as a macrotask, without
+      the clamp browsers put on nested zero-delay timers (4 ms). In order:
+      `setImmediate` (node); else one `MessageChannel` carrying a FIFO of
+      thunks (browsers); else `setTimeout(f, 0)`. Never a microtask, which
+      would starve paint and input. Every thunk is its own macrotask, so a
+      throwing thunk is reported by the host and drops none of the others."
+     [^js env]
+     (cond
+       (fn? (.-setImmediate env)) (fn [f] (.setImmediate env f))
+       (fn? (.-MessageChannel env))
+       (let [C (.-MessageChannel env)
+             ^js ch (new C)
+             ^js in (.-port1 ch)
+             ^js out (.-port2 ch)
+             q #js []
+             ;; node: an idle port must not keep the process alive
+             node? (fn? (.-unref in))]
+         (set! (.-onmessage in) (fn [_]
+                                  (let [f (.shift q)]
+                                    (when (and node? (zero? (.-length q))) (.unref in))
+                                    (f))))
+         (when node? (.unref in))
+         (fn [f]
+           (.push q f)
+           (when node? (.ref in))
+           (.postMessage out nil)))
+       :else (fn [f] (.setTimeout env f 0)))))
+
+#?(:cljs (def ^:private macrotask! (macrotask js/globalThis)))
+
 (defn execute-or!
   "execute!, calling `(on-reject t)` instead of throwing when the executor
    refuses the work."
   [ex on-reject f]
   #?(:clj (try (.execute ^java.util.concurrent.Executor ex ^Runnable f)
                (catch java.util.concurrent.RejectedExecutionException t (on-reject t)))
-     :cljs (js/setTimeout f 0))
+     :cljs (macrotask! f))
   nil)
 
 (defn execute!
   "Runs `f` later: on the executor (JVM), as a macrotask (JS)."
   [ex f]
   #?(:clj (.execute ^java.util.concurrent.Executor ex ^Runnable f)
-     :cljs (js/setTimeout f 0))
+     :cljs (macrotask! f))
   nil)
 
 (defn execute-surely!
@@ -144,8 +177,27 @@
   #?(:clj (try (.execute ^java.util.concurrent.Executor ex ^Runnable f)
                (catch Throwable _
                  (.start (doto (Thread. ^Runnable f "spindel-v2-handoff") (.setDaemon true)))))
-     :cljs (js/setTimeout f 0))
+     :cljs (macrotask! f))
   nil)
+
+;; A turn's time slice (H2): a cheap monotonic clock, in ticks
+
+#?(:cljs (def ^:private clock
+           (if (and (exists? js/performance) (fn? (.-now js/performance)))
+             #(.now js/performance)
+             #(js/Date.now))))
+
+(defn now
+  "Monotonic ticks: nanoseconds (JVM), milliseconds (JS)."
+  ^long []
+  #?(:clj (System/nanoTime) :cljs (clock)))
+
+(defn ms->ticks
+  "`ms` in the ticks of `now`; 0 (no slice) for nil or a non-positive `ms`."
+  [ms]
+  (if (and ms (pos? ms))
+    #?(:clj (long (* ms 1000000)) :cljs ms)
+    0))
 
 #?(:clj
    (def ^:private metadata-executor
