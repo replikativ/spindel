@@ -175,7 +175,6 @@
     (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
                  (router/path-for test-routes :user {})))))
 
-
 ;; =============================================================================
 ;; The route signal
 ;; =============================================================================

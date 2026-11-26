@@ -393,8 +393,8 @@
    while it is still attached."
   [m ctx]
   {:created (fn [vnode el] (vswap! ctx (fn [c] (-> c
-                                                    (update :created conj [vnode el])
-                                                    (update :visits conj [vnode el true])))))
+                                                   (update :created conj [vnode el])
+                                                   (update :visits conj [vnode el true])))))
    :removed (fn [vnode] (removal-pass! m (commit/tree-addrs vnode)))})
 
 (defn- leave-hook
@@ -418,10 +418,10 @@
     (when-not (:defer-posted? old)
       (let [{:keys [discharge world]} old]
         (defer! discharge
-          (fn []
-            (try (v2/host! world #(flush-deferred! m))
-                 (catch #?(:clj Throwable :cljs :default) t
-                   (when-not (released? t) (log/error :render/deferred-refused {:error t}))))))))))
+                (fn []
+                  (try (v2/host! world #(flush-deferred! m))
+                       (catch #?(:clj Throwable :cljs :default) t
+                         (when-not (released? t) (log/error :render/deferred-refused {:error t}))))))))))
 
 (defn- run-effects!
   "Steps 2-5 of a commit that succeeded (addendum §3.8.3): the re-run pass,

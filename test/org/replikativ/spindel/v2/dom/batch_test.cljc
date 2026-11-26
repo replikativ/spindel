@@ -123,21 +123,21 @@
 ;; JVM: on CLJS the propagation after an inline throw comes in a macrotask
 ;; (the handoff), so CB10 is in batch_cljs_test there
 #?(:clj
-(deftest cb10-a-write-then-a-throw
-  (fx/each-world
-   (fn [env]
-     (let [a (v2/signal 0)
-           root (spin (el/div (str (iv/get-new (track a)))))
-           {:keys [state] :as ctl} (fx/render! env root)
-           thrown (try (batch (reset! a 1) (throw (ex-info "after the write" {}))) nil
-                       (catch #?(:clj Exception :cljs :default) e (ex-message e)))]
-       (fx/settle! env)
-       (if (:inline? env)
-         (is (= "after the write" thrown) "inline, the throw reaches the caller")
-         (is (nil? thrown) "queued, it is reported by the processing thread"))
-       (is (= [[:div {} "1"]] (mock/dom (d env) :container)) "the first write stays and propagates")
-       (is (= 2 (render/revision state)))
-       (fx/unmount! env ctl))))))
+   (deftest cb10-a-write-then-a-throw
+     (fx/each-world
+      (fn [env]
+        (let [a (v2/signal 0)
+              root (spin (el/div (str (iv/get-new (track a)))))
+              {:keys [state] :as ctl} (fx/render! env root)
+              thrown (try (batch (reset! a 1) (throw (ex-info "after the write" {}))) nil
+                          (catch #?(:clj Exception :cljs :default) e (ex-message e)))]
+          (fx/settle! env)
+          (if (:inline? env)
+            (is (= "after the write" thrown) "inline, the throw reaches the caller")
+            (is (nil? thrown) "queued, it is reported by the processing thread"))
+          (is (= [[:div {} "1"]] (mock/dom (d env) :container)) "the first write stays and propagates")
+          (is (= 2 (render/revision state)))
+          (fx/unmount! env ctl))))))
 
 ;; ---------------------------------------------------------------------------
 ;; CB8, CB9 (JVM)
