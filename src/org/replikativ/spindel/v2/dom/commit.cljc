@@ -217,25 +217,25 @@
           ;; carried along the walk
           (loop [i 0 base 0]
             (when (< i (count slots))
-            (let [slot (get slots i)]
-              (if-let [d (get by-slot i)]
-                (do (apply-slot-delta! discharge el d base)
-                    (seed-created! store d created))
-                (case (:type slot)
-                  :keyed (commit-keyed-slot! discharge store el (:value slot) base)
-                  :single (let [child (:value slot)]
-                            (when (and (core/vnode? child) (not (core/text-node? child)) (:addr child))
-                              (commit-reconcile* discharge store child)))
-                  nil))
+              (let [slot (get slots i)]
+                (if-let [d (get by-slot i)]
+                  (do (apply-slot-delta! discharge el d base)
+                      (seed-created! store d created))
+                  (case (:type slot)
+                    :keyed (commit-keyed-slot! discharge store el (:value slot) base)
+                    :single (let [child (:value slot)]
+                              (when (and (core/vnode? child) (not (core/text-node? child)) (:addr child))
+                                (commit-reconcile* discharge store child)))
+                    nil))
               ;; a single slot the delta reconciled in place (:update of a
               ;; compatible element) is recursed into like an unchanged one
-              (when-let [d (get by-slot i)]
-                (let [child (:value slot)]
-                  (when (and (= :update (:delta d)) (= :single (:type slot))
-                             (core/vnode? child) (not (core/text-node? child)) (:addr child)
-                             (not (contains? created (:addr child))))
-                    (commit-reconcile* discharge store child))))
-              (recur (inc i) (+ base (count (cache/flatten-slot slot)))))))
+                (when-let [d (get by-slot i)]
+                  (let [child (:value slot)]
+                    (when (and (= :update (:delta d)) (= :single (:type slot))
+                               (core/vnode? child) (not (core/text-node? child)) (:addr child)
+                               (not (contains? created (:addr child))))
+                      (commit-reconcile* discharge store child))))
+                (recur (inc i) (+ base (count (cache/flatten-slot slot)))))))
           (cache/set-slot-cache! store addr slots)
           ;; 3. :value after the children
           (run! apply-attr! value-deltas)
