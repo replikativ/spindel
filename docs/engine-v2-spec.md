@@ -1054,10 +1054,15 @@ Each `track` *site* in a run (identified by `at`) has its own edge, with
 - **H2 – bounded combining (W#11, X#9).** After enqueueing, the host thread
   *tries* to take the gate.
   - **It wins:** it processes its own item, then at most a constant budget of
-    further work, counting both ingress items and slices (Y#4). Each slice
-    is finite by B9. A turn may also end early, after a time slice. If
-    work remains, it schedules the world's drainer on the world's executor
-    and releases the gate.
+    further work, counting both ingress items and slices (Y#4). Host
+    callbacks (H3) count against the same budget, one unit each, so a
+    callback that writes a source it observes still lets the turn end. Each
+    slice is finite by B9. A turn may also end early, after a time slice,
+    checked between units, callbacks included. A batch of callbacks is thus
+    split at a callback boundary when the budget or the time slice runs
+    out: its rest runs in order, before any later callback, but the next
+    turn's items and slices may commit first. If work remains, it schedules
+    the world's drainer on the world's executor and releases the gate.
   - **Inline is optional,** per world and per JVM host thread (Z#79). A
     world created with `:inline? false` runs no user slice on host threads;
     it suits UI threads. A JVM thread inside `without-inline-turns` (macro

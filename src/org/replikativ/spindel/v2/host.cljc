@@ -28,6 +28,20 @@
 (defn last-index-of [l x] #?(:clj (.lastIndexOf ^java.util.ArrayList l x) :cljs (.lastIndexOf l x)))
 (defn remove-at! [l i] #?(:clj (.remove ^java.util.ArrayList l (int i)) :cljs (.splice l i 1)) nil)
 (defn remove-first! [l] #?(:clj (.remove ^java.util.ArrayList l (int 0)) :cljs (.shift l)))
+(defn take-first!
+  "Removes the first `k` elements of `l`, returning them in a new list."
+  [l k]
+  #?(:clj (let [s (.subList ^java.util.ArrayList l 0 (int k)) r (java.util.ArrayList. s)] (.clear s) r)
+     :cljs (.splice l 0 k)))
+(defn put-first!
+  "Puts the elements of `from` from index `i` on back at the front of `l`,
+   in order, ahead of what `l` holds."
+  [l from i]
+  #?(:clj (.addAll ^java.util.ArrayList l 0 (.subList ^java.util.ArrayList from (int i) (.size ^java.util.ArrayList from)))
+     :cljs (let [tail (.splice l 0 (.-length l))]
+             (loop [j i] (when (< j (.-length from)) (.push l (aget from j)) (recur (inc j))))
+             (dotimes [j (.-length tail)] (.push l (aget tail j)))))
+  nil)
 (defn remove-value! [l x]
   (let [i (index-of l x)] (when-not (neg? i) (remove-at! l i) true)))
 
