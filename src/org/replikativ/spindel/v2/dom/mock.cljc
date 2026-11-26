@@ -6,6 +6,12 @@
   attrs and properties, a queue of deferred work that a test runs with
   `run-deferred!`, and failure injection.
 
+  The tree model holds the live tree only: a subtree detached by
+  `remove-child!`, `replace-child!` or `clear-container!` (or orphaned by
+  an injected failure of its attachment) is retired from it, as a browser
+  lets go of a detached node. The operation log is the separate history;
+  it records a fn value as ::fn, so it holds no handler either.
+
   Elements are gensym ids; the container is any value passed to `render!`
   (tests use :container)."
   (:require [org.replikativ.spindel.dom.discharge :as disch]
@@ -18,17 +24,27 @@
 (defn- remove-at [v i]
   (if (< -1 i (count v)) (into (subvec v 0 i) (subvec v (inc i))) v))
 
+(defn- retire!
+  "Drops node `el` and its descendants from the live tree model."
+  [{:keys [kids parent nodes attrs props] :as d} el]
+  (doseq [c (get @kids el)] (retire! d c))
+  (doseq [a [kids parent nodes attrs props]] (swap! a dissoc el)))
+
 (defn- op!
-  "Logs `op`, unless the failure predicate matches it: then throws."
-  [{:keys [log fail]} op]
+  "Logs `op` (a fn value as ::fn), unless the failure predicate matches it:
+   then throws, retiring the child the failed operation would have attached
+   (nothing else refers to it)."
+  [{:keys [log fail] :as d} op]
   (when-let [f @fail]
-    (when (f op) (throw (ex-info "mock discharge failure" {:op op}))))
-  (swap! log conj op))
+    (when (f op)
+      (when-let [c (:child op)] (retire! d c))
+      (throw (ex-info "mock discharge failure" {:op op}))))
+  (swap! log conj (cond-> op (fn? (:value op)) (assoc :value ::fn))))
 
 (defn- detach!
-  "Removes child `c` from the parent model."
-  [{:keys [parent]} c]
-  (swap! parent dissoc c))
+  "Removes child `c` from the tree: it and its subtree are retired."
+  [d c]
+  (retire! d c))
 
 (defn- set-kids! [{:keys [kids parent]} p v]
   (swap! kids assoc p v)
