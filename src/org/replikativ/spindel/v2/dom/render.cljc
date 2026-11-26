@@ -258,14 +258,15 @@
 ;; ---------------------------------------------------------------------------
 ;; Mount, update, teardown
 
-(defn ^:no-doc root-identity-changed?
-  "Whether the new root is another DOM node than the mounted one (a
-   conditional at the top of the root): then the whole tree is replaced."
+(defn- root-replaced?
+  "Whether the new root cannot be reconciled with the mounted one, so the
+   whole tree is replaced: another tag, address or key, or a root without
+   an address (a fragment or text root has no element to reconcile in
+   place, so it is replaced on every commit)."
   [current-vdom new-vdom]
-  (boolean
-   (when (and current-vdom new-vdom)
-     (let [ca (:addr current-vdom) na (:addr new-vdom)]
-       (if (and ca na) (not= ca na) (not= (:tag current-vdom) (:tag new-vdom)))))))
+  (boolean (and current-vdom new-vdom
+                (or (nil? (:addr new-vdom))
+                    (not (disch/reconcilable? current-vdom new-vdom))))))
 
 (defn- attach! [d container root]
   (when (and container root)
@@ -281,7 +282,7 @@
 
 (defn- mount-update! [m v]
   (let [{:keys [discharge container store current-vdom]} @m]
-    (if (root-identity-changed? current-vdom v)
+    (if (root-replaced? current-vdom v)
       (do (disch/call-refs-on-unmount! current-vdom)
           (let [root (disch/render-initial! discharge v)]
             (clear-container! discharge container)
@@ -694,6 +695,11 @@
   "Renders root handle `h` (a computation or source whose value is a vnode)
    into `container` through `discharge`, in the world `(:world opts)` or
    `(v2/current-world)`. Returns {:state s :stop! f :unmount! g}.
+
+   The root's value is an element vnode, kept across commits while its
+   tag, address and key stay the same and replaced as a whole otherwise. A
+   root without an address (`el/fragment`, text) is replaced on every
+   commit. A nil value keeps the last frame and commits nothing.
 
    `:stop!` ends the updates and keeps the DOM; `:unmount!` tears the mount
    down: the cleanups run, the container is cleared. Both run under the
