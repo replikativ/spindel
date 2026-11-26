@@ -500,13 +500,20 @@
 (defn- live? [[_ _ _ token owner]]
   (and (= :live @token) (on-thread? owner)))
 
+(defn- restorable?
+  "Whether entry [a el k token owner] may still restore: the token is live
+   (its wrapper has not returned), the mount is :mounted and the registry
+   still maps `a` to the identical `el`."
+  [m [a el :as entry]]
+  (let [{:keys [phase discharge]} @m]
+    (and (live? entry) (= :mounted phase) (identical? el (disch/get-element discharge a)))))
+
 (defn- restore!
   "Restores the DOM property of entry [a el k token owner] to the committed
-   attr, when the token is live (its wrapper has not returned), the mount is
-   :mounted and the registry still maps `a` to `el`."
+   attr, when it is still restorable."
   [m [a el k token :as entry]]
-  (let [{:keys [phase discharge store]} @m]
-    (when (and (live? entry) (= :mounted phase) (identical? el (disch/get-element discharge a)))
+  (let [{:keys [discharge store]} @m]
+    (when (restorable? m entry)
       (let [v (get (cache/get-attr-cache store a) k)
             want (if (= k :value) (str (if (nil? v) "" v)) (boolean v))]
         (when (not= want (dom-prop discharge el k))
@@ -524,7 +531,7 @@
    flush of the delivery the mount still holds."
   [m entry]
   (fn [_ _]
-    (when (live? entry)
+    (when (restorable? m entry)
       (if (some? (:next @m))
         (swap! m update :restore-pending conj entry)
         (restore! m entry)))))

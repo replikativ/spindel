@@ -1051,6 +1051,10 @@ Each `track` *site* in a run (identified by `at`) has its own edge, with
     point of `W`'s slice history. With the default owner, the child is
     handed off after `W`'s gate is released, never under it (§8.1 F7); a
     fork with another owner keeps its caller-side handoff.
+  - **`send-world!` always enqueues,** also to the world being processed:
+    issued from inside an item, callback or slice of `W`, its function runs
+    later as an ingress item of `W`, never in the current one (the DOM
+    mount's flush relies on this).
 - **H2 – bounded combining (W#11, X#9).** After enqueueing, the host thread
   *tries* to take the gate.
   - **It wins:** it processes its own item, then at most a constant budget of
