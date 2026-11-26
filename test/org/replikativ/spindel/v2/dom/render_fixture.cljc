@@ -76,7 +76,7 @@
            (pump! q)
            (is (empty? @divergences) (str "Rule R divergences: " (vec (take 3 @divergences)))))))
      :cljs
-     (let [w (v2/world opts)
+     (let [w (v2/world (merge {:slice-ms nil} opts))
            env {:w w :inline? true :settle! (constantly 0) :mock (mock/make-mock)}]
        (disch/collect-violations!)
        (try
