@@ -122,17 +122,27 @@
           (>= (get old kind 0) n) (f :ok)))
   nil)
 
+(defn- ack!
+  "Calls waiter `f` with `x`, isolated: a waiter is acknowledgement code,
+   and its throw must not cut short the commit or teardown that calls it,
+   nor the other waiters."
+  [f x]
+  (try (f x)
+       (catch #?(:clj Throwable :cljs :default) t
+         (log/error :render/waiter-error {:error t})))
+  nil)
+
 (defn- bump-rev! [rev kind]
   (let [due? (fn [r [k n _]] (and (= k kind) (<= n (get r kind))))
         [old new] (swap-vals! rev (fn [r]
                                     (let [r (update r kind (fnil inc 0))]
                                       (assoc r :waiters (filterv #(not (due? r %)) (:waiters r))))))]
     (doseq [[_ _ f :as w] (:waiters old) :when (due? new w)]
-      (f :ok))))
+      (ack! f :ok))))
 
 (defn- close-rev! [rev]
   (let [[old _] (swap-vals! rev assoc ::closed true :waiters [])]
-    (doseq [[_ _ f] (:waiters old)] (f ::unmounted))))
+    (doseq [[_ _ f] (:waiters old)] (ack! f ::unmounted))))
 
 ;; ---------------------------------------------------------------------------
 ;; Reading a mount (tests, tooling)
@@ -486,9 +496,11 @@
             false))
       (do (swap! m assoc :current-vdom v :error nil)
           #?(:cljs (clear-overlay! (:container @m)))
-          (run-effects! m @ctx)
-          (bump-rev! (:rev @m) :revision)
-          (finish! m true))
+          ;; nothing may skip the finalization: the request slot is taken
+          ;; even if effect or acknowledgement code throws past its isolation
+          (try (run-effects! m @ctx)
+               (bump-rev! (:rev @m) :revision)
+               (finally (finish! m true))))
       (do #?(:cljs (show-overlay! (:container @m) (:error @m)))
           (finish! m false)))))
 
