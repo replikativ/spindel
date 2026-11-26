@@ -13,6 +13,8 @@
             [org.replikativ.spindel.v2.core :as v2 :refer [spin track await]]
             [org.replikativ.spindel.incremental.interval :as iv]
             [org.replikativ.spindel.v2.verify :as verify]
+            [org.replikativ.spindel.v2.rows :as rw]
+            [org.replikativ.spindel.v2.host :as hs]
             [org.replikativ.spindel.v2.dom.elements :as el]
             [org.replikativ.spindel.v2.dom.render :as render]
             [org.replikativ.spindel.v2.dom.mock :as mock]
@@ -197,8 +199,13 @@
             {:keys [state] :as ctl} (fx/render! env root)
             writer (future (v2/write! s 2))]
         (is (true? (deref in-commit 5000 false)) "the slow commit runs")
-        (let [unmounter (future ((:unmount! ctl)) :done)]
-          (Thread/sleep 50)
+        (let [unmounter (future ((:unmount! ctl)) :done)
+              ingress (aget ^objects (:w env) rw/W-INGRESS)
+              deadline (+ (System/currentTimeMillis) 5000)]
+          ;; the acknowledgement: the unmount's item is queued behind the commit
+          (while (and (hs/mpsc-empty? ingress) (< (System/currentTimeMillis) deadline))
+            (Thread/sleep 1))
+          (is (not (hs/mpsc-empty? ingress)) "the unmount's item is queued")
           (is (not (realized? unmounter)) "the unmount waits for the commit")
           (deliver release true)
           (is (= :done (deref unmounter 5000 :hung))))
@@ -210,38 +217,65 @@
 ;; ---------------------------------------------------------------------------
 ;; M4: the control object kept after unmount holds no tree
 
+(defn- m4-mount
+  "Renders a root whose body creates a child computation (kept in `kept`)
+   and records a weak reference to its run in `run`; releases the root
+   handle. Returns the control map."
+  [env kept run]
+  (let [root (spin (reset! run (java.lang.ref.WeakReference. (v2/active-run)))
+                   (let [child (spin (el/span "child"))]
+                     (reset! kept child)
+                     (el/div (await child))))
+        c (fx/render! env root)]
+    (v2/release! root)
+    c))
+
+(defn- gc! [env]
+  (verify/gc-settle! (:w env))
+  (fx/settle! env)
+  (verify/gc-settle! (:w env)))
+
 (deftest m4-the-control-object-holds-no-tree-after-unmount
+  ;; every weak read outside `is`, whose try block keeps its values in frame slots
   (fx/with-world
     {:verify? false}
     (fn [env]
       (let [kept (atom nil)
             run (atom nil)
-            {:keys [state] :as ctl} (let [root (spin (reset! run (java.lang.ref.WeakReference. (v2/active-run)))
-                                                     (let [child (spin (el/span "child"))]
-                                                       (reset! kept child)
-                                                       (el/div (await child))))
-                                          c (fx/render! env root)]
-                                      (v2/release! root)
-                                      c)
+            {:keys [state] :as ctl} (m4-mount env kept run)
             weak (java.lang.ref.WeakReference. (render/committed state))
-            ;; read outside `is`: its try block would keep the tree in a frame slot
             mounted? (some? (.get weak))]
         (is mounted?)
         (fx/unmount! env ctl)
         (is (nil? (render/committed state)))
-        (verify/gc-settle! (:w env))
-        (fx/settle! env)
-        (verify/gc-settle! (:w env))
-        ;; every read outside `is`, whose try block keeps its values in frame slots
-        (let [run-gone? (nil? (.get ^java.lang.ref.WeakReference @run))
-              child-kept? (some? @kept)]
-          (is run-gone? "a retained child computation does not keep its creator's run (D8)")
-          (is child-kept?))
+        (gc! env)
+        (let [run-gone? (nil? (.get ^java.lang.ref.WeakReference @run))]
+          (is run-gone? "a retained child computation does not keep its creator's run (D8)"))
         (reset! kept nil)
-        (verify/gc-settle! (:w env))
+        (gc! env)
         (let [tree-gone? (nil? (.get weak))]
-          (is tree-gone? "the vnode tree is collectable"))
+          (is tree-gone? "with the child dropped too, the vnode tree is collectable"))
         (is (= :unmounted (render/phase (:state ctl))))))))
+
+(deftest ^:gap m4-a-retained-child-keeps-its-ancestors-result
+  ;; GAP, owned by P11 (the census and heap-reachability gate): a child
+  ;; computation stores its creator as owner, and demotion drops the
+  ;; creator's run but not its cached result, so while the application keeps
+  ;; the child's handle the ancestor's vnode result stays reachable after
+  ;; unmount, though no row of the world needs it. No engine change in P4.
+  (fx/with-world
+    {:verify? false}
+    (fn [env]
+      (let [kept (atom nil)
+            run (atom nil)
+            {:keys [state] :as ctl} (m4-mount env kept run)
+            weak (java.lang.ref.WeakReference. (render/committed state))]
+        (fx/unmount! env ctl)
+        (gc! env)
+        (let [child-kept? (some? @kept)
+              ancestor-result-gone? (nil? (.get weak))]
+          (is child-kept?)
+          (is ancestor-result-gone? "the ancestor's result is collectable while the child is kept"))))))
 
 ;; ---------------------------------------------------------------------------
 ;; M5: two mounts of one world share nothing
@@ -414,17 +448,30 @@
   (fx/with-world
     {:inline? false :budget 8}
     (fn [env]
-      (let [v (v2/signal (vnode 0))
-            {:keys [state] :as ctl} (fx/render! env v)]
-        (v2/host! (:w env) #(dotimes [i 10] (reset! v (vnode (inc i)))))
-        (fx/settle! env)
+      (let [commits (atom [])
+            ;; each committed tree records itself: its hook fn is new every time
+            node (fn [i] (el/div {:id (str "v" i) :on-commit (fn [_] (swap! commits conj i) nil)} (str i)))
+            v (v2/signal (node 0))
+            {:keys [state] :as ctl} (fx/render! env v)
+            ^java.util.concurrent.LinkedBlockingQueue q (:q env)]
+        (v2/host! (:w env) #(dotimes [i 10] (reset! v (node (inc i)))))
+        ;; step the drainer one turn at a time
+        (let [turns (loop [acc [] n 0]
+                      (if-let [r (when (< n 100) (.poll q))]
+                        (do (.run ^Runnable r) (recur (conj acc @commits) (inc n)))
+                        acc))]
+          (is (= [0] (first turns)) "the first turn runs the item and 7 callbacks: no commit yet")
+          (is (= [0 7 10] @commits)
+              (str "budget 8: the item and 7 callbacks fill the first turn (#364 splits the batch);"
+                   " the next turn's ingress commits that part's newest delivery, then the rest of"
+                   " the batch posts a second flush, which commits the newest")))
         (is (= [[:div {:id "v10"} "10"]] (dom env)) "the final committed tree is the newest delivery")
-        (is (<= 2 (render/revision state) 3)
-            "split batches (#364): the flush can commit a delivery from the first part; at most two commits")
+        (is (= 3 (render/revision state)))
         (fx/unmount! env ctl)
-        (v2/host! (:w env) #(dotimes [i 10] (reset! v (vnode (+ 20 i)))))
+        (v2/host! (:w env) #(dotimes [i 10] (reset! v (node (+ 20 i)))))
         (fx/settle! env)
-        (is (empty? (fx/leftovers env state)) "no commit after :unmount!")))))
+        (is (= [0 7 10] @commits) "no commit after :unmount!")
+        (is (empty? (fx/leftovers env state)))))))
 
 (deftest cb4-ordinary-observers-are-untouched
   (fx/each-world

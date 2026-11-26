@@ -20,7 +20,8 @@
             [org.replikativ.spindel.v2.dom.elements :as el]
             [org.replikativ.spindel.v2.dom.render :as render]
             [org.replikativ.spindel.v2.dom.mock :as mock]
-            [org.replikativ.spindel.v2.dom.render-fixture :as fx]))
+            [org.replikativ.spindel.v2.dom.render-fixture :as fx]
+            [org.replikativ.spindel.dom.fragment :as frag]))
 
 (def ^:private kinds [:ref :on-commit :on-commit-deferred])
 
@@ -446,8 +447,7 @@
     (fx/run-deferred! env)
     [c state @ctl]))
 
-#?(:clj
-   (deftest ce16-the-deferred-flush-epilogue-takes-the-request
+(deftest ce16-the-deferred-flush-epilogue-takes-the-request
      (fx/each-world
       (fn [env]
         (testing "(a) the last deferred setup stops the mount"
@@ -475,10 +475,9 @@
             (is (= :mounted (render/phase state)) "the phase is unchanged")
             (is (nil? (:request @state)))
             (fx/unmount! env ctl)
-            (is (balanced? c))))))))
+            (is (balanced? c)))))))
 
-#?(:clj
-   (deftest ce17-requests-from-cleanups-and-throwing-setups
+(deftest ce17-requests-from-cleanups-and-throwing-setups
      (fx/each-world
       (fn [env]
         (testing "a removal cleanup asks for an unmount: the commit finishes, then the teardown"
@@ -510,7 +509,7 @@
               (is (nil? (get-in (render/ledger state) [(:addr (first (:children (render/committed state)))) :on-commit-deferred])))
               (when (= ph :stopped) (fx/unmount! env @ctl))
               (is (balanced? c #{[:def :P]}) "no claim for the throwing setup")
-              (fx/violations))))))))
+              (fx/violations)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; CE18-CE21b: identity
@@ -685,3 +684,58 @@
            (is (= [[:div {} (str n)]] (mock/dom (:discharge (:mock env)) :container)) "the chain completes")
            (is (<= 3 turns) (str "it took " turns " turns"))
            (fx/unmount! env ctl))))))
+
+;; ---------------------------------------------------------------------------
+;; Mixed siblings (sol's P4 review): an element reconciled in place, a created
+;; one and a keyed fragment with a surviving and a new item, in one commit
+
+(deftest mixed-siblings-in-one-commit
+  (fx/each-world
+   (fn [env]
+     (let [c (ctx env)
+           step (v2/signal 0)
+           item (fn [k] (let [h (hooks c k)] (el/li {:key k :ref (:ref h) :on-commit (:on-commit h)} (name k))))
+           root (spin (let [s (iv/get-new (track step))
+                            hp (hooks c :P) ha (hooks c :A) hc (hooks c :C)
+                            ks (if (zero? s) [:K1] [:K1 :K2])]
+                        (el/div {:ref (:ref hp) :on-commit (:on-commit hp)}
+                                (el/div {:ref (:ref ha) :on-commit (:on-commit ha)} "a")
+                                (when (pos? s) (el/p {:ref (:ref hc) :on-commit (:on-commit hc)} "c"))
+                                (assoc (frag/keyed-fragment (mapv item ks) nil) :addr :frag-mixed :keys ks))))
+           {:keys [state] :as ctl} (fx/render! env root)
+           n (mark c)]
+       (fx/write! env step 1)
+       (is (= [[:oc :P :cleanup] [:oc :K1 :cleanup] [:oc :A :cleanup]
+               [:ref :C :setup] [:ref :K2 :setup]
+               [:oc :A :setup] [:oc :C :setup] [:oc :K2 :setup] [:oc :K1 :setup] [:oc :P :setup]]
+              (since c n))
+           (str "the re-run pass newest first; the refs of the created elements in creation order;"
+                " on-commit as the walk leaves each element, slot by slot (a keyed slot's new items"
+                " are created by its diff, before its surviving items are visited), the parent last"))
+       (is (= [[:div {} [:div {} "a"] [:p {} "c"] [:li {} "K1"] [:li {} "K2"]]]
+              (mock/dom (:d c) :container)))
+       (fx/unmount! env ctl)
+       (is (balanced? c))
+       (is (empty? (fx/leftovers env state)))))))
+
+;; ---------------------------------------------------------------------------
+;; An unexpected exception of the deferred flush itself (not of a setup)
+
+#?(:clj
+   (deftest an-unexpected-deferred-flush-exception-still-takes-the-request
+     (fx/each-world
+      (fn [env]
+        (let [ctl (volatile! nil)
+              orig @#'render/register!
+              [c state] (mount env {:sb (v2/signal 0) :gate (v2/deferred) :ctl ctl
+                                    :extra {:A {:on-commit-deferred (fn [_] ((:unmount! @ctl)))}}})]
+          (with-redefs-fn {#'render/register! (fn [m addr kind cleanup]
+                                                (if (= kind :on-commit-deferred)
+                                                  (throw (ex-info "an internal failure of the flush" {}))
+                                                  (orig m addr kind cleanup)))}
+            #(fx/run-deferred! env))
+          (is (= :unmounted (render/phase state)) "the epilogue still tears down")
+          (is (not (:busy @state)))
+          (is (nil? (:request @state)))
+          (is (balanced? c #{[:def :A]}))
+          (fx/violations))))))

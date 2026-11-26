@@ -171,14 +171,16 @@
 
 (defn leftovers
   "What a torn-down mount left behind, as a vector of keywords; empty when
-   the mock's registry, the store, the ledger and the container are empty,
-   the committed vdom is nil and the phase is :unmounted."
+   the mock's registry, the store, the ledger, the container and the mock's
+   live tree model are empty, the committed vdom is nil and the phase is
+   :unmounted."
   [env state]
   (let [{:keys [elements discharge]} (:mock env)]
     (cond-> []
       (not= :unmounted (render/phase state)) (conj [:phase (render/phase state)])
       (seq @elements) (conj :registry)
       (seq (mock/children discharge :container)) (conj :container)
+      (some pos? (vals (mock/live-state discharge))) (conj [:mock-live (mock/live-state discharge)])
       (not (render/clean? state)) (conj :mount-state))))
 
 (defn violations

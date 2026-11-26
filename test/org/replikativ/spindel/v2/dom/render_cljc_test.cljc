@@ -14,12 +14,6 @@
             [org.replikativ.spindel.v2.dom.mock :as mock]
             [org.replikativ.spindel.v2.dom.render-fixture :as fx]))
 
-(defn- later
-  "Runs `f` after `ms` milliseconds: a JVM future, a JS timer."
-  [ms f]
-  #?(:clj (future (Thread/sleep ms) (f))
-     :cljs (js/setTimeout f ms)))
-
 (defn- in-world
   "Calls `(f w done)` with a fresh world made with `opts` bound; the test
    ends at `(done)`."
@@ -54,12 +48,14 @@
                   (render/on-revision state 1
                                       (fn [_]
                                         (v2/write! s 2)
-                                        (later 50 (fn []
-                                                    (is (= :unmounted (render/phase state)))
-                                                    (is (= 1 (render/revision state)) "the queued delivery did not commit")
-                                                    (is (empty? (text m)))
-                                                    (is (render/clean? state))
-                                                    (done))))))))))
+                                        ;; the acknowledgement: the teardown releases this waiter
+                                        (render/on-revision state 10
+                                                            (fn [x]
+                                                              (is (= ::render/unmounted x))
+                                                              (is (= 1 (render/revision state)) "the queued delivery did not commit")
+                                                              (is (empty? (text m)))
+                                                              (is (render/clean? state))
+                                                              (done))))))))))
 
 (deftest m2-unmount-from-a-ref-during-the-first-commit
   (in-world {:slice-ms nil}

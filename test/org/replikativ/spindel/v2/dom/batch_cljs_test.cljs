@@ -14,9 +14,10 @@
             [org.replikativ.spindel.v2.dom.render-fixture :as fx]))
 
 (defn- read-later
-  "Calls `(k v)` with the value of `s` after the world has drained."
+  "Calls `(k v)` with the value of `s` once the items queued before this
+   read have run: the read is an item of its own, behind them (FIFO)."
   [s k]
-  (js/setTimeout #(v2/value-async s (fn [v _] (k v))) 20))
+  (v2/value-async s (fn [v _] (k v))))
 
 (deftest cb2-swap-on-a-non-inline-world
   (async done*

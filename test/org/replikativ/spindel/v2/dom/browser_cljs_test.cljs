@@ -11,6 +11,7 @@
             [org.replikativ.spindel.v2.dom.elements :as el]
             [org.replikativ.spindel.v2.dom.render :as render :refer [batch]]
             [org.replikativ.spindel.v2.dom.browser :as browser]
+            [org.replikativ.spindel.dom.fragment :as frag]
             [org.replikativ.spindel.v2.dom.render-fixture :as fx]
             ["jsdom" :refer [JSDOM]]))
 
@@ -196,15 +197,19 @@
                               (let [input (.querySelector (:container p) "input")]
                                 (later 0 (fn []
                                            (type! p input "12a")
-                                           (later 30 (fn []
-                                                       (is (= "12a" (.-value input)) "the P4 scope: no asynchronous restore")
-                                                       ((:unmount! ctl))
-                                                       (later 30 done))))))))))))
+                                           ;; the acknowledgement: a read queued behind the
+                                           ;; handler's wait and withdrawal
+                                           (v2/value-async (:root @state)
+                                                           (fn [_ _]
+                                                             (is (= "12a" (.-value input)) "the P4 scope: no asynchronous restore")
+                                                             ((:unmount! ctl))
+                                                             (done))))))))))))
 
 (deftest cb5g-a-queued-callback-after-the-withdrawal
   (with-world {:budget 2}
     (fn [w p done]
-      (let [{:keys [state ctl]} (mount-input p (fn [_]))]
+      (let [{:keys [state ctl]} (mount-input p (fn [_]))
+            ack (v2/signal 0)]
         (render/on-revision state 1
                             (fn [_]
                               (later 0 (fn []
@@ -214,10 +219,12 @@
                                            (type! p input "12a")
                                            (is (= "12a" (.-value input)) "no restore before the wrapper returned")
                                            (set! (.-value input) "999")
-                                           (later 30 (fn []
-                                                       (is (= "999" (.-value input)) "the late callback writes nothing")
-                                                       ((:unmount! ctl))
-                                                       (done))))))))))))
+                                           ;; the acknowledgement: a callback queued behind the late one
+                                           (v2/value-async ack
+                                                           (fn [_ _]
+                                                             (is (= "999" (.-value input)) "the late callback writes nothing")
+                                                             ((:unmount! ctl))
+                                                             (done))))))))))))
 
 (deftest cb5h-the-callback-defers-to-a-flush-that-spills
   (async done*
@@ -232,20 +239,23 @@
                          p (page)
                          {:keys [state ctl u input]} (binding [v2/*world* w] (mount-input p (fn [_])))
                          deferred? (atom false)]
-                     (later 0 (fn []
+                     (render/on-revision state 1 (fn [_] (later 0 (fn []
                                 (v2/send-world! w #(reset! u 1))
                                 (add-watch state ::pending (fn [_ _ _ n] (when (seq (:restore-pending n)) (reset! deferred? true))))
                                 (type! p input "12a")
                                 (remove-watch state ::pending)
                                 (let [this? (and @deferred? (= "12a" (.-value input)))]
                                   (when this? (reset! hit budget))
-                                  (later 30 (fn []
-                                              (when this?
-                                                (is (= 2 (render/revision state)) "the flush commits")
-                                                (is (= "12a" (.-value input)) "but does not restore"))
-                                              ((:unmount! ctl))
-                                              (v2/release-world! w)
-                                              (try-budget (inc budget))))))))))]
+                                  ;; the acknowledgement: a read queued behind the flush
+                                  (v2/value-async (:root @state)
+                                                  (fn [_ _]
+                                                    (when this?
+                                                      (is (= 2 (render/revision state)) "the flush commits")
+                                                      (is (= "12a" (.-value input)) "but does not restore"))
+                                                    ((:unmount! ctl))
+                                                    (later 0 (fn []
+                                                               (v2/release-world! w)
+                                                               (try-budget (inc budget))))))))))))))]
            (try-budget 3))))
 
 (deftest cb5i-liveness
@@ -271,5 +281,58 @@
         (type! p input "12a")
         (is (= "<div></div>" (html p)))
         (is (= "12a" (.-value input)) "no restore on the removed element, no throw")
+        ((:unmount! ctl))
+        (done)))))
+
+;; ---------------------------------------------------------------------------
+;; Keyed fragment positions (sol's P4 review, finding 1)
+
+(defn- keyed [fa ks items]
+  (assoc (frag/keyed-fragment (vec items) nil) :addr fa :keys (vec ks)))
+
+(defn- li [k] (el/li {:key k} (str k)))
+
+(deftest an-empty-fragment-grows-at-its-slot
+  (with-world {}
+    (fn [_ p done]
+      (let [ks (v2/signal [])
+            root (spin (let [xs (iv/get-new (track ks))]
+                         (el/div (el/h1 "head") (keyed :frag-a xs (mapv li xs)) (el/footer "foot"))))
+            ctl (render/render! (:container p) root (:d p))]
+        (reset! ks ["a"])
+        (is (= "<div><h1>head</h1><li>a</li><footer>foot</footer></div>" (html p)))
+        ((:unmount! ctl))
+        (done)))))
+
+(deftest a-fragment-grows-while-a-later-sibling-goes
+  (with-world {}
+    (fn [_ p done]
+      (let [step (v2/signal 0)
+            root (spin (let [s (iv/get-new (track step))
+                             xs (if (zero? s) ["A"] ["A" "B"])]
+                         (el/div (keyed :frag-b xs (mapv li xs)) (when (zero? s) (el/p "tail")))))
+            ctl (render/render! (:container p) root (:d p))]
+        (is (= "<div><li>A</li><p>tail</p></div>" (html p)))
+        (reset! step 1)
+        (is (= "<div><li>A</li><li>B</li></div>" (html p)))
+        ((:unmount! ctl))
+        (done)))))
+
+;; ---------------------------------------------------------------------------
+;; A select's value after its options (sol's P4 review, finding 6)
+
+(deftest a-select-value-follows-its-new-option
+  (with-world {}
+    (fn [_ p done]
+      (let [two? (v2/signal false)
+            root (spin (let [t (iv/get-new (track two?))]
+                         (el/div (el/select {:value (if t "b" "a")}
+                                            (el/option {:value "a"} "a")
+                                            (when t (el/option {:value "b"} "b"))))))
+            ctl (render/render! (:container p) root (:d p))
+            select (.querySelector (:container p) "select")]
+        (is (= "a" (.-value select)))
+        (reset! two? true)
+        (is (= "b" (.-value select)) "the value is set after the option exists")
         ((:unmount! ctl))
         (done)))))

@@ -164,3 +164,14 @@
               (into [tag (into {} (remove (comp fn? val)) (attrs-of d c))] (dom d c))
               text)))
         (children d parent)))
+
+(defn live-state
+  "How much the mock's live tree model holds: node, attr, property, child
+   list and parent entries (the container's own child list not counted).
+   The operation log is history and not counted."
+  [d]
+  {:nodes (count @(:nodes d))
+   :attrs (count @(:attrs d))
+   :props (count @(:props d))
+   :kids (count (remove (fn [[_ v]] (empty? v)) @(:kids d)))
+   :parent (count @(:parent d))})
