@@ -1055,8 +1055,9 @@ Each `track` *site* in a run (identified by `at`) has its own edge, with
   *tries* to take the gate.
   - **It wins:** it processes its own item, then at most a constant budget of
     further work, counting both ingress items and slices (Y#4). Each slice
-    is finite by B9. If work remains, it schedules the
-    world's drainer on the world's executor and releases the gate.
+    is finite by B9. A turn may also end early, after a time slice. If
+    work remains, it schedules the world's drainer on the world's executor
+    and releases the gate.
   - **Inline is optional,** per world and per JVM host thread (Z#79). A
     world created with `:inline? false` runs no user slice on host threads;
     it suits UI threads. A JVM thread inside `without-inline-turns` (macro

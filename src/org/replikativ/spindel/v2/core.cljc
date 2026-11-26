@@ -189,11 +189,20 @@
     (when parent (aadd! (gm parent rw/S-CHILDREN) s))
     (register! w s)))
 
+;; A turn's time slice (H2). JS: 5 ms, so a long drain yields to paint and
+;; input. JVM: none by default; the drainer runs on its own thread, and the
+;; clock read per unit cost 2-7% in the quickbench graphs.
+(def ^:private default-slice-ms #?(:clj nil :cljs 5))
+
 (defn world
   "A new world. `:verify? true` keeps an id->row registry and a commit log
-   (test only); `:hook` runs after every commit in verify mode."
+   (test only); `:hook` runs after every commit in verify mode. A turn ends
+   after `:budget` units (items and slices) or, checked between units, once
+   `:slice-ms` milliseconds have passed (H2; nil: no time slice; default
+   5 on JS, none on the JVM)."
   ([] (world {}))
-  ([{:keys [verify? hook inline? budget executor] :or {inline? true budget 4096}}]
+  ([{:keys [verify? hook inline? budget slice-ms executor]
+     :or {inline? true budget 4096 slice-ms default-slice-ms}}]
    (let [w (rw/new-row nil nil rw/W-SIZE)
          next #?(:clj (java.util.concurrent.atomic.AtomicLong. 1)
                  :cljs (doto (long-array 1) (aset 0 1)))]
@@ -215,6 +224,7 @@
      (s! w rw/W-EXEC (or executor (hs/executor)))
      (s! w rw/W-INLINE (boolean inline?))
      (s! w rw/W-BUDGET (long budget))
+     (s! w rw/W-SLICE (hs/ms->ticks slice-ms))
      (s! w rw/W-ROOTS (hs/lmap))
      (s! w rw/W-RELEASED false)
      (s! w rw/W-UNBORN false)
@@ -3047,19 +3057,24 @@
   (when (g w rw/W-RETIRE) (retire-local! w)))
 
 (defn- run-turn!
-  "H2: processes ingress items and internal work up to the budget. Returns
-   true when work remains."
+  "H2: processes ingress items and internal work up to the budget, or until
+   the time slice has passed (checked between units, after the first).
+   Returns true when work remains."
   [w]
   (s! w rw/W-DRAINING true)
   (first-entry! w)
-  (let [unborn? (g w rw/W-UNBORN)]
+  (let [unborn? (g w rw/W-UNBORN)
+        budget (gl w rw/W-BUDGET)
+        slice #?(:clj (gl w rw/W-SLICE) :cljs (g w rw/W-SLICE))
+        t0 (if (pos? slice) (hs/now) 0)]
     ;; E4: an unborn instance commits host items only: its inherited work and
     ;; dormant resources wait for activate!
     (when (and (not unborn?) (or (g w rw/W-DORMANT) (g w rw/W-DISCHARGE))) (activate-dormant! w))
     (when (and (not unborn?) (g w rw/W-NORMALIZE)) (normalize! w))
     (try
-      (loop [n (gl w rw/W-BUDGET) unborn? unborn?]
-        (if (zero? n)
+      (loop [n budget unborn? unborn?]
+        (if (or (zero? n)
+                (and (pos? slice) (< n budget) (>= (- (hs/now) t0) slice)))
           true
           (if-let [item (hs/mpsc-poll! (ingress w))]
             ;; a queued item is another caller's: its throw is reported, not

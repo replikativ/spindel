@@ -198,7 +198,8 @@
 (def ^:const W-RETIRE 59)   ; Z#77: the fork-local run sets inherited at the fork, retired at the first gate entry (T28)
 (def ^:const W-SHUT 60)      ; host admission shut: nil, :frozen (a savepoint basis: never run or changed, S1)
                              ; or :released (a fork effect's unpublished child, before and after its queued T21)
-(def ^:const W-SIZE 61)
+(def ^:const W-SLICE 61)     ; H2: a turn's time slice in host/now ticks, 0 for none
+(def ^:const W-SIZE 62)
 
 ;; Scope
 (def ^:const S-PARENT 2)
