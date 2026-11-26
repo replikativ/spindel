@@ -138,8 +138,9 @@
 
 (defn- reconcile-slot
   "{:slot new-slot :delta delta-or-nil} for slot `i` from `prev-slot` to
-   child `new`. A [:keyed :keyed] pair yields no delta: the commit walk
-   diffs it against the keyed cache itself."
+   child `new`. A [:keyed :keyed] pair of one fragment (one address) yields
+   no delta: the commit walk diffs it against the keyed cache itself; a pair
+   of two fragments is a :replace-fragment."
   [i prev-slot new]
   (let [new-slot (make-slot new)
         prev (:value prev-slot)]
@@ -154,7 +155,10 @@
               [:single :keyed] {:delta :replace-with-fragment :path [i] :old-value prev :value new}
               [:keyed :nil] {:delta :remove-fragment :path [i] :old-value prev}
               [:keyed :single] {:delta :replace-fragment-with-single :path [i] :old-value prev :value new}
-              [:keyed :keyed] nil)}))
+              ;; another fragment in this slot (one moved across slots) has
+              ;; nothing in common with the previous one: replaced
+              [:keyed :keyed] (when (not= (:addr prev) (:addr new))
+                                {:delta :replace-fragment :path [i] :old-value prev :value new}))}))
 
 (defn reconcile-children
   "{:slots new-slots :deltas slot-deltas} from the committed `prev-slots`
@@ -165,8 +169,3 @@
                       (range (max (count prev-slots) (count new-children))))]
     {:slots (mapv :slot results)
      :deltas (into [] (keep :delta) results)}))
-
-(defn slot-base-index
-  "The child index slot `i` starts at: the sizes of the slots before it."
-  [slots i]
-  (reduce + 0 (map #(count (flatten-slot (get slots %))) (range i))))

@@ -137,7 +137,8 @@
                     (:add :replace-fragment-with-single) (when-let [a (:addr value)] [a])
                     :update (when (and (not (disch/reconcilable? old-value value)) (:addr value))
                               [(:addr value)])
-                    (:add-fragment :replace-with-fragment) (keep :addr (frag/fragment-items value))
+                    (:add-fragment :replace-with-fragment :replace-fragment)
+                    (keep :addr (frag/fragment-items value))
                     nil)))
         deltas))
 
@@ -171,8 +172,18 @@
   (case delta
     (:add :replace-fragment-with-single :update)
     (when (contains? created (:addr value)) (seed-subtree-caches! store value))
-    (:add-fragment :replace-with-fragment) (seed-subtree-caches! store value)
+    (:add-fragment :replace-with-fragment :replace-fragment) (seed-subtree-caches! store value)
     nil))
+
+(defn- apply-slot-delta!
+  "Applies slot delta `d` at child index `base` of `el`. A :replace-fragment
+   (another fragment took the slot) removes the previous fragment's items,
+   each in its own cleanup pass, and creates the new one's."
+  [discharge el d base]
+  (if (= :replace-fragment (:delta d))
+    (do (disch/apply-child-delta! discharge el {:delta :remove-fragment :path [base] :old-value (:old-value d)})
+        (disch/apply-child-delta! discharge el {:delta :add-fragment :path [base] :value (:value d)}))
+    (disch/apply-child-delta! discharge el (assoc d :path [base]))))
 
 (defn- commit-reconcile*
   [discharge store vnode]
@@ -202,12 +213,13 @@
           ;; 2. slot by slot, in order: when slot i is reached, every slot
           ;; before it holds its new children, so i's physical base is the
           ;; size of the new slots before it (also for an empty keyed slot,
-          ;; and also while later slots still hold their old children)
-          (dotimes [i (count slots)]
-            (let [slot (get slots i)
-                  base (cache/slot-base-index slots i)]
+          ;; and also while later slots still hold their old children),
+          ;; carried along the walk
+          (loop [i 0 base 0]
+            (when (< i (count slots))
+            (let [slot (get slots i)]
               (if-let [d (get by-slot i)]
-                (do (disch/apply-child-delta! discharge el (assoc d :path [base]))
+                (do (apply-slot-delta! discharge el d base)
                     (seed-created! store d created))
                 (case (:type slot)
                   :keyed (commit-keyed-slot! discharge store el (:value slot) base)
@@ -222,7 +234,8 @@
                   (when (and (= :update (:delta d)) (= :single (:type slot))
                              (core/vnode? child) (not (core/text-node? child)) (:addr child)
                              (not (contains? created (:addr child))))
-                    (commit-reconcile* discharge store child))))))
+                    (commit-reconcile* discharge store child))))
+              (recur (inc i) (+ base (count (cache/flatten-slot slot)))))))
           (cache/set-slot-cache! store addr slots)
           ;; 3. :value after the children
           (run! apply-attr! value-deltas)
