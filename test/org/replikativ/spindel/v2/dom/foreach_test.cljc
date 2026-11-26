@@ -128,37 +128,29 @@
        (fx/unmount! env ctl)
        (is (empty? (fx/leftovers env state)))))))
 
-#?(:clj
-   (deftest ^:gap an-item-that-reruns-on-its-own-is-readopted-by-key
-     ;; JVM only: the CLJS runner does not exclude :gap.
-     ;; GAP, engine (E1, Z#82): an item that tracks a source reruns on its own;
-     ;; the list's await-all is a group await, which stores no continuation,
-     ;; so the enclosing computation restarts from its body (core.cljc:2153,
-     ;; dispatch! 1747-1763). But dispatch!'s cut takes the group-await edge's
-     ;; `at` (1705-1725): the items, created before it, stay in the basis
-     ;; instead of moving to the adoption basis, and keyed creation looks only
-     ;; there. So the restart creates new item computations (their bodies run
-     ;; from the start) and the basis holds each key twice (the verify key
-     ;; check). Design §1.6 and §4.3 say a group-await restart makes every row
-     ;; suffix. The DOM is right; only the identity and the counts are not.
-     (fx/each-world
-      (fn [env]
-        (let [items (v2/signal [{:id 1 :v "a"} {:id 2 :v "b"}])
-              sel (v2/signal 1)
-              runs (atom {})
-              root (spin (el/ul (ifor-each :id (track items)
-                                           (fn [{:keys [id v]}]
-                                             (swap! runs update id (fnil inc 0))
-                                             (let [s (iv/get-new (track sel))]
-                                               (el/li {:class (if (= s id) "sel" "")} v))))))
-              {:keys [state] :as ctl} (fx/render! env root)]
-          (is (= [[:ul {} [:li {:class "sel"} "a"] [:li {:class ""} "b"]]] (dom env)))
-          (let [before @runs]
-            (fx/write! env sel 2)
-            (is (= [[:ul {} [:li {:class ""} "a"] [:li {:class "sel"} "b"]]] (dom env)))
-            (is (= {} (delta @runs before)) "each item resumes at its track, after the counter"))
-          (fx/unmount! env ctl)
-          (is (empty? (fx/leftovers env state))))))))
+(deftest an-item-that-reruns-on-its-own-is-readopted-by-key
+  ;; an item that tracks a source reruns on its own; the list's await-all
+  ;; stores no continuation, so the list restarts from its body (T11) and
+  ;; readopts the items, created before the fired edge, from its basis by
+  ;; key. The counter before the track tells a resume from a new row.
+  (fx/each-world
+   (fn [env]
+     (let [items (v2/signal [{:id 1 :v "a"} {:id 2 :v "b"}])
+           sel (v2/signal 1)
+           runs (atom {})
+           root (spin (el/ul (ifor-each :id (track items)
+                                        (fn [{:keys [id v]}]
+                                          (swap! runs update id (fnil inc 0))
+                                          (let [s (iv/get-new (track sel))]
+                                            (el/li {:class (if (= s id) "sel" "")} v))))))
+           {:keys [state] :as ctl} (fx/render! env root)]
+       (is (= [[:ul {} [:li {:class "sel"} "a"] [:li {:class ""} "b"]]] (dom env)))
+       (let [before @runs]
+         (fx/write! env sel 2)
+         (is (= [[:ul {} [:li {:class ""} "a"] [:li {:class "sel"} "b"]]] (dom env)))
+         (is (= {} (delta @runs before)) "each item resumes at its track, after the counter"))
+       (fx/unmount! env ctl)
+       (is (empty? (fx/leftovers env state)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Instances: one ifor-each site expanded twice in one run (through a
