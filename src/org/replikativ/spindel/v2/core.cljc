@@ -3036,15 +3036,25 @@
 
 (defn- run-callbacks!
   "Host callbacks run between items, on the processing thread (H3), each
-   isolated."
-  [w]
-  (let [cbs (g w rw/W-CALLBACKS)]
-    (when (pos? (acount cbs))
-      (let [batch (acopy cbs)]
-        (aclear! cbs)
-        (dotimes [i (acount batch)]
-          (let [[cb [v err?]] (rv w (anth batch i))] (isolated! "host callback" #(cb v err?))))
-        true))))
+   isolated. H2: each callback is a unit of the turn, so at most the
+   remaining budget `n` of the queued ones run, oldest first, and the time
+   slice (`slice` ticks from `t0`, none when 0) is checked between them as
+   between other units. The rest stay queued ahead of later ones: a batch
+   is split at a callback boundary, and the next turn's items and slices
+   may run before its rest. Returns how many ran, nil for none."
+  [w ^long n ^long slice ^long t0]
+  (let [cbs (g w rw/W-CALLBACKS)
+        k (min n (acount cbs))]
+    (when (pos? k)
+      (let [batch (hs/take-first! cbs k)]
+        (loop [i 0]
+          (if (and (< i k)
+                   (or (zero? i) (not (and (pos? slice) (>= (- (hs/now) t0) slice)))))
+            (let [[cb [v err?]] (rv w (anth batch i))]
+              (isolated! "host callback" #(cb v err?))
+              (recur (inc i)))
+            (do (when (< i k) (hs/put-first! cbs batch i))
+                i)))))))
 
 (defn- ingress [w] (g w rw/W-INGRESS))
 
@@ -3082,8 +3092,7 @@
             ;; caller, ingress-body's fast and held paths, throws to that caller)
             (do (isolated! "host item" item) (recur (dec n) (and unborn? (g w rw/W-UNBORN))))
             (cond (and (not unborn?) (drain-step! w)) (recur (dec n) false)
-                  (run-callbacks! w) (recur n unborn?)
-                  :else false))))
+                  :else (if-let [k (run-callbacks! w n slice t0)] (recur (- n (long k)) unborn?) false)))))
       (finally (finish-metadata! w) (maybe-finish-token! w) (s! w rw/W-DRAINING false)))))
 
 (declare handoff! activate-dormant!)
