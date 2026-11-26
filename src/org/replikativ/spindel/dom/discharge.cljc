@@ -440,11 +440,17 @@
    on the fragment's rows, not on siblings.
 
    Returns nil. Mutates the DOM under `parent-el` and the
-   discharge's element registry (`set-element!`)."
-  [discharge parent-el
-   {:keys [degree grow shrink permutation change]
-    :or {grow 0 shrink 0 permutation {} change {}}}
-   prev-vnodes]
+   discharge's element registry (`set-element!`).
+
+   With `offset`, the caller knows where the fragment starts (the v2
+   commit walk tracks every slot's physical base, also an empty
+   fragment's); without, it is derived as above."
+  ([discharge parent-el diff prev-vnodes]
+   (apply-seq-diff! discharge parent-el diff prev-vnodes nil))
+  ([discharge parent-el
+    {:keys [degree grow shrink permutation change]
+     :or {grow 0 shrink 0 permutation {} change {}}}
+    prev-vnodes offset]
   (let [size-before (- degree grow)
         size-after  (- degree shrink)
         inv-π       (perm/inverse permutation)
@@ -453,7 +459,7 @@
         ;; render of an empty fragment — the producer's pure-grow diff
         ;; assumes index 0) or when the discharge has no DOM model
         ;; (mock/SSR — they don't track offsets the same way).
-        offset      (fragment-offset discharge parent-el prev-vnodes)
+        offset      (or offset (fragment-offset discharge parent-el prev-vnodes))
         ;; Compute doomed prev-positions (those permuted past size-after).
         doomed (into #{} (filter #(doomed-prev? permutation % size-after))
                      (range size-before))
@@ -510,7 +516,7 @@
           ;; Source is doomed — this position must be a grown slot or
           ;; the diff is malformed. Skip silently; producer error
           ;; would surface in tests.
-          :else nil)))))
+          :else nil))))))
 
 (defn- reconcile-vnode!
   "Reconcile new-vnode into the DOM element backing old-vnode. Does NOT

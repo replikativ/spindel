@@ -127,8 +127,6 @@
 ;; capped like the discharge's collision throttle
 (defonce ^:private logged-unbound (atom #{}))
 
-(defn ^:no-doc logged-unbound-count [] (count @logged-unbound))
-
 (defn- created-value-addrs
   "The addresses of the subtrees a set of applied child deltas created (as
    opposed to reconciled in place)."
@@ -144,24 +142,37 @@
         deltas))
 
 (defn- commit-keyed-slot!
-  "Commits one [:keyed :keyed] slot: diffs the fragment's items against the
-   committed keyed entry, applies, advances the entry, seeds grown items and
-   recurses into surviving ones."
-  [discharge store parent-el fragment]
+  "Commits one [:keyed :keyed] slot whose items start at child index `base`
+   of `parent-el`: diffs the fragment's items against the committed keyed
+   entry, applies, advances the entry, seeds the items the diff created
+   (new keys, and surviving keys whose element was replaced) and recurses
+   into the items it kept."
+  [discharge store parent-el fragment base]
   (let [fa (:addr fragment)
         [order by-key _] (fragment-order+by-key fragment)
         committed (when fa (cache/get-keyed-cache store fa))
         prev-order (or (:order committed) [])
         prev-by-key (or (:by-key committed) {})
-        diff (sa/keyed-seq-diff order prev-order by-key prev-by-key cache/vnode-value-equal?)
-        prev-keys (set prev-order)]
+        diff (sa/keyed-seq-diff order prev-order by-key prev-by-key cache/vnode-value-equal?)]
     (when diff
-      (disch/apply-seq-diff! discharge parent-el diff (mapv prev-by-key prev-order)))
+      (disch/apply-seq-diff! discharge parent-el diff (mapv prev-by-key prev-order) base))
     (when fa (cache/set-keyed-cache! store fa {:order order :by-key by-key}))
-    (doseq [k order :when (not (contains? prev-keys k))]
-      (seed-subtree-caches! store (get by-key k)))
-    (doseq [k order :when (contains? prev-keys k)]
-      (commit-reconcile* discharge store (get by-key k)))))
+    (doseq [k order
+            :let [item (get by-key k)
+                  prev (get prev-by-key k ::none)]]
+      (if (and (not= ::none prev) (disch/reconcilable? prev item))
+        (commit-reconcile* discharge store item)
+        ;; a new key, or a surviving key whose element the diff replaced
+        (seed-subtree-caches! store item)))))
+
+(defn- seed-created!
+  "Seeds the subtree slot delta `d` created, if it created one."
+  [store {:keys [delta value] :as d} created]
+  (case delta
+    (:add :replace-fragment-with-single :update)
+    (when (contains? created (:addr value)) (seed-subtree-caches! store value))
+    (:add-fragment :replace-with-fragment) (seed-subtree-caches! store value)
+    nil))
 
 (defn- commit-reconcile*
   [discharge store vnode]
@@ -177,43 +188,45 @@
             (log/warn ::commit-unbound-addr (assoc data :children (count (:children vnode))))))
         (let [new-attrs (attr-cache-value vnode)
               attr-deltas (cache/reconcile-attrs (cache/get-attr-cache store addr) new-attrs)
-              new-slots (vnode-slots vnode)
+              [value-deltas attr-deltas] ((juxt filter remove) #(= :value (first (:path %))) attr-deltas)
               prev-slots (cache/get-slot-cache store addr)
-              {:keys [slots deltas]} (cache/reconcile-children prev-slots (mapv :value new-slots))
-              keyed-pairs (into [] (keep-indexed
-                                    (fn [i slot]
-                                      (when (and (= :keyed (:type slot))
-                                                 (= :keyed (:type (get prev-slots i))))
-                                        (:value slot))))
-                                slots)
-              created (created-value-addrs deltas)]
-          ;; 1. attrs
-          (doseq [{:keys [delta path value]} attr-deltas]
-            (case delta
-              (:add :update) (disch/set-attribute! discharge el (first path) value)
-              :remove (disch/remove-attribute! discharge el (first path))))
-          (cache/set-attr-cache! store addr new-attrs)
-          ;; 2. structural child deltas
-          (doseq [d (cache/adjust-delta-paths slots deltas)]
-            (disch/apply-child-delta! discharge el d))
+              {:keys [slots deltas]} (cache/reconcile-children prev-slots (mapv :value (vnode-slots vnode)))
+              by-slot (into {} (map (fn [d] [(first (:path d)) d])) deltas)
+              created (created-value-addrs deltas)
+              apply-attr! (fn [{:keys [delta path value]}]
+                            (case delta
+                              (:add :update) (disch/set-attribute! discharge el (first path) value)
+                              :remove (disch/remove-attribute! discharge el (first path))))]
+          ;; 1. attrs, but :value: a select's value needs its options first
+          (run! apply-attr! attr-deltas)
+          ;; 2. slot by slot, in order: when slot i is reached, every slot
+          ;; before it holds its new children, so i's physical base is the
+          ;; size of the new slots before it (also for an empty keyed slot,
+          ;; and also while later slots still hold their old children)
+          (dotimes [i (count slots)]
+            (let [slot (get slots i)
+                  base (cache/slot-base-index slots i)]
+              (if-let [d (get by-slot i)]
+                (do (disch/apply-child-delta! discharge el (assoc d :path [base]))
+                    (seed-created! store d created))
+                (case (:type slot)
+                  :keyed (commit-keyed-slot! discharge store el (:value slot) base)
+                  :single (let [child (:value slot)]
+                            (when (and (core/vnode? child) (not (core/text-node? child)) (:addr child))
+                              (commit-reconcile* discharge store child)))
+                  nil))
+              ;; a single slot the delta reconciled in place (:update of a
+              ;; compatible element) is recursed into like an unchanged one
+              (when-let [d (get by-slot i)]
+                (let [child (:value slot)]
+                  (when (and (= :update (:delta d)) (= :single (:type slot))
+                             (core/vnode? child) (not (core/text-node? child)) (:addr child)
+                             (not (contains? created (:addr child))))
+                    (commit-reconcile* discharge store child))))))
           (cache/set-slot-cache! store addr slots)
-          ;; 3. subtrees created in step 2 get seeded caches
-          (doseq [{:keys [delta value]} deltas]
-            (case delta
-              (:add :replace-fragment-with-single :update)
-              (when (contains? created (:addr value)) (seed-subtree-caches! store value))
-              (:add-fragment :replace-with-fragment) (seed-subtree-caches! store value)
-              nil))
-          ;; 4. keyed pairs: our own diff, and recursion into surviving items
-          (doseq [fragment keyed-pairs]
-            (commit-keyed-slot! discharge store el fragment))
-          ;; 5. recursion into children reconciled in place
-          (doseq [slot slots
-                  :when (= :single (:type slot))
-                  :let [child (:value slot)]
-                  :when (and (core/vnode? child) (not (core/text-node? child)) (:addr child)
-                             (not (contains? created (:addr child))))]
-            (commit-reconcile* discharge store child))
+          ;; 3. :value after the children
+          (run! apply-attr! value-deltas)
+          (cache/set-attr-cache! store addr new-attrs)
           (when *leave* (*leave* vnode)))))
     nil))
 

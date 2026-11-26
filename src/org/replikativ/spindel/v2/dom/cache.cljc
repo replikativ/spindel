@@ -80,9 +80,11 @@
 ;; Reconciliation
 
 (defn vnode-value-equal?
-  "Whether two vnodes of plain values render the same: text by content,
-   elements by tag, key, attrs and children, recursively. Lifecycle fns
-   (`:ref`, `:on-commit`, ...) are not compared."
+  "Whether two vnodes of plain values render the same, as the same DOM
+   nodes: text by content, elements by tag, key, address (their DOM
+   identity), attrs and children, recursively. Lifecycle fns (`:ref`,
+   `:on-commit`, ...) are not compared: surviving elements get their own
+   effect comparison."
   [a b]
   (cond
     (and (nil? a) (nil? b)) true
@@ -91,6 +93,7 @@
     (and (:tag a) (:tag b))
     (and (= (:tag a) (:tag b))
          (= (:key a) (:key b))
+         (= (:addr a) (:addr b))
          (= (:attrs a) (:attrs b))
          (let [ca (:children a) cb (:children b)]
            (and (= (count ca) (count cb))
@@ -163,15 +166,7 @@
     {:slots (mapv :slot results)
      :deltas (into [] (keep :delta) results)}))
 
-(defn- slot-base-index
+(defn slot-base-index
   "The child index slot `i` starts at: the sizes of the slots before it."
   [slots i]
   (reduce + 0 (map #(count (flatten-slot (get slots %))) (range i))))
-
-(defn adjust-delta-paths
-  "Slot deltas with their slot index replaced by the child index the slot
-   starts at in `slots` (a :nil slot has no child, a :keyed one many)."
-  [slots deltas]
-  (mapv (fn [delta]
-          (assoc delta :path [(slot-base-index slots (first (:path delta)))]))
-        deltas))
