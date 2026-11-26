@@ -240,22 +240,22 @@
                          {:keys [state ctl u input]} (binding [v2/*world* w] (mount-input p (fn [_])))
                          deferred? (atom false)]
                      (render/on-revision state 1 (fn [_] (later 0 (fn []
-                                (v2/send-world! w #(reset! u 1))
-                                (add-watch state ::pending (fn [_ _ _ n] (when (seq (:restore-pending n)) (reset! deferred? true))))
-                                (type! p input "12a")
-                                (remove-watch state ::pending)
-                                (let [this? (and @deferred? (= "12a" (.-value input)))]
-                                  (when this? (reset! hit budget))
+                                                                    (v2/send-world! w #(reset! u 1))
+                                                                    (add-watch state ::pending (fn [_ _ _ n] (when (seq (:restore-pending n)) (reset! deferred? true))))
+                                                                    (type! p input "12a")
+                                                                    (remove-watch state ::pending)
+                                                                    (let [this? (and @deferred? (= "12a" (.-value input)))]
+                                                                      (when this? (reset! hit budget))
                                   ;; the acknowledgement: a read queued behind the flush
-                                  (v2/value-async (:root @state)
-                                                  (fn [_ _]
-                                                    (when this?
-                                                      (is (= 2 (render/revision state)) "the flush commits")
-                                                      (is (= "12a" (.-value input)) "but does not restore"))
-                                                    ((:unmount! ctl))
-                                                    (later 0 (fn []
-                                                               (v2/release-world! w)
-                                                               (try-budget (inc budget))))))))))))))]
+                                                                      (v2/value-async (:root @state)
+                                                                                      (fn [_ _]
+                                                                                        (when this?
+                                                                                          (is (= 2 (render/revision state)) "the flush commits")
+                                                                                          (is (= "12a" (.-value input)) "but does not restore"))
+                                                                                        ((:unmount! ctl))
+                                                                                        (later 0 (fn []
+                                                                                                   (v2/release-world! w)
+                                                                                                   (try-budget (inc budget))))))))))))))]
            (try-budget 3))))
 
 (deftest cb5i-liveness

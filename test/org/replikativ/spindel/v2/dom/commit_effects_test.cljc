@@ -448,68 +448,68 @@
     [c state @ctl]))
 
 (deftest ce16-the-deferred-flush-epilogue-takes-the-request
-     (fx/each-world
-      (fn [env]
-        (testing "(a) the last deferred setup stops the mount"
-          (let [[c state ctl] (deferred-requests env {:P [:stop!]})]
-            (is (= :stopped (render/phase state)))
-            (is (nil? (:request @state)) "the slot is empty")
-            (fx/unmount! env ctl)
-            (is (balanced? c))))
-        (testing "(b) a stop, then a later unmount: the unmount wins"
-          (let [[c state] (deferred-requests env {:A [:stop!] :B [:unmount!]})]
-            (is (= :unmounted (render/phase state)))
-            (is (not-any? #(= [:def :P :setup] %) @(:log c)))
-            (is (balanced? c))))
-        (testing "(c) an unmount, then a stop: unmounted"
-          (let [[c state] (deferred-requests env {:A [:unmount! :stop!]})]
-            (is (= :unmounted (render/phase state)))
-            (is (balanced? c))))
-        (testing "(d) a flush whose queue was emptied by a removal"
-          (let [show (v2/signal true)
-                [c state ctl] (mount env {:sb (v2/signal 0) :show show})
-                d0 (render/deferred-revision state)]
-            (fx/write! env show false)
-            (fx/run-deferred! env)
-            (is (= (inc d0) (render/deferred-revision state)) "the flush ran and ended")
-            (is (= :mounted (render/phase state)) "the phase is unchanged")
-            (is (nil? (:request @state)))
-            (fx/unmount! env ctl)
-            (is (balanced? c)))))))
+  (fx/each-world
+   (fn [env]
+     (testing "(a) the last deferred setup stops the mount"
+       (let [[c state ctl] (deferred-requests env {:P [:stop!]})]
+         (is (= :stopped (render/phase state)))
+         (is (nil? (:request @state)) "the slot is empty")
+         (fx/unmount! env ctl)
+         (is (balanced? c))))
+     (testing "(b) a stop, then a later unmount: the unmount wins"
+       (let [[c state] (deferred-requests env {:A [:stop!] :B [:unmount!]})]
+         (is (= :unmounted (render/phase state)))
+         (is (not-any? #(= [:def :P :setup] %) @(:log c)))
+         (is (balanced? c))))
+     (testing "(c) an unmount, then a stop: unmounted"
+       (let [[c state] (deferred-requests env {:A [:unmount! :stop!]})]
+         (is (= :unmounted (render/phase state)))
+         (is (balanced? c))))
+     (testing "(d) a flush whose queue was emptied by a removal"
+       (let [show (v2/signal true)
+             [c state ctl] (mount env {:sb (v2/signal 0) :show show})
+             d0 (render/deferred-revision state)]
+         (fx/write! env show false)
+         (fx/run-deferred! env)
+         (is (= (inc d0) (render/deferred-revision state)) "the flush ran and ended")
+         (is (= :mounted (render/phase state)) "the phase is unchanged")
+         (is (nil? (:request @state)))
+         (fx/unmount! env ctl)
+         (is (balanced? c)))))))
 
 (deftest ce17-requests-from-cleanups-and-throwing-setups
-     (fx/each-world
-      (fn [env]
-        (testing "a removal cleanup asks for an unmount: the commit finishes, then the teardown"
-          (let [ctl (volatile! nil)
-                show (v2/signal true)
-                [c state] (mount env {:sb (v2/signal 0) :show show :gate (v2/deferred) :ctl ctl
-                                      :extra {:A {[:on-commit :cleanup] #((:unmount! @ctl))}}})]
-            (fx/write! env show false)
-            (is (= :unmounted (render/phase state)))
-            (is (= 2 (render/revision state)) "the commit finished")
-            (is (balanced? c))
-            (is (empty? (fx/leftovers env state)))))
-        (testing "a teardown cleanup asks for an unmount: nothing to do"
-          (let [ctl (volatile! nil)
-                [c state] (mount env {:sb (v2/signal 0) :gate (v2/deferred) :ctl ctl
-                                      :extra {:A {[:ref :cleanup] #((:unmount! @ctl))}}})]
-            (fx/unmount! env @ctl)
-            (is (= :unmounted (render/phase state)))
-            (is (balanced? c))))
-        (doseq [[req ph] [[:unmount! :unmounted] [:stop! :stopped]]]
-          (testing (str "the last deferred setup asks for " req " and throws")
-            (let [ctl (volatile! nil)
-                  [c state] (mount env {:sb (v2/signal 0) :gate (v2/deferred) :ctl ctl
-                                        :extra {:P {:on-commit-deferred (fn [_] ((get @ctl req))
-                                                                          (throw (ex-info "after the request" {})))}}})]
-              (fx/run-deferred! env)
-              (is (= ph (render/phase state)))
-              (is (nil? (:request @state)) "the slot is empty")
-              (is (nil? (get-in (render/ledger state) [(:addr (first (:children (render/committed state)))) :on-commit-deferred])))
-              (when (= ph :stopped) (fx/unmount! env @ctl))
-              (is (balanced? c #{[:def :P]}) "no claim for the throwing setup")
-              (fx/violations)))))))
+  (fx/each-world
+   (fn [env]
+     (testing "a removal cleanup asks for an unmount: the commit finishes, then the teardown"
+       (let [ctl (volatile! nil)
+             show (v2/signal true)
+             [c state] (mount env {:sb (v2/signal 0) :show show :gate (v2/deferred) :ctl ctl
+                                   :extra {:A {[:on-commit :cleanup] #((:unmount! @ctl))}}})]
+         (fx/write! env show false)
+         (is (= :unmounted (render/phase state)))
+         (is (= 2 (render/revision state)) "the commit finished")
+         (is (balanced? c))
+         (is (empty? (fx/leftovers env state)))))
+     (testing "a teardown cleanup asks for an unmount: nothing to do"
+       (let [ctl (volatile! nil)
+             [c state] (mount env {:sb (v2/signal 0) :gate (v2/deferred) :ctl ctl
+                                   :extra {:A {[:ref :cleanup] #((:unmount! @ctl))}}})]
+         (fx/unmount! env @ctl)
+         (is (= :unmounted (render/phase state)))
+         (is (balanced? c))))
+     (doseq [[req ph] [[:unmount! :unmounted] [:stop! :stopped]]]
+       (testing (str "the last deferred setup asks for " req " and throws")
+         (let [ctl (volatile! nil)
+               [c state] (mount env {:sb (v2/signal 0) :gate (v2/deferred) :ctl ctl
+                                     :extra {:P {:on-commit-deferred (fn [_] ((get @ctl req))
+                                                                       (throw (ex-info "after the request" {})))}}})]
+           (fx/run-deferred! env)
+           (is (= ph (render/phase state)))
+           (is (nil? (:request @state)) "the slot is empty")
+           (is (nil? (get-in (render/ledger state) [(:addr (first (:children (render/committed state)))) :on-commit-deferred])))
+           (when (= ph :stopped) (fx/unmount! env @ctl))
+           (is (balanced? c #{[:def :P]}) "no claim for the throwing setup")
+           (fx/violations)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; CE18-CE21b: identity
