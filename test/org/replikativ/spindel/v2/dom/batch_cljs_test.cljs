@@ -10,7 +10,8 @@
             [org.replikativ.spindel.incremental.interval :as iv]
             [org.replikativ.spindel.v2.dom.elements :as el]
             [org.replikativ.spindel.v2.dom.render :as render :refer [batch]]
-            [org.replikativ.spindel.v2.dom.mock :as mock]))
+            [org.replikativ.spindel.v2.dom.mock :as mock]
+            [org.replikativ.spindel.v2.dom.render-fixture :as fx]))
 
 (defn- read-later
   "Calls `(k v)` with the value of `s` after the world has drained."
@@ -18,8 +19,9 @@
   (js/setTimeout #(v2/value-async s (fn [v _] (k v))) 20))
 
 (deftest cb2-swap-on-a-non-inline-world
-  (async done
-         (let [w (v2/world {:inline? false})
+  (async done*
+         (let [done (fx/guard-done done*)
+               w (v2/world {:inline? false})
                s (v2/signal w 0)
                thrown (try (swap! s inc) nil (catch :default e (ex-message e)))]
            (is (re-find #"synchronously" (str thrown)) "a bare swap! throws after enqueueing")
@@ -34,8 +36,9 @@
                                              (done)))))))))
 
 (deftest cb10-a-write-then-a-throw
-  (async done
-         (let [w (v2/world {:slice-ms nil})
+  (async done*
+         (let [done (fx/guard-done done*)
+               w (v2/world {:slice-ms nil})
                m (mock/make-mock)]
            (binding [v2/*world* w]
              (let [a (v2/signal 0)

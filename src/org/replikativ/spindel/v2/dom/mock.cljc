@@ -115,12 +115,14 @@
 
 (defn run-deferred!
   "Runs the deferred work queued so far, oldest first (work it queues runs
-   too). Returns how many ran."
+   too). Returns how many ran; throws after 100000 (work that never ends)."
   [d]
   (loop [n 0]
     (let [[old _] (swap-vals! (:deferred d) (fn [q] (if (seq q) (subvec q 1) q)))]
       (if-let [f (first old)]
-        (do (f) (recur (inc n)))
+        (if (< n 100000)
+          (do (f) (recur (inc n)))
+          (throw (ex-info "run-deferred!: deferred work does not end" {:runs n})))
         n))))
 
 (defn deferred-count [d] (count @(:deferred d)))

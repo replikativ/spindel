@@ -26,13 +26,25 @@
      (let [q (LinkedBlockingQueue.)]
        [(reify Executor (execute [_ r] (.add q r))) q])))
 
+(def max-steps
+  "A deadline on every loop of the fixture: a run that does not settle in
+   this many steps fails instead of hanging."
+  100000)
+
+(def wait-ms
+  "A deadline on every wait of the fixture, in milliseconds."
+  10000)
+
 #?(:clj
    (defn pump!
-     "Runs the queued runnables until none is left. Returns how many ran."
+     "Runs the queued runnables until none is left. Returns how many ran.
+      Throws after `max-steps` runnables (work that never settles)."
      [^LinkedBlockingQueue q]
      (loop [n 0]
        (if-let [r (.poll q)]
-         (do (.run ^Runnable r) (recur (inc n)))
+         (if (< n max-steps)
+           (do (.run ^Runnable r) (recur (inc n)))
+           (throw (ex-info "pump!: the world did not settle" {:steps n})))
          n))))
 
 (def configs
@@ -71,6 +83,22 @@
          (binding [v2/*world* w] (f env))
          (finally (v2/release-world! w))))))
 
+#?(:cljs
+   (defn guard-done
+     "`done` of an async test with a deadline: if it is not called within
+      `wait-ms`, the test fails and ends instead of hanging. Idempotent."
+     [done]
+     (let [fin (atom false)
+           t (js/setTimeout (fn []
+                              (when (compare-and-set! fin false true)
+                                (is false (str "the test did not finish within " wait-ms " ms"))
+                                (done)))
+                            wait-ms)]
+       (fn []
+         (when (compare-and-set! fin false true)
+           (js/clearTimeout t)
+           (done))))))
+
 (defn each-world
   "Calls `(f env)` once per configuration, each in its own `testing`."
   [f]
@@ -87,12 +115,15 @@
    `env`'s executor, for host operations that wait for their item, which a
    non-inline world processes only when the test pumps."
   [env f]
-  #?(:clj (let [fut (future (f))]
+  #?(:clj (let [fut (future (f))
+                deadline (+ (System/currentTimeMillis) wait-ms)]
             (loop []
               (settle! env)
-              (if (realized? fut)
-                (do (settle! env) @fut)
-                (do (Thread/sleep 1) (recur)))))
+              (cond (realized? fut) (do (settle! env) @fut)
+                    (> (System/currentTimeMillis) deadline)
+                    (do (future-cancel fut)
+                        (throw (ex-info "call!: no answer before the deadline" {:ms wait-ms})))
+                    :else (do (Thread/sleep 1) (recur)))))
      :cljs (f)))
 
 (defn read!

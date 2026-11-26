@@ -192,7 +192,7 @@
             release (promise)
             root (spin (let [x (iv/get-new (track s))]
                          (el/div (if (= x 2)
-                                   (el/span {:ref (fn [el] (when el (deliver in-commit true) @release nil))} "slow")
+                                   (el/span {:ref (fn [el] (when el (deliver in-commit true) (deref release 5000 nil) nil))} "slow")
                                    (el/i "fast")))))
             {:keys [state] :as ctl} (fx/render! env root)
             writer (future (v2/write! s 2))]

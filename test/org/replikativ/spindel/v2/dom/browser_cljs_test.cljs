@@ -11,6 +11,7 @@
             [org.replikativ.spindel.v2.dom.elements :as el]
             [org.replikativ.spindel.v2.dom.render :as render :refer [batch]]
             [org.replikativ.spindel.v2.dom.browser :as browser]
+            [org.replikativ.spindel.v2.dom.render-fixture :as fx]
             ["jsdom" :refer [JSDOM]]))
 
 (defn- page []
@@ -34,8 +35,9 @@
    slice unless given: a turn ends only at its budget) and a fresh page; the
    test ends at `(done)`."
   [opts f]
-  (async done
-         (let [w (v2/world (merge {:slice-ms nil} opts))
+  (async done*
+         (let [done (fx/guard-done done*)
+               w (v2/world (merge {:slice-ms nil} opts))
                p (page)]
            (binding [v2/*world* w]
              (f w p (fn [] (v2/release-world! w) (js/setTimeout done 0)))))))
@@ -218,8 +220,9 @@
                                                        (done))))))))))))
 
 (deftest cb5h-the-callback-defers-to-a-flush-that-spills
-  (async done
-         (let [hit (atom nil)
+  (async done*
+         (let [done (fx/guard-done done*)
+               hit (atom nil)
                try-budget
                (fn try-budget [budget]
                  (if (or @hit (> budget 12))

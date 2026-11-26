@@ -11,7 +11,8 @@
             [org.replikativ.spindel.incremental.interval :as iv]
             [org.replikativ.spindel.v2.dom.elements :as el]
             [org.replikativ.spindel.v2.dom.render :as render]
-            [org.replikativ.spindel.v2.dom.mock :as mock]))
+            [org.replikativ.spindel.v2.dom.mock :as mock]
+            [org.replikativ.spindel.v2.dom.render-fixture :as fx]))
 
 (defn- later
   "Runs `f` after `ms` milliseconds: a JVM future, a JS timer."
@@ -28,8 +29,9 @@
             (try (binding [v2/*world* w] (f w #(deliver p true)))
                  (is (true? (deref p 5000 false)) "the test completes")
                  (finally (v2/release-world! w))))
-     :cljs (async done
-                  (let [w (v2/world opts)]
+     :cljs (async done*
+                  (let [w (v2/world opts)
+                        done (fx/guard-done done*)]
                     (binding [v2/*world* w]
                       (f w (fn [] (v2/release-world! w) (js/setTimeout done 0))))))))
 
