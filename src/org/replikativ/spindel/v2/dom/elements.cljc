@@ -353,9 +353,10 @@
            `(let [~@(mapcat (fn [t a] (when t [t (treat env loc a)])) ts args)]
               ~(finish-as env' loc call shape)))))
 
-     (defn- treat
+     (defn treat
        "A form in a position whose value or effects the DOM context must
-        reach (§2.5), in `env` where the reserved locals are bound."
+        reach (§2.5), in `env` where the reserved locals are bound. Macro
+        time; used by the DOM macros of other namespaces (`ifor-each`)."
        [env loc form]
        (cond
          (ms/body-of env form)
@@ -391,17 +392,18 @@
                  (finish env loc form)
                  :else (hoist env loc form)))))))
 
-     (defn- context-bindings
-       "Bindings of `p` and `s` to the current DOM context in `env`."
+     (defn context-bindings
+       "Bindings of `p` and `s` to the current DOM context in `env`. Macro
+        time."
        [env loc p s]
        (if (addr/lexical-context? env)
          [p '__dom-parent s '__dom-slot]
          (let [c (gensym "context")]
            [c `(addr/current '~loc) p `(nth ~c 0) s `(nth ~c 1)])))
 
-     (defn- source-loc
+     (defn source-loc
        "The location of `form`: its canonical source path (the same on every
-        platform and compiler, D2), line and column."
+        platform and compiler, D2), line and column. Macro time."
        [env form]
        {:file (addr/source-file env)
         :line (:line (meta form))
