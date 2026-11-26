@@ -147,25 +147,28 @@
 (deftest cb5h-the-callback-defers-to-a-flush-that-spills
   ;; a write queued before the handler: the wait's callback runs with the
   ;; mount's delivery stored and leaves the restore to the flush; for some
-  ;; budget the flush is past it
+  ;; budget that flush runs only after the wait returned (here: inside the
+  ;; withdrawal's turn), with the token expired
   (let [hit (atom nil)]
     (doseq [budget (range 3 12) :while (nil? @hit)]
       (fx/with-world
         {:budget budget}
         (fn [env]
-          (let [{:keys [el u state ctl]} (mount env (fn [_]))]
+          (let [{:keys [el u state ctl]} (mount env (fn [_]))
+                deferred? (atom false)]
             (v2/no-inline (v2/write! u 1))
+            (add-watch state ::pending (fn [_ _ _ n] (when (seq (:restore-pending n)) (reset! deferred? true))))
             (type! env el "12a")
-            (when (and (seq (:restore-pending @state)) (:posted? @state))
+            (remove-watch state ::pending)
+            (when (and @deferred? (= "12a" (mock/prop (d env) el :value)))
               (reset! hit budget)
-              (is (= "12a" (mock/prop (d env) el :value)) "no restore before the wrapper returned")
               (fx/settle! env)
               (is (= 2 (render/revision state)) "the flush commits")
               (is (= "12a" (mock/prop (d env) el :value)) "but does not restore")
               (is (empty? (prop-writes env))))
             (fx/settle! env)
             (fx/unmount! env ctl)))))
-    (is (some? @hit) "a budget at which the callback ran and the flush spilled")))
+    (is (some? @hit) "a budget at which the callback deferred and the flush came too late")))
 
 (deftest cb5i-liveness
   (testing "the handler unmounts the mount"

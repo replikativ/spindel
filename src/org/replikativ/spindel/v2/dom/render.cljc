@@ -50,6 +50,16 @@
   for a new fn. Effects run with v2/*world* bound to the mount's world and
   may write its sources; the writes propagate after the item.
 
+  Event handlers (addendum §3.8.9-§3.8.10): the mount registers every
+  :on-* handler wrapped so that it runs with v2/*world* bound to the
+  mount's world (what `batch` captures); the attr cache keeps the raw fn
+  for diffing. After a handler on a controlled element (committed :value or
+  :checked) returns, the wrapper restores the element's DOM property to the
+  committed attr, but only when the root has settled and the mount has
+  committed its newest delivery before the wrapper returns (an inline world
+  within the budget); otherwise an expiry token makes the late paths do
+  nothing.
+
   A commit that fails in the walk (a DOM or cache failure) runs no new
   setup, claims the ledger, clears the container and leaves the mount
   :failed; the next delivery mounts from scratch."
@@ -59,7 +69,9 @@
             [org.replikativ.spindel.dom.discharge :as disch]
             [org.replikativ.spindel.v2.dom.cache :as cache]
             [org.replikativ.spindel.v2.dom.commit :as commit]
-            [replikativ.logging :as log]))
+            [clojure.string :as str]
+            [replikativ.logging :as log])
+  #?(:cljs (:require-macros [org.replikativ.spindel.v2.dom.render])))
 
 ;; ---------------------------------------------------------------------------
 ;; What a mount needs of its discharge besides PDischarge
@@ -294,7 +306,7 @@
    so a cleanup that asks for a stop or unmount finds nothing to do."
   [m]
   (when-not (#{:tearing-down :unmounted} (:phase @m))
-    (swap! m assoc :phase :tearing-down :next nil :request nil :deferred [])
+    (swap! m assoc :phase :tearing-down :next nil :request nil :deferred [] :restore-pending [])
     (try
       (unobserve! m)
       (let [addrs (keys (:ledger @m))]
@@ -480,6 +492,118 @@
           (finish! m false)))))
 
 ;; ---------------------------------------------------------------------------
+;; Controlled-input restore, the synchronous subset (addendum §3.8.10)
+
+(defn- calling-thread [] #?(:clj (Thread/currentThread) :cljs true))
+(defn- on-thread? [t] #?(:clj (identical? t (Thread/currentThread)) :cljs true))
+
+(defn- live? [[_ _ _ token owner]]
+  (and (= :live @token) (on-thread? owner)))
+
+(defn- restore!
+  "Restores the DOM property of entry [a el k token owner] to the committed
+   attr, when the token is live (its wrapper has not returned), the mount is
+   :mounted and the registry still maps `a` to `el`."
+  [m [a el k token :as entry]]
+  (let [{:keys [phase discharge store]} @m]
+    (when (and (live? entry) (= :mounted phase) (identical? el (disch/get-element discharge a)))
+      (let [v (get (cache/get-attr-cache store a) k)
+            want (if (= k :value) (str (if (nil? v) "" v)) (boolean v))]
+        (when (not= want (dom-prop discharge el k))
+          (set-dom-prop! discharge el k want))
+        (reset! token :done)))))
+
+(defn- restore-pending!
+  "After a flush: the restores the wait's callback left for it."
+  [m]
+  (let [[old _] (swap-vals! m assoc :restore-pending [])]
+    (doseq [entry (:restore-pending old)] (restore! m entry))))
+
+(defn- settled-cb
+  "The wait's callback, under the gate: restores at once, or after the
+   flush of the delivery the mount still holds."
+  [m entry]
+  (fn [_ _]
+    (when (live? entry)
+      (if (some? (:next @m))
+        (swap! m update :restore-pending conj entry)
+        (restore! m entry)))))
+
+(defn- event-target [e el]
+  #?(:clj (if (map? e) (get e :target el) el)
+     :cljs (or (some-> e .-target) el)))
+
+(defn- restore-controlled!
+  "After a handler returned: if its event targeted a controlled element of
+   the mount, waits for the root and restores the element, synchronously
+   only (token :live -> :done); a wait not done before this returns is
+   expired and withdrawn."
+  [m e el]
+  (let [{:keys [phase discharge store root]} @m
+        target (event-target e el)
+        a (some-> (:el->addr discharge) (hs/mget target))
+        attrs (when a (cache/get-attr-cache store a))
+        k (cond (contains? attrs :value) :value (contains? attrs :checked) :checked)]
+    (when (and k root (= :mounted phase))
+      (let [token (atom :live)
+            withdraw (v2/value-async root (settled-cb m [a target k token (calling-thread)]))]
+        (when (compare-and-set! token :live :expired)
+          (withdraw))))))
+
+(defn- handler? [k v]
+  (and (fn? v) (keyword? k) (str/starts-with? (name k) "on")))
+
+(defn- wrap-handler
+  "A handler as the mount registers it: run with the mount's world bound,
+   then the controlled-input restore."
+  [m el f]
+  (fn [e]
+    (let [r (binding [v2/*world* (:world @m)] (f e))]
+      (restore-controlled! m e el)
+      r)))
+
+(deftype MountDischarge [d m el->addr]
+  disch/PDischarge
+  (create-element! [_ vnode] (disch/create-element! d vnode))
+  (create-text! [_ text] (disch/create-text! d text))
+  (set-attribute! [_ el k v] (disch/set-attribute! d el k (if (handler? k v) (wrap-handler m el v) v)))
+  (remove-attribute! [_ el k] (disch/remove-attribute! d el k))
+  (append-child! [_ p c] (disch/append-child! d p c))
+  (insert-child! [_ p c i] (disch/insert-child! d p c i))
+  (remove-child! [_ p i] (disch/remove-child! d p i))
+  (replace-child! [_ p c i] (disch/replace-child! d p c i))
+  (move-child! [_ p from to] (disch/move-child! d p from to))
+  (child-index-of [_ p c] (disch/child-index-of d p c))
+  (set-text-content! [_ el text] (disch/set-text-content! d el text))
+  (get-element [_ addr] (disch/get-element d addr))
+  (set-element! [_ addr el]
+    (when-let [old (disch/get-element d addr)] (hs/mdel! el->addr old))
+    (hs/mput! el->addr el addr)
+    (disch/set-element! d addr el))
+  (remove-element! [_ addr]
+    (when-let [old (disch/get-element d addr)] (hs/mdel! el->addr old))
+    (disch/remove-element! d addr))
+  (remove-children-range! [_ p start n] (disch/remove-children-range! d p start n))
+  (insert-children! [_ p cs start] (disch/insert-children! d p cs start))
+
+  PMountHost
+  (defer! [_ f] (defer! d f))
+  (clear-container! [_ container] (clear-container! d container))
+  (dom-prop [_ el k] (dom-prop d el k))
+  (set-dom-prop! [_ el k v] (set-dom-prop! d el k v))
+
+  #?(:clj clojure.lang.ILookup :cljs ILookup)
+  (#?(:clj valAt :cljs -lookup) [_ k] (when (= k :el->addr) el->addr))
+  (#?(:clj valAt :cljs -lookup) [_ k nf] (if (= k :el->addr) el->addr nf)))
+
+(defn- mount-discharge
+  "The mount's view of `d`: handlers wrapped, and an element -> address
+   index next to the registry."
+  [d m]
+  (->MountDischarge d m #?(:clj (java.util.Collections/synchronizedMap (java.util.IdentityHashMap.))
+                           :cljs (js/Map.))))
+
+;; ---------------------------------------------------------------------------
 ;; The deferred flush (addendum §3.8.2-§3.8.4)
 
 (defn- finish-deferred!
@@ -529,7 +653,8 @@
       (when-not (ignores? (:phase old))
         (binding [v2/*world* (:world old)]
           (cond err? (show-error! m v)
-                (some? v) (commit! m v)))))))
+                (some? v) (commit! m v)))))
+    (restore-pending! m)))
 
 (defn- deliver!
   "The observe callback, under the gate: stores the delivery and posts one
@@ -571,12 +696,13 @@
   ([container h discharge {:keys [world]}]
    (let [w (or world (v2/current-world)
                (throw (ex-info "render!: no world (bind v2/*world* or pass :world)" {})))
-         m (atom {:world w :root h :container container :discharge discharge
+         m (atom {:world w :root h :container container
                   :phase :pending :request nil :busy false
                   :current-vdom nil :store (cache/new-store)
                   :ledger {} :current {} :deferred [] :seq 0
-                  :next nil :posted? false
+                  :next nil :posted? false :restore-pending []
                   :rev (new-rev)})
+         _ (swap! m assoc :discharge (mount-discharge discharge m))
          u (binding [v2/*world* w] (v2/observe! h (fn [v err?] (deliver! m v err?))))
          ;; the fn holds the root's row (through its edge): dropped once used
          [old _] (swap-vals! m #(if (:unobserved? %) % (assoc % :unobserve u)))]
@@ -584,3 +710,18 @@
      {:state m
       :stop! (fn [] (in-world! m #(request! m :stop)))
       :unmount! (fn [] (in-world! m #(request! m :unmount)))})))
+
+#?(:clj
+   (defmacro batch
+     "Runs `body` as one host item of the world current at the call, with
+      that world bound inside: its writes nest, so nothing propagates between
+      them; observation and rendering follow through normal processing. Not
+      one turn or one commit: on an inline world within the budget, with no
+      asynchronous dependency, two writes give one commit before `batch`
+      returns. Inside a world's item (an effect, another batch) it runs at
+      once. On a world that is not inline it returns nil at once and the body
+      runs later: do event-object work (preventDefault, reading .-value)
+      before it. If the body throws, its earlier writes stay."
+     [& body]
+     `(let [w# (v2/current-world)]
+        (v2/host! w# (fn [] (binding [v2/*world* w#] ~@body))))))
