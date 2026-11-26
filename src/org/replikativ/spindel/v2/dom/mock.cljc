@@ -61,10 +61,10 @@
       :checked (swap! props assoc-in [el :checked] false)
       nil))
   (append-child! [this p c]
-    (op! this {:op :append-child :parent p :child c :child-addr (:addr (get @nodes c))})
+    (op! this {:op :append-child :parent p :child c :child-addr (:addr (get @nodes c)) :child-tag (:tag (get @nodes c))})
     (set-kids! this p (conj (get @kids p []) c)))
   (insert-child! [this p c i]
-    (op! this {:op :insert-child :parent p :child c :index i :child-addr (:addr (get @nodes c))})
+    (op! this {:op :insert-child :parent p :child c :index i :child-addr (:addr (get @nodes c)) :child-tag (:tag (get @nodes c))})
     (set-kids! this p (insert-at (get @kids p []) i c)))
   (remove-child! [this p i]
     (op! this {:op :remove-child :parent p :index i})
@@ -72,7 +72,7 @@
       (when-let [c (get v i)] (detach! this c))
       (set-kids! this p (remove-at v i))))
   (replace-child! [this p c i]
-    (op! this {:op :replace-child :parent p :child c :index i :child-addr (:addr (get @nodes c))})
+    (op! this {:op :replace-child :parent p :child c :index i :child-addr (:addr (get @nodes c)) :child-tag (:tag (get @nodes c))})
     (let [v (get @kids p [])]
       (if (< -1 i (count v))
         (do (detach! this (get v i)) (set-kids! this p (assoc v i c)))

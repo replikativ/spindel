@@ -22,15 +22,33 @@
               entry, then calls the cleanup, so none runs twice
   - :store    the commit caches (v2.dom.cache), and the discharge with its
               element registry
+  - :current  addr -> {kind f}: the :on-commit and :on-commit-deferred
+              fns of the committed tree, whether their setup ran, threw or
+              is still queued
+  - :deferred the queued deferred setups [{:addr :f :el}], in enqueue order
   - :next :posted?  the stored delivery and whether a flush is posted
-  - :rev      an atom {:revision n :waiters [...]}: the committed render
-              revision, bumped once per commit, and its waiters
+  - :rev      an atom {:revision n :deferred n :waiters [...]}: the
+              committed render revision, bumped once per commit, the count
+              of deferred flushes, and their waiters
 
-  A `:ref` (fn [el]) runs once its element is created and the commit's DOM
-  writes have landed, post-order. It may return a cleanup; if it returns
-  none, its cleanup is `(f nil)` with the `f` that ran. A setup or cleanup
-  that throws is reported (:dom/effect-error) and the commit goes on; a
-  throwing setup registers no cleanup.
+  Commit effects (addendum §3.8.2-§3.8.6), each (fn [el]) that may return
+  a cleanup:
+  - `:ref` is the lifetime hook: it runs when its element is created, once
+    the commit's DOM writes have landed, post-order; it is read only then.
+    If it returns no cleanup, its cleanup is `(f nil)` with the `f` that ran.
+  - `:on-commit` runs after the commit's refs, in the walk's post-order. It
+    re-runs when the fn committed at its address is not identical to the
+    last one: identity, not deps.
+  - `:on-commit-deferred` is the same in a later macrotask (the
+    discharge's `defer!`), in enqueue order; a replaced entry moves to the
+    end. It yields the task first; it promises no paint.
+  Cleanups run in passes, each newest first by setup history: one pass per
+  removed subtree, in walk order, while it is still attached; then one for
+  the hooks that re-run. All cleanups of a commit run before any setup of
+  it. A setup or cleanup that throws is reported (:dom/effect-error) and the
+  commit goes on; a throwing setup registers no cleanup and is retried only
+  for a new fn. Effects run with v2/*world* bound to the mount's world and
+  may write its sources; the writes propagate after the item.
 
   A commit that fails in the walk (a DOM or cache failure) runs no new
   setup, claims the ledger, clears the container and leaves the mount
@@ -78,7 +96,7 @@
 ;; The render revision (§5.3): register-or-return and bump-and-take are
 ;; each one swap on one atom, so no wakeup is lost
 
-(defn- new-rev [] (atom {:revision 0 :waiters []}))
+(defn- new-rev [] (atom {:revision 0 :deferred 0 :waiters []}))
 
 (defn- on-rev!
   "Calls `(f :ok)` once `(kind @rev)` reaches `n`, at once when it has;
@@ -113,6 +131,7 @@
 (defn error "The last error delivery shown, nil after a successful commit." [state] (:error @state))
 (defn store "The mount's commit store." [state] (:store @state))
 (defn revision "The committed render revision." [state] (:revision @(:rev @state)))
+(defn deferred-revision "How many deferred-effect flushes have ended." [state] (:deferred @(:rev @state)))
 
 (defn clean?
   "Whether the mount holds no committed tree, caches or effects."
@@ -120,6 +139,8 @@
   (let [s @state]
     (and (nil? (:current-vdom s))
          (empty? (:ledger s))
+         (empty? (:current s))
+         (empty? (:deferred s))
          (cache/store-empty? (:store s)))))
 
 (defn on-revision
@@ -129,6 +150,12 @@
   [state n cb]
   (on-rev! (:rev @state) :revision n cb))
 
+(defn on-deferred
+  "As `on-revision`, for the count of ended deferred-effect flushes (the
+   completion barrier of `:on-commit-deferred`)."
+  [state n cb]
+  (on-rev! (:rev @state) :deferred n cb))
+
 #?(:clj
    (defn await-revision
      "Blocks until the render revision is at least `n`: :ok, ::unmounted, or
@@ -136,6 +163,15 @@
      [state n timeout-ms]
      (let [p (promise)]
        (on-revision state n #(deliver p %))
+       (deref p timeout-ms ::timeout))))
+
+#?(:clj
+   (defn await-deferred
+     "Blocks until `n` deferred-effect flushes have ended: :ok, ::unmounted,
+      or ::timeout after `timeout-ms`."
+     [state n timeout-ms]
+     (let [p (promise)]
+       (on-deferred state n #(deliver p %))
        (deref p timeout-ms ::timeout))))
 
 ;; ---------------------------------------------------------------------------
@@ -196,6 +232,17 @@
 
 (defn- unmount-requested? [m] (= :unmount (:request @m)))
 
+(defn- removal-pass!
+  "The cleanup pass of a removed subtree with addresses `addrs`, run while
+   it is still attached: its queued deferred setups are dropped and its
+   committed hooks forgotten, then its entries are claimed newest first."
+  [m addrs]
+  (let [as (set addrs)]
+    (swap! m (fn [s] (-> s
+                         (update :deferred (fn [q] (filterv #(not (as (:addr %))) q)))
+                         (update :current #(apply dissoc % as)))))
+    (cleanup-pass! m as)))
+
 ;; ---------------------------------------------------------------------------
 ;; Mount, update, teardown
 
@@ -247,7 +294,7 @@
    so a cleanup that asks for a stop or unmount finds nothing to do."
   [m]
   (when-not (#{:tearing-down :unmounted} (:phase @m))
-    (swap! m assoc :phase :tearing-down :next nil :request nil)
+    (swap! m assoc :phase :tearing-down :next nil :request nil :deferred [])
     (try
       (unobserve! m)
       (let [addrs (keys (:ledger @m))]
@@ -257,7 +304,7 @@
             (disch/remove-element! discharge a))
           (clear-container! discharge container)
           (cache/reset-store! store)))
-      (swap! m assoc :ledger {} :current-vdom nil :root nil)
+      (swap! m assoc :ledger {} :current {} :current-vdom nil :root nil)
       (close-rev! (:rev @m))
       (finally (swap! m assoc :phase :unmounted)))))
 
@@ -326,46 +373,147 @@
         (disch/remove-element! discharge a))
       (clear-container! discharge container)
       (cache/reset-store! store)))
-  (swap! m assoc :ledger {} :current-vdom nil :error e))
+  (swap! m assoc :ledger {} :current {} :deferred [] :current-vdom nil :error e))
 
 (defn- walk-hooks
-  "The discharge hooks of one commit: created elements are collected for
-   their setups after the walk; a removed subtree gets its cleanup pass now,
+  "The discharge hooks of one commit: a created element is collected for
+   its setups after the walk; a removed subtree gets its cleanup pass now,
    while it is still attached."
   [m ctx]
-  {:created (fn [vnode el] (vswap! ctx update :created conj [vnode el]))
-   :removed (fn [vnode] (cleanup-pass! m (commit/tree-addrs vnode)))})
+  {:created (fn [vnode el] (vswap! ctx (fn [c] (-> c
+                                                    (update :created conj [vnode el])
+                                                    (update :visits conj [vnode el true])))))
+   :removed (fn [vnode] (removal-pass! m (commit/tree-addrs vnode)))})
 
-(defn- run-setups!
-  "The setups of a commit that succeeded, in order, until an unmount is
-   requested: the refs of the created elements."
-  [m {:keys [created]}]
-  (doseq [[vnode el] created
-          :let [f (:ref vnode)]
-          :when f
-          :while (not (unmount-requested? m))]
-    (setup! m (:addr vnode) :ref f el)))
+(defn- leave-hook
+  "commit/*leave* for one commit: an element reconciled in place is visited
+   when the walk leaves it."
+  [m ctx]
+  (fn [vnode]
+    (vswap! ctx update :visits conj
+            [vnode (disch/get-element (:discharge @m) (:addr vnode)) false])))
+
+(def ^:private commit-kinds [:on-commit :on-commit-deferred])
+
+(defn- hooks-of [vnode] (into {} (keep (fn [k] (when-let [f (get vnode k)] [k f]))) commit-kinds))
+
+(declare flush-deferred!)
+
+(defn- defer-flush!
+  "Schedules the mount's deferred flush, once while one is pending."
+  [m]
+  (let [[old _] (swap-vals! m assoc :defer-posted? true)]
+    (when-not (:defer-posted? old)
+      (let [{:keys [discharge world]} old]
+        (defer! discharge
+          (fn []
+            (try (v2/host! world #(flush-deferred! m))
+                 (catch #?(:clj Throwable :cljs :default) t
+                   (when-not (released? t) (log/error :render/deferred-refused {:error t}))))))))))
+
+(defn- run-effects!
+  "Steps 2-5 of a commit that succeeded (addendum §3.8.3): the re-run pass,
+   the refs of the created elements, the on-commit setups, and the deferred
+   queue. An unmount requested by a cleanup lets the pass finish and stops
+   every later setup."
+  [m {:keys [created visits]}]
+  (let [created-addrs (into #{} (keep (comp :addr first)) created)
+        visits (filterv (fn [[vn _ new?]] (and (:addr vn) (or new? (not (created-addrs (:addr vn)))))) visits)
+        cur (:current @m)
+        rerun (for [[vn _ new?] visits :when (not new?)
+                    k commit-kinds
+                    :when (not (identical? (get vn k) (get-in cur [(:addr vn) k])))]
+                [(:addr vn) k])
+        rerun-set (set rerun)
+        runs? (fn [[vn _ new?] k] (and (get vn k) (or new? (rerun-set [(:addr vn) k]))))]
+    ;; every committed hook is recorded, whether its setup runs, throws or waits
+    (swap! m update :current
+           (fn [c] (reduce (fn [c [vn]] (let [hs (hooks-of vn)]
+                                          (if (seq hs) (assoc c (:addr vn) hs) (dissoc c (:addr vn)))))
+                           c visits)))
+    ;; 2. the re-run pass: queued deferred setups that never ran are dropped
+    (swap! m update :deferred (fn [q] (filterv #(not (rerun-set [(:addr %) :on-commit-deferred])) q)))
+    (let [l (:ledger @m)]
+      (doseq [[a k] (sort-by #(get-in l (conj % :seq)) > (filter #(get-in l %) rerun))]
+        (claim! m a k)))
+    ;; 3. the refs of the created elements, in creation order
+    (doseq [[vnode el] created
+            :let [f (:ref vnode)]
+            :when f
+            :while (not (unmount-requested? m))]
+      (setup! m (:addr vnode) :ref f el))
+    ;; 4. on-commit, post-order of the walk
+    (doseq [[vn el :as v] visits
+            :when (runs? v :on-commit)
+            :while (not (unmount-requested? m))]
+      (setup! m (:addr vn) :on-commit (:on-commit vn) el))
+    ;; 5. on-commit-deferred: queued, a replaced entry at the end
+    (when-not (unmount-requested? m)
+      (let [es (for [[vn el :as v] visits :when (runs? v :on-commit-deferred)]
+                 {:addr (:addr vn) :f (:on-commit-deferred vn) :el el})]
+        (when (seq es)
+          (let [as (set (map :addr es))]
+            (swap! m update :deferred (fn [q] (into (filterv #(not (as (:addr %))) q) es))))
+          (defer-flush! m))))))
 
 (defn- commit! [m v]
   (let [initial? (contains? #{:pending :failed} (:phase @m))
         rendered (atom {})
-        ctx (volatile! {:created []})]
+        ctx (volatile! {:created [] :visits []})]
     (swap! m assoc :phase :committing :busy true)
     (if (try
           (binding [disch/*rendered-addrs* rendered
-                    disch/*mount-hooks* (walk-hooks m ctx)]
-            (if initial? (mount-initial! m v) (mount-update! m v)))
+                    disch/*mount-hooks* (walk-hooks m ctx)
+                    commit/*leave* (leave-hook m ctx)]
+            (when-let [dead (if initial? (mount-initial! m v) (mount-update! m v))]
+              (swap! m update :current #(apply dissoc % dead))))
           true
           (catch #?(:clj Throwable :cljs :default) e
             (fail! m e rendered)
             false))
       (do (swap! m assoc :current-vdom v :error nil)
           #?(:cljs (clear-overlay! (:container @m)))
-          (run-setups! m @ctx)
+          (run-effects! m @ctx)
           (bump-rev! (:rev @m) :revision)
           (finish! m true))
       (do #?(:cljs (show-overlay! (:container @m) (:error @m)))
           (finish! m false)))))
+
+;; ---------------------------------------------------------------------------
+;; The deferred flush (addendum §3.8.2-§3.8.4)
+
+(defn- finish-deferred!
+  "The deferred flush's epilogue, run unconditionally: takes the request
+   slot, so no request is left behind."
+  [m]
+  (let [[old _] (swap-vals! m assoc :busy false :request nil)]
+    (case (:request old)
+      :unmount (teardown! m)
+      :stop (when-not (= :stopped (:phase @m)) (stop-now! m))
+      nil)))
+
+(defn- flush-deferred!
+  "The mount's deferred flush, a host item of its world: runs the queued
+   deferred setups in enqueue order. After :stop! it still runs (its frame
+   is on screen); after a teardown the queue is empty. A request a setup
+   makes is held until that setup returns; an unmount stops the rest."
+  [m]
+  (swap! m assoc :defer-posted? false)
+  (let [{:keys [phase busy deferred]} @m]
+    (cond
+      ;; a commit's effect ran the deferred work synchronously: after it
+      busy (when (seq deferred) (defer-flush! m))
+      (contains? #{:mounted :stopped} phase)
+      (do (swap! m assoc :busy true)
+          (try
+            (loop []
+              (when-not (unmount-requested? m)
+                (let [[old _] (swap-vals! m update :deferred #(if (seq %) (subvec % 1) %))]
+                  (when-let [{:keys [addr f el]} (first (:deferred old))]
+                    (setup! m addr :on-commit-deferred f el)
+                    (recur)))))
+            (finally (finish-deferred! m))))))
+  (bump-rev! (:rev @m) :deferred))
 
 ;; ---------------------------------------------------------------------------
 ;; Deliveries and the flush (addendum §3.8.8)
@@ -426,7 +574,7 @@
          m (atom {:world w :root h :container container :discharge discharge
                   :phase :pending :request nil :busy false
                   :current-vdom nil :store (cache/new-store)
-                  :ledger {} :seq 0
+                  :ledger {} :current {} :deferred [] :seq 0
                   :next nil :posted? false
                   :rev (new-rev)})
          u (binding [v2/*world* w] (v2/observe! h (fn [v err?] (deliver! m v err?))))

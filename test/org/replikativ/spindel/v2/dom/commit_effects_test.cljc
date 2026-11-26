@@ -47,6 +47,10 @@
                        (swap! detached conj [(short-kind k) tag]))
                      (when-let [f (get extra [k :cleanup])] (f))))]))))
 
+;; Element macros take only a literal map as attrs, so the trees below write
+;; {:ref (:ref h) :on-commit (:on-commit h) :on-commit-deferred
+;; (:on-commit-deferred h)} for a hooks map `h`.
+
 (defn- tree
   "The fixture of §3.8.12: a section W (no hooks) holding, while `show` is
    true (always without it), P with children A and B. B is its own
@@ -58,10 +62,13 @@
   (spin (when gate (await gate))
         (el/section
          (when (if show (iv/get-new (track show)) true)
-           (el/div (hooks c :P (:P extra))
-                   (el/div (hooks c :A (:A extra)) "a")
-                   (await (spin (let [x (iv/get-new (track sb))]
-                                  (el/div (hooks c (keyword (str "B" x)) (:B extra)) (str x))))))))))
+           (let [hp (hooks c :P (:P extra))
+                 ha (hooks c :A (:A extra))]
+             (el/div {:ref (:ref hp) :on-commit (:on-commit hp) :on-commit-deferred (:on-commit-deferred hp)}
+                     (el/div {:ref (:ref ha) :on-commit (:on-commit ha) :on-commit-deferred (:on-commit-deferred ha)} "a")
+                     (await (spin (let [x (iv/get-new (track sb))
+                                        hb (hooks c (keyword (str "B" x)) (:B extra))]
+                                    (el/div {:ref (:ref hb) :on-commit (:on-commit hb) :on-commit-deferred (:on-commit-deferred hb)} (str x)))))))))))
 
 (defn- mark [c] (count @(:log c)))
 (defn- since [c n] (subvec @(:log c) n))
@@ -180,7 +187,8 @@
      (let [c (ctx env)
            tag (v2/signal :div)
            root (spin (let [t (iv/get-new (track tag))]
-                        (el/section (el/element t (hooks c t) "x"))))
+                        (let [h (hooks c t)]
+                          (el/section (el/element t {:ref (:ref h) :on-commit (:on-commit h) :on-commit-deferred (:on-commit-deferred h)} "x")))))
            {:keys [state] :as ctl} (fx/render! env root)
            _ (fx/run-deferred! env)
            addr (:addr (first (:children (render/committed state))))
@@ -261,9 +269,10 @@
      (let [c (ctx env)
            ph (v2/signal 1)
            root (spin (let [p (iv/get-new (track ph))]
-                        (el/section (when (= p 1) (el/div (hooks c :X) "x"))
-                                    (el/div (hooks c :Q) "q")
-                                    (when (= p 2) (el/article (hooks c :Y) "y")))))
+                        (let [hx (hooks c :X) hq (hooks c :Q) hy (hooks c :Y)]
+                          (el/section (when (= p 1) (el/div {:ref (:ref hx) :on-commit (:on-commit hx) :on-commit-deferred (:on-commit-deferred hx)} "x"))
+                                      (el/div {:ref (:ref hq) :on-commit (:on-commit hq) :on-commit-deferred (:on-commit-deferred hq)} "q")
+                                      (when (= p 2) (el/article {:ref (:ref hy) :on-commit (:on-commit hy) :on-commit-deferred (:on-commit-deferred hy)} "y"))))))
            {:keys [state] :as ctl} (fx/render! env root)
            _ (fx/run-deferred! env)
            n (mark c)]
@@ -515,10 +524,12 @@
            show (v2/signal true)
            root (spin (let [h (iv/get-new (track has))
                             r (iv/get-new (track refd))
-                            sh (iv/get-new (track show))]
+                            sh (iv/get-new (track show))
+                            hh (when h (hooks c :H))
+                            hr (when r (hooks c :R))]
                         (el/section
-                         (el/div (if h (select-keys (hooks c :H) [:on-commit :on-commit-deferred]) {}) "h")
-                         (when sh (el/div (if r (select-keys (hooks c :R) [:ref]) {}) "r")))))
+                         (el/div {:on-commit (:on-commit hh) :on-commit-deferred (:on-commit-deferred hh)} "h")
+                         (when sh (el/div {:ref (:ref hr)} "r")))))
            {:keys [state] :as ctl} (fx/render! env root)
            n (mark c)]
        (fx/write! env has true)
@@ -584,7 +595,7 @@
                             y (iv/get-new (track t))]
                         (el/div {:id (str y) :on-commit stable-hook}
                                 (str x)
-                                (await (spin (el/span (hooks c :K) "k"))))))
+                                (await (spin (let [h (hooks c :K)] (el/span {:ref (:ref h) :on-commit (:on-commit h) :on-commit-deferred (:on-commit-deferred h)} "k")))))))
            ctl (fx/render! env root)
            n (mark c)]
        (fx/run-deferred! env)
@@ -623,8 +634,9 @@
      (let [c (ctx env)
            show (v2/signal true)
            root (spin (let [sh (iv/get-new (track show))]
-                        (el/section (when sh (el/div (hooks c :A) "a"))
-                                    (when sh (el/div (hooks c :B) "b")))))
+                        (let [ha (hooks c :A) hb (hooks c :B)]
+                          (el/section (when sh (el/div {:ref (:ref ha) :on-commit (:on-commit ha) :on-commit-deferred (:on-commit-deferred ha)} "a"))
+                                      (when sh (el/div {:ref (:ref hb) :on-commit (:on-commit hb) :on-commit-deferred (:on-commit-deferred hb)} "b"))))))
            ctl (fx/render! env root)
            _ (fx/run-deferred! env)
            n (mark c)]
