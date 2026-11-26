@@ -101,3 +101,51 @@
        (is (empty? (fx/violations)) "no unbound address")
        (fx/unmount! env ctl)
        (is (empty? (fx/leftovers env state)))))))
+
+;; ---------------------------------------------------------------------------
+;; Whole fragments moving across slots (sol's confirmation pass, P1): a
+;; slot whose fragment is another one than the slot's previous fragment is
+;; replaced, so its items are recreated: cleaned up and set up once each
+
+(defn- fragments-root
+  "A div holding, slot by slot, the fragments named in `order` (a signal of
+   fragment names); fragment n holds one item keyed n, with a ref logging
+   [n attached?]."
+  [order log]
+  (spin (let [ns (iv/get-new (track order))]
+          (el/div (mapv (fn [n]
+                          (keyed (keyword (str "frag-" n)) [n]
+                                 [(el/li {:key n :ref (fn [el] (swap! log conj [n (some? el)]))} n)]))
+                        ns)))))
+
+(deftest fragments-swap-slots
+  (fx/each-world
+   (fn [env]
+     (let [order (v2/signal ["F" "G"])
+           log (atom [])
+           {:keys [state] :as ctl} (fx/render! env (fragments-root order log))]
+       (fx/write! env order ["G" "F"])
+       (is (= [[:div {} [:li {} "G"] [:li {} "F"]]] (dom env)) "the DOM follows the slots")
+       (is (= #{["F" true] ["G" true] ["F" false] ["G" false]} (set (take 4 @log))))
+       (is (= [["F" true] ["G" true]] (take 2 @log)))
+       (is (= 1 (count (filter #{["F" false]} @log))) "F's item is cleaned up once")
+       (is (= 2 (count (filter #{["F" true]} @log))) "and set up once more")
+       (is (= 2 (count (render/ledger state))) "one ledger entry per item")
+       (fx/unmount! env ctl)
+       (is (= (frequencies (map first @log)) {"F" 4 "G" 4}) "every setup claimed once")
+       (is (empty? (fx/leftovers env state)))))))
+
+(deftest three-fragments-rotate
+  (fx/each-world
+   (fn [env]
+     (let [order (v2/signal ["F" "G" "H"])
+           log (atom [])
+           {:keys [state] :as ctl} (fx/render! env (fragments-root order log))]
+       (fx/write! env order ["G" "H" "F"])
+       (is (= [[:div {} [:li {} "G"] [:li {} "H"] [:li {} "F"]]] (dom env)))
+       (fx/write! env order ["F" "G" "H"])
+       (is (= [[:div {} [:li {} "F"] [:li {} "G"] [:li {} "H"]]] (dom env)))
+       (is (= 3 (count (render/ledger state))))
+       (fx/unmount! env ctl)
+       (is (= (frequencies (map first @log)) {"F" 6 "G" 6 "H" 6}) "every setup claimed once")
+       (is (empty? (fx/leftovers env state)))))))

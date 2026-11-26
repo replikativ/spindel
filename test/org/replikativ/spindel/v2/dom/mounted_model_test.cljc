@@ -13,7 +13,10 @@
             [org.replikativ.spindel.v2.dom.commit :as commit]
             [org.replikativ.spindel.v2.dom.cache :as cache]
             [org.replikativ.spindel.dom.discharge :as disch]
-            [org.replikativ.spindel.dom.fragment :as frag]))
+            [org.replikativ.spindel.dom.fragment :as frag]
+            [org.replikativ.spindel.dom.core :as dom-core]))
+
+(defn- dom-text [s] (dom-core/make-text-vnode s))
 
 (defn- vn [tag addr & slot-values]
   (let [slots (mapv cache/make-slot slot-values)]
@@ -170,3 +173,17 @@
       (is (= disch/log-throttle-cap firsts))
       (is (not (disch/first-log? logged 0)) "an address is logged once")
       (is (= disch/log-throttle-cap (count @logged))))))
+
+#?(:clj
+   (deftest a-wide-element-commits-in-linear-steps
+     ;; sol's confirmation pass, P2: each slot's physical base is carried
+     ;; through the walk, not recomputed from every preceding slot. The steps
+     ;; are counted as slot flattenings, not timed.
+     (let [n 10000
+           tree (apply vn :div :el-wide (map #(dom-text (str %)) (range n)))
+           {:keys [discharge store]} (mount! tree)
+           steps (atom 0)
+           flatten-slot @#'cache/flatten-slot]
+       (with-redefs-fn {#'cache/flatten-slot (fn [slot] (swap! steps inc) (flatten-slot slot))}
+         #(commit/commit-update! discharge store tree tree))
+       (is (<= @steps (* 4 n)) (str @steps " slot flattenings for " n " slots")))))

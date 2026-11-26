@@ -336,3 +336,19 @@
         (is (= "b" (.-value select)) "the value is set after the option exists")
         ((:unmount! ctl))
         (done)))))
+
+(defn- fragments-root [order]
+  (spin (let [ns (iv/get-new (track order))]
+          (el/div (mapv (fn [n] (keyed (keyword (str "frag-" n)) [n] [(el/li {:key n} n)])) ns)))))
+
+(deftest fragments-swap-and-rotate-across-slots
+  (with-world {}
+    (fn [_ p done]
+      (let [order (v2/signal ["F" "G" "H"])
+            ctl (render/render! (:container p) (fragments-root order) (:d p))]
+        (reset! order ["G" "F" "H"])
+        (is (= "<div><li>G</li><li>F</li><li>H</li></div>" (html p)) "a swap")
+        (reset! order ["F" "H" "G"])
+        (is (= "<div><li>F</li><li>H</li><li>G</li></div>" (html p)) "a rotation")
+        ((:unmount! ctl))
+        (done)))))
