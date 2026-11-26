@@ -136,7 +136,7 @@
 
     :else (= prev new)))
 
-(defn reconcile-slot
+(defn- reconcile-slot
   "{:slot new-slot :delta delta-or-nil} for slot `i` from `prev-slot` to
    child `new`. A [:keyed :keyed] pair yields no delta: the commit walk
    diffs it against the keyed cache itself."

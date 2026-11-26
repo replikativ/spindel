@@ -65,7 +65,6 @@
   :failed; the next delivery mounts from scratch."
   (:require [org.replikativ.spindel.v2.core :as v2]
             [org.replikativ.spindel.v2.host :as hs]
-            [org.replikativ.spindel.dom.core :as core]
             [org.replikativ.spindel.dom.discharge :as disch]
             [org.replikativ.spindel.v2.dom.cache :as cache]
             [org.replikativ.spindel.v2.dom.commit :as commit]

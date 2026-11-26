@@ -34,7 +34,7 @@
 
 (defn- plain-attrs [vnode] (or (:attrs vnode) {}))
 
-(defn vnode-slots
+(defn- vnode-slots
   "The slot vector of a vnode: its `:slots`, or its children classified
    (correct only when no slot is nil; hand-built vnodes)."
   [vnode]
