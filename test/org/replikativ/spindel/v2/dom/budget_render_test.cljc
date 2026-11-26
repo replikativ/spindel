@@ -18,19 +18,29 @@
 (defn- in-world
   "Calls `(f env done)` with a fresh world made with `opts` bound. JVM: a
    manual executor, so handed off work runs only when `(:settle! env)`
-   runs it. The test ends at `(done)`."
+   runs it. The test ends at `(done)` or at the deadline; either way the
+   fns the test put in `(:cleanups env)` run (an unmount), then the world
+   is released."
   [opts f]
   #?(:clj (let [[ex q] (fx/manual-executor)
                 w (v2/world (assoc opts :executor ex))
+                cleanups (atom [])
                 p (promise)]
-            (try (binding [v2/*world* w] (f {:w w :settle! #(fx/pump! q)} #(deliver p true)))
+            (try (binding [v2/*world* w] (f {:w w :settle! #(fx/pump! q) :cleanups cleanups} #(deliver p true)))
                  (is (true? (deref p fx/wait-ms false)) "the test completes")
-                 (finally (v2/release-world! w) (fx/pump! q))))
+                 (finally
+                   (doseq [c @cleanups] (c))
+                   (v2/release-world! w)
+                   (fx/pump! q))))
      :cljs (async done*
                   (let [w (v2/world opts)
-                        done (fx/guard-done done*)]
+                        cleanups (atom [])
+                        done (fx/guard-done (fn []
+                                              (doseq [c @cleanups] (c))
+                                              (v2/release-world! w)
+                                              (js/setTimeout done* 0)))]
                     (binding [v2/*world* w]
-                      (f {:w w :settle! (constantly 0)} (fn [] (v2/release-world! w) (js/setTimeout done 0))))))))
+                      (f {:w w :settle! (constantly 0) :cleanups cleanups} done))))))
 
 (defn- on-revision
   "Calls `(k x)` once the mount's revision reaches `n`, `x` the waiter's
@@ -55,6 +65,7 @@
                     xs (v2/signal (items 100))
                     root (spin (el/ul (ifor-each :id (track xs) (fn [x] (el/li (:v x))))))
                     {:keys [state unmount!]} (render/render! :container root (:discharge m))]
+                (swap! (:cleanups env) conj unmount!)
                 (is (= 0 (render/revision state)) "100 items do not fit 8 units: no commit yet")
                 (on-revision env state 1
                              (fn [x]
