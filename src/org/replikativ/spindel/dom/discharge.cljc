@@ -38,7 +38,6 @@
   - StringDischarge (string.cljc) — HTML string for SSR
   - MockDischarge (this file)    — operation log for tests"
   (:require [org.replikativ.spindel.dom.core :as core]
-            [org.replikativ.spindel.dom.cache :as cache]
             [org.replikativ.spindel.dom.fragment :as frag]
             [org.replikativ.spindel.incremental.deltaable :as d]
             [org.replikativ.spindel.incremental.permutation :as perm]
@@ -193,7 +192,21 @@
 
 (defonce ^:private logged-collisions (atom #{}))
 
-(defonce ^:private logged-unbound (atom #{}))
+(def ^:no-doc log-throttle-cap
+  "How many distinct addresses a once-per-address log throttle remembers.
+   Past the cap, logging stops for new addresses; violation collection in
+   tests is unaffected."
+  1024)
+
+(defn ^:no-doc first-log?
+  "Whether `addr` is logged now under the once-per-address throttle
+   `logged` (an atom of a set): it was not logged before and the set is
+   under the cap. Records it when so."
+  [logged addr]
+  (let [s @logged]
+    (when (and (not (contains? s addr)) (< (count s) log-throttle-cap))
+      (swap! logged conj addr)
+      true)))
 
 (defn register-addr!
   "Register an address as claimed during this render pass.
@@ -212,8 +225,7 @@
                              {:addr addr
                               :prior (vnode-fingerprint seen)
                               :new (vnode-fingerprint vnode)})
-          (when-not (contains? @logged-collisions addr)
-            (swap! logged-collisions conj addr)
+          (when (first-log? logged-collisions addr)
             (log/error ::addr-collision
                        {:addr addr
                         :prior (vnode-fingerprint seen)
@@ -428,77 +440,83 @@
    on the fragment's rows, not on siblings.
 
    Returns nil. Mutates the DOM under `parent-el` and the
-   discharge's element registry (`set-element!`)."
-  [discharge parent-el
-   {:keys [degree grow shrink permutation change]
-    :or {grow 0 shrink 0 permutation {} change {}}}
-   prev-vnodes]
-  (let [size-before (- degree grow)
-        size-after  (- degree shrink)
-        inv-π       (perm/inverse permutation)
+   discharge's element registry (`set-element!`).
+
+   With `offset`, the caller knows where the fragment starts (the v2
+   commit walk tracks every slot's physical base, also an empty
+   fragment's); without, it is derived as above."
+  ([discharge parent-el diff prev-vnodes]
+   (apply-seq-diff! discharge parent-el diff prev-vnodes nil))
+  ([discharge parent-el
+    {:keys [degree grow shrink permutation change]
+     :or {grow 0 shrink 0 permutation {} change {}}}
+    prev-vnodes offset]
+   (let [size-before (- degree grow)
+         size-after  (- degree shrink)
+         inv-π       (perm/inverse permutation)
         ;; Offset of this fragment's first child in parent.childNodes.
         ;; Defaults to 0 when there's no first prev-vnode (initial
         ;; render of an empty fragment — the producer's pure-grow diff
         ;; assumes index 0) or when the discharge has no DOM model
         ;; (mock/SSR — they don't track offsets the same way).
-        offset      (fragment-offset discharge parent-el prev-vnodes)
+         offset      (or offset (fragment-offset discharge parent-el prev-vnodes))
         ;; Compute doomed prev-positions (those permuted past size-after).
-        doomed (into #{} (filter #(doomed-prev? permutation % size-after))
-                     (range size-before))
+         doomed (into #{} (filter #(doomed-prev? permutation % size-after))
+                      (range size-before))
         ;; Tracker: prev-position → current DOM index *after* the doomed
         ;; positions have been removed. Removing tail-to-head leaves each
         ;; survivor at (original-i - count of doomed indices < i), so
         ;; pre-compute that here in one pass. Indices are FRAGMENT-RELATIVE;
         ;; `offset` is added at every protocol call site.
-        tracker (atom (loop [i 0 removed 0 acc {}]
-                        (if (= i size-before)
-                          acc
-                          (if (doomed i)
-                            (recur (inc i) (inc removed) acc)
-                            (recur (inc i) removed (assoc acc i (- i removed)))))))]
+         tracker (atom (loop [i 0 removed 0 acc {}]
+                         (if (= i size-before)
+                           acc
+                           (if (doomed i)
+                             (recur (inc i) (inc removed) acc)
+                             (recur (inc i) removed (assoc acc i (- i removed)))))))]
     ;; (1) Remove doomed prev elements, tail-to-head.
-    (doseq [i (sort > doomed)]
-      (call-refs-on-unmount! (nth prev-vnodes i))
-      (remove-child! discharge parent-el (+ offset i)))
+     (doseq [i (sort > doomed)]
+       (call-refs-on-unmount! (nth prev-vnodes i))
+       (remove-child! discharge parent-el (+ offset i)))
     ;; (2) Walk new-positions in order.
-    (doseq [k (range size-after)]
-      (let [src (perm/apply-perm inv-π k)
-            new-vnode (get change k)]
-        (cond
+     (doseq [k (range size-after)]
+       (let [src (perm/apply-perm inv-π k)
+             new-vnode (get change k)]
+         (cond
           ;; Grown source — must be in :change.
-          (>= src size-before)
-          (when new-vnode
-            (let [new-el (render-initial! discharge new-vnode)]
-              (when new-el
-                (insert-child! discharge parent-el new-el (+ offset k))
-                (subtree-attached!)
-                (shift-positions-on-insert! tracker k))))
+           (>= src size-before)
+           (when new-vnode
+             (let [new-el (render-initial! discharge new-vnode)]
+               (when new-el
+                 (insert-child! discharge parent-el new-el (+ offset k))
+                 (subtree-attached!)
+                 (shift-positions-on-insert! tracker k))))
 
           ;; Prev source, survives.
-          (not (doomed src))
-          (let [current (get @tracker src)
-                old-vnode (nth prev-vnodes src)]
+           (not (doomed src))
+           (let [current (get @tracker src)
+                 old-vnode (nth prev-vnodes src)]
             ;; Move into position if needed.
-            (when (not= current k)
-              (move-child! discharge parent-el (+ offset current) (+ offset k))
-              (shift-positions! tracker current k)
-              (swap! tracker assoc src k))
+             (when (not= current k)
+               (move-child! discharge parent-el (+ offset current) (+ offset k))
+               (shift-positions! tracker current k)
+               (swap! tracker assoc src k))
             ;; Apply :change at this position if present.
-            (when new-vnode
-              (if (reconcilable? old-vnode new-vnode)
-                (when-let [el (get-element discharge (:addr new-vnode))]
-                  (reconcile-vnode! discharge el old-vnode new-vnode)
-                  (set-element! discharge (:addr new-vnode) el))
-                (do
-                  (call-refs-on-unmount! old-vnode)
-                  (when-let [new-el (render-initial! discharge new-vnode)]
-                    (replace-child! discharge parent-el new-el (+ offset k))
-                    (subtree-attached!))))))
+             (when new-vnode
+               (if (reconcilable? old-vnode new-vnode)
+                 (when-let [el (get-element discharge (:addr new-vnode))]
+                   (reconcile-vnode! discharge el old-vnode new-vnode)
+                   (set-element! discharge (:addr new-vnode) el))
+                 (do
+                   (call-refs-on-unmount! old-vnode)
+                   (when-let [new-el (render-initial! discharge new-vnode)]
+                     (replace-child! discharge parent-el new-el (+ offset k))
+                     (subtree-attached!))))))
 
           ;; Source is doomed — this position must be a grown slot or
           ;; the diff is malformed. Skip silently; producer error
           ;; would surface in tests.
-          :else nil)))))
+           :else nil))))))
 
 (defn- reconcile-vnode!
   "Reconcile new-vnode into the DOM element backing old-vnode. Does NOT
@@ -728,12 +746,24 @@
    the caller owns attachment)."
   nil)
 
+(def ^:dynamic ^:no-doc *mount-hooks*
+  "The commit hooks of an engine-v2 mount (`v2.dom.render`), or nil. When
+   bound to `{:created (fn [vnode el]) :removed (fn [vnode])}`, the mount
+   owns every lifecycle call: `render-initial!` reports each element it
+   creates to `:created` (post-order, whether or not it has a `:ref`) and
+   calls no ref, and a removal reports the departing subtree to `:removed`
+   (before it is detached) instead of calling refs with nil. Unbound, refs
+   behave as described at `*mount-effects*`."
+  nil)
+
 (defn- mount-ref!
   [vnode el]
-  (when (:ref vnode)
-    (if-let [q *mount-effects*]
-      (vswap! q update :pending conj [vnode el])
-      (call-ref! vnode el))))
+  (if-let [h *mount-hooks*]
+    ((:created h) vnode el)
+    (when (:ref vnode)
+      (if-let [q *mount-effects*]
+        (vswap! q update :pending conj [vnode el])
+        (call-ref! vnode el)))))
 
 (defn subtree-attached!
   "Record that the subtree(s) `render-initial!` just built have been attached
@@ -781,6 +811,9 @@
   [vnode]
   (when vnode
     (cond
+      *mount-hooks*
+      ((:removed *mount-hooks*) vnode)
+
       (core/text-node? vnode)
       nil  ; Text nodes have no :addr and no refs
 

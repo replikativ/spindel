@@ -112,22 +112,27 @@
   [slots]
   (into [] (mapcat flatten-slot) slots))
 
+(def ^:private lifted
+  "The attrs lifted out of an element's attrs into its vnode: the key and
+   the commit hooks (`:ref`, `:on-commit`, `:on-commit-deferred`)."
+  [:key :ref :on-commit :on-commit-deferred])
+
 (defn build-element
   "A vnode of plain values from evaluated children. `my-addr` is the
    element's structural address; with a :key in `attrs` the vnode's :addr
    is keyed under it. The slots keep a nil child's place, so a later
-   sibling's position does not shift."
+   sibling's position does not shift. The key and the commit hooks are
+   lifted out of the attrs into the vnode."
   [tag my-addr attrs children]
   (let [k (:key attrs)
-        ref-fn (:ref attrs)
         slots (mapv make-slot (flatten-and-normalize children))]
-    (cond-> {:tag tag
+    (reduce (fn [vn h] (if-let [f (get attrs h)] (assoc vn h f) vn))
+            {:tag tag
              :addr (if k (addr/keyed-child-address my-addr k) my-addr)
-             :attrs (dissoc attrs :key :ref)
+             :attrs (apply dissoc attrs lifted)
              :slots slots
              :children (flatten-slots slots)}
-      k (assoc :key k)
-      ref-fn (assoc :ref ref-fn))))
+            lifted)))
 
 (defn fragment
   "Several children without a wrapper element."

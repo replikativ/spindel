@@ -163,7 +163,10 @@
            (.postMessage out nil)))
        :else (fn [f] (.setTimeout env f 0)))))
 
-#?(:cljs (def ^:private macrotask! (macrotask js/globalThis)))
+#?(:cljs (def macrotask!
+           "Runs a thunk as a macrotask of this environment (see `macrotask`):
+            the world handoff, and the DOM's deferred commit effects."
+           (macrotask js/globalThis)))
 
 (defn execute-or!
   "execute!, calling `(on-reject t)` instead of throwing when the executor
