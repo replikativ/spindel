@@ -11,7 +11,7 @@
    operations complete before they return (within the budget), so settling
    is a no-op and reads answer synchronously."
   (:require #?(:clj [clojure.test :refer [is testing]]
-               :cljs [cljs.test :refer-macros [is testing]])
+               :cljs [cljs.test :refer-macros [is testing async]])
             [org.replikativ.spindel.v2.core :as v2]
             #?(:clj [org.replikativ.spindel.v2.verify :as verify])
             [org.replikativ.spindel.v2.dom.render :as render]
@@ -153,6 +153,47 @@
   (let [ctl (render/render! :container h (:discharge (:mock env)))]
     (settle! env)
     ctl))
+
+(defn async-world
+  "Calls `(f env done)` with a fresh world made with `opts` bound, for a
+   test whose work outlasts the operation that starts it (a turn budget):
+   on CLJS handed off work runs in later macrotasks, on the JVM on a
+   manual executor when `(:settle! env)` runs it. The test ends at
+   `(done)` or at the deadline (`wait-ms`); either way the fns the test
+   put in `(:cleanups env)` run (an unmount), then the world is released.
+   On CLJS this is the deftest's async value."
+  [opts f]
+  #?(:clj (let [[ex q] (manual-executor)
+                w (v2/world (assoc opts :executor ex))
+                cleanups (atom [])
+                p (promise)]
+            (try (binding [v2/*world* w] (f {:w w :settle! #(pump! q) :cleanups cleanups} #(deliver p true)))
+                 (is (true? (deref p wait-ms false)) "the test completes")
+                 (finally
+                   (doseq [c @cleanups] (c))
+                   (v2/release-world! w)
+                   (pump! q))))
+     :cljs (async done*
+                  (let [w (v2/world opts)
+                        cleanups (atom [])
+                        done (guard-done (fn []
+                                           (doseq [c @cleanups] (c))
+                                           (v2/release-world! w)
+                                           (js/setTimeout done* 0)))]
+                    (binding [v2/*world* w]
+                      (f {:w w :settle! (constantly 0) :cleanups cleanups} done))))))
+
+(defn on-revision
+  "Calls `(k x)` once the mount's revision reaches `n`, `x` the waiter's
+   answer. JVM: runs the handed off work first."
+  [env state n k]
+  #?(:clj (settle! env))
+  (render/on-revision state n k))
+
+(defn later
+  "Runs `f` after the current macrotask (JVM: at once, the work is run)."
+  [f]
+  #?(:clj (f) :cljs (js/setTimeout f 0)))
 
 (defn unmount! [env ctl] (call! env (:unmount! ctl)) (settle! env))
 (defn stop! [env ctl] (call! env (:stop! ctl)) (settle! env))
