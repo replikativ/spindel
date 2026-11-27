@@ -42,6 +42,18 @@
 
 (defn- rid [x] (aget ^objects (v2/row-of x) rw/ID))
 
+(defn- eventually
+  "Calls `(k (pred))` once `pred` holds, or with false after 5 s."
+  [pred k]
+  #?(:clj (let [deadline (+ (System/nanoTime) 5000000000)]
+            (loop [] (cond (pred) (k true)
+                           (> (System/nanoTime) deadline) (k false)
+                           :else (do (Thread/sleep 5) (recur)))))
+     :cljs (let [deadline (+ (js/Date.now) 5000)]
+             ((fn poll [] (cond (pred) (k true)
+                                (> (js/Date.now) deadline) (k false)
+                                :else (js/setTimeout poll 5)))))))
+
 (defn- keyed-parent
   "Tracks `items` and creates one child computation per item under the key
    `(key-of item)`; records each run's [item id] pairs in `ids` and each
@@ -239,3 +251,32 @@
                            (is (apply = @ids) "every key keeps its row")
                            (is (= {1 1 2 1 3 1} @runs) "no item body runs again from its start")
                            (u) (done)))))))))
+
+(deftest a-rejected-prefix-predecessor-is-cancelled-at-the-completion
+  ;; Z#83: the task captures a fresh vector, so the restart from the body
+  ;; rejects its predecessor; the restarted run's completion cancels it
+  (in-world
+   (fn [done]
+     (let [sel (v2/signal 1)
+           never (v2/deferred)
+           made (atom []) fins (atom 0)
+           c (spin (let [cfg (vector 1)
+                         t (v2/with-key :t (task (try (count cfg) (await never) (finally (swap! fins inc)))))
+                         i (v2/with-key :i (spin (iv/get-new (track sel))))]
+                     (swap! made conj (rid t))
+                     (await-all [i])))
+           u (v2/observe! c (fn [_ _]))]
+       (then c (fn [v]
+                 (is (= [1] v))
+                 (v2/write! sel 2)
+                 (then c (fn [v]
+                           (is (= [2] v))
+                           (is (= 2 (count (set @made))) "the restart rejected the predecessor")
+                           (eventually #(= 1 @fins)
+                                       (fn [ok]
+                                         (is ok "the completion cancelled it")
+                                         (u)
+                                         (eventually #(= 2 @fins)
+                                                     (fn [ok]
+                                                       (is ok "unobserved: the last one is cancelled")
+                                                       (done)))))))))))))
