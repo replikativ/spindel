@@ -135,26 +135,59 @@
              :when (not (.containsKey ^java.util.Map reg (f row rw/ID)))]
          {:type (t row) :id (f row rw/ID) :removed true})))))
 
+(defn- basis-rows
+  "C's basis as the model sees it: without the rows its run rejected (Z#83),
+   which belong to the adoption basis until T12 or the next cut removes them."
+  [c]
+  (let [rej (set (map #(f (canon %) rw/ID) (f c rw/C-REJ)))]
+    (remove #(rej (f (canon %) rw/ID)) (f c rw/C-BASIS))))
+
+(defn- adoption-rows
+  "C's adoption basis: the positional list, the keyed map's rows and the
+   rejected basis rows (Z#83)."
+  [c]
+  (concat (f c rw/C-ADOPT) (vals (f c rw/C-ADOPT-K)) (f c rw/C-REJ)))
+
 (defn key-violations
-  "Z#82: within a computation's basis a creation key occurs at most once, and
-   within its adoption basis (the positional list and the keyed map
-   together) at most once; a keyed map entry is under its row's key. A
-   rejected predecessor and its replacement may share a key across the two."
+  "Z#82, Z#83: within a computation's basis a creation key occurs at most
+   once, and within its adoption basis at most once; a row is in at most one
+   of the two, once; a keyed map entry is under its row's key. A rejected
+   predecessor and its replacement may share a key across the two. The rows
+   the run rejected are basis rows until they leave it. The keyed prefix kept
+   by a restart from the body (T11) indexes basis rows under their keys. Both
+   end with the run that completes. Physically, `C-BASIS` holds a row once,
+   rejected or not: one reference each."
   [w]
   (binding [*reg* (f w rw/W-REG)]
-    (let [key-of #(f (canon %) rw/KEY)]
+    (let [key-of #(f (canon %) rw/KEY)
+          id-of #(f (canon %) rw/ID)]
       (vec (for [c (rows w)
                  :when (== rw/T-COMP (t c))
+                 :let [basis (basis-rows c) adoption (adoption-rows c)
+                       physical (frequencies (map id-of (f c rw/C-BASIS)))
+                       done? (= (f c rw/C-DONE-EPOCH) (f c rw/C-EPOCH))]
                  v (concat
-                    (for [[container xs] [[:basis (map key-of (f c rw/C-BASIS))]
-                                          [:adoption (concat (map key-of (f c rw/C-ADOPT))
-                                                             (map key-of (vals (f c rw/C-ADOPT-K))))]]
+                    (for [[container xs] [[:basis (map key-of basis)] [:adoption (map key-of adoption)]]
                           [k n] (frequencies xs)
                           :when (> (long n) 1)]
                       {:container container :key k})
+                    (for [[id n] (frequencies (map id-of (concat basis adoption)))
+                          :when (> (long n) 1)]
+                      {:container :rows :id id})
+                    (for [[id n] physical :when (> (long n) 1)]
+                      {:container :physical-basis :id id})
                     (for [[k x] (f c rw/C-ADOPT-K)
                           :when (not= k (key-of x))]
-                      {:container :adoption-map :key k}))]
+                      {:container :adoption-map :key k})
+                    (for [x (f c rw/C-REJ)
+                          :when (not (physical (id-of x)))]
+                      {:container :rejected :id (id-of x)})
+                    (let [kept (set (map id-of basis))]
+                      (for [[k x] (f c rw/C-KEPT-K)
+                            :when (or (not= k (key-of x)) (not (kept (id-of x))))]
+                        {:container :kept :key k}))
+                    (when (and done? (or (f c rw/C-KEPT-K) (f c rw/C-REJ)))
+                      [{:container :kept :completed true}]))]
              (assoc v :comp (f c rw/ID)))))))
 
 (defn checking-hook
@@ -220,10 +253,11 @@
                           :result (result w c) :idle (f c rw/C-IDLE)
                           :validity (let [v (f c rw/C-VALIDITY)]
                                       (if (sequential? v) (mapv (fn [[d ver]] [(id d) ver]) v) v))
-                          :basis (mapv (fn [x] [(id x) (f x rw/AT)]) (f c rw/C-BASIS))
-                          :adoption (when (or (f c rw/C-ADOPT) (f c rw/C-ADOPT-K) (f c rw/C-ADOPT-BASE))
-                                      ;; the adoption basis: the positional list and the keyed map's rows (Z#82)
-                                      {:basis (mapv id (concat (f c rw/C-ADOPT) (vals (f c rw/C-ADOPT-K))))
+                          :basis (mapv (fn [x] [(id x) (f x rw/AT)]) (basis-rows c))
+                          :adoption (when (or (f c rw/C-ADOPT) (f c rw/C-ADOPT-K) (f c rw/C-REJ) (f c rw/C-ADOPT-BASE))
+                                      ;; the adoption basis: the positional list, the keyed map's rows
+                                      ;; (Z#82) and the rejected basis rows (Z#83)
+                                      {:basis (mapv id (adoption-rows c))
                                        :baselines (mapv (fn [e] [(f e rw/E-AT) (id (f e rw/E-DEBTOR))
                                                                  (intern! w (f e rw/E-BASE))])
                                                         (f c rw/C-ADOPT-BASE))})

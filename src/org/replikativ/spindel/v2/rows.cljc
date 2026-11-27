@@ -251,7 +251,9 @@
 (def ^:const C-BIND 31)      ; JVM: the creator's dynamic binding frame, each run's initial frame
 (def ^:const C-RUNS 32)      ; its unretired runs (the §3.2 tombstone count), as W-RUNS per world
 (def ^:const C-ADOPT-K 33)   ; the keyed part of the adoption basis: persistent map creation key -> row, or nil (Z#82)
-(def ^:const C-SIZE 34)
+(def ^:const C-KEPT-K 34)    ; T11 restart from the body: the keyed creations kept in the basis, creation key -> row, until re-created; or nil
+(def ^:const C-REJ 35)       ; Z#83: keyed basis rows the current run rejected, adoption rows until T12 or the next cut removes them from the basis; vector or nil
+(def ^:const C-SIZE 36)
 
 ;; Task
 (def ^:const K-BODY 12)

@@ -105,6 +105,10 @@
                                                             runs: every run of a fork-local task is
                                                             retired, nothing runs; a task without a
                                                             result gets err v (v = ::forked) -
+    49  reject st x                            §5.2 a creation of a computation run rejected its
+                                                            predecessor x in the basis (a body
+                                                            restart's kept prefix, T11): x joins
+                                                            the adoption basis -
   A stream is created by T1 (`create-source(-top)` with kind `sk-stream`, spindel.v2.engine), which
   also allocates its first tail link (id = the stream's + 1).
   Indices 0-24 are unchanged; later items get the next indices.
@@ -250,7 +254,8 @@
   (own [s Nat] [m Nat])                                            ; C1c B: the owned-fork count ([:fork r c])
   (owned-done [s Nat] [c Nat])                                     ; C1c B: [:owned-done s c]
   (drain [ids (List Nat)])                                         ; C1c B: [:normalize] (W-NORMALIZE)
-  (retire-local [v Nat]))                                          ; Z#77 T28: [:retire-local] (internal)
+  (retire-local [v Nat])                                           ; Z#77 T28: [:retire-local] (internal)
+  (reject [st Nat] [x Nat]))                                       ; §5.2: a rejected basis predecessor joins the adoption basis
 
 ;; ---- validity tokens (§2, V#5): one check per token kind
 
@@ -1406,4 +1411,5 @@
     (own s m) true
     (owned-done s c) true
     (drain ids) true
-    (retire-local v) true))
+    (retire-local v) true
+    (reject st x) (run-tok-ok w st)))

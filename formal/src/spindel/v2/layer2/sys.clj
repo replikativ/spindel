@@ -210,7 +210,8 @@
     (own s m) false
     (owned-done s c) false
     (drain ids) false
-    (retire-local v) false))
+    (retire-local v) false
+    (reject st x) false))
 (a/defn seal-shut [sealed :- Bool, w :- World, it :- Item] Bool
   (Bool.and sealed (Bool.and (seal-item it) (Bool.not (slice-held w)))))
 ;; the world after item `it` in a cell sealed or not: a refused item changes nothing

@@ -1,4 +1,4 @@
-;; Keyed creation (spec §5.2 Z#82, phase-d design §1.13): oracle log samples 75-79 and 81. Keys are absent from the
+;; Keyed creation (spec §5.2 Z#82, Z#83, phase-d design §1.13): oracle log samples 75-79 and 81-83. Keys are absent from the
 ;; model (ids are item inputs), so the replay shows each chosen id is a legal item; the shape checks in
 ;; oracle_test.clj (`keyed-sample-shapes`) pin the key -> id mapping.
 ;;
@@ -19,6 +19,14 @@
 ;;     site is seeded at 2^20 in the running run (test-only access to R-ORD); the next creation there throws
 ;;     ::too-many-creations, the body catches it and continues: in a task with a task-owned computation, and in a
 ;;     computation with a body source (site -1). No item, effect index, id or row comes from the rejection.
+;; 82  w: a restart from the body readopts keyed prefix creations (T11). A list creates a positional child, a keyed
+;;     task and one keyed child per key; each child tracks `sel`; the list awaits them all. A write to `sel` changes
+;;     children 1 and 3: child 1's edge at the group await (no continuation) restarts the list from its body. The
+;;     restart names every kept creation's id (no fresh id), each once in the basis.
+;; 83  w: a rejected prefix predecessor (Z#83). A list creates a keyed task that captures a fresh vector in every
+;;     run, then a keyed child that tracks `sel`, and awaits the child. A write to `sel` restarts the list from its
+;;     body; the task's captures differ, so the creation rejects its predecessor: `[:reject r t1]` moves t1 to the
+;;     adoption basis before the spawn of t2, and the list's completion cancels t1.
 ;;
 ;; From the repository root (one -Xmx1g JVM):
 ;;   clojure -J-Xmx1g -Sdeps '{:paths ["src" "test"]}' -M -i formal/test/spindel/v2/oracle/gen/samples-keyed.clj
@@ -141,3 +149,37 @@
   (assert (= [::v2/too-many-creations :after] (v2/value t 2000 :timeout)))
   (assert (= [::v2/too-many-creations :after] (v2/value c 2000 :timeout)))
   (finish! 81 w acc))
+
+;; 82
+(let [acc (atom []) w (vworld acc)
+      [sel c] (in w #(let [sel (v2/signal 1)
+                           never (v2/deferred)]
+                       [sel (spin (let [p (spin :p)
+                                        t (v2/with-key :t (task (await never)))
+                                        hs (loop [xs [1 2 3] acc []]
+                                             (if-let [x (first xs)]
+                                               (recur (rest xs)
+                                                      (conj acc (v2/with-key x (spin (= x (iv/get-new (track sel)))))))
+                                               acc))]
+                                    t
+                                    (await-all (into [p] hs))))]))]
+  (v2/observe! c (fn [_ _]))
+  (assert (= [:p true false false] (v2/value c 2000 :timeout)))
+  (v2/write! sel 3)
+  (assert (= [:p false false true] (v2/value c 2000 :timeout)))
+  (finish! 82 w acc))
+
+;; 83
+(let [acc (atom []) w (vworld acc)
+      [sel c] (in w #(let [sel (v2/signal 1)
+                           never (v2/deferred)]
+                       [sel (spin (let [cfg (vector 1)
+                                        t (v2/with-key :t (task (count cfg) (await never)))
+                                        i (v2/with-key :i (spin (iv/get-new (track sel))))]
+                                    t
+                                    (await-all [i])))]))]
+  (v2/observe! c (fn [_ _]))
+  (assert (= [1] (v2/value c 2000 :timeout)))
+  (v2/write! sel 2)
+  (assert (= [2] (v2/value c 2000 :timeout)))
+  (finish! 83 w acc))

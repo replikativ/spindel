@@ -754,7 +754,7 @@
                     t12-complete t-schedule t-take t-finalize t-open-scope t-finally-enter t-finally-exit t-finally-leave t-slice-exit
                     t21-release-world tok-run run-find comp-find edge-find resource-find resource-has source-find rn cn en zn sn hr
                     tbl-find tbl-has refuse in-cleanup arm-refused in-finally await-refused take-refused complete-refused fins-open opt-test
-                    t-own own-ok t-owned-done t-drain t28-retire-local fn0 tbl-any]))
+                    t-own own-ok t-owned-done t-drain t28-retire-local t-reject fn0 tbl-any]))
   (all_goals (cases hh)))
 
 ;; Theorem (refusal): in a quiet world with quiet-world-inv every item is refused (host items by host-item-refused: no

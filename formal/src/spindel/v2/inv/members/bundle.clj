@@ -1667,7 +1667,7 @@
 ;; ---- the row functions that keep what current-members reads
 (def ^:private h3-comp-ok '#{comp-detach-row comp-set-rank comp-inc-epoch comp-dec-handles comp-start-row comp-set-run comp-first-handle
                              comp-adopt-row comp-consume-adopt comp-add-basis comp-no-handles comp-replace-row comp-clear-run comp-demand-row
-                             comp-cut-row comp-rebasis})
+                             comp-cut-row comp-rebasis comp-reject-row})
 (def ^:private h3-comp-ep '#{comp-inc-epoch comp-demand-row comp-replace-row comp-start-row})
 (def ^:private h3-comp-hkm '#{comp-inc-epoch comp-demand-row comp-replace-row comp-start-row})
 (def ^:private h3-run-ok '#{run-wake run-tick run-enter-row run-fin-pop run-fin-exit run-tick-park run-fin-pop-end run-park-row run-unres run-arm run-fin-push run-drop-fins})

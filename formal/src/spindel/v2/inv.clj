@@ -1449,6 +1449,19 @@
   (all_goals (simp only [new-task-handle ht hh refuse accept sl-task-upd]))
   (all_goals (exact h)))
 
+(a/theorem sl-t-reject [x :- Nat, w :- World, st :- Nat, y :- Nat]
+  (=> (= (i10-slice-at x w) true) (= (i10-slice-at x (:world (t-reject w st y))) true))
+  (intro h)
+  (cases ht (tok-run w st))
+  (case [none] (simp only [t-reject ht refuse]) (exact h))
+  (case [some r]
+    (cases hc (comp-find w (:of r)))
+    (case [none] (simp only [t-reject ht hc refuse]) (exact h))
+    (case [some c]
+      (cases hg (Bool.and (Bool.not (:idle c)) (reach-mem y (created-ids (:basis c)))))
+      (case [false] (simp only [t-reject ht hc hg refuse]) (exact h))
+      (case [true] (simp only [t-reject ht hc hg accept]) (exact (Eq.trans (sl-comp-upd x w _ _) h))))))
+
 (a/theorem sl-t-handle-new [x :- Nat, w :- World, y :- Nat]
   (=> (= (i10-slice-at x w) true) (= (i10-slice-at x (:world (t-handle-new w y))) true))
   (intro h)
@@ -1957,7 +1970,8 @@
   (rename_i s m) (exact (i10-ra w _ (ra-t-own w s m) h))
   (rename_i s c) (exact (i10-ra w _ (ra-t-owned-done w s c) h))
   (rename_i ids) (exact (i10-ra w _ (ra-t-drain w ids) h))
-  (rename_i v) (exact (i10-slice-intro _ _ (sl-t28-retire-local _ w v hx))))
+  (rename_i v) (exact (i10-slice-intro _ _ (sl-t28-retire-local _ w v hx)))
+  (rename_i st y) (exact (i10-slice-intro _ _ (sl-t-reject _ w st y hx))))
 
 (a/theorem i10-raw [w :- World, it :- Item]
   (=> (= (inv-i10-slice w) true) (= (inv-i10-slice (:world (raw w it))) true))
@@ -3436,6 +3450,19 @@
   (all_goals (simp only [new-task-handle ht hh refuse accept s9-task-upd]))
   (all_goals (exact h)))
 
+(a/theorem s9-t-reject [w :- World, st :- Nat, y :- Nat]
+  (=> (= (inv-i9 w) true) (= (inv-i9 (:world (t-reject w st y))) true))
+  (intro h)
+  (cases ht (tok-run w st))
+  (case [none] (simp only [t-reject ht refuse]) (exact h))
+  (case [some r]
+    (cases hc (comp-find w (:of r)))
+    (case [none] (simp only [t-reject ht hc refuse]) (exact h))
+    (case [some c]
+      (cases hg (Bool.and (Bool.not (:idle c)) (reach-mem y (created-ids (:basis c)))))
+      (case [false] (simp only [t-reject ht hc hg refuse]) (exact h))
+      (case [true] (simp only [t-reject ht hc hg accept]) (exact (Eq.trans (s9-comp-upd w _ _) h))))))
+
 (a/theorem s9-t-handle-new [w :- World, y :- Nat]
   (=> (= (inv-i9 w) true) (= (inv-i9 (:world (t-handle-new w y))) true))
   (intro h)
@@ -3897,7 +3924,8 @@
   (rename_i s m) (exact (i9-ra w _ (ra-t-own w s m) h))
   (rename_i s c) (exact (i9-ra w _ (ra-t-owned-done w s c) h))
   (rename_i ids) (exact (i9-ra w _ (ra-t-drain w ids) h))
-  (rename_i v) (exact (s9-t28-retire-local w v h)))
+  (rename_i v) (exact (s9-t28-retire-local w v h))
+  (rename_i st y) (exact (s9-t-reject w st y h)))
 
 (a/theorem i9-raw [w :- World, it :- Item]
   (=> (= (well-formed w) true) (= (inv-i9 w) true) (= (inv-i9 (:world (raw w it))) true))

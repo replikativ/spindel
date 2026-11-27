@@ -1502,7 +1502,27 @@
   (when (and (task? x) (rv w (g x rw/K-RUN))) (cancel! w (rv w (g x rw/K-RUN)) ::cancelled))
   (ref-dec! w x))
 
+(defn- take-rejected!
+  "Z#83: the keyed rows rejected from the kept prefix (C-REJ) leave the
+   basis, in one pass; returns them. They belong to the adoption basis."
+  [w c]
+  (when-let [rej (g c rw/C-REJ)]
+    (s! c rw/C-REJ nil)
+    (let [ids (into #{} (map #(g % rw/ID)) rej)
+          basis (gm c rw/C-BASIS)
+          n (acount basis)]
+      (loop [i 0 j 0]
+        (if (< i n)
+          (let [x (rv w (anth basis i))]
+            (if (contains? ids (g x rw/ID))
+              (recur (inc i) j)
+              (do (aput! basis j x) (recur (inc i) (inc j)))))
+          (dotimes [_ (- n j)] (apop! basis))))
+      rej)))
+
 (defn- release-adoption! [w c]
+  (s! c rw/C-KEPT-K nil)   ; no additional retention references: its rows are the basis's
+  (doseq [x (take-rejected! w c)] (release-adopted! w (rv w x)))
   (when-let [ab (g c rw/C-ADOPT)]
     (s! c rw/C-ADOPT nil)
     (dotimes [i (acount ab)] (release-adopted! w (rv w (anth ab i)))))
@@ -1683,6 +1703,7 @@
         (s! c rw/C-ADOPT nil)
         (s! c rw/C-ADOPT-K nil)
         (s! c rw/C-ADOPT-BASE nil)
+        (s! c rw/C-KEPT-K nil)
         ;; Suffix: dep edges after E are removed; those with a baseline keep
         ;; their debtors through the adoption baselines (§4.4, Z#21; the
         ;; model's `bases-of`). The baselines take their references before
@@ -1702,8 +1723,10 @@
               (dotimes [i (acount gone)] (unlink! w (anth gone i)))
               (s! c rw/C-ADOPT-BASE bs))))
         ;; Suffix creations become the adoption basis: keyed ones (Z#82) by
-        ;; their creation key, positional ones in a list.
-        (let [basis (g c rw/C-BASIS)]
+        ;; their creation key, positional ones in a list. The rows the last
+        ;; run rejected from the basis (Z#83) were adoption rows: dropped.
+        (let [rej (take-rejected! w c)
+              basis (g c rw/C-BASIS)]
           (when (and basis (pos? (acount basis)))
             (let [ab (alist)
                   kept (alist)
@@ -1719,8 +1742,19 @@
                           (persistent! abk)))]
               (s! c rw/C-BASIS kept)
               (s! c rw/C-ADOPT ab)
-              (s! c rw/C-ADOPT-K (not-empty abk)))))
-        (drop-adoption! w old-ab old-abk old-bs))
+              (s! c rw/C-ADOPT-K (not-empty abk))
+              ;; A run that restarts from the body (E without a continuation)
+              ;; counts its creations afresh, so it re-creates the kept prefix
+              ;; too: its keyed rows are indexed by key (positional ones are
+              ;; found in the basis).
+              (when (and e (nil? (g e rw/E-CONT)))
+                (s! c rw/C-KEPT-K (not-empty (loop [i 0 kk (transient {})]
+                                               (if (< i (acount kept))
+                                                 (let [x (anth kept i) key (g x rw/KEY)]
+                                                   (recur (inc i) (if (vector? key) (assoc! kk key x) kk)))
+                                                 (persistent! kk))))))))
+          (drop-adoption! w old-ab old-abk old-bs)
+          (doseq [x rej] (ref-dec! w (rv w x)))))
       (let [t5? (and (nil? e) (zero? (acount ins)))
             r (new-run! w c (g c rw/C-EPOCH))
             k (when e (g e rw/E-CONT))
@@ -2605,27 +2639,49 @@
     (when-let [r (active-run)]
       (s! r rw/R-PATH (nth saved 0)))))
 
+(defn- reject!
+  "Z#83: run `r`'s creation rejected `x`, a predecessor in the basis (the kept
+   prefix of a restart from the body, T11): `x` joins the adoption basis, so
+   T12 releases it and the next cut drops it, as a rejected predecessor of the
+   adoption basis."
+  [w r x]
+  (commit! w [:reject (g r rw/ID) (g x rw/ID)])
+  nil)
+
 (defn- adopt!
-  "The creation of `c` with `key`, from its basis or its adoption basis, when
-   `ok?` accepts it (kind, captures, path, initial state). A rejected
-   candidate stays where it is: the model's fresh creation leaves its
-   predecessor in the adoption basis (T1, T4, create-link), for T12 or the
-   next cut."
-  [w c key ok?]
+  "The creation of `c` with `key` in run `r`, from its basis or its adoption
+   basis, when `ok?` accepts it (kind, captures, path, initial state). A
+   rejected candidate stays in the adoption basis: the model's fresh creation
+   leaves its predecessor there (T1, T4, create-link), for T12 or the next
+   cut; one from the basis moves there first (Z#83)."
+  [w r c key ok?]
   (let [basis (or (gm c rw/C-BASIS) (let [l (alist)] (s! c rw/C-BASIS l) l))
         abk (when (vector? key) (g c rw/C-ADOPT-K))]
     (if (vector? key)
-      ;; keyed (Z#82): only the adoption basis can hold it, the counts make
-      ;; the key new in the basis
-      (when-let [x (some->> (get abk key) (rv w))]
+      ;; keyed (Z#82): the counts make the key new in the basis, except for
+      ;; the prefix a restart from the body re-creates (C-KEPT-K)
+      (if-let [x (some->> (get abk key) (rv w))]
         (when (ok? x)
           (s! c rw/C-ADOPT-K (not-empty (dissoc abk key)))
           (aadd! basis x)   ; the adoption reference moves to the basis
-          x))
+          x)
+        (when-let [x (some->> (get (g c rw/C-KEPT-K) key) (rv w))]
+          (s! c rw/C-KEPT-K (not-empty (dissoc (g c rw/C-KEPT-K) key)))
+          (if (ok? x)
+            x   ; it stays in the basis
+            ;; it leaves the basis at T12 or the next cut (take-rejected!)
+            (do (s! c rw/C-REJ (conj (or (g c rw/C-REJ) []) x))
+                (reject! w r x)))))
       (let [bi (find-created w basis key)
             ab (gm c rw/C-ADOPT)
             ai (when-not bi (find-created w ab key))]
-        (cond bi (let [x (rv w (anth basis bi))] (when (ok? x) x))
+        (cond bi (let [x (rv w (anth basis bi))]
+                   (if (ok? x)
+                     x
+                     (do (aput! basis bi (rv w (anth basis (dec (acount basis)))))
+                         (apop! basis)
+                         (aadd! (or ab (let [l (alist)] (s! c rw/C-ADOPT l) l)) x)   ; its reference moves along
+                         (reject! w r x))))
               ai (let [x (rv w (anth ab ai))]
                    (when (ok? x)
                      (aput! ab ai (rv w (anth ab (dec (acount ab))))) (apop! ab)
@@ -2654,17 +2710,18 @@
             c (rv w (g r rw/R-OF))
             ;; §5.2: first, so a rejected creation (the ordinal limit)
             ;; changes nothing: no effect index, id or registration
-            key (creation-key! r site)
-            at (next-at! r)]
+            key (creation-key! r site)]
         (if-not (comp? c)
           ;; Created by a task run: owned by the run scope, retained by demand.
-          (let [child (set-origin! (new-comp! w (run-scope! w r) 0 at inputs body 0)
+          (let [at (next-at! r)
+                child (set-origin! (new-comp! w (run-scope! w r) 0 at inputs body 0)
                                    (conj (frame-of c) key) r)]
             (aadd! (g w rw/W-RQ) child)
             (let [h (handle! w child)]
               (commit! w [:create-comp (g r rw/ID) (g child rw/ID) [:opaque-seq inputs] [:opaque body]])
               h))
-          (let [child (adopt! w c key comp?)]
+          (let [child (adopt! w r c key comp?)
+                at (next-at! r)]   ; after a [:reject] item (Z#83), which ticks nothing
             (if child
               (do (s! child rw/AT at)   ; adoption reuses the live handle, or makes one (Z#29)
                   ;; bindings are not inputs: the latest creation's frame, no rerun
@@ -2754,11 +2811,11 @@
              local (fork-local-opt opts)
              _ (when (and local (comp? x))
                  (throw (invalid-op :fork-local "a computation's tasks are never fork-local (Z#77)")))
-             key (creation-key! r site)   ; §5.2: first, a rejected creation changes nothing
-             at (next-at! r)]
+             key (creation-key! r site)]   ; §5.2: first, a rejected creation changes nothing
          (if (comp? x)
-           (let [old (adopt! w x key #(and (task? %) (same-inputs? inputs (g % rw/K-INPUTS))
-                                           (= (g r rw/R-PATH) (g % rw/K-PATH))))]   ; §8.2 P4
+           (let [old (adopt! w r x key #(and (task? %) (same-inputs? inputs (g % rw/K-INPUTS))
+                                             (= (g r rw/R-PATH) (g % rw/K-PATH))))   ; §8.2 P4
+                 at (next-at! r)]
              (if old
                (do (s! old rw/AT at)
                    (do (commit! w [:spawn (g r rw/ID) [:opaque body] (g old rw/ID) [:opaque-seq inputs]])
@@ -2774,7 +2831,8 @@
                  (let [h (handle! w k)]
                    (commit! w [:spawn (g r rw/ID) [:opaque body] (g k rw/ID) [:opaque-seq inputs]])
                    h))))
-           (let [s (current-scope! w r)
+           (let [at (next-at! r)
+                 s (current-scope! w r)
                  local (or local (boolean (g s rw/S-LOCAL)))   ; Z#77: K2 inheritance
                  k (set-origin! (new-task! w s 0 at inputs body 0) (conj (frame-of x) key) r)]
              (when local (s! k rw/K-LOCAL true))
@@ -2902,14 +2960,16 @@
                        (unlink! w e)
                        (recur acc))
                      acc))]
-    (when-let [b (g c rw/C-BASIS)]
-      (s! c rw/C-BASIS nil)
-      (dotimes [i (acount b)]
-        (let [x (rv w (anth b i))]
-          (when (and (task? x) (rv w (g x rw/K-RUN))) (cancel! w (rv w (g x rw/K-RUN)) ::cancelled))
-          (when (stream? x) (close-source! w x))   ; C0: like its tasks, inside this item
-          (ref-dec! w x))))
-    (release-adoption! w c)
+    (let [rej (take-rejected! w c)]   ; Z#83: adoption rows, released as such
+      (when-let [b (g c rw/C-BASIS)]
+        (s! c rw/C-BASIS nil)
+        (dotimes [i (acount b)]
+          (let [x (rv w (anth b i))]
+            (when (and (task? x) (rv w (g x rw/K-RUN))) (cancel! w (rv w (g x rw/K-RUN)) ::cancelled))
+            (when (stream? x) (close-source! w x))   ; C0: like its tasks, inside this item
+            (ref-dec! w x))))
+      (release-adoption! w c)
+      (doseq [x rej] (release-adopted! w (rv w x))))
     (s! c rw/C-PENDING 0)
     (if (or (some? (g c rw/C-DONE-EPOCH)) (pos? (gl c rw/HANDLES)))
       (do (s! c rw/C-IDLE true)
@@ -3411,13 +3471,13 @@
   (let [w (cw)
         x (rv w (g r rw/R-OF))
         ;; §5.2: first, a rejected creation changes nothing
-        key (when (comp? x) (creation-key! r -1))
-        at (next-at! r)]
+        key (when (comp? x) (creation-key! r -1))]
     (if (comp? x)
       ;; readoption by creation key needs the same kind (a run that creates a
       ;; signal where the last one created a mailbox makes a new source; the
       ;; other stays in the adoption basis)
-      (let [old (adopt! w x key #(and (source? %) (== (long kind) (gl % rw/X-KIND))))]
+      (let [old (adopt! w r x key #(and (source? %) (== (long kind) (gl % rw/X-KIND))))
+            at (next-at! r)]
         (if old
           (do (s! old rw/AT at)
               (do (commit! w [:create-source (g r rw/ID) (rw/kind-names kind)
@@ -3434,7 +3494,8 @@
               (commit! w [:create-source (g r rw/ID) (rw/kind-names kind)
                           (source-item-value kind v) (g s rw/ID)])
               h))))
-      (let [sc (current-scope! w r)
+      (let [at (next-at! r)
+            sc (current-scope! w r)
             s (new-source! w kind v sc 0 at)]
         (own-source! w sc s)
         (s! s rw/HANDLES 0)
@@ -3745,11 +3806,11 @@
         (body-released!)
         (let [w (cw)
               key (creation-key! r site)   ; §5.2: first, a rejected creation changes nothing
-              at (next-at! r)
-              old (adopt! w x key #(when (link? %)
-                                     (let [spec (g % rw/X-REALIZE)]
-                                       (and spec (same-inputs? inputs (nth spec 5))
-                                            (same-capture? init (nth spec 1))))))]
+              old (adopt! w r x key #(when (link? %)
+                                       (let [spec (g % rw/X-REALIZE)]
+                                         (and spec (same-inputs? inputs (nth spec 5))
+                                              (same-capture? init (nth spec 1))))))
+              at (next-at! r)]
           (if old
             (do (s! old rw/AT at)
                 (do (commit! w [:create-link (g r rw/ID) (g old rw/ID)])

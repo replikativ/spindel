@@ -97,7 +97,8 @@
    (own s m) false
    (owned-done s c) false
    (drain ids) false
-   (retire-local v) false)),
+   (retire-local v) false
+   (reject st x) false)),
  loser-task
  (a/defn
   loser-task
