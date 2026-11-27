@@ -1227,7 +1227,7 @@ resource acknowledgement (T15), operation completion (T25), finalizer exit
 
 | Creator | Created computation | Created source | Spawned task |
 |---|---|---|---|
-| computation run | in `basis` with `at`; owner is the computation | in `basis` with `at`; owner is the computation | in `basis` with `at`; owner is the computation; cancelled if a later run does not re-spawn it |
+| computation run | in `basis` with `at`; owner is the computation | in `basis` with `at`; owner is the computation | in `basis` with `at`; owner is the computation; cancelled if a later run does not re-spawn it, unless it stays in the prefix `basis` keeps (T11, T12) |
 | task run | owner is the run scope; retained while running or until consumed | owner is the run scope; retained by edges and handles only | structured child of the run scope (Q10); `detach` re-owns it to a named open scope outside its own run-scope subtree (Z#69) |
 | top level | owner is the current scope | owner is the current scope | owner is the current scope |
 
@@ -1245,20 +1245,20 @@ immutable values compared by value. `k` is evaluated once, before `body`.
 tasks it creates run in their own scopes. Outside a body `with-key` runs `body`
 unkeyed.
 
-A computation run adopts the entity of its adoption basis that has the
+A computation run adopts the entity of its adoption basis (or, after a
+restart from the body, of the prefix `basis` keeps, T11) that has the
 creation key of a new creation, if it is accepted: a computation always (T3,
 with W#5 and P4 for changed captures or path); a task if its captures and path
 are equal (T4), else a new task is spawned; a source if its kind is equal (T1);
 a pull sequence if its captures and initial state are equal (C0). Only an
-accepted entity moves to `basis`. Creations of the same `(site, K)` in one run
+accepted entity moves to (or stays in) `basis`. Creations of the same `(site, K)` in one run
 are told apart by `n`, so equal keys are positional among themselves. After a
 T11 resume the counts continue from the creations kept in `basis`. Each T11
 replaces the adoption basis with the latest suffix; the superseded one loses
 that retention, and Rule R (§3.3) cancels those of its tasks that are no longer
 live. A rejected predecessor stays in the adoption basis; one from `basis` (the
 prefix a restart from the body keeps, T11) moves there first (T29, Z#83).
-Registered-effect
-occurrences are never keyed (§8.2). Creation keys decide adoption only;
+Registered-effect occurrences are never keyed (§8.2). Creation keys decide adoption only;
 ownership and retention follow the table above.
 
 **Errors.**
