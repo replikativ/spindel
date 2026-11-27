@@ -1,4 +1,4 @@
-;; Keyed creation (spec §5.2 Z#82, phase-d design §1.13): oracle log samples 75-79, 81 and 82. Keys are absent from the
+;; Keyed creation (spec §5.2 Z#82, Z#83, phase-d design §1.13): oracle log samples 75-79 and 81-83. Keys are absent from the
 ;; model (ids are item inputs), so the replay shows each chosen id is a legal item; the shape checks in
 ;; oracle_test.clj (`keyed-sample-shapes`) pin the key -> id mapping.
 ;;
@@ -23,6 +23,10 @@
 ;;     task and one keyed child per key; each child tracks `sel`; the list awaits them all. A write to `sel` changes
 ;;     children 1 and 3: child 1's edge at the group await (no continuation) restarts the list from its body. The
 ;;     restart names every kept creation's id (no fresh id), each once in the basis.
+;; 83  w: a rejected prefix predecessor (Z#83). A list creates a keyed task that captures a fresh vector in every
+;;     run, then a keyed child that tracks `sel`, and awaits the child. A write to `sel` restarts the list from its
+;;     body; the task's captures differ, so the creation rejects its predecessor: `[:reject r t1]` moves t1 to the
+;;     adoption basis before the spawn of t2, and the list's completion cancels t1.
 ;;
 ;; From the repository root (one -Xmx1g JVM):
 ;;   clojure -J-Xmx1g -Sdeps '{:paths ["src" "test"]}' -M -i formal/test/spindel/v2/oracle/gen/samples-keyed.clj
@@ -164,3 +168,18 @@
   (v2/write! sel 3)
   (assert (= [:p false false true] (v2/value c 2000 :timeout)))
   (finish! 82 w acc))
+
+;; 83
+(let [acc (atom []) w (vworld acc)
+      [sel c] (in w #(let [sel (v2/signal 1)
+                           never (v2/deferred)]
+                       [sel (spin (let [cfg (vector 1)
+                                        t (v2/with-key :t (task (count cfg) (await never)))
+                                        i (v2/with-key :i (spin (iv/get-new (track sel))))]
+                                    t
+                                    (await-all [i])))]))]
+  (v2/observe! c (fn [_ _]))
+  (assert (= [1] (v2/value c 2000 :timeout)))
+  (v2/write! sel 2)
+  (assert (= [2] (v2/value c 2000 :timeout)))
+  (finish! 83 w acc))

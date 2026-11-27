@@ -980,7 +980,8 @@
 ;; the suffix child is readopted. 79: repeated interrupted reruns with fresh keys: each cut's adoption basis is
 ;; the previous run's child only. 81: creations rejected at the ordinal limit (caught by the body) leave no item,
 ;; id, row or effect index behind. 82: a restart from the body (T11, a group await's edge) readopts the kept prefix,
-;; positional and keyed: no fresh id, each creation once in the basis.
+;; positional and keyed: no fresh id, each creation once in the basis. 83 (Z#83): the restart's creation rejects a
+;; kept keyed task (a fresh captured vector): `[:reject r t1]` moves it to the adoption basis, the completion cancels it.
 (def ^:private keyed-specs
   {"75" {:w {:log (log "75-w") :kind :root}}
    "76" {:w {:log (log "76-w") :kind :root}}
@@ -990,7 +991,8 @@
    "78" {:w {:log (log "78-w") :kind :root}}
    "79" {:w {:log (log "79-w") :kind :root}}
    "81" {:w {:log (log "81-w") :kind :root}}
-   "82" {:w {:log (log "82-w") :kind :root}}})
+   "82" {:w {:log (log "82-w") :kind :root}}
+   "83" {:w {:log (log "83-w") :kind :root}}})
 
 (deftest keyed-samples
   (doseq [[n spec] keyed-specs]
@@ -1009,7 +1011,7 @@
     (last (filter #(and (= :complete (first (:item %))) (runs (second (:item %)))) l))))
 
 (deftest keyed-sample-shapes
-  (doseq [n ["75-w" "76-w" "77-root" "77-child" "78-w" "79-w" "81-w" "82-w"]]
+  (doseq [n ["75-w" "76-w" "77-root" "77-child" "78-w" "79-w" "81-w" "82-w" "83-w"]]
     (is (every? :accepted (log n)) (str n ": every item accepted")))
   (let [l (log "75-w")
         ids (vec (created l))
@@ -1069,8 +1071,26 @@
     (is (= t t') "82: the keyed task is readopted")
     (is (= 5 (count (:basis pc))))
     (is (= #{p t c1 c2 c3} (set (map first (:basis pc)))) "82: each once in the basis")
-    (is (nil? (:adoption pc)))))
+    (is (nil? (:adoption pc))))
+  (let [l (log "83-w")
+        [t1 t2 :as ts] (keep #(when (= :spawn (first (:item %))) (nth (:item %) 3)) l)
+        [rj] (filter #(= :reject (first (:item %))) l)
+        sp2 (first (filter #(and (= :spawn (first (:item %))) (= t2 (nth (:item %) 3))) l))
+        [c] (top-comps l)
+        done (last-complete l c)
+        pc (get-in (:proj done) [:comps c])]
+    (is (= 2 (count ts)))
+    (is (not= t1 t2) "83: the restart's spawn is a new task")
+    (is (= t1 (nth (:item rj) 2)) "83: [:reject r t1] names the predecessor")
+    (is (< (.indexOf ^java.util.List l rj) (.indexOf ^java.util.List l sp2)) "83: before the new spawn")
+    (is (contains? (set (get-in (:proj rj) [:comps c :adoption :basis])) t1) "83: it moved to the adoption basis")
+    (is (not (contains? (set (map first (get-in (:proj rj) [:comps c :basis]))) t1)))
+    (is (not (contains? (set (map first (:basis pc))) t1)) "83: the completion released it")
+    (is (contains? (set (map first (:basis pc))) t2))
+    (is (nil? (:adoption pc)))
+    (is (= :done (get-in (:proj done) [:runs (get-in (:proj done) [:tasks t1 :run]) :act] :done))
+        "83: its run is cancelled")))
 
 (deftest projection-roundtrip-keyed
-  (doseq [n ["75-w" "76-w" "77-root" "77-child" "78-w" "79-w" "81-w" "82-w"]]
+  (doseq [n ["75-w" "76-w" "77-root" "77-child" "78-w" "79-w" "81-w" "82-w" "83-w"]]
     (is (= [] (o/roundtrip (log n))) (str "sample " n))))
