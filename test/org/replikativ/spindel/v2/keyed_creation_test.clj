@@ -723,7 +723,7 @@
                                      (.remove l (int (dec (.size l)))) (.remove l (int (dec (.size l))))
                                      (set (map :container v)))))))]
     (is (= [] (v2/call-in! w #(kv w))))
-    (is (= #{:basis :rows} (found rw/C-BASIS)))
+    (is (= #{:basis :rows :physical-basis} (found rw/C-BASIS)))
     (is (= #{:adoption :rows} (found rw/C-ADOPT)))
     (is (= [{:container :kept :key [0 [:x] 0] :comp (hid w c)} {:container :kept :completed true :comp (hid w c)}]
            (v2/call-in! w (fn []
@@ -733,6 +733,33 @@
                               (let [v (kv w)] (aset x rw/C-KEPT-K nil) v)))))
         "the kept keyed prefix of a restart (T11)")
     (is (= [] (v2/call-in! w #(kv w))) "restored")
+    (u)))
+
+(deftest the-verify-hook-checks-rejected-basis-rows
+  ;; Z#83: malformed C-REJ states injected into a computation with basis [a b]
+  ;; (`pending?`: its run not completed) and undone inside one world item
+  (let [w v2/*world*
+        c (spin (let [a (spin 1) b (spin 2)] (+ (await a) (await b))))
+        u (v2/observe! c (fn [_ _]))
+        _ (is (= 3 (now c)))
+        found (fn [pending? mutate]
+                (v2/call-in! w (fn []
+                                 (let [^objects x (v2/row-of c)
+                                       ^java.util.List basis (aget x rw/C-BASIS)
+                                       saved (java.util.ArrayList. basis)
+                                       epoch (aget x rw/C-EPOCH)]
+                                   (when pending? (aset x rw/C-EPOCH (inc (long epoch))))
+                                   (mutate x (.get basis 0))
+                                   (let [v (verify/key-violations w)]
+                                     (.clear basis) (.addAll basis saved)
+                                     (aset x rw/C-REJ nil) (aset x rw/C-EPOCH epoch)
+                                     (set (map :container v)))))))]
+    (is (= #{} (found true (fn [x a] (aset x rw/C-REJ [a])))) "a rejected row physically in the basis once is well formed")
+    (is (= #{:physical-basis} (found true (fn [x a] (.add ^java.util.List (aget x rw/C-BASIS) a) (aset x rw/C-REJ [a]))))
+        "a rejected row twice in the basis: the logical split would hide it")
+    (is (= #{:rejected} (found true (fn [x _] (aset x rw/C-REJ [x])))) "a rejected row outside the basis")
+    (is (= #{:kept} (found false (fn [x a] (aset x rw/C-REJ [a])))) "rejected rows outlive the completed run")
+    (is (= [] (v2/call-in! w #(verify/key-violations w))) "restored")
     (u)))
 
 ;; ---------------------------------------------------------------------------
@@ -1078,3 +1105,47 @@
     (is (= 2 (count (set (first @ids)))))
     (is (= [0 1] @runs))
     (u)))
+
+(deftest a-changed-computation-capture-is-replaced-in-place-without-reject
+  ;; W#5: a computation is never rejected; its new captures rerun it at its row
+  (let [w v2/*world*
+        sel (v2/signal 1)
+        ids (atom []) runs (atom 0)
+        c (spin (let [cfg (vector 1)
+                      k (v2/with-key :k (spin (swap! runs inc) (count cfg)))
+                      i (v2/with-key :i (spin (iv/get-new (track sel))))]
+                  (swap! ids conj (rid k))
+                  (await-all [k i])))
+        u (v2/observe! c (fn [_ _]))]
+    (is (= [1 1] (now c)))
+    (v2/write! sel 2)
+    (is (= [1 2] (now c)))
+    (is (apply = @ids) "the same row")
+    (is (= 2 @runs) "rerun with the new captures")
+    (is (not-any? #(= :reject (first (:item %))) (verify/log w)) "no [:reject] item")
+    (u)))
+
+(deftest a-released-world-completes-with-a-rejected-predecessor-pending
+  ;; the restarted run parks after rejecting (the keyed predecessor still in
+  ;; C-REJ) when the world is released
+  (let [acc (atom [])
+        w (v2/world {:verify? true :hook (verify/checking-hook acc)})
+        fins (atom 0) made (atom [])
+        [sel mb c] (binding [v2/*world* w]
+                     (let [sel (v2/signal 1) never (v2/deferred) mb (v2/mailbox)]
+                       [sel mb (spin (let [cfg (vector 1)
+                                           t (v2/with-key :t (fin-task cfg never fins))
+                                           i (v2/with-key :i (spin (iv/get-new (track sel))))]
+                                       (swap! made conj (rid t))
+                                       (take! mb)
+                                       (await-all [i])))]))]
+    (v2/observe! c (fn [_ _]))
+    (v2/post! mb :go)
+    (is (= [1] (now c)))
+    (v2/write! sel 2)
+    (is (h/wait-until #(= 2 (count @made))) "rejected and parked")
+    (is (= 0 @fins))
+    (v2/release-world! w)
+    (is (true? (v2/await-complete w 5000 ::timeout)) "the world completes")
+    (is (= 2 @fins) "both tasks were cancelled")
+    (is (empty? @acc) (str "Rule R divergences: " (vec (take 3 @acc))))))

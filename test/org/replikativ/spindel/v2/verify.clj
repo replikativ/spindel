@@ -155,7 +155,8 @@
    predecessor and its replacement may share a key across the two. The rows
    the run rejected are basis rows until they leave it. The keyed prefix kept
    by a restart from the body (T11) indexes basis rows under their keys. Both
-   end with the run that completes."
+   end with the run that completes. Physically, `C-BASIS` holds a row once,
+   rejected or not: one reference each."
   [w]
   (binding [*reg* (f w rw/W-REG)]
     (let [key-of #(f (canon %) rw/KEY)
@@ -163,7 +164,7 @@
       (vec (for [c (rows w)
                  :when (== rw/T-COMP (t c))
                  :let [basis (basis-rows c) adoption (adoption-rows c)
-                       in-basis (set (map id-of (f c rw/C-BASIS)))
+                       physical (frequencies (map id-of (f c rw/C-BASIS)))
                        done? (= (f c rw/C-DONE-EPOCH) (f c rw/C-EPOCH))]
                  v (concat
                     (for [[container xs] [[:basis (map key-of basis)] [:adoption (map key-of adoption)]]
@@ -173,11 +174,13 @@
                     (for [[id n] (frequencies (map id-of (concat basis adoption)))
                           :when (> (long n) 1)]
                       {:container :rows :id id})
+                    (for [[id n] physical :when (> (long n) 1)]
+                      {:container :physical-basis :id id})
                     (for [[k x] (f c rw/C-ADOPT-K)
                           :when (not= k (key-of x))]
                       {:container :adoption-map :key k})
                     (for [x (f c rw/C-REJ)
-                          :when (not (in-basis (id-of x)))]
+                          :when (not (physical (id-of x)))]
                       {:container :rejected :id (id-of x)})
                     (let [kept (set (map id-of basis))]
                       (for [[k x] (f c rw/C-KEPT-K)
