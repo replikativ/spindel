@@ -693,6 +693,19 @@
       (simp only [keeps-clean clean-one idle-clean comp-rebasis hi Bool.not_true Bool.false_or (And.left hk) (And.right (And.right hk))
                   (ce-filter (created-other (:id b)) _ (And.left (And.right hk))) Bool.and_self Bool.or_true]))))
 
+(a/theorem comp-reject-row-nsl [x :- Nat, c :- CompRow] (= (no-sleep (comp-reject-row x) c) true)
+  (cases hi (:idle c)) (all_goals (simp only [no-sleep comp-reject-row hi Bool.not_true Bool.not_false Bool.or_true Bool.true_or])))
+(a/theorem comp-reject-row-kcl [x :- Nat, c :- CompRow] (= (keeps-clean (comp-reject-row x) c) true)
+  (cases hk (clean-one c))
+  (case [false] (simp only [keeps-clean hk Bool.not_false Bool.true_or]))
+  (case [true]
+    (cases hi (:idle c))
+    (case [false] (simp only [keeps-clean clean-one comp-reject-row hi Bool.not_false Bool.true_or Bool.or_true]))
+    (case [true]
+      (simp only [clean-one idle-clean hi Bool.not_true Bool.false_or Bool.and_eq_true] at hk)
+      (simp only [keeps-clean clean-one idle-clean comp-reject-row hi Bool.not_true Bool.false_or (And.left hk) (And.left (And.right hk))
+                  (And.right (And.right hk)) Bool.and_self Bool.or_true]))))
+
 (a/theorem comp-result-row-nsl [res :- RunResult, ep :- Nat, c :- CompRow] (= (no-sleep (comp-result-row res ep) c) true)
   (cases hi (:idle c)) (all_goals (simp only [no-sleep comp-result-row hi Bool.not_true Bool.not_false Bool.or_true Bool.true_or])))
 (a/theorem comp-result-row-kcl [res :- RunResult, ep :- Nat, c :- CompRow] (= (keeps-clean (comp-result-row res ep) c) true)
@@ -737,7 +750,7 @@
                          run-fin-pop-end [run-fin-pop-end-dwn run-fin-pop-end-snk]
                          run-drop-fins [run-drop-fins-dwn run-drop-fins-snk]})
 (def ^:private comp-fns '#{comp-react-row comp-demand-row comp-start-row comp-replace-row comp-consume-adopt
-                           comp-rebasis comp-result-row comp-clear-run})
+                           comp-rebasis comp-reject-row comp-result-row comp-clear-run})
 (defn- fhead [f] (if (seq? f) (first f) f))
 ;; a function applied to a row function's arguments: (f a b) -> (lem a b)
 (defn- lemma-app [f lem] (if (seq? f) (apply list lem (rest f)) lem))

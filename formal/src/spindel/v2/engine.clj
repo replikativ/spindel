@@ -115,8 +115,10 @@
         (`deb-consuming` in transition).
     B11. T12 releases the adoption basis: the predecessor's suffix creations (at > E.at)
         that the new run did not re-adopt (re-creation or re-spawn moves an id back into the
-        basis); their running tasks are cancelled; prefix creations stay; the adoption
-        basis and baselines are discarded.
+        basis), and the basis creations a creation of the run rejected (`t-reject`, Z#83:
+        `[:reject st x]` moves x from the basis to the adoption basis before the creation);
+        their running tasks are cancelled; prefix creations stay; the adoption basis and
+        baselines are discarded.
     B12. The scheduling choice gives the slice to an active, normal run when no run holds
         one; a cleanup slice is given by `finalize R` (Part F2).
     B13. Z#32: computations are never final (rule.clj `comp-final` is false): dep edges on
@@ -691,6 +693,54 @@
 (a/theorem comp-rebasis-pending [b :- Created, c :- CompRow] (= (:pending (comp-rebasis b c)) (:pending c)) (rfl))
 (a/defn respawn-raw [w :- World, r :- RunRow, x :- Nat] World
   (run-upd (comp-upd w (:of r) (comp-rebasis (Created.mk x (:effect-index r)))) (:id r) run-tick))
+
+;; §5.2 (B11): a creation of a computation run that rejects its predecessor x in C's basis (the kept
+;; prefix of a restart from the body, T11: captures, path, kind or initial state differ) moves x to the
+;; adoption basis, as a rejected predecessor of the adoption basis stays there: T12 releases it, the
+;; next cut drops it. Logged before the creation; no effect tick. An idle row is left as it is (I7: an
+;; idle computation has no adoption basis; `t-reject` refuses it).
+(a/defn created-is [x :- Nat, b :- Created] Bool (Nat.beq (:id b) x))
+(a/defn comp-reject-row [x :- Nat, c :- CompRow] CompRow
+  (CompRow.mk (:id c) (:owner c) (:inputs c) (:body c) (:run c) (:epoch c) (:done-epoch c)
+              (:pending c) (:rank c) (:version c) (:result c) (:idle c) (:validity c)
+              (if (:idle c) (:basis c) (tbl-filter (created-other x) (:basis c)))
+              (if (:idle c) (:adopt-basis c) (List.append Created (tbl-filter (created-is x) (:basis c)) (:adopt-basis c)))
+              (:adopt-baselines c) (:handles c) (:tomb c)))
+(a/theorem comp-reject-row-id [x :- Nat, c :- CompRow] (= (comp-id (comp-reject-row x c)) (comp-id c)) (rfl))
+(a/theorem comp-reject-row-pending [x :- Nat, c :- CompRow] (= (:pending (comp-reject-row x c)) (:pending c)) (rfl))
+(a/defn t-reject [w :- World, st :- Nat, x :- Nat] Outcome
+  (match (tok-run w st)
+    none (refuse w)
+    (some r) (match (comp-find w (:of r))
+               none (refuse w)
+               (some c) (if (Bool.and (Bool.not (:idle c)) (reach-mem x (created-ids (:basis c))))
+                            (accept (comp-upd w (:of r) (comp-reject-row x)))
+                            (refuse w)))))
+(a/theorem well-formed-t-reject [w :- World, st :- Nat, x :- Nat]
+  (=> (= (well-formed w) true) (= (well-formed (:world (t-reject w st x))) true))
+  (intro h)
+  (cases ht (tok-run w st))
+  (case [none] (simp only [t-reject ht refuse]) (exact h))
+  (case [some r]
+    (cases hc (comp-find w (:of r)))
+    (case [none] (simp only [t-reject ht hc refuse]) (exact h))
+    (case [some c]
+      (cases hg (Bool.and (Bool.not (:idle c)) (reach-mem x (created-ids (:basis c)))))
+      (case [false] (simp only [t-reject ht hc hg refuse]) (exact h))
+      (case [true] (simp only [t-reject ht hc hg accept])
+        (exact (well-formed-comp-upd w (:of r) _ (comp-reject-row-id x) (comp-reject-row-pending x) h))))))
+(a/theorem t-reject-refuse [w :- World, st :- Nat, x :- Nat]
+  (=> (= (:accepted (t-reject w st x)) false) (= (:world (t-reject w st x)) w))
+  (intro ha)
+  (cases ht (tok-run w st))
+  (case [none] (simp only [t-reject ht refuse]))
+  (case [some r]
+    (cases hc (comp-find w (:of r)))
+    (case [none] (simp only [t-reject ht hc refuse]))
+    (case [some c]
+      (cases hg (Bool.and (Bool.not (:idle c)) (reach-mem x (created-ids (:basis c)))))
+      (case [false] (simp only [t-reject ht hc hg refuse]))
+      (case [true] (simp [t-reject ht hc hg accept] at ha)))))
 
 ;; Z#77 fork-local tasks (K2): a scope is fork-local when it or a scope on its parent chain is the run
 ;; scope of a run of a fork-local task; a new task is fork-local when it is created with the option
@@ -3475,7 +3525,8 @@
     (own s m) (t-own w s m)
     (owned-done s c) (t-owned-done w s c)
     (drain ids) (t-drain w ids)
-    (retire-local v) (t28-retire-local w v)))
+    (retire-local v) (t28-retire-local w v)
+    (reject st x) (t-reject w st x)))
 
 ;; Z#56 (T21): a released world refuses the HOST's admissions (top-level creations, writes, observe,
 ;; pins, handles, host waits, source operations, cancel, close, detach), except while a run holds the
@@ -3532,7 +3583,8 @@
     (own s m) false
     (owned-done s c) false
     (drain ids) false
-    (retire-local v) false))
+    (retire-local v) false
+    (reject st x) false))
 (a/defn slice-held [w :- World] Bool (tbl-any run-slice (:runs w)))
 (a/defn host-item-refused [w :- World, it :- Item] Bool
   (Bool.and (:released w) (Bool.and (host-item it) (Bool.not (slice-held w)))))
@@ -3646,7 +3698,8 @@
   (exact (well-formed-t-own w _ _ h))
   (exact (well-formed-t-owned-done w _ _ h))
   (exact (well-formed-t-drain w _ h))
-  (exact (well-formed-t28-retire-local w _ h)))
+  (exact (well-formed-t28-retire-local w _ h))
+  (exact (well-formed-t-reject w _ _ h)))
 
 (a/theorem transition-refuse [w :- World, it :- Item]
   (=> (= (:accepted (transition w it)) false) (= (:world (transition w it)) w))
@@ -3746,7 +3799,8 @@
   (exact (t-own-refuse w _ _ ha))
   (exact (t-owned-done-refuse w _ _ ha))
   (exact (t-drain-refuse w _ ha))
-  (exact (t28-retire-local-refuse w _ ha)))
+  (exact (t28-retire-local-refuse w _ ha))
+  (exact (t-reject-refuse w _ _ ha)))
 
 (a/theorem well-formed-cancel-losers [w0 :- World, w1 :- World]
   (=> (= (well-formed w1) true) (= (well-formed (cancel-losers w0 w1)) true))
@@ -3852,7 +3906,11 @@
   (simp [item-token-ok] at hg)
   (simp [item-token-ok] at hg)
   (simp only [transition t-finally-leave (run-tok-none w _ hg) refuse])
-  (all_goals (simp [item-token-ok] at hg)))
+  (simp [item-token-ok] at hg)
+  (simp [item-token-ok] at hg)
+  (simp [item-token-ok] at hg)
+  (simp [item-token-ok] at hg)
+  (simp only [transition t-reject (run-tok-none w _ hg) refuse]))
 
 (a/theorem raw-l4 [w :- World, it :- Item]
   (=> (= (raw-token-ok w it) false) (= (:accepted (raw w it)) false))

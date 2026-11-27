@@ -129,7 +129,7 @@
             well-formed-t-handle-new well-formed-t-post well-formed-t-release well-formed-t-finalize well-formed-t-open-scope well-formed-t-detach well-formed-t-finally-enter
             well-formed-t-finally-exit well-formed-t-finally-leave
             well-formed-t1-create-source well-formed-t1-create-source-top well-formed-t-create-link well-formed-t-create-link-top well-formed-t-link-demand well-formed-require-root-open
-            well-formed-t-own well-formed-t-owned-done well-formed-t-drain])
+            well-formed-t-own well-formed-t-owned-done well-formed-t-drain well-formed-t-reject])
 
 ;; ---- C0: a link's realization, an append, a stream close (marks-waiting: the realized link / closed stream is a source)
 (a/theorem current-members-link-realize-raw [xm :- (List Nat), hx :- (List Nat), w :- World, l :- Nat, tag :- Nat, v :- Nat, n :- Nat]
@@ -348,7 +348,8 @@
   (case [own s m] (simp only [transition]) (exact (current-members-t-own xm w _ _ h)))
   (case [owned-done s c] (simp only [transition]) (exact (current-members-t-owned-done xm w _ _ h)))
   (case [drain ids] (simp only [transition]) (exact (current-members-t-drain xm w _ h)))
-  (case [retire-local v] (simp only [transition]) (exact (current-members-t28-retire-local xm w _ (h3ctx-intro w hga hgd hg7 hg10 hk hke) h))))
+  (case [retire-local v] (simp only [transition]) (exact (current-members-t28-retire-local xm w _ (h3ctx-intro w hga hgd hg7 hg10 hk hke) h)))
+  (case [reject st x] (simp only [transition]) (exact (current-members-t-reject xm w _ _ h))))
 
 (a/theorem current-members-raw [xm :- (List Nat), w :- World, it :- Item]
   (=> (= (chain-to-edge-kinds w) true) (= (current-members xm w) true) (= (current-members xm (:world (raw w it))) true))

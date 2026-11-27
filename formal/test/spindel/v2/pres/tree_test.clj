@@ -55,7 +55,7 @@
 (deftest transition-is-cut-by-item
   ;; one lemma per item, each checked for well-formed; well-formed-transition dispatches to them, and a part that
   ;; passes into one transition gets that branch's lemma, not the dispatcher's
-  (is (= 49 (count (filter #(re-matches #"well-formed-transition-.+" (name %)) (:nodes @tree/tree)))))
+  (is (= 50 (count (filter #(re-matches #"well-formed-transition-.+" (name %)) (:nodes @tree/tree)))))
   (is (declared? 'well-formed-transition-complete))
   (doseq [B [c/GL c/G9]] (is (not (tree/variant? B 'well-formed-transition))))
   (is (tree/variant? c/GL 'well-formed-transition-complete))
