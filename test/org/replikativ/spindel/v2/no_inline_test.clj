@@ -36,10 +36,18 @@
      run-all
      (fn pass! [] (reset! through true) (run-all))]))
 
+(defn- new-thread
+  "`(f)` on a new, dedicated thread with the caller's bindings (a pooled
+   `future` may reuse one thread for several calls); a future of its value."
+  [f]
+  (let [t (java.util.concurrent.FutureTask. ^Callable (bound-fn* f))]
+    (.start (Thread. t))
+    t))
+
 (defn- off-thread
   "`(f)` on a new thread opted out of inline turns; a future of its value."
   [f]
-  (future (v2/without-inline-turns f)))
+  (new-thread #(v2/without-inline-turns f)))
 
 (deftest an-opted-in-caller-runs-no-slice-on-a-mixed-world
   (checked
@@ -50,8 +58,9 @@
        (testing "the same operation, inline and opted in"
          (let [me (Thread/currentThread)
                inline (task (Thread/currentThread))
-               [caller ran-on] @(off-thread #(let [t (task (Thread/currentThread))]
-                                               [(Thread/currentThread) (v2/value t 2000 ::timeout)]))]
+               [caller ran-on] (deref (off-thread #(let [t (task (Thread/currentThread))]
+                                                     [(Thread/currentThread) (v2/value t 2000 ::timeout)]))
+                                      10000 [::stuck ::stuck])]
            (is (identical? me (v2/value inline 2000 ::timeout)) "an ordinary caller runs the slice")
            (is (instance? Thread ran-on))
            (is (not (identical? caller ran-on)) "an opted-in caller hands it off")))
@@ -66,7 +75,7 @@
                                           (do (v2/write! (nth xs i) (inc n))
                                               (task (record! i) (* 2 (iv/get-new (track (nth xs i))))))))]
                             [(Thread/currentThread) ts])))
-               runs (mapv (fn [i] (if (even? i) (future ((worker i))) (off-thread (worker i)))) (range 4))
+               runs (mapv (fn [i] (if (even? i) (new-thread (worker i)) (off-thread (worker i)))) (range 4))
                results (mapv #(deref % 10000 ::stuck) runs)]
            (is (not-any? #{::stuck} results))
            (is (= 400 (v2/value total 5000 ::timeout)) "every write applied")
